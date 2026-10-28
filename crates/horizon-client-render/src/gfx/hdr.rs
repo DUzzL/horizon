@@ -61,7 +61,8 @@ struct Targets {
 }
 
 /// How one tier of light sources (`mesher::hdr_tier`) shines: `share` of the headroom for
-/// its brightest pixels, lifted from brightness `start` (none) to `full` (all of it).
+/// its brightest pixels, lifted from brightness `start` (none) to `full` (all of it), the
+/// texel's own brightness before lighting.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tier {
     pub share: f32,
@@ -268,7 +269,7 @@ impl Hdr {
         let params = || {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Horizon HDR parameters"),
-                size: 96,
+                size: 64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
@@ -438,6 +439,11 @@ impl Hdr {
     }
 
     /// Writes the finished frame to the swapchain image `target`.
+    /// The tiers' windows for the shaders that mark the frame (`Globals::hdr_windows`):
+    /// where each starts, then where each is full.
+    pub fn windows(&self) -> [[f32; 4]; 2] {
+        [self.tiers.map(|t| t.start), self.tiers.map(|t| t.full)]
+    }
     pub fn present(
         &self,
         queue: &wgpu::Queue,
@@ -510,10 +516,10 @@ impl Hdr {
     }
 
     /// hdr.wgsl's `Params`.
-    fn params(&self, world: bool, pq: bool) -> [f32; 24] {
+    fn params(&self, world: bool, pq: bool) -> [f32; 16] {
         let paper = self.paper_white.max(1.0);
         let c = self.calibration;
-        let mut params = [0.0; 24];
+        let mut params = [0.0; 16];
         params[..5].copy_from_slice(&[
             paper / 80.0,
             (self.peak / paper).max(1.0),
@@ -525,12 +531,10 @@ impl Hdr {
         params[6] = self.ui.clamp(0.25, 1.0);
         for (i, t) in self.tiers.iter().enumerate() {
             params[8 + i] = t.share;
-            params[12 + i] = t.start;
-            params[16 + i] = t.full;
         }
-        params[20] = c.map_or(0.0, |c| c.step as f32);
-        params[21] = c.map_or(0.0, |c| c.nits);
-        params[22] = c.map_or(0.0, |c| c.band);
+        params[12] = c.map_or(0.0, |c| c.step as f32);
+        params[13] = c.map_or(0.0, |c| c.nits);
+        params[14] = c.map_or(0.0, |c| c.band);
         params
     }
 

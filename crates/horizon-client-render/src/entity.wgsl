@@ -28,6 +28,9 @@ struct Globals {
     emissive_count: vec4<u32>,
     sunrise_fan: array<vec4<f32>, 32>,
     filtering: vec4<f32>,
+    // HDR output's tier windows (hdr.rs `Hdr::windows`): x..w low to very bright,
+    // [0] where the lift starts, [1] where it is full.
+    hdr_windows: array<vec4<f32>, 2>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -315,8 +318,21 @@ fn shadow_color(in: Out) -> vec4<f32> {
     // Beams wrap their v in the sprite as fs_entity does: sample where they draw.
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
-    if in.tier == 0u || textureSample(atlas, atlas_sampler, uv).a < 0.1 { discard; }
-    return vec4(0.0, 0.0, 0.0, 0.7 * f32(4u - min(in.tier, 4u)) / 4.0);
+    let texel = textureSample(atlas, atlas_sampler, uv);
+    if in.tier == 0u || texel.a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, hdr_mark(in.tier, brightness(texel.rgb * in.color.rgb)));
+}
+fn brightness(c: vec3<f32>) -> f32 {
+    let l = pow(max(c, vec3(0.0)), vec3(2.2));
+    return 0.5 * (dot(l, vec3(0.2126, 0.7152, 0.0722)) + max(l.r, max(l.g, l.b)));
+}
+// HDR output's mark (hdr.wgsl): the frame's alpha below 0.75, a band of 0.175 per
+// tier (1 low .. 4 very bright, from 0.525 down to 0) and in it how much the pixel
+// lifts, from its own brightness `y` before lighting through the tier's window.
+fn hdr_mark(tier: u32, y: f32) -> f32 {
+    let t = clamp(tier, 1u, 4u) - 1u;
+    let lift = smoothstep(globals.hdr_windows[0][t], globals.hdr_windows[1][t], y);
+    return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
 }
 
 fn celestial_color(in: Out) -> vec4<f32> {
@@ -334,19 +350,17 @@ fn celestial_color(in: Out) -> vec4<f32> {
 }
 
 // The sky's celestial pass (sun, moon, the End sky): fs_celestial's light,
-// premultiplied for an additive (one, one) blend, and as alpha how much of it
-// the texel adds, which the blend takes off the frame's alpha. HDR output
-// (hdr.wgsl) lifts only where that left it low: the sun's and moon's discs, not
-// the dark rest of their quads or the dim End sky.
+// premultiplied for an additive (one, one) blend. Where a texel adds light, its
+// alpha leaves the sky's 1 at HDR output's mark (hdr_mark) for the brightest
+// tier, so the sun's and moon's discs shine; the dark rest of their quads and
+// the dim End sky stay unmarked.
 @fragment fn fs_sky_celestial(in: Out) -> @location(0) vec4<f32> {
     let color = celestial_color(in);
     let added = color.rgb * color.a;
-    // The sky under the disc keeps alpha 1 less this: 0 for the brightest tier
-    // (the sun), terrain.wgsl's mark for the lower ones (the moon). Tier 0 is
-    // geometry that sets none (the End sky, the End flash): it stays brightest.
-    let tier = select(4u, min(in.tier, 4u), in.tier > 0u);
-    let mark = 1.0 - 0.7 * f32(4u - tier) / 4.0;
-    return vec4(added, mark * smoothstep(0.1, 0.3, max(added.r, max(added.g, added.b))));
+    // The sun at the brightest tier, the moon at its own (in.tier); geometry that sets
+    // none (the End sky, the End flash) stays brightest.
+    let keep = 1.0 - hdr_mark(select(in.tier, 4u, in.tier == 0u), brightness(added));
+    return vec4(added, keep * smoothstep(0.1, 0.3, max(added.r, max(added.g, added.b))));
 }
 
 // RenderPipelines.ENERGY_SWIRL (entity.fsh with EMISSIVE and NO_OVERLAY): the sprite, scrolled by
