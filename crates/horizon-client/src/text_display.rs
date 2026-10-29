@@ -251,6 +251,37 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_quad_front_tracks_the_display_transform() {
+        let lines = Lines {
+            lines: vec![],
+            width: 10.0,
+        };
+        let mut batch = crate::hud::HudBatch::new([1, 1]);
+        batch.quad(
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            [[0.0; 2]; 4],
+            u32::MAX,
+        );
+        let front = |data: &TextDisplayData, entity: [f32; 2], camera: [f32; 2]| {
+            let matrix = data.matrix(entity, camera) * lines.pose();
+            let point = |i: usize| {
+                let v = batch.vertices[i];
+                matrix.transform_point3(glam::Vec3::new(v.pos[0], v.pos[1], v.depth))
+            };
+            (point(1) - point(0)).cross(point(2) - point(0)).normalize()
+        };
+        let mut display = TextDisplayData::default();
+        assert!(front(&display, [0.0, 0.0], [0.0, 0.0]).dot(glam::Vec3::NEG_Z) > 0.99);
+        assert!(front(&display, [180.0, 0.0], [0.0, 0.0]).dot(glam::Vec3::Z) > 0.99);
+        display.scale = [-1.0, 1.0, 1.0];
+        assert!(front(&display, [0.0, 0.0], [0.0, 0.0]).dot(glam::Vec3::Z) > 0.99);
+        display.scale = [1.0; 3];
+        display.billboard = 3;
+        assert!(front(&display, [0.0, 0.0], [0.0, 0.0]).dot(glam::Vec3::Z) > 0.99);
+    }
+
     #[test]
     fn partial_updates_retain_values_and_bad_vectors_do_not_panic() {
         let mut d = TextDisplayData::default();

@@ -2075,7 +2075,7 @@ impl Renderer {
         // RenderPipelines.TEXT_SEE_THROUGH: translucent, no depth test or writes.
         let see_through_pipeline = entity_pipeline(
             "See-through text",
-            None,
+            Some(wgpu::Face::Back),
             false,
             wgpu::CompareFunction::Always,
             Default::default(),
@@ -2086,7 +2086,7 @@ impl Renderer {
         // background win against the surface they lie on (bias 1, 10).
         let text_polygon_offset_pipeline = entity_pipeline(
             "Polygon offset text",
-            None,
+            Some(wgpu::Face::Back),
             true,
             wgpu::CompareFunction::GreaterEqual,
             wgpu::DepthBiasState {
