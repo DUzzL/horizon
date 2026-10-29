@@ -5,6 +5,16 @@
 use super::Game;
 use horizon_client::Result;
 
+/// Directions from the head to the snow column, (down first, keeping the old behaviour when several columns match).
+const SNOW_GOLEM_DIRS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+    [1, 0, 0],
+    [-1, 0, 0],
+];
+
 impl Game<'_> {
     fn golem_block(&self, p: [i32; 3]) -> &str {
         let state = self.world.block(p[0], p[1], p[2]);
@@ -19,16 +29,25 @@ impl Game<'_> {
     /// The blocks of the golem whose head is at `head` and its spawn base
     /// (`BlockPattern.find`), snow golems first.
     fn find_golem(&self, head: [i32; 3]) -> Option<(&'static str, Vec<[i32; 3]>, [i32; 3])> {
-        let below = |n: i32| [head[0], head[1] - n, head[2]];
-        if self.golem_block(below(1)) == "minecraft:snow_block"
-            && self.golem_block(below(2)) == "minecraft:snow_block"
-        {
-            // The pattern ("^", "#", "#") is one column.
-            return Some((
-                "minecraft:snow_golem",
-                vec![head, below(1), below(2)],
-                below(2),
-            ));
+        // BlockPattern.find tries every orientation, so the snow column
+        // ("^", "#", "#") may run along any axis away from the head.
+        for dir in SNOW_GOLEM_DIRS {
+            let step = |n: i32| {
+                [
+                    head[0] + dir[0] * n,
+                    head[1] + dir[1] * n,
+                    head[2] + dir[2] * n,
+                ]
+            };
+            if self.golem_block(step(1)) == "minecraft:snow_block"
+                && self.golem_block(step(2)) == "minecraft:snow_block"
+            {
+                return Some((
+                    "minecraft:snow_golem",
+                    vec![head, step(1), step(2)],
+                    step(2),
+                ));
+            }
         }
         for (ax, az) in [(1, 0), (0, 1)] {
             let side = |s: i32, row: i32| [head[0] + ax * s, head[1] - row, head[2] + az * s];
@@ -249,5 +268,24 @@ impl Game<'_> {
                 .play("minecraft:entity.copper_golem.spawn", Some(p), 1.0, 1.0);
         }
         self.process_level_events()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SNOW_GOLEM_DIRS;
+
+    #[test]
+    fn snow_golem_directions_cover_all_axes() {
+        for axis in 0..3 {
+            for sign in [-1, 1] {
+                assert!(
+                    SNOW_GOLEM_DIRS
+                        .iter()
+                        .any(|d| d[axis] == sign && d.iter().map(|v| v.abs()).sum::<i32>() == 1)
+                );
+            }
+        }
+        assert_eq!(SNOW_GOLEM_DIRS.len(), 6);
     }
 }
