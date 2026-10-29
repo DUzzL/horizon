@@ -498,21 +498,24 @@ pub fn transient(m: &Mob, a: Attr) -> Option<(f64, Op)> {
     }
 }
 /// The attribute modifiers of the mob's effects (`MobEffect.addAttributeModifier`,
-/// scaled by the amplifier plus one): strength and speed.
+/// scaled by the amplifier plus one): strength, weakness, speed and slowness.
+fn effect_modifier(effect: &str, a: Attr, amplifier: i32) -> Option<(f64, Op)> {
+    let level = f64::from(amplifier + 1);
+    match (effect.trim_start_matches("minecraft:"), a) {
+        ("strength", Attr::AttackDamage) => Some((3.0 * level, Op::AddValue)),
+        ("weakness", Attr::AttackDamage) => Some((-4.0 * level, Op::AddValue)),
+        ("speed", Attr::MovementSpeed) => Some((f64::from(0.2f32) * level, Op::AddMultipliedTotal)),
+        ("slowness", Attr::MovementSpeed) => {
+            Some((f64::from(-0.15f32) * level, Op::AddMultipliedTotal))
+        }
+        _ => None,
+    }
+}
 fn effect_modifiers(m: &Mob, a: Attr) -> impl Iterator<Item = (f64, Op)> + '_ {
     m.extra
         .effects
         .iter()
-        .filter_map(move |&(effect, _, amplifier)| {
-            let level = f64::from(amplifier + 1);
-            match (effect.trim_start_matches("minecraft:"), a) {
-                ("strength", Attr::AttackDamage) => Some((3.0 * level, Op::AddValue)),
-                ("speed", Attr::MovementSpeed) => {
-                    Some((f64::from(0.2f32) * level, Op::AddMultipliedTotal))
-                }
-                _ => None,
-            }
-        })
+        .filter_map(move |&(effect, _, amplifier)| effect_modifier(effect, a, amplifier))
 }
 /// `AttributeInstance.getValue`: the base, then the modifiers by operation.
 pub fn value(m: &Mob, a: Attr) -> f64 {
@@ -2197,6 +2200,23 @@ mod tests {
             "minecraft:cow"
         ));
         assert!(!spawn_egg_is_for("minecraft:stick", "minecraft:cow"));
+    }
+    /// #3887: weakness and slowness carry attribute modifiers like strength and speed.
+    #[test]
+    fn weakness_and_slowness_modify_attributes() {
+        assert_eq!(
+            effect_modifier("minecraft:weakness", Attr::AttackDamage, 0),
+            Some((-4.0, Op::AddValue))
+        );
+        assert_eq!(
+            effect_modifier("weakness", Attr::AttackDamage, 1),
+            Some((-8.0, Op::AddValue))
+        );
+        let (amount, op) = effect_modifier("minecraft:slowness", Attr::MovementSpeed, 0).unwrap();
+        assert_eq!(op, Op::AddMultipliedTotal);
+        assert!((0.23 * (1.0 + amount) - 0.1955).abs() < 1e-6);
+        assert_eq!(effect_modifier("slowness", Attr::AttackDamage, 0), None);
+        assert_eq!(effect_modifier("weakness", Attr::MovementSpeed, 0), None);
     }
     #[test]
     fn reasons_round_trip() {
