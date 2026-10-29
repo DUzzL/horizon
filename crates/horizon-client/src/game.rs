@@ -11225,8 +11225,11 @@ impl Game<'_> {
         let Some((position, yaw)) = self.player.as_ref().map(|p| (p.position, p.yaw)) else {
             return;
         };
-        let time = self.world.day_time.rem_euclid(24000);
-        let night = (12542..23460).contains(&time) || self.world.weather.thundering;
+        // Level.isThundering: the thunder level, which scales with the rain
+        // level, is above 0.9. The bare `thundering` flag also stays on in
+        // clear weather and must not allow sleeping by day.
+        let thunder = self.world.weather.levels(1.0).1;
+        let night = can_start_sleep(self.world.day_time, thunder);
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let props = self
             .pack
@@ -16060,6 +16063,11 @@ fn player_arms(root: &std::path::Path, key: &str) -> [Option<horizon_client::mob
 }
 
 // Player.tick: cap the sleeping fade at 100, then fade out over 10 waking ticks.
+/// The overworld's bed rule `when_dark`: night (day.json, from tick 12542 to
+/// 23459) or a thunderstorm (`Level.isThundering`: thunder level above 0.9).
+fn can_start_sleep(day_time: i64, thunder_level: f32) -> bool {
+    (12542..23460).contains(&day_time.rem_euclid(24000)) || thunder_level > 0.9
+}
 fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
     if sleeping {
         (timer + 1).min(100)
@@ -16185,6 +16193,17 @@ mod tests {
         for action in [KeyAction::Press, KeyAction::Repeat, KeyAction::Release] {
             assert_eq!(keyboard_button(false, action), None);
         }
+    }
+    #[test]
+    fn sleeping_needs_night_or_a_real_thunderstorm() {
+        assert!(!can_start_sleep(1000, 0.0));
+        assert!(!can_start_sleep(6000, 0.0));
+        assert!(can_start_sleep(12542, 0.0));
+        assert!(can_start_sleep(24000 + 23459, 0.0));
+        assert!(!can_start_sleep(23460, 0.0));
+        assert!(can_start_sleep(6000, 1.0));
+        // Thunder scaled by rain at or below 0.9 does not count.
+        assert!(!can_start_sleep(6000, 0.9));
     }
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {
