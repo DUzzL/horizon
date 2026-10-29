@@ -341,6 +341,12 @@ impl ServerAdvancements {
                     .map_or(Vec::new(), |a| a.iter().map(Some).collect());
                 (cells, "misc")
             }
+            "minecraft:smelting"
+            | "minecraft:blasting"
+            | "minecraft:smoking"
+            | "minecraft:campfire_cooking" => {
+                return self.cooking_entry(r, kind, ids.start, sync, flags);
+            }
             _ => return Vec::new(),
         };
         // ShapedCraftingRecipeDisplay / ShapelessCraftingRecipeDisplay:
@@ -385,6 +391,80 @@ impl ServerAdvancements {
             holder_set(&mut w, v, &item);
         }
         // The notification only where the recipe shows one.
+        let notify = r["show_notification"].as_bool().unwrap_or(true);
+        w.i8(if notify { flags } else { flags & !1 });
+        vec![w.data]
+    }
+}
+
+impl ServerAdvancements {
+    /// The entry of a smelting, blasting, smoking or campfire recipe: a
+    /// `FurnaceRecipeDisplay` (ingredient, any fuel, result, station, cooking
+    /// time, experience), the group, the book category and the one-ingredient
+    /// placement.
+    fn cooking_entry(
+        &self,
+        r: &Value,
+        kind: &str,
+        display_id: i32,
+        sync: &SyncData,
+        flags: i8,
+    ) -> Vec<Vec<u8>> {
+        let item = |n: &str| sync.id("minecraft:item", n).unwrap_or(0);
+        let slot = |n: &str| sync.id("minecraft:slot_display", n).unwrap_or(0);
+        let (station, default_time, category) = match kind {
+            "minecraft:smelting" => (
+                "minecraft:furnace",
+                200,
+                match r["category"].as_str().unwrap_or("misc") {
+                    "food" => "minecraft:furnace_food",
+                    "blocks" => "minecraft:furnace_blocks",
+                    _ => "minecraft:furnace_misc",
+                },
+            ),
+            "minecraft:blasting" => (
+                "minecraft:blast_furnace",
+                100,
+                match r["category"].as_str().unwrap_or("misc") {
+                    "blocks" => "minecraft:blast_furnace_blocks",
+                    _ => "minecraft:blast_furnace_misc",
+                },
+            ),
+            "minecraft:smoking" => ("minecraft:smoker", 100, "minecraft:smoker_food"),
+            _ => ("minecraft:campfire", 100, "minecraft:campfire"),
+        };
+        let ingredient = &r["ingredient"];
+        let mut w = Writer::new();
+        w.varint(display_id);
+        w.varint(
+            sync.id("minecraft:recipe_display", "minecraft:furnace")
+                .unwrap_or(0),
+        );
+        // FurnaceRecipeDisplay: ingredient, any fuel, result, station, time, experience.
+        w.varint(slot("minecraft:tag"));
+        holder_set(&mut w, ingredient, &item);
+        w.varint(slot("minecraft:any_fuel"));
+        w.varint(slot("minecraft:item_stack"));
+        w.varint(item(r["result"]["id"].as_str().unwrap_or("minecraft:air")));
+        w.varint(r["result"]["count"].as_i64().unwrap_or(1) as i32);
+        w.varint(0);
+        w.varint(0);
+        w.varint(slot("minecraft:item"));
+        w.varint(item(station));
+        w.varint(r["cookingtime"].as_i64().unwrap_or(default_time) as i32);
+        w.f32(r["experience"].as_f64().unwrap_or(0.0) as f32);
+        match r["group"].as_str().and_then(|g| self.groups.get(g)) {
+            Some(g) => w.varint(g + 1),
+            None => w.varint(0),
+        }
+        w.varint(
+            sync.id("minecraft:recipe_book_category", category)
+                .unwrap_or(0),
+        );
+        // The placement: the single ingredient.
+        w.bool(true);
+        w.varint(1);
+        holder_set(&mut w, ingredient, &item);
         let notify = r["show_notification"].as_bool().unwrap_or(true);
         w.i8(if notify { flags } else { flags & !1 });
         vec![w.data]

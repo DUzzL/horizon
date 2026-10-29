@@ -996,3 +996,46 @@ fn changed_biomes_reach_the_players_that_see_the_column() {
             .all(|(i, b)| i == 4 || b.get(25) == 0)
     );
 }
+
+/// The initial recipe book carries the smelting, blasting and smoking recipes
+/// as furnace displays, so the furnace books of a network player are filled.
+#[test]
+fn initial_recipe_book_has_cooking_recipes() {
+    use horizon_client::recipe_book::Settings;
+    use horizon_protocol::{
+        buf::Reader,
+        packets::recipes::{RecipeBookEntry, RecipeDisplay, SlotDisplay},
+    };
+    let Some(resources) = resources() else {
+        eprintln!("skipped: no prepared resources");
+        return;
+    };
+    let sync =
+        SyncData::load(&resources, &horizon_world::loot::PackOverlay::NONE).expect("sync data");
+    let mut book = Settings::default();
+    for id in [
+        "minecraft:charcoal",
+        "minecraft:iron_ingot_from_blasting_raw_iron",
+        "minecraft:cooked_porkchop_from_smoking",
+    ] {
+        book.recipes.insert(id.to_owned());
+    }
+    let bytes = sync.advancements.initial_recipe_book(&book, &sync);
+    let mut r = Reader::new(&bytes);
+    let n = r.varint().unwrap();
+    assert_eq!(n, 3, "every cooking recipe has an entry");
+    let mut times = Vec::new();
+    for _ in 0..n {
+        let e = RecipeBookEntry::read(&mut r).unwrap();
+        let RecipeDisplay::Furnace { fuel, duration, .. } = e.display else {
+            panic!("not a furnace display: {:?}", e.display);
+        };
+        assert_eq!(fuel, SlotDisplay::AnyFuel);
+        assert!(e.requirements.as_ref().is_some_and(|q| q.len() == 1));
+        times.push(duration);
+    }
+    assert!(r.bool().unwrap(), "the packet replaces the book");
+    times.sort();
+    // The 26.3 jar states "cookingtime": 200 for all three, blasting and smoking included.
+    assert_eq!(times, vec![200, 200, 200]);
+}
