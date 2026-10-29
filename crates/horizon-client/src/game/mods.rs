@@ -65,6 +65,7 @@ pub(super) fn content_root(
     }
     match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {
         Ok(out) => {
+            mod_content::set_local_blocks(&out);
             if out != root {
                 log::info!(
                     "Horizon: content from {} mod(s) in {}",
@@ -76,6 +77,7 @@ pub(super) fn content_root(
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
+            mod_content::set_local_blocks(root);
             root.to_owned()
         }
     }

@@ -27,3 +27,16 @@ pub fn tag_namespaces(root: &Path) -> Vec<String> {
     }
     out
 }
+
+/// In a root built by `mod_content::build`: the content blocks, one entry
+/// `<id> <template>` per block, in block-state id order.
+pub const BLOCKS: &str = "horizon-mod-blocks.json";
+
+/// The content blocks of a root built by `mod_content::build`, in block-state
+/// id order; none in any other root.
+pub fn blocks(root: &Path) -> Vec<String> {
+    fs::read(root.join(BLOCKS))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}

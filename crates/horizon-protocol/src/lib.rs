@@ -5,6 +5,7 @@
 pub mod buf;
 pub mod chunk;
 pub mod connection;
+pub mod content;
 pub mod crypto;
 pub mod entity_data;
 pub mod frame;

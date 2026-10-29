@@ -515,6 +515,15 @@ fn run(
         .encode(),
     )
     .map_err(e)?;
+    // The content blocks this game carries, which a Horizon host compares with its own.
+    c.send(
+        &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+            channel: horizon_protocol::content::CHANNEL.into(),
+            data: crate::mod_content::local_fingerprint().encode(),
+        })
+        .encode(),
+    )
+    .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
     let registries = configure(&mut reader, shared_writer, configuring, lang, send, cookies)?;

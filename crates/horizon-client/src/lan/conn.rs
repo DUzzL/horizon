@@ -830,6 +830,7 @@ fn login_and_configure(
     )?;
     let mut info = ClientInformation::new(10);
     let mut brand = String::from("vanilla");
+    let mut content = None;
     let known_pack = loop {
         let (id, payload) = c.recv().map_err(e)?;
         match cfg::Serverbound::decode(id, &payload).map_err(e)? {
@@ -839,10 +840,29 @@ fn login_and_configure(
                     .string(32767)
                     .unwrap_or(brand);
             }
+            cfg::Serverbound::CustomPayload(p)
+                if p.channel == horizon_protocol::content::CHANNEL =>
+            {
+                content = horizon_protocol::content::Fingerprint::decode(&p.data).ok();
+            }
             cfg::Serverbound::SelectKnownPacks(p) => break p.packs == vec![core.clone()],
             _ => {}
         }
     };
+    // A Horizon guest must carry the host's content blocks: block-state ids
+    // past vanilla's come from the mods' files, so a different set shows the
+    // guest other blocks than the host placed.
+    let ours = crate::mod_content::local_fingerprint();
+    if brand == "horizon" && content_mismatch(&ours, content.as_ref()) {
+        let reason = horizon_protocol::text::literal(CONTENT_MISMATCH);
+        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+        lost(
+            shared,
+            &format!("{name} ({})", uuid_string(uuid)),
+            CONTENT_MISMATCH,
+        );
+        return Ok(None);
+    }
     // A Horizon client hears that this server runs its mods' quiet commands
     // (horizon_protocol::quiet); a vanilla one is told nothing.
     if brand == "horizon" {
@@ -882,6 +902,20 @@ fn login_and_configure(
         info,
         brand,
     }))
+}
+
+/// Why a guest whose content blocks differ from the host's is refused.
+const CONTENT_MISMATCH: &str = "This server and your game have different content blocks (mods). \
+     Install the same content mods as the host, in the same versions.";
+
+/// Whether a Horizon guest with `theirs` (none when it sent nothing) must be
+/// refused by a host with `ours`. A host without content blocks sends none
+/// that a guest could misread, so it takes any guest.
+fn content_mismatch(
+    ours: &horizon_protocol::content::Fingerprint,
+    theirs: Option<&horizon_protocol::content::Fingerprint>,
+) -> bool {
+    ours.count > 0 && theirs.is_none_or(|t| t != ours)
 }
 
 /// ServerboundResourcePackPacket.Action.DECLINED.
@@ -1288,6 +1322,26 @@ fn write_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_with_content_blocks_refuses_a_different_guest() {
+        use horizon_protocol::content::Fingerprint;
+        let blocks = |names: &[&str]| {
+            Fingerprint::of(&names.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        let host = blocks(&[
+            "demo:a minecraft:gold_block",
+            "demo:z minecraft:diamond_block",
+        ]);
+        let guest = blocks(&["demo:z minecraft:diamond_block"]);
+        assert!(content_mismatch(&host, Some(&guest)));
+        assert!(content_mismatch(&host, Some(&Fingerprint::default())));
+        assert!(content_mismatch(&host, None));
+        assert!(!content_mismatch(&host, Some(&host.clone())));
+        // Nothing past vanilla's states to misread: any guest is taken.
+        assert!(!content_mismatch(&Fingerprint::default(), Some(&guest)));
+        assert!(!content_mismatch(&Fingerprint::default(), None));
+    }
 
     #[test]
     fn prompts_become_the_components_vanilla_sends() {

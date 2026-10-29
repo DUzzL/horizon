@@ -723,7 +723,7 @@ const NBT_TABLES: [&str; 6] = [
     "worldgen/blocks/cached-support.nbt",
     "worldgen/blocks/cached-collision.nbt",
 ];
-use horizon_items::content_namespaces::MARKER;
+use horizon_items::content_namespaces::{BLOCKS, MARKER};
 pub use horizon_items::content_namespaces::{namespaces, tag_namespaces};
 /// Block states a world can hold. Chunk sections widen their global palette
 /// past vanilla's 16 bits to fit the registry (crate::chunk::set_block_states);
@@ -1330,8 +1330,31 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         .collect();
     namespaces.sort();
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
+    // The blocks in state-id order: what a LAN host and its guests compare.
+    let blocks: Vec<String> = plan
+        .blocks
+        .iter()
+        .map(|b| format!("{} {}", b.decl.id, b.decl.template))
+        .collect();
+    overlay.write(BLOCKS, &serde_json::to_vec(&blocks)?)?;
     overlay.write(WARNINGS, warnings.join("\n").as_bytes())?;
     Ok(warnings)
+}
+
+/// The content blocks of the game's resource root, as fingerprinted for the
+/// network (`horizon_protocol::content`). Set where the root is chosen.
+static LOCAL_BLOCKS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Records the content blocks of `root` as this game's own.
+pub fn set_local_blocks(root: &Path) {
+    *LOCAL_BLOCKS.lock().unwrap_or_else(|e| e.into_inner()) =
+        horizon_items::content_namespaces::blocks(root);
+}
+
+/// The fingerprint of this game's content blocks.
+pub fn local_fingerprint() -> horizon_protocol::content::Fingerprint {
+    let blocks = LOCAL_BLOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    horizon_protocol::content::Fingerprint::of(&blocks)
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay

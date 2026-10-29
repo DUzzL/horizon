@@ -302,6 +302,15 @@ fn content_root_loads_with_every_table() {
     let relative = Path::new("../../.local/horizon-client/26.3");
     let root = resource_root(relative, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
     assert_ne!(root, base);
+    // The blocks a LAN guest is compared on, in state-id order.
+    assert_eq!(
+        horizon_items::content_namespaces::blocks(&root),
+        [
+            "ruby:ruby_block minecraft:iron_block",
+            "ruby:ruby_door minecraft:oak_door",
+            "ruby:ruby_glass minecraft:glass"
+        ]
+    );
 
     let vanilla = Assets::load(&base).unwrap();
     let assets = Assets::load(&root).unwrap();
