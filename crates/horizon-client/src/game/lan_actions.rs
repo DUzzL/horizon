@@ -2718,10 +2718,10 @@ impl Game<'_> {
             }
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
+                // Player.jumpFromGround: the exhaustion and the jump's velocity
+                // on the server's copy, which a push in the air (Lunge) adds to.
                 if w.player.ground.on_ground && !on_ground && moved[1] > 0.0 {
-                    let sprinting = w.player.sprinting;
-                    w.player
-                        .cause_food_exhaustion(if sprinting { 0.2 } else { 0.05 });
+                    let _ = w.jump_from_ground();
                 }
                 let landed = (|| -> horizon_client::Result<()> {
                     w.set_on_ground_with_movement(on_ground, false, movement)?;
