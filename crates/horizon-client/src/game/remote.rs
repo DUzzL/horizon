@@ -6380,6 +6380,13 @@ impl Game<'_> {
             Some((_, name)) => tweaks_menu(name),
         }
     }
+    /// The server's open menu has slots that don't take every item (the
+    /// crafting table, a furnace): the wheel asks the menu engine where an
+    /// item goes and what a slot takes.
+    pub(super) fn remote_tweaks_routed(&self) -> bool {
+        let name = self.remote_menu().1;
+        name == "minecraft:crafting" || furnace_menu(&name)
+    }
     /// The server's open menu is the inventory or a chest-like container
     /// (chests, barrels, ender chests: `generic_9xN`; shulker boxes).
     pub(super) fn remote_storage_open(&self) -> bool {
@@ -7378,6 +7385,17 @@ fn tweaks_menu(name: &str) -> bool {
         || name.starts_with("minecraft:generic_9x")
         || name == "minecraft:shulker_box"
         || name == "minecraft:crafting"
+        || name == "minecraft:hopper"
+        || name == "minecraft:generic_3x3"
+        || furnace_menu(name)
+}
+
+/// A furnace, blast furnace or smoker menu.
+fn furnace_menu(name: &str) -> bool {
+    matches!(
+        name,
+        "minecraft:furnace" | "minecraft:blast_furnace" | "minecraft:smoker"
+    )
 }
 
 #[cfg(test)]
@@ -7389,7 +7407,13 @@ mod tests {
         assert!(super::tweaks_menu("minecraft:crafting"));
         assert!(super::tweaks_menu("inventory"));
         assert!(super::tweaks_menu("minecraft:generic_9x3"));
-        assert!(!super::tweaks_menu("minecraft:furnace"));
+        assert!(super::tweaks_menu("minecraft:furnace"));
+        assert!(super::tweaks_menu("minecraft:smoker"));
+        assert!(super::tweaks_menu("minecraft:hopper"));
+        assert!(super::tweaks_menu("minecraft:generic_3x3"));
+        assert!(!super::tweaks_menu("minecraft:anvil"));
+        assert!(!super::tweaks_menu("minecraft:brewing_stand"));
+        assert!(!super::tweaks_menu("minecraft:crafter_3x3"));
     }
 
     /// An NPC plugin lists the NPC, spawns it, and takes the entry off the list:

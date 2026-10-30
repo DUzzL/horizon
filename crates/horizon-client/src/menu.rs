@@ -2739,6 +2739,31 @@ impl Menu {
                 || matches!(self.kind, Kind::Loom | Kind::Grindstone | Kind::Anvil))
     }
 
+    /// Whether slot `s` takes `stack` (`Slot.mayPlace`).
+    pub fn slot_takes(&self, env: &Env, s: usize, stack: &ItemStack) -> bool {
+        s < self.slots.len() && self.may_place(env, s, stack)
+    }
+
+    /// The slots a QUICK_MOVE of one item of slot `index` changes, other than
+    /// `index`, in slot order: where `quickMoveStack` routes a single item.
+    /// It changes the menu, so run it on a scratch copy.
+    pub fn quick_move_one_changes(&mut self, env: &Env, index: usize) -> Vec<usize> {
+        let Some(mut one) = self.slot(index).cloned() else {
+            return Vec::new();
+        };
+        one.count = 1;
+        self.set_slot(env, index, Some(one));
+        let before: Vec<Option<ItemStack>> = (0..self.slots.len())
+            .map(|i| self.slot(i).cloned())
+            .collect();
+        if self.click(env, index as i32, 0, Input::QuickMove).is_err() {
+            return Vec::new();
+        }
+        (0..self.slots.len())
+            .filter(|&i| i != index && self.slot(i) != before[i].as_ref())
+            .collect()
+    }
+
     /// `AbstractContainerScreen.mouseReleased` on a Shift double click:
     /// QUICK_MOVE on every slot of `clicked`'s container that holds
     /// `moved`'s item (`lastQuickMoved`, the stack the first click moved).
@@ -3267,6 +3292,27 @@ pub(crate) mod tests {
             assert_eq!(menu.slot(1).map(|s| s.count), Some(32));
             assert_eq!(menu.carried, None);
             assert_eq!(menu.quick_status, 0);
+        });
+    }
+
+    /// #4312: the Mouse Tweaks wheel takes its target from `quickMoveStack`:
+    /// an ore goes to the furnace's input, fuel to its fuel slot, and the
+    /// output slot takes nothing back.
+    #[test]
+    fn one_item_quick_moves_to_the_furnace_slot_that_takes_it() {
+        with_menu(Kind::Furnace("smelting"), |env, menu| {
+            menu.creative = false;
+            // Hotbar slots start at 30 (input, fuel, output, then 27 main).
+            menu.set_slot(env, 30, stack("iron_ore", 8));
+            menu.set_slot(env, 31, stack("coal", 8));
+            menu.set_slot(env, 32, stack("dirt", 8));
+            assert_eq!(menu.quick_move_one_changes(env, 30), vec![0]);
+            assert_eq!(menu.quick_move_one_changes(env, 31), vec![1]);
+            // Anything else only trades the hotbar for the main inventory.
+            assert!(menu.quick_move_one_changes(env, 32).iter().all(|&i| i >= 3));
+            let ingot = stack("iron_ingot", 3).unwrap();
+            assert!(menu.slot_takes(env, 0, &ingot));
+            assert!(!menu.slot_takes(env, 2, &ingot));
         });
     }
 

@@ -127,7 +127,7 @@ impl Game<'_> {
             None => true,
             Some(s) => s.same_item_same_components(&held) && s.count < self.max_stack(&s),
         };
-        if accepts && self.tweak_click(slot, 1, Input::Pickup) {
+        if accepts && self.tweak_takes(slot, &held) && self.tweak_click(slot, 1, Input::Pickup) {
             drag.held = (held.count > 1).then(|| ItemStack {
                 count: held.count - 1,
                 ..held
@@ -155,6 +155,7 @@ impl Game<'_> {
                 let spread = self.inv_drag.as_ref().is_some_and(|(_, s)| s.len() > 1);
                 if let Some(s) = stack.filter(|s| s.same_item_same_components(&held))
                     && (drag.active || !spread)
+                    && self.tweak_takes(slot, &held)
                 {
                     if !drag.active {
                         drag.active = true;
@@ -208,6 +209,44 @@ impl Game<'_> {
         }
         true
     }
+    /// The open menu is one whose slots don't all take every item (a
+    /// server's crafting table or furnace): the menu engine routes the wheel.
+    fn tweaks_routed(&self) -> bool {
+        self.remote.is_some() && self.remote_tweaks_routed()
+    }
+    /// Whether game slot `slot` takes `stack`. Always true outside the
+    /// routed menus, where every slot the tweaks touch takes anything.
+    fn tweak_takes(&mut self, slot: usize, stack: &ItemStack) -> bool {
+        if !self.tweaks_routed() {
+            return true;
+        }
+        let mut takes = false;
+        self.menu_session(|m, env, to_menu| {
+            takes = to_menu(slot).is_some_and(|s| m.slot_takes(env, s, stack));
+            Some(false)
+        });
+        takes
+    }
+    /// Where `quickMoveStack` puts one item of `slot`: the first of
+    /// `candidates` it changes. None when the slot can't take its stack back
+    /// (a furnace's output) or nothing moves.
+    fn tweak_route(&mut self, slot: usize, candidates: &[usize]) -> Option<usize> {
+        let mut target = None;
+        self.menu_session(|m, env, to_menu| {
+            let from = to_menu(slot)?;
+            let stack = m.slot(from)?.clone();
+            if !m.slot_takes(env, from, &stack) {
+                return Some(false);
+            }
+            let changed = m.quick_move_one_changes(env, from);
+            target = candidates
+                .iter()
+                .copied()
+                .find(|&g| to_menu(g).is_some_and(|t| changed.contains(&t)));
+            Some(false)
+        });
+        target
+    }
     /// The slots across from `slot`, in quick-move order: a container's
     /// go to the inventory (hotbar first, from the right), the inventory's
     /// to the container; without one, hotbar and main inventory trade.
@@ -220,6 +259,7 @@ impl Game<'_> {
         let player = || (0..9).rev().chain((9..36).rev());
         match slot {
             300..500 => player().collect(),
+            100..109 if self.tweaks_routed() => player().collect(),
             0..36 if !container.is_empty() => container,
             0..9 => (9..36).collect(),
             9..36 => (0..9).collect(),
@@ -233,17 +273,27 @@ impl Game<'_> {
             return;
         };
         let max = self.max_stack(&stack);
-        let side = self.other_side(slot);
-        let views: Vec<(usize, Option<ItemStack>)> =
-            side.iter().map(|&s| (s, self.slot_view(s))).collect();
-        let target = views
-            .iter()
-            .find(|(_, v)| {
-                v.as_ref()
-                    .is_some_and(|v| v.same_item_same_components(&stack) && v.count < max)
-            })
-            .or_else(|| views.iter().find(|(_, v)| v.is_none()))
-            .map(|(s, _)| *s);
+        let target = if self.tweaks_routed() {
+            // Fuel, input and result slots as `quickMoveStack` fills them.
+            let candidates: Vec<usize> = self
+                .slots()
+                .into_iter()
+                .filter(|&s| s != slot && s != 200)
+                .collect();
+            self.tweak_route(slot, &candidates)
+        } else {
+            let side = self.other_side(slot);
+            let views: Vec<(usize, Option<ItemStack>)> =
+                side.iter().map(|&s| (s, self.slot_view(s))).collect();
+            views
+                .iter()
+                .find(|(_, v)| {
+                    v.as_ref()
+                        .is_some_and(|v| v.same_item_same_components(&stack) && v.count < max)
+                })
+                .or_else(|| views.iter().find(|(_, v)| v.is_none()))
+                .map(|(s, _)| *s)
+        };
         let Some(target) = target else {
             return;
         };
@@ -262,11 +312,16 @@ impl Game<'_> {
         if stack.count >= self.max_stack(&stack) {
             return;
         }
+        if !self.tweak_takes(slot, &stack) {
+            return;
+        }
         let side = self.other_side(slot);
         let source = side.into_iter().find_map(|s| {
             self.slot_view(s)
                 .filter(|v| v.same_item_same_components(&stack))
                 .map(|v| (s, v.count))
+                // A source takes the rest back (a furnace's output doesn't).
+                .filter(|_| self.tweak_takes(s, &stack))
         });
         let Some((source, count)) = source else {
             return;
