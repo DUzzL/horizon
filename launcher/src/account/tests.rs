@@ -674,6 +674,19 @@ fn system_keychain_keeps_long_secrets() {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
+fn windows_code_8_gets_a_plain_explanation() {
+    let said = keychain_said("Platform secure storage failure: Windows error code 8");
+    assert!(said.starts_with("Platform secure storage failure: Windows error code 8 ("));
+    assert!(said.contains("not enough memory"));
+    // Other answers stay as they were.
+    assert_eq!(
+        keychain_said("Windows error code 87"),
+        "Windows error code 87"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
 fn long_secrets_split_into_keychain_sized_pieces() {
     // Mixed 1-, 2- and 4-byte characters, so the cuts land inside some of them.
     let secret = "aé🔑".repeat(300);

@@ -696,12 +696,26 @@ fn split_secret(mut secret: &str) -> Vec<&str> {
     pieces
 }
 
+/// What the keyring crate said, with a plain explanation added for the raw Windows code 8
+/// (`ERROR_NOT_ENOUGH_MEMORY`) it would otherwise show alone (#4313, #4366).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn keychain_said(said: &str) -> String {
+    if said.ends_with("Windows error code 8") {
+        format!(
+            "{said} (Windows reported not enough memory while Credential Manager was saving the \
+             sign-in; close other programs or restart Windows, then sign in again)"
+        )
+    } else {
+        said.to_string()
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn read_item(key: &str) -> Result<Option<String>, String> {
     match keyring::Entry::new(SERVICE, key).and_then(|e| e.get_password()) {
         Ok(secret) => Ok(Some(secret)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(keychain_said(&e.to_string())),
     }
 }
 
@@ -709,7 +723,7 @@ fn read_item(key: &str) -> Result<Option<String>, String> {
 fn write_item(key: &str, secret: &str) -> Result<(), String> {
     keyring::Entry::new(SERVICE, key)
         .and_then(|e| e.set_password(secret))
-        .map_err(|e| e.to_string())
+        .map_err(|e| keychain_said(&e.to_string()))
 }
 
 /// Removes one item; false when there was none.
@@ -718,7 +732,7 @@ fn remove_item(key: &str) -> Result<bool, String> {
     match keyring::Entry::new(SERVICE, key).and_then(|e| e.delete_credential()) {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(keychain_said(&e.to_string())),
     }
 }
 
