@@ -693,4 +693,22 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn broken_shulker_box_keeps_its_contents() {
+        let pos = [1, 64, 2];
+        for block in ["minecraft:shulker_box", "minecraft:red_shulker_box"] {
+            let mut entity = BlockEntity::for_block(block).unwrap();
+            let BlockEntity::Chest(items) = &mut entity else {
+                panic!("shulker box entity");
+            };
+            items[3] = Some(ItemStack::new("minecraft:diamond", 5));
+            let mut pending = Pending::default();
+            pending.record(pos, &entity, block, None);
+            let mut dropped = ItemStack::new(block, 1);
+            pending.attach(pos, &mut dropped);
+            assert_eq!(dropped.data().unwrap().container.len(), 1);
+            assert!(item_data::encode_components(&dropped).is_some());
+        }
+    }
 }

@@ -4354,6 +4354,17 @@ impl Game<'_> {
             let at = pos.map(f64::from);
             self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
         }
+        // ShulkerBoxBlock.playerWillDestroy: a creative break drops the box with
+        // its contents (a survival break uses the loot table instead). The item
+        // entity is added whatever the block_drops rule says.
+        if creative && storage::is_shulker_box(&facts.name) {
+            let mut stack = ItemStack::new(&facts.name, 1);
+            self.pending.attach(pos, &mut stack);
+            if stack.data().is_some_and(|d| !d.container.is_empty()) {
+                let at = pos.map(|c| f64::from(c) + 0.5);
+                self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+            }
+        }
         let correct_tool =
             !facts.requires_tool || self.res.items().correct_for_drops(self.held(), &facts.name);
         let removed = self.with_level(|b, level, ticks| {
