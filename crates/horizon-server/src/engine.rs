@@ -134,7 +134,7 @@ pub fn resource_candidates(config: &Config, dir: &Path, program: Option<&Path>) 
 /// (`asset-index.json` comes only with the optional sounds, which a server doesn't need).
 pub fn resources(config: &Config, dir: &Path, program: Option<&Path>) -> Result<PathBuf, String> {
     let candidates = resource_candidates(config, dir, program);
-    candidates
+    let found = candidates
         .iter()
         .find(|d| d.join("horizon-resources.json").is_file())
         .cloned()
@@ -149,7 +149,40 @@ pub fn resources(config: &Config, dir: &Path, program: Option<&Path>) -> Result<
                  the folder to resources/ here, or set engine.resources in server.toml. Looked in:\n{}",
                 tried.join("\n")
             )
+        })?;
+    check_complete(&found)?;
+    Ok(found)
+}
+
+/// The files the headless game cannot start without. A folder copied half-way would otherwise end in a
+/// bare "os error 2" from the game, at every restart.
+fn check_complete(resources: &Path) -> Result<(), String> {
+    let required: [(&str, bool); 3] = [
+        ("registries.json", false),
+        ("assets/minecraft/font/default.json", false),
+        ("assets/minecraft/textures/font", true),
+    ];
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|(name, is_dir)| {
+            let path = resources.join(name);
+            !(if *is_dir {
+                path.is_dir()
+            } else {
+                path.is_file()
+            })
         })
+        .map(|(name, _)| format!("  {}", resources.join(name).display()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the prepared game files in {} are incomplete; missing:\n{}\nThe copy was probably cut short or \
+         made from an older release: prepare again and copy the whole 26.3 folder (see docs/hosting.md).",
+        resources.display(),
+        missing.join("\n")
+    ))
 }
 
 /// Starts the engine in the server folder, with its console and log piped to the supervisor and its status
@@ -262,6 +295,15 @@ mod tests {
         assert!(resources(&config, &server, Some(&program)).is_err());
         // What `horizon-prepare` writes on every run; no asset index without `horizon-prepare sounds`.
         std::fs::write(prepared.join("horizon-resources.json"), "{}").unwrap();
+        // A manifest alone is a half-copied folder: the error names what is missing.
+        let error = resources(&config, &server, Some(&program)).unwrap_err();
+        assert!(error.contains("incomplete"), "{error}");
+        assert!(error.contains("registries.json"), "{error}");
+        assert!(error.contains("default.json"), "{error}");
+        std::fs::write(prepared.join("registries.json"), "{}").unwrap();
+        std::fs::create_dir_all(prepared.join("assets/minecraft/font")).unwrap();
+        std::fs::write(prepared.join("assets/minecraft/font/default.json"), "{}").unwrap();
+        std::fs::create_dir_all(prepared.join("assets/minecraft/textures/font")).unwrap();
         assert_eq!(resources(&config, &server, Some(&program)), Ok(prepared));
         std::fs::remove_dir_all(&root).unwrap();
     }

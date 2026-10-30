@@ -82,9 +82,20 @@ Add `--minecraft-dir PATH` if your launcher keeps the game elsewhere. The prepar
 `game-files`, which updates keep.
 
 **On a headless machine** (a VPS, a home server), prepare on your own computer instead, with the launcher or
-`horizon-prepare`, and copy the prepared `26.3` folder to the server: into
-`~/.local/share/horizon/game-files/horizon-client/26.3`, or into `resources/` in the server folder, or anywhere
-`[engine] resources` in `server.toml` names. A folder copied this way needs release v2026.10.17.07 or
+`horizon-prepare`, then:
+
+1. Archive the prepared `26.3` folder (`.local/horizon-client/26.3` in a checkout, `game-files/horizon-client/26.3`
+   in a release install), for example `tar -czf horizon-resources-26.3.tar.gz -C game-files/horizon-client 26.3`.
+2. Copy it to the server and extract it, whole, into `resources/` in the server folder, into
+   `~/.local/share/horizon/game-files/horizon-client/26.3`, or anywhere `[engine] resources` in `server.toml`
+   names. The folder you point at is the one holding `horizon-resources.json`.
+3. Run `horizon-server init` there: it prints `Game files: ...` when it finds them, or says what is missing.
+
+`horizon-server start` checks the folder before it starts the game and stops with the missing paths
+(`registries.json`, `assets/minecraft/font/default.json`, `assets/minecraft/textures/font`) instead of letting
+the game crash on a file it can't open. A copy cut short is the usual cause: copy it again.
+
+A folder copied this way needs release v2026.10.17.07 or
 newer: older ones don't keep `registries.json` and `commands.json` with the prepared files, and the
 server then stops with "registries.json not found next to the resources". Prepare again with a newer release.
 
