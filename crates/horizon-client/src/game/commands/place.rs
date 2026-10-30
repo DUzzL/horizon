@@ -11,6 +11,12 @@ use horizon_world::{
 };
 use std::sync::{Arc, OnceLock};
 
+/// The generic `command.failed` error, with the real cause written to the log.
+fn place_failed(cause: &str) -> super::CommandError {
+    log::warn!("/place failed: {cause}");
+    err("command.failed", &[])
+}
+
 fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
 }
@@ -97,7 +103,7 @@ impl Game<'_> {
                 self.place_check_loaded([cx - 1, cz - 1], [cx + 1, cz + 1])?;
                 // Inline features are not built by the live feature registry.
                 if raw.starts_with('{') {
-                    return Err(err("command.failed", &[]));
+                    return Err(place_failed("inline features are not supported"));
                 }
                 let name = if raw.contains(':') {
                     raw
@@ -107,9 +113,9 @@ impl Game<'_> {
                 let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
                 let placed = self
                     .with_level(|b, level, ticks| b.place_feature(level, ticks, &name, at))
-                    .ok_or_else(|| err("command.failed", &[]))?;
+                    .ok_or_else(|| place_failed("no live level to place the feature in"))?;
                 self.process_level_events()
-                    .map_err(|_| err("command.failed", &[]))?;
+                    .map_err(|e| place_failed(&format!("level events failed: {e:#}")))?;
                 if !placed {
                     return Err(err("commands.place.feature.failed", &[]));
                 }
@@ -144,7 +150,7 @@ impl Game<'_> {
                 let terrain = self
                     .end
                     .locator()
-                    .ok_or_else(|| err("command.failed", &[]))?;
+                    .ok_or_else(|| place_failed("no terrain locator for jigsaw pieces"))?;
                 let query = horizon_world::worldgen::generator::JigsawQuery {
                     pool: &pool,
                     target: &target,
@@ -155,7 +161,7 @@ impl Game<'_> {
                     b.place_jigsaw(level, ticks, pos, || terrain.jigsaw_pieces(&query))
                 });
                 self.process_level_events()
-                    .map_err(|_| err("command.failed", &[]))?;
+                    .map_err(|e| place_failed(&format!("level events failed: {e:#}")))?;
                 if !placed {
                     return Err(err("commands.place.jigsaw.failed", &[]));
                 }
@@ -179,7 +185,9 @@ impl Game<'_> {
                 }
                 self.place_pos(ctx, "pos")?;
                 // Structure.generate is not wired to the live level.
-                Err(err("command.failed", &[]))
+                Err(place_failed(&format!(
+                    "/place structure {structure} is not implemented: Structure.generate is not wired to the live level"
+                )))
             }
         }
     }
