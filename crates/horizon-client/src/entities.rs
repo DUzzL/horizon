@@ -760,6 +760,8 @@ pub struct ArmorStand {
     pub health: f32,
     pub id: u32,
     pub position: Vec3,
+    /// `xo/yo/zo`: the position one tick ago, for the renderer's partial-tick lerp.
+    pub previous: Vec3,
     pub velocity: Vec3,
     pub on_ground: bool,
     pub yaw: f32,
@@ -800,6 +802,7 @@ impl ArmorStand {
             health: 20.0,
             id,
             position,
+            previous: position,
             velocity: Vec3::ZERO,
             on_ground: true,
             yaw,

@@ -615,6 +615,7 @@ impl Game<'_> {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         for (i, a) in self.armor_stands.iter_mut().enumerate() {
+            a.previous = a.position;
             if !ticking(a.position.x.floor() as i32, a.position.z.floor() as i32) {
                 continue;
             }
@@ -678,10 +679,11 @@ impl Game<'_> {
             let dragon = a.equipment[5]
                 .as_ref()
                 .is_some_and(|i| &*i.item == "minecraft:dragon_head");
+            let previous = super::entity_culling::at(a.previous);
             let position = super::entity_culling::at(a.position);
             if !self.standing_entity_in_view(
                 camera,
-                position,
+                previous,
                 position,
                 alpha,
                 width,
@@ -694,7 +696,8 @@ impl Game<'_> {
             let Some(model) = (if a.small { &assets.small } else { &assets.main }) else {
                 continue;
             };
-            let p = glam::DVec3::new(a.position.x, a.position.y, a.position.z) - camera;
+            // Entity.lerp: the stand is drawn between last tick's position and this one's.
+            let p = previous.lerp(position, alpha) - camera;
             // setupRotations: 180 - body yaw, plus the wobble for 5 ticks after a hit.
             let wiggle = (self.world.game_time - a.last_hit) as f32 + alpha as f32;
             let wobble = if wiggle < 5.0 {
