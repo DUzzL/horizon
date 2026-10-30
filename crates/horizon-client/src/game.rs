@@ -1470,6 +1470,25 @@ struct DragView {
 /// Ctrl+Q reads the physical keyboard, independently of sprint key mappings.
 /// A chunk whose ticking future can complete (`ChunkMap.prepareTickingChunk`):
 /// lit, with its neighbours loaded, as `postprocess_chunks` waits for.
+/// Whether a screen layered over `Screen::Playing` (book, lectern, sign
+/// editor) is open. `MouseHandler.onScroll` only steps the hotbar with no
+/// screen open.
+fn wheel_screen_open(book: bool, sign_edit: bool) -> bool {
+    book || sign_edit
+}
+
+#[cfg(test)]
+mod wheel_screen_tests {
+    use super::wheel_screen_open;
+
+    #[test]
+    fn open_book_or_sign_screen_blocks_hotbar_wheel() {
+        assert!(wheel_screen_open(true, false));
+        assert!(wheel_screen_open(false, true));
+        assert!(!wheel_screen_open(false, false));
+    }
+}
+
 fn ticking_chunk(world: &World, x: i32, z: i32) -> bool {
     world.chunks.get(&(x, z)).is_some_and(|c| c.lit)
         && (-1..=1).all(|dz| (-1..=1).all(|dx| world.chunks.contains_key(&(x + dx, z + dz))))
@@ -13563,6 +13582,7 @@ impl ApplicationHandler for Game<'_> {
                     if self.screen == Screen::Playing
                         && self.sleeping.is_none()
                         && self.player.is_some()
+                        && !wheel_screen_open(self.book.is_some(), self.sign_edit.is_some())
                         && !self.native_wheel_event(d)
                         && let Some((wheel, (_, vertical_steps))) =
                             self.mouse
