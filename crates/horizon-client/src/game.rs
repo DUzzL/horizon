@@ -1467,9 +1467,6 @@ struct DragView {
     slots: HashMap<usize, Option<(u32, bool)>>,
     left: Option<u32>,
 }
-/// Ctrl+Q reads the physical keyboard, independently of sprint key mappings.
-/// A chunk whose ticking future can complete (`ChunkMap.prepareTickingChunk`):
-/// lit, with its neighbours loaded, as `postprocess_chunks` waits for.
 /// Whether a screen layered over `Screen::Playing` (book, lectern, sign
 /// editor) is open. `MouseHandler.onScroll` only steps the hotbar with no
 /// screen open.
@@ -1489,6 +1486,9 @@ mod wheel_screen_tests {
     }
 }
 
+/// Ctrl+Q reads the physical keyboard, independently of sprint key mappings.
+/// A chunk whose ticking future can complete (`ChunkMap.prepareTickingChunk`):
+/// lit, with its neighbours loaded, as `postprocess_chunks` waits for.
 fn ticking_chunk(world: &World, x: i32, z: i32) -> bool {
     world.chunks.get(&(x, z)).is_some_and(|c| c.lit)
         && (-1..=1).all(|dz| (-1..=1).all(|dx| world.chunks.contains_key(&(x + dx, z + dz))))
