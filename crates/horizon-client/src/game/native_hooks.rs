@@ -6,6 +6,8 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 4 adds server sound emission (`native_play_sound`).
+//!
 //! API 3 adds the world lifecycle hook (`native_world_lifecycle`).
 //!
 //! API 2 adds the item panel beside container screens and its recipe pages
@@ -35,10 +37,36 @@ use horizon_client::{
 use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 use winit::{event::MouseButton, keyboard::KeyCode};
 
+/// The largest volume a native mod may ask for. The server sends a sound to
+/// players within `volume.max(1) * 16` blocks, so this bounds the range.
+const NATIVE_SOUND_MAX_VOLUME: f32 = 16.0;
+
+/// The vanilla sound event a native mod names, as `minecraft:path`, or `None`
+/// when the name is not a plain `minecraft` resource location. Whether the
+/// event exists is checked against the sound registry by the caller.
+fn native_sound_name(name: &str) -> Option<String> {
+    let path = name.strip_prefix("minecraft:").unwrap_or(name);
+    let plain = !path.is_empty()
+        && path.len() <= 128
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-./".contains(&b));
+    plain.then(|| ["minecraft:", path].concat())
+}
+
+/// Validate a native sound request before it reaches the server dispatch.
+fn native_sound_input_valid(at: [f64; 3], volume: f32, pitch: f32) -> bool {
+    at.into_iter().all(|v| v.is_finite() && v.abs() <= 3.0e7)
+        && volume.is_finite()
+        && (0.0..=NATIVE_SOUND_MAX_VOLUME).contains(&volume)
+        && pitch.is_finite()
+        && (0.5..=2.0).contains(&pitch)
+}
+
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 3;
+pub(crate) const NATIVE_HOOKS_API: u32 = 4;
 
 /// The zoom a native mod asks for (`native_zoom`): the factor (1 is none),
 /// eased through the field of view like the spyglass when `smooth`, and the
@@ -357,6 +385,34 @@ impl Game<'_> {
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
     }
+    /// Play a vanilla sound event for the players near `at` in this server's
+    /// active dimension, through the server's sound dispatch: the players
+    /// within `volume.max(1) * 16` blocks hear it. `true` means the sound was
+    /// accepted, not that a player was in range. Calls outside a server, names
+    /// that are not vanilla sound events, and out-of-range values are
+    /// rejected. API 4.
+    pub(super) fn native_play_sound(
+        &mut self,
+        name: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        if self.options.execution_role.is_client()
+            || self.audio.capture.is_none()
+            || !native_sound_input_valid(at, volume, pitch)
+        {
+            return false;
+        }
+        let Some(event) = native_sound_name(name) else {
+            return false;
+        };
+        if !self.audio.event_names().contains(&event) {
+            return false;
+        }
+        self.audio.play(&event, Some(at), volume, pitch);
+        true
+    }
     /// Whether a box in `corner` shows: F3's debug screen takes both top
     /// corners (its left and right columns), and a bottom corner while one
     /// of its charts is drawn there.
@@ -648,6 +704,33 @@ fn finite(v: f32, lo: f32, hi: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_sound_inputs_reject_bad_names_and_values() {
+        use super::{native_sound_input_valid as valid, native_sound_name as name};
+        assert_eq!(
+            name("block.note_block.bell").as_deref(),
+            Some("minecraft:block.note_block.bell")
+        );
+        assert_eq!(
+            name("minecraft:entity.player.levelup").as_deref(),
+            Some("minecraft:entity.player.levelup")
+        );
+        for bad in ["", "minecraft:", "other:ding", "Block.Bell", "a b", "a:b:c"] {
+            assert_eq!(name(bad), None, "{bad}");
+        }
+        assert_eq!(name(&"a".repeat(129)), None);
+        assert!(valid([0.0; 3], 1.0, 1.0));
+        assert!(valid([-2.9e7, 64.0, 2.9e7], 16.0, 0.5));
+        assert!(!valid([0.0; 3], 16.5, 1.0));
+        assert!(!valid([0.0; 3], -0.1, 1.0));
+        assert!(!valid([0.0; 3], f32::NAN, 1.0));
+        assert!(!valid([0.0; 3], 1.0, 0.49));
+        assert!(!valid([0.0; 3], 1.0, 2.01));
+        assert!(!valid([0.0; 3], 1.0, f32::INFINITY));
+        assert!(!valid([f64::NAN, 0.0, 0.0], 1.0, 1.0));
+        assert!(!valid([0.0, 4.0e7, 0.0], 1.0, 1.0));
+    }
+
     /// horizon-mixins refuses targets whose body has a `cfg` or a macro:
     /// the hook points and helpers must stay free of both. The launcher
     /// reads the API line as it is.

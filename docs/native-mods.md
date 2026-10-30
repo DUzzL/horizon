@@ -39,6 +39,11 @@ the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_
 recipe viewer needs, in builds with or without the `mods` feature. A WebAssembly mod's panel shows only while no native
 mod shows one.
 
+API 4 adds `native_play_sound(name, at, volume, pitch)` for vanilla sound events on authoritative servers. It uses
+the server's normal sound dispatch, so players in the active dimension within `max(volume, 1) * 16` blocks of `at` hear
+it. The name must be a `minecraft` sound event the game knows; volume is 0 to 16 and pitch 0.5 to 2. It cannot add
+sounds or assets. The return value says whether the call was accepted, not whether any player heard it.
+
 API 3 adds authoritative world lifecycle events through `native_world_lifecycle`: open ready, open failed,
 and final close. Bundles that use these events need `"hooks": 3`.
 
