@@ -105,8 +105,9 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
   written to disk.
 
 ### Mouse Tweaks controls (`mouseTweaks`, default off; `mouseTweaksWheel`, default on)
-In the player inventory and chest-like containers (chests, barrels, ender
-chests, shulker boxes, hoppers, dispensers), in singleplayer and on servers:
+In the player inventory, the crafting table and chest-like containers (chests,
+barrels, ender chests, shulker boxes, hoppers, dispensers), in singleplayer and
+on servers:
 - Right-drag holding a stack: one item goes into each slot entered, at once
   (slots holding another item, or full, are skipped).
 - Left-drag holding a stack: each slot entered that holds the same item is

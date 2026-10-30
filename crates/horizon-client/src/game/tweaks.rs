@@ -62,7 +62,7 @@ impl Game<'_> {
             return false;
         }
         if self.remote.is_some() {
-            self.remote_storage_open()
+            self.remote_tweaks_open()
         } else {
             matches!(self.container_kind(), None | Some(BlockEntity::Chest(_)))
         }

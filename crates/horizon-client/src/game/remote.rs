@@ -6372,6 +6372,14 @@ impl Game<'_> {
             }));
         }
     }
+    /// The server's open menu is one the Mouse Tweaks extra runs in: a
+    /// storage menu or the crafting table.
+    pub(super) fn remote_tweaks_open(&self) -> bool {
+        match self.remote.as_ref().and_then(|r| r.menu.as_ref()) {
+            None => true,
+            Some((_, name)) => tweaks_menu(name),
+        }
+    }
     /// The server's open menu is the inventory or a chest-like container
     /// (chests, barrels, ender chests: `generic_9xN`; shulker boxes).
     pub(super) fn remote_storage_open(&self) -> bool {
@@ -7364,8 +7372,26 @@ fn snapshot_value(s: &play::AttributeSnapshot) -> f64 {
     value
 }
 
+/// Whether the Mouse Tweaks extra runs in the server menu `name`.
+fn tweaks_menu(name: &str) -> bool {
+    name == "inventory"
+        || name.starts_with("minecraft:generic_9x")
+        || name == "minecraft:shulker_box"
+        || name == "minecraft:crafting"
+}
+
 #[cfg(test)]
 mod tests {
+    /// The Mouse Tweaks drags run in a server's crafting table too, not
+    /// only in its inventory and storage menus (#4166).
+    #[test]
+    fn tweaks_run_in_a_servers_crafting_table() {
+        assert!(super::tweaks_menu("minecraft:crafting"));
+        assert!(super::tweaks_menu("inventory"));
+        assert!(super::tweaks_menu("minecraft:generic_9x3"));
+        assert!(!super::tweaks_menu("minecraft:furnace"));
+    }
+
     /// An NPC plugin lists the NPC, spawns it, and takes the entry off the list:
     /// the entity keeps the skin it found; a player spawned before its entry
     /// arrives takes the entry once it comes.
