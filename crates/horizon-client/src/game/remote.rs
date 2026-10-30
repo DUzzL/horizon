@@ -681,6 +681,29 @@ impl Game<'_> {
                 .unwrap_or("minecraft:air"),
         )
     }
+    /// `Player.getHurtSound` for a damage type's registry id from the server:
+    /// the `effects` of its synchronized data, else of the local type by name.
+    fn remote_hurt_sound(&self, source_type: i32) -> &'static str {
+        let Some(r) = self.remote.as_ref() else {
+            return horizon_client::health::hurt_sound("hurt");
+        };
+        let synced = match r
+            .registries
+            .data("minecraft:damage_type", source_type)
+            .and_then(|t| t.get("effects"))
+        {
+            Some(Tag::String(s)) => Some(s.to_string_lossy()),
+            _ => None,
+        };
+        let local = || {
+            let name = r.registries.name("minecraft:damage_type", source_type)?;
+            let damage = &self.motion.health.damage;
+            let def = damage.definition(damage.id(name)?)?;
+            Some(def.effects.clone())
+        };
+        let effects = synced.or_else(local).unwrap_or_default();
+        horizon_client::health::hurt_sound(&effects)
+    }
     /// The server's network id of a mob effect (`brewing::EFFECTS` id).
     pub(super) fn remote_effect_network_id(&self, effect: &str) -> Option<i32> {
         let r = self.remote.as_ref()?;
@@ -2582,14 +2605,20 @@ impl Game<'_> {
             // The same packet for another entity: Entity.lerpMotion.
             C::SetEntityMotion(p) => self.remote_motion(p.id, p.velocity),
             // ClientPacketListener.handleDamageEvent: LivingEntity.handleDamageEvent
-            // jolts the walk animation and restarts the hurt flash. Its hurt
-            // sound comes as a sound from Horizon's host, which plays it itself.
+            // jolts the walk animation and restarts the hurt flash. Other
+            // entities' hurt sounds come as a sound from Horizon's host, which
+            // plays them itself; this player's own is played here, as the
+            // vanilla client does (no server sends it).
             // This player's own hurt tilt and flash come from the server too
             // (sent to the player itself): its own moves never hurt it.
             C::DamageEvent(p) => {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
+                    let sound = self.remote_hurt_sound(p.source_type);
                     if let Some(pl) = self.player.as_mut() {
                         pl.health.animate_hurt();
+                        let at = [pl.position.x, pl.position.y, pl.position.z];
+                        // Player.getVoicePitch: always 1.0.
+                        self.audio.play(sound, Some(at), 1.0, 1.0);
                     }
                 } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
                     m.limb_speed = 1.5;
