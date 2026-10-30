@@ -123,6 +123,9 @@ impl Game<'_> {
                 display.vehicle = None;
             }
         }
+        if let Some(r) = self.remote.as_mut() {
+            r.first_passenger = passengers.first() == Some(&me);
+        }
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
@@ -265,6 +268,9 @@ impl Game<'_> {
     /// (`ServerboundMoveVehiclePacket`) instead of the server steering it.
     pub(super) fn driven_mob(&self) -> Option<&horizon_client::mobs::Mob> {
         let id = self.riding?;
+        if !self.remote.as_ref()?.first_passenger {
+            return None;
+        }
         self.mobs.iter().find(|m| {
             m.id == id
                 && m.species() == horizon_client::mobs::Species::HappyGhast
@@ -277,6 +283,11 @@ impl Game<'_> {
     fn drive_remote_ghast(&mut self, i: usize, keys: Keys) {
         use horizon_client::mobs::{Species, equine};
         if self.mobs[i].species() != Species::HappyGhast {
+            return;
+        }
+        // Only the first passenger steers; the others see the server's ghast.
+        if !self.remote.as_ref().is_some_and(|r| r.first_passenger) {
+            self.mobs[i].rider = None;
             return;
         }
         let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));

@@ -166,6 +166,9 @@ pub(super) struct Remote {
     /// The happy ghast the player just got off, until the server's teleport
     /// puts the player on top of it (`place_ghast_under`).
     pub(super) ghast_dismount: Option<u32>,
+    /// Whether the player is the first passenger of its vehicle, the one
+    /// `getControllingPassenger` names.
+    pub(super) first_passenger: bool,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -505,6 +508,7 @@ impl Game<'_> {
             stepped: HashMap::new(),
             head_lerps: HashMap::new(),
             ghast_dismount: None,
+            first_passenger: false,
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
