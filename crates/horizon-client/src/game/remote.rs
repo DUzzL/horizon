@@ -4410,6 +4410,8 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+        // The ghast this client steers moves here, not where the server says.
+        let driven = self.driven_mob().map(|m| m.id);
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -4482,6 +4484,7 @@ impl Game<'_> {
             if let Some(at) = stepped
                 .get_mut(&(m.id as i32))
                 .and_then(|h| h.interpolate())
+                .filter(|_| Some(m.id) != driven)
             {
                 place_interpolated(m, at);
             }

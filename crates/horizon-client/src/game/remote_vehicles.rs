@@ -134,6 +134,9 @@ impl Game<'_> {
         } else if self.riding == Some(vehicle_id) {
             // The server takes the player out, then teleports it.
             self.riding = None;
+            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == vehicle_id) {
+                m.rider = None;
+            }
             // HappyGhast.removePassenger: a still timeout of 10 (the server's
             // STAYS_STILL confirms it), and the rider lands on top of the ghast
             // (`place_ghast_under`).
@@ -159,6 +162,7 @@ impl Game<'_> {
             // (PlayerInput); here the jump bar charges for the HUD and the
             // rider sits where `positionRider` puts it.
             self.charge_mount_jump(i, keys);
+            self.drive_remote_ghast(i, keys);
             self.position_rider();
             return true;
         }
@@ -198,6 +202,15 @@ impl Game<'_> {
     /// `LocalPlayer.tick` for a passenger: the boat it controls goes to the
     /// server every tick with its paddles (the rider's own position does not).
     pub(super) fn remote_vehicle_packets(&self) -> Vec<S> {
+        if let Some(m) = self.driven_mob() {
+            // A mob its rider steers moves on this client, which reports it.
+            return vec![S::MoveVehicle(play::MoveVehicleRequest {
+                position: [m.position.x, m.position.y, m.position.z],
+                yaw: m.yaw,
+                pitch: m.head_pitch,
+                on_ground: m.on_ground,
+            })];
+        }
         let Some(b) = self
             .riding
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
@@ -221,6 +234,17 @@ impl Game<'_> {
     /// `ClientPacketListener.handleMoveVehicle`: the server put the boat the
     /// player drives back.
     pub(super) fn remote_move_vehicle(&mut self, position: [f64; 3], yaw: f32) {
+        if let Some(id) = self.driven_mob().map(|m| m.id)
+            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+        {
+            let at = Vec3::new(position[0], position[1], position[2]);
+            m.previous = at;
+            m.position = at;
+            m.yaw = yaw;
+            m.previous_yaw = yaw;
+            m.velocity = Vec3::ZERO;
+            return;
+        }
         let Some(b) = self
             .riding
             .and_then(|id| self.boats.iter_mut().find(|b| b.id == id))
@@ -233,5 +257,53 @@ impl Game<'_> {
         b.yaw = yaw;
         b.previous_yaw = yaw;
         b.velocity = Vec3::ZERO;
+    }
+
+    /// The mob the player rides while this client moves it: on a server, a
+    /// harnessed happy ghast is controlled by its rider's client
+    /// (`isLocalInstanceAuthoritative`), which sends its moves
+    /// (`ServerboundMoveVehiclePacket`) instead of the server steering it.
+    pub(super) fn driven_mob(&self) -> Option<&horizon_client::mobs::Mob> {
+        let id = self.riding?;
+        self.mobs.iter().find(|m| {
+            m.id == id
+                && m.species() == horizon_client::mobs::Species::HappyGhast
+                && horizon_client::mobs::equine::controlled(m)
+        })
+    }
+
+    /// `LocalPlayer.aiStep` and `HappyGhast.tickRidden` on the controlling
+    /// client: hand the rider's input to the ghast and tick it here.
+    fn drive_remote_ghast(&mut self, i: usize, keys: Keys) {
+        use horizon_client::mobs::{Species, equine};
+        if self.mobs[i].species() != Species::HappyGhast {
+            return;
+        }
+        let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
+        let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
+        self.mobs[i].rider = Some(equine::Rider {
+            strafe,
+            forward,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            jump: 0.0,
+            steer: false,
+            sprint: keys.sprint,
+            jumping: keys.jump,
+        });
+        if !equine::controlled(&self.mobs[i]) {
+            return;
+        }
+        let mut mob = self.mobs.remove(i);
+        let mut random = self.world.random.clone();
+        let mut events = Vec::new();
+        {
+            let world = self.mob_world_base(&[]);
+            mob.tick(&world, &mut random, &mut events);
+        }
+        // The server owns removal; only its packets take the ghast away.
+        mob.removed = false;
+        self.world.random = random;
+        self.mobs.insert(i, mob);
     }
 }
