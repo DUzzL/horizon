@@ -1160,6 +1160,16 @@ impl LevelAccess for GameLevel<'_> {
     fn is_client_side(&self) -> bool {
         self.client_side
     }
+    fn before_fire_odds(&self, state: BlockStateId, odds: &mut Option<(i32, i32)>) {
+        if self.native_authoritative {
+            self.native_fire_odds(self.dimension, state, odds);
+        }
+    }
+    fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
+        if self.native_authoritative {
+            self.native_smoke_source(self.dimension, state, smoke);
+        }
+    }
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.world.world_surface(x, z, |s| self.facts.is_air(s))
     }
