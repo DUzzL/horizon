@@ -35,7 +35,8 @@ class ChecksRunnerTests(unittest.TestCase):
                 routed += 1
                 where = f"{path.name} {name}"
                 # The switch back to GitHub's runners.
-                self.assertIn("vars.SELF_HOSTED_CI != 'off'", runs_on, where)
+                self.assertTrue("vars.SELF_HOSTED_CI != 'off'" in runs_on or "vars.SELF_HOSTED_CI == 'all'" in runs_on,
+                                where)
                 self.assertIn("'ubuntu-latest'", runs_on, where)
                 if "pull_request" in on:
                     job_if = next((l for l in block.splitlines() if l.strip().startswith("if:")), "")

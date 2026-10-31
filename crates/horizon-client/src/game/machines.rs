@@ -46,6 +46,8 @@ enum Kind {
     Brewing,
     /// `ChiseledBookShelfBlockEntity`: books only, one to a slot.
     Bookshelf,
+    /// `JukeboxBlockEntity`'s single slot: a playable disc only.
+    Jukebox,
     /// A mod block's block entity (`ModContainer`).
     Mod,
     /// `ShulkerBoxBlockEntity`: a shulker box doesn't go through a face into one.
@@ -209,6 +211,7 @@ impl Containers<'_> {
             (BlockEntity::Crafter(_), _) => Kind::Crafter,
             (BlockEntity::Brewing(_), _) => Kind::Brewing,
             (BlockEntity::ChiseledBookshelf(_), _) => Kind::Bookshelf,
+            (BlockEntity::Jukebox(_), _) => Kind::Jukebox,
             (_, "minecraft:hopper") => Kind::Hopper,
             (_, n) if is_shulker_box(n) => Kind::Shulker,
             _ => Kind::Generic,
@@ -301,6 +304,15 @@ impl Containers<'_> {
                 }
                 _ => false,
             };
+        }
+        if view.kind == Kind::Jukebox {
+            // JukeboxBlockEntity.canPlaceItem: a playable disc, into the one
+            // slot, which has to be empty first (its maximum stack is 1).
+            return self
+                .items
+                .get(&stack.item)
+                .is_some_and(|i| i.jukebox_song.is_some())
+                && self.get(view, slot).is_none();
         }
         if view.kind == Kind::Bookshelf {
             // ListBackedContainer.canPlaceItem: `acceptsItemType` (the books)
@@ -572,6 +584,12 @@ impl Game<'_> {
         let (rest, moved) = self.move_in_item(from_hopper, view, stack, slot);
         if moved {
             self.view_changed(view);
+            // JukeboxBlockEntity.setTheItem through a hopper's or a dropper's
+            // transfer: the disc it lands on starts playing.
+            if view.kind == Kind::Jukebox {
+                let (x, y, z) = view.parts[0].0;
+                self.jukebox_inserted([x, y, z]);
+            }
         }
         rest
     }
@@ -868,6 +886,12 @@ impl Game<'_> {
             match self.add_item(source_hopper, hopper, one, None) {
                 None => {
                     self.view_changed(source);
+                    // JukeboxBlockEntity.removeItem -> setTheItem(EMPTY): a
+                    // disc a hopper takes out stops the song.
+                    if source.kind == Kind::Jukebox {
+                        let (x, y, z) = source.parts[0].0;
+                        self.jukebox_taken([x, y, z]);
+                    }
                     return true;
                 }
                 Some(rest) => self.put_back(source, slot, rest),

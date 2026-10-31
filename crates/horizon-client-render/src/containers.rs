@@ -421,7 +421,7 @@ impl BlockEntity {
             Self::Furnace(f) => f.items.iter().flatten().cloned().collect(),
             Self::Brewing(b) => b.items.iter().flatten().cloned().collect(),
             Self::Sign(_) => Vec::new(),
-            Self::Jukebox(j) => j.record.iter().cloned().collect(),
+            Self::Jukebox(j) => j.items.iter().flatten().cloned().collect(),
             Self::Beacon(_)
             | Self::CreakingHeart(_)
             | Self::Spawner(_)
@@ -454,7 +454,6 @@ impl BlockEntity {
             Self::Furnace(f) => &f.items,
             Self::Brewing(b) => &b.items,
             Self::Sign(_)
-            | Self::Jukebox(_)
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
@@ -468,6 +467,7 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Brushable(_) => &[],
+            Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
             Self::ChiseledBookshelf(b) => &b.items,
             Self::Shelf(b) => &b.items,
@@ -488,7 +488,6 @@ impl BlockEntity {
             Self::Furnace(f) => &mut f.items,
             Self::Brewing(b) => &mut b.items,
             Self::Sign(_)
-            | Self::Jukebox(_)
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
@@ -502,6 +501,7 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Brushable(_) => &mut [],
+            Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,
             Self::ChiseledBookshelf(b) => &mut b.items,
             Self::Shelf(b) => &mut b.items,
@@ -643,6 +643,26 @@ mod tests {
         let mut fifth = ItemStack::new("minecraft:potato", 1);
         assert!(!c.place_food(&mut fifth, 600));
         assert_eq!(fifth.count, 1);
+    }
+
+    /// `JukeboxBlockEntity`'s single slot is a `Container` slot, so a hopper
+    /// (`HopperBlockEntity.getContainerAt`) can reach the disc in it.
+    #[test]
+    fn a_jukebox_offers_its_record_as_its_one_container_slot() {
+        let mut entity = BlockEntity::Jukebox(Jukebox::default());
+        assert_eq!(entity.slots().len(), 1);
+        assert!(entity.slots()[0].is_none(), "empty until a disc lands");
+        let disc = ItemStack::new("minecraft:cat", 1);
+        entity.slots_mut()[0] = Some(disc.clone());
+        let slots = entity.slots();
+        assert_eq!(slots[0].as_ref().map(|s| &*s.item), Some("minecraft:cat"));
+        match &entity {
+            BlockEntity::Jukebox(j) => {
+                assert_eq!(j.record().map(|s| &*s.item), Some("minecraft:cat"));
+            }
+            _ => panic!("a jukebox"),
+        }
+        assert_eq!(entity.contents().len(), 1);
     }
 
     /// A whole amount pays itself without a draw; a fraction is a chance of one more.

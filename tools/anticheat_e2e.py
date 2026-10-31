@@ -11,10 +11,10 @@ Checks:
 - timer: `[anticheat]` on, with the timer's thresholds once trusted (it logs only by default): a bot ticking 1.5 times as fast as vanilla's client is flagged, sent back,
          reported to the console and kicked; the legit bots (walking and exploring at 20 Hz) are never
          flagged.
-- ground: `[anticheat]` on, survival (allow-flight on, so vanilla's floating kick stays out of it): a bot
-         hovering 24 blocks up that claims the ground in every move (no-fall) and one standing on water
-         that does (jesus) are flagged, their claim dropped, and kicked; bots walking on the ground and
-         standing still are never flagged.
+- ground: the default thresholds, survival (allow-flight on, so vanilla's floating kick stays out of it): a
+         bot walking 24 blocks up that claims the ground in every move (no-fall) and one walking on water
+         that does (jesus) are flagged, their claim dropped, and kicked, warned of the ban the next kick
+         brings; bots walking on the ground and standing still are never flagged.
 - prediction: `[anticheat]` on, survival: a real Horizon client, through a relay that holds every packet
          20-120 ms, walks, sprint-jumps, strafes and sneaks, with effects given and cleared, over ice and
          soul sand, swims, walks into cows, has blocks changed around it, flies in creative, glides with an
@@ -77,10 +77,6 @@ enabled = true
 setback = 2
 alert = 5
 kick = 20
-[anticheat.ground]
-setback = 5
-alert = 15
-kick = 60
 [anticheat.prediction]
 enabled = false
 '''
@@ -174,15 +170,17 @@ def check_ground(bins, scratch, out, seconds):
             runs = {
                 'Walk': pool.submit(bots, bins, port, out, 'Walk', 3, 'walk', seconds, '--height', '0', '--ground'),
                 'Stand': pool.submit(bots, bins, port, out, 'Stand', 2, 'stand', seconds),
-                'NoFall': pool.submit(bots, bins, port, out, 'NoFall', 1, 'idle', seconds, '--ground'),
-                'Jesus': pool.submit(bots, bins, port, out, 'Jesus', 1, 'idle', seconds, '--height', '0',
+                # They move, as the no-fall and jesus players of the official server did: a claim
+                # standing still isn't judged (no fall to skip).
+                'NoFall': pool.submit(bots, bins, port, out, 'NoFall', 1, 'walk', seconds, '--ground'),
+                'Jesus': pool.submit(bots, bins, port, out, 'Jesus', 1, 'walk', seconds, '--height', '0',
                                      '--ground'),
             }
             # The jesus bot goes far from the others, then the ground under it turns to water.
             server.wait_for('Jesus0 joined the game', 120)
             server.console('tp Jesus0 200.5 -60 200.5')
             time.sleep(4)
-            server.console('fill 196 -61 196 204 -61 204 minecraft:water')
+            server.console('fill 176 -61 176 224 -61 224 minecraft:water')
             runs = {k: v.result() for k, v in runs.items()}
     finally:
         server.stop()
@@ -201,8 +199,12 @@ def check_ground(bins, scratch, out, seconds):
             raise Failed(f'ground: {cheater["name"]} was flagged {flags} times ({where}):\n{log}')
         if 'disconnected' not in (cheater['error'] or ''):
             raise Failed(f'ground: {cheater["name"]} was not kicked ({cheater["error"]})')
+        # The defaults act: the first kick warns of the ban the second brings.
+        if f'{cheater["name"]} failed ground' not in log or 'kicked (1 of 2 before a ban)' not in log:
+            raise Failed(f'ground: {cheater["name"]}: no kick with its ban count in the log:\n{log}')
     walkers = runs['Walk']['joined'] + runs['Stand']['joined']
-    print(f'ground: the no-fall and jesus bots are flagged and kicked; {walkers} bots on the ground never flagged')
+    print(f'ground: the no-fall and jesus bots are flagged and kicked (1 of 2 before a ban) at the default thresholds; '
+          f'{walkers} bots on the ground never flagged')
 
 
 class Jitter:
@@ -542,9 +544,20 @@ def check_combat(bins, scratch, out, seconds):
                                     '--attack', 'Target1,Target2'),
             }
             runs = {k: v.result() for k, v in runs.items()}
+            # Kicked once, the cheaters come back and cheat again: that kick bans (ban_after = 2), and
+            # then the server refuses them.
+            again = {
+                'NoSwing': pool.submit(bots, bins, port, out, 'NoSwing', 1, 'stand', seconds,
+                                       '--attack', 'Target1', '--no-swing'),
+                'Aura': pool.submit(bots, bins, port, out, 'Aura', 1, 'stand', seconds,
+                                    '--attack', 'Target1,Target2'),
+            }
+            again = {k: v.result() for k, v in again.items()}
+            refused = bots(bins, port, out, 'NoSwing', 1, 'stand', 5)
             runs['Target'] = targets.result()
     finally:
         server.stop()
+    bans = json.loads((folder / 'banned-players.json').read_text())
     log = folder / 'logs/anticheat.log'
     # The other checks only log by default, and the bots move by their own rules.
     log = '\n'.join(l for l in (log.read_text() if log.exists() else '').splitlines() if 'failed combat' in l)
@@ -567,8 +580,25 @@ def check_combat(bins, scratch, out, seconds):
             raise Failed(f'combat: {cheater["name"]}\'s attacks were never dropped:\n{log}')
         if 'disconnected' not in (cheater['error'] or ''):
             raise Failed(f'combat: {cheater["name"]} was not kicked ({cheater["error"]})')
-    print(f'combat: the no-swing and two-target bots are flagged, their attacks dropped, and kicked; the fair '
-          f'bot attacked {fair["attacks"]} times, never flagged; health left: {health}')
+    banned = {b['name']: b for b in bans}
+    for name in ('NoSwing', 'Aura'):
+        cheater = again[name]['per_bot'][0]
+        ban = banned.get(cheater['name'])
+        if not ban or ban.get('reason') != 'Horizon anticheat: combat' or ban.get('source') != 'Horizon anticheat':
+            raise Failed(f'combat: {cheater["name"]} came back, cheated again and was not banned: {bans}')
+        if 'disconnected' not in (cheater['error'] or ''):
+            raise Failed(f'combat: banned {cheater["name"]} was not sent away ({cheater["error"]})')
+    if len(banned) != 2:
+        raise Failed(f'combat: only the two cheaters are banned: {bans}')
+    if 'banned' not in (refused['per_bot'][0]['error'] or '').lower():
+        raise Failed(f'combat: banned NoSwing logged in again ({refused["per_bot"][0]["error"]})')
+    lines = (folder / 'logs/anticheat.log').read_text()
+    if not all(f'{n}0 failed combat' in lines and 'kicked (1 of 2 before a ban)' in lines and ', banned' in lines
+               for n in ('NoSwing', 'Aura')):
+        raise Failed(f'combat: the log doesn\'t show the kick before the ban:\n{lines}')
+    print(f'combat: the no-swing and two-target bots are flagged, their attacks dropped, and kicked; back, they '
+          f'cheat again and are banned, then refused; the fair bot attacked {fair["attacks"]} times, never '
+          f'flagged; health left: {health}')
 
 
 CHECKS = {'off': check_off, 'timer': check_timer, 'ground': check_ground, 'prediction': check_prediction,

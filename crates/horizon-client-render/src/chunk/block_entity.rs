@@ -291,10 +291,18 @@ pub struct Beacon {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Jukebox {
-    pub record: Option<ItemStack>,
+    /// `JukeboxBlockEntity`'s one slot (`ContainerSingleItem`), so a hopper or
+    /// a dropper reaches it as it reaches any container.
+    pub items: [Option<ItemStack>; 1],
     /// `ticks_since_song_started`, while a song plays.
     pub ticks: i64,
     pub playing: bool,
+}
+impl Jukebox {
+    /// `JukeboxBlockEntity.getTheItem`: the disc it holds.
+    pub fn record(&self) -> Option<&ItemStack> {
+        self.items[0].as_ref()
+    }
 }
 /// `BrewingStandBlockEntity` state. Slots: 0-2 bottles, 3 ingredient, 4 fuel.
 #[derive(Clone, Debug, Default)]

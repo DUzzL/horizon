@@ -420,6 +420,37 @@ impl Game<'_> {
         }
         true
     }
+    /// Shows `nickname` in place of that player's name in chat (their
+    /// messages, `/me`, `/msg`) and in the Tab list; None shows their name
+    /// again. Hovering the shown name gives the real one, which stays in the
+    /// log, commands, selectors and the server's events. Kept until a mod
+    /// sets it again or the server stops (also if they leave and come back).
+    /// Plain text: the mod checks it (`native_text_allowed`, its length,
+    /// other players' names). Only where no player's state is swapped in,
+    /// as `native_run_command`; false there and when they aren't on. API
+    /// 62.
+    pub(super) fn native_set_nickname(&mut self, uuid: u128, nickname: Option<&str>) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        if !host.hub.guests.iter().any(|g| g.placed && g.uuid == uuid) {
+            return false;
+        }
+        host.hub.set_nickname(uuid, nickname.map(str::to_owned));
+        true
+    }
+    /// Whether the server's chat filter (`server.toml` `[chat_filter]`)
+    /// lets `text` through: true without a filter, None inside a player's
+    /// hook (where the server is out of reach). API 62.
+    pub(super) fn native_text_allowed(&self, text: &str) -> Option<bool> {
+        let host = self.lan.as_ref()?;
+        Some(
+            host.hub
+                .chat_filter
+                .as_ref()
+                .is_none_or(|g| !g.filter.matches(text)),
+        )
+    }
     /// A system line in every player's chat and the server's log.
     pub(super) fn native_broadcast(&self, line: Text) {
         let plain = line.plain();

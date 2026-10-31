@@ -7,7 +7,7 @@ AbstractBoat.tickBubbleColumn	missing		player: a boat in a bubble column does no
 AbstractBoat.handleEntityEvent	missing		player: the bubble column effect event (71 or 72) never reaches a boat, same gap as the bubble column lift
 AbstractBoat.handleBubbleColumnEffect	missing		player: a boat in an up or down bubble column keeps its speed; Horizon never changes its vertical velocity from a column
 AbstractBoat.setPaddleState	inline	crates/horizon-client/src/game/boats.rs::Game::tick_boat	paddle flags are set from the rider's input inside the controlled branch
-AbstractBoat.getLeashOffset	missing		player: a lead can be tied to a boat in vanilla (AbstractBoat is Leashable); Horizon leads only mobs
+AbstractBoat.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::Holder::boat_leash_offset	1.375 by 0.5625 for a boat or raft
 AbstractBoat.getStatus	port	crates/horizon-client/src/game/boats.rs::Game::boat_status	in air, in water, under water or on land
 AbstractBoat.getWaterLevelAbove	port	crates/horizon-client/src/game/boats.rs::Game::water_level_above	
 AbstractBoat.getGroundFriction	port	crates/horizon-client/src/game/boats.rs::Game::boat_ground_friction	average friction of blocks whose collision shape meets a thin slab under the hull; lily pads skipped

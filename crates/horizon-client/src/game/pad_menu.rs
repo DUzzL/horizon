@@ -211,6 +211,10 @@ impl Game<'_> {
                     }
                 }
                 for (i, t) in self.creative_screen.tabs.iter().enumerate() {
+                    // A tab of another page of mods' tabs isn't drawn: its place is another's.
+                    if !self.creative_screen.on_page(t) {
+                        continue;
+                    }
                     let (x, y) = Creative::tab_position(t);
                     targets.push(Target {
                         rect: [ox + x, oy + y, 26.0, 32.0],
@@ -648,7 +652,7 @@ impl Game<'_> {
     /// order; other screens register their tabs).
     fn pad_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
         if self.screen == Screen::Creative && self.title.is_none() {
-            self.pad_creative_tab(event_loop, next);
+            self.pad_creative_tab(next);
             return;
         }
         let tabs: Vec<(Rect, bool)> = self
@@ -680,11 +684,10 @@ impl Game<'_> {
         }
     }
 
-    /// Click the next or previous creative tab (wrapping), as a mouse would.
-    fn pad_creative_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
-        let Some(batch) = self.gui_scale() else {
-            return;
-        };
+    /// Select the next or previous creative tab (wrapping), as clicking it does. A tab on
+    /// another page of mods' tabs shows its page: clicking where it would be would hit the
+    /// tab drawn there on this page.
+    fn pad_creative_tab(&mut self, next: bool) {
         let count = self.creative_screen.tabs.len();
         if count == 0 {
             return;
@@ -695,13 +698,10 @@ impl Game<'_> {
         } else {
             (selected + count - 1) % count
         };
-        let (ox, oy) = Self::creative_origin(&batch);
-        let (x, y) = Creative::tab_position(&self.creative_screen.tabs[tab]);
-        let back = self.pad.menu.pos;
-        self.pad_click_at(event_loop, (ox + x + 13.0, oy + y + 16.0), false);
-        if let Some(at) = back {
-            self.pad_pointer_to(event_loop, at);
-        }
+        super::select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, tab);
+        self.refresh_saved_hotbars();
+        self.inv_drag = None;
+        self.last_inv_click = None;
     }
 
     /// Once per poll in a menu: the stick moves the cursor (pointer) or

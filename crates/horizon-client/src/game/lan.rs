@@ -1900,6 +1900,9 @@ impl Game<'_> {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
                 }
+                HostEvent::Ban { uuid, name, reason } => {
+                    self.anticheat_ban(&mut host.hub, uuid, &name, &reason);
+                }
                 HostEvent::ChatFiltered {
                     sender,
                     name,

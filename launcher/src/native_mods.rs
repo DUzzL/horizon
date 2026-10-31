@@ -833,6 +833,27 @@ pub fn digest<'a>(files: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The digest of a bundle's files as the Mods page reads it (`native_status::enabled`): an
+/// unpacked `.hnmod`'s whole folder, its `horizon-native.json` included, else the bundle's own
+/// folder. A build records it, so a build of the mods turned on reads as up to date.
+fn source_digest(bundle: &Bundle) -> Option<String> {
+    let root = bundle
+        .dir
+        .parent()
+        .and_then(Path::parent)
+        .filter(|root| {
+            root.join(NATIVE_MANIFEST).is_file()
+                && bundle.dir == root.join("mixins").join(&bundle.id)
+        })
+        .unwrap_or(&bundle.dir);
+    let read: Vec<_> = files(root)
+        .ok()?
+        .into_iter()
+        .map(|(name, path)| Some((name, fs::read(path).ok()?)))
+        .collect::<Option<_>>()?;
+    Some(digest(read.iter().map(|(n, b)| (n.as_str(), b.as_slice()))))
+}
+
 /// Where a build is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
@@ -1242,6 +1263,11 @@ pub fn build(
     for b in &found {
         backend::copy_dir(&b.dir, &copy_to(b)).map_err(|e| e.to_string())?;
     }
+    // Read before `repin` rewrites a copy's manifest.
+    let digests: std::collections::HashMap<String, Option<String>> = found
+        .iter()
+        .map(|b| (b.id.clone(), source_digest(b)))
+        .collect();
     let mods: Vec<Bundle> = found
         .into_iter()
         .map(|b| Bundle {
@@ -1397,10 +1423,7 @@ pub fn build(
             "mods": mods.iter().map(|m| serde_json::json!({
                 "id": m.id,
                 "version": m.version,
-                "sha256": files(&m.dir).ok().map(|list| {
-                    let read: Vec<_> = list.iter().filter_map(|(n, p)| Some((n.clone(), fs::read(p).ok()?))).collect();
-                    digest(read.iter().map(|(n, b)| (n.as_str(), b.as_slice())))
-                }),
+                "sha256": digests.get(&m.id).cloned().flatten(),
             })).collect::<Vec<_>>(),
         });
         install(base, &version, &binary, &about, |dir| {
@@ -1457,15 +1480,7 @@ fn install(
     fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(&from).map_err(|e| e.to_string())?.flatten() {
         let name = entry.file_name();
-        if [
-            backend::CLIENT,
-            ".installed",
-            "Horizon.app",
-            "native-mods.json",
-        ]
-        .iter()
-        .any(|n| name == *n)
-        {
+        if !carried_over(&name) {
             continue;
         }
         let to = partial.join(&name);
@@ -1489,6 +1504,21 @@ fn install(
         return Err(e);
     }
     fs::write(dir.join(".installed"), "").map_err(|e| e.to_string())
+}
+
+/// Whether a file of the version a build starts from goes into the new build. The game, its
+/// record, and the mods' post-build data (`native-data/`, which the new build's steps write
+/// again) are the new build's own: a mod turned off leaves none of its data behind.
+fn carried_over(name: &std::ffi::OsStr) -> bool {
+    ![
+        backend::CLIENT,
+        ".installed",
+        "Horizon.app",
+        "native-mods.json",
+        "native-data",
+    ]
+    .iter()
+    .any(|n| name == *n)
 }
 
 /// How many native builds no instance plays stay installed, the newest first: switching a mod
@@ -1536,6 +1566,22 @@ fn stale(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rebuild_leaves_the_old_builds_mod_data_behind() {
+        use std::ffi::OsStr;
+        for own in [
+            backend::CLIENT,
+            ".installed",
+            "native-mods.json",
+            "native-data",
+        ] {
+            assert!(!carried_over(OsStr::new(own)), "{own}");
+        }
+        for kept in ["horizon-ctl", "resources", "LICENSE"] {
+            assert!(carried_over(OsStr::new(kept)), "{kept}");
+        }
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("horizon-native-{name}-{}", std::process::id()));
@@ -1662,6 +1708,21 @@ mod tests {
         assert_eq!(
             (found[0].id.as_str(), found[0].horizon.as_deref()),
             ("veinminer", Some(A))
+        );
+        // What a build records of it is what the Mods page compares: up to date, not Needs rebuild.
+        assert_eq!(
+            crate::native_status::enabled(&home),
+            [(
+                "veinminer".to_string(),
+                "0.3.0".to_string(),
+                source_digest(&found[0])
+            )]
+        );
+        repin(&found[0], "f".repeat(40).as_str()).unwrap();
+        assert_ne!(
+            crate::native_status::enabled(&home)[0].2,
+            source_digest(&found[0]),
+            "a build reads the digest before repinning its copy"
         );
         pack(
             "veinminer.hnmod",

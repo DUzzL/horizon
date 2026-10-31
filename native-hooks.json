@@ -415,6 +415,11 @@
       "name": "render_needs",
       "version": 1,
       "target": "horizon_client_render::gfx::native_render::native_render_needs"
+    },
+    {
+      "name": "item_bar",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_bar"
     }
   ]
 }

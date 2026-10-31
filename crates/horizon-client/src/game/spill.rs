@@ -476,7 +476,7 @@ impl GameLevel<'_> {
                     // events and a neighbour update), the record pops, and
                     // onSongChanged updates the neighbours again.
                     if let Some(BlockEntity::Jukebox(j)) = &entity
-                        && let Some(record) = j.record.clone()
+                        && let Some(record) = j.record().cloned()
                     {
                         if j.playing {
                             self.jukebox_stopped(pos, old);

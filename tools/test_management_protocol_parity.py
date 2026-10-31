@@ -14,7 +14,7 @@ sent the same things over TLS, and every answer is compared exactly:
   unparsable method names, a bad request id, wrong parameters, a notification (no answer), a batch, an
   answer to nothing, `rpc.discover` (its document must also equal `reports/json-rpc-api-schema.json` from
   vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
-  `server/system_message` with no one online, the allowlist and the bans changed (`add`, `remove`, `set`,
+  `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
   `clear`; with no profile service, players named resolve to offline players on both), and `server/stop`;
 - the TLS version each server agrees on.
 
@@ -108,6 +108,19 @@ MESSAGES = [
     '"expires":"2027-01-01T00:00:00Z"},{"player":{"name":"Ann0"},"source":"Moderator"}]]}',
     '{"jsonrpc":"2.0","id":30,"method":"minecraft:bans"}',
     '{"jsonrpc":"2.0","id":31,"method":"minecraft:bans/clear"}',
+    '{"jsonrpc":"2.0","id":32,"method":"minecraft:ip_bans/add","params":[[{"ip":"198.51.100.4","reason":"proxy",'
+    '"expires":"2027-01-01T00:00:00Z"},{"ip":"not an address"},{"player":{"name":"Nobody"}}]]}',
+    '{"jsonrpc":"2.0","id":33,"method":"minecraft:ip_bans/remove","params":[["203.0.113.7"]]}',
+    '{"jsonrpc":"2.0","id":34,"method":"minecraft:ip_bans/set","params":[[{"ip":"198.51.100.4","reason":"proxy",'
+    '"expires":"2027-01-01T00:00:00Z"},{"ip":"2001:db8::1","source":"Bot"},{"ip":"bad"}]]}',
+    '{"jsonrpc":"2.0","id":35,"method":"minecraft:ip_bans/clear"}',
+    '{"jsonrpc":"2.0","id":36,"method":"minecraft:operators/add","params":[[{"player":{"name":"Lou0"},'
+    '"permissionLevel":2},{"player":{"name":"Ann0"}}]]}',
+    '{"jsonrpc":"2.0","id":37,"method":"minecraft:operators/set","params":[[{"player":{"name":"Lou0"},'
+    '"permissionLevel":2,"bypassesPlayerLimit":false},{"player":{"name":"Ann0"},"bypassesPlayerLimit":true},'
+    '{"player":{"id":"93e029a5-04a0-349d-90b2-f7e145b2644f"}}]]}',
+    '{"jsonrpc":"2.0","id":38,"method":"minecraft:operators/remove","params":[[{"name":"Lou0"}]]}',
+    '{"jsonrpc":"2.0","id":39,"method":"minecraft:operators/clear"}',
 ]
 
 

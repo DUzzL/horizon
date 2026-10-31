@@ -60,6 +60,36 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
             edit(Vec::new())?;
             Ok(lists.bans())
         }
+        "ip_bans/add" | "ip_bans/remove" | "ip_bans/set" | "ip_bans/clear" => {
+            let entries = list_or_none(argument)?;
+            edit(match short {
+                "ip_bans/add" => entries
+                    .iter()
+                    .map(incoming_ip_ban)
+                    .collect::<Result<_, _>>()?,
+                "ip_bans/remove" => entries.iter().map(ip).collect::<Result<_, _>>()?,
+                "ip_bans/set" => entries.iter().map(ip_ban).collect::<Result<_, _>>()?,
+                _ => Vec::new(),
+            })?;
+            Ok(lists.ip_bans())
+        }
+        "operators/add" | "operators/set" => {
+            edit(
+                list(argument)?
+                    .iter()
+                    .map(operator)
+                    .collect::<Result<_, _>>()?,
+            )?;
+            Ok(lists.operators())
+        }
+        "operators/remove" => {
+            edit(players(argument)?)?;
+            Ok(lists.operators())
+        }
+        "operators/clear" => {
+            edit(Vec::new())?;
+            Ok(lists.operators())
+        }
         _ => Err((
             INTERNAL_ERROR,
             Some(format!("minecraft:{short} isn't in Horizon yet")),
@@ -120,19 +150,28 @@ fn player(value: &Value) -> Result<Value, Failure> {
     Ok(json!({ "id": id.map(|id| format!("{id:032x}")), "name": name }))
 }
 
-/// A `UserBanDto`: the player, and the reason, source and end when given (the end as an ISO-8601 instant).
-fn user_ban(value: &Value) -> Result<Value, Failure> {
-    let Some(dto) = value.get("player") else {
-        return Err(invalid_params("No key player"));
-    };
-    let text = |key: &str| match value.get(key) {
+/// The list a method takes, or none for a `clear`.
+fn list_or_none(argument: &Value) -> Result<Vec<Value>, Failure> {
+    match argument {
+        Value::Null => Ok(Vec::new()),
+        _ => list(argument).cloned(),
+    }
+}
+
+/// An optional string field.
+fn text(value: &Value, key: &str) -> Result<Option<String>, Failure> {
+    match value.get(key) {
         None => Ok(None),
         Some(v) => v
             .as_str()
             .map(|s| Some(s.to_owned()))
             .ok_or_else(|| invalid_params(format!("Not a string: {v}"))),
-    };
-    let expires = match text("expires")? {
+    }
+}
+
+/// What a ban DTO may give: the reason, the source and the end (an ISO-8601 instant, sent in milliseconds).
+fn ban_terms(value: &Value) -> Result<Value, Failure> {
+    let expires = match text(value, "expires")? {
         None => None,
         Some(at) => Some(
             chrono::DateTime::parse_from_rfc3339(&at)
@@ -140,12 +179,68 @@ fn user_ban(value: &Value) -> Result<Value, Failure> {
                 .timestamp_millis(),
         ),
     };
-    Ok(json!({
-        "player": player(dto)?,
-        "reason": text("reason")?,
-        "source": text("source")?,
-        "expires": expires,
-    }))
+    Ok(
+        json!({ "reason": text(value, "reason")?, "source": text(value, "source")?, "expires": expires }),
+    )
+}
+
+/// A `UserBanDto`: the player and the ban's terms.
+fn user_ban(value: &Value) -> Result<Value, Failure> {
+    let Some(dto) = value.get("player") else {
+        return Err(invalid_params("No key player"));
+    };
+    let mut ban = ban_terms(value)?;
+    ban["player"] = player(dto)?;
+    Ok(ban)
+}
+
+/// An `IncomingIpBanDto`: an address or a player (whose address is banned if online), and the terms.
+fn incoming_ip_ban(value: &Value) -> Result<Value, Failure> {
+    let mut ban = ban_terms(value)?;
+    ban["ip"] = json!(text(value, "ip")?);
+    if let Some(dto) = value.get("player") {
+        ban["player"] = player(dto)?;
+    }
+    Ok(ban)
+}
+
+/// An `IpBanDto`: the address and the terms.
+fn ip_ban(value: &Value) -> Result<Value, Failure> {
+    let mut ban = ban_terms(value)?;
+    ban["ip"] = ip(value.get("ip").ok_or_else(|| invalid_params("No key ip"))?)?["ip"].take();
+    Ok(ban)
+}
+
+/// An address to unban, as `ip_bans/remove` takes them.
+fn ip(value: &Value) -> Result<Value, Failure> {
+    let ip = value
+        .as_str()
+        .ok_or_else(|| invalid_params(format!("Not a string: {value}")))?;
+    Ok(json!({ "ip": ip }))
+}
+
+/// An `OperatorDto`: the player, and the permission level (0 to 4) and bypass when given.
+fn operator(value: &Value) -> Result<Value, Failure> {
+    let Some(dto) = value.get("player") else {
+        return Err(invalid_params("No key player"));
+    };
+    let level = match value.get("permissionLevel") {
+        None => None,
+        Some(level) => Some(
+            level
+                .as_i64()
+                .filter(|l| (0..=4).contains(l))
+                .ok_or_else(|| invalid_params(format!("Not a valid permission level: {level}")))?,
+        ),
+    };
+    let bypass = match value.get("bypassesPlayerLimit") {
+        None => None,
+        Some(b) => Some(
+            b.as_bool()
+                .ok_or_else(|| invalid_params(format!("Not a boolean: {b}")))?,
+        ),
+    };
+    Ok(json!({ "player": player(dto)?, "permissionLevel": level, "bypassesPlayerLimit": bypass }))
 }
 
 /// `Message.asComponent` as a JSON text component; `None` when it has neither text nor key.
@@ -404,6 +499,36 @@ mod tests {
         assert_eq!(lists.operators()[0]["bypassesPlayerLimit"], true);
         assert_eq!(lists.allowlist(), json!([]));
         assert_eq!(lists.ip_bans(), json!([]));
+    }
+
+    #[test]
+    fn list_edits_reach_the_game_checked_and_normalized() {
+        let kim = json!({ "id": "93e029a5-04a0-349d-90b2-f7e145b2644f" });
+        assert_eq!(
+            user_ban(&json!({ "player": kim, "expires": "2027-01-01T00:00:00Z" })).unwrap(),
+            json!({ "player": { "id": "93e029a504a0349d90b2f7e145b2644f", "name": null },
+                    "reason": null, "source": null, "expires": 1798761600000i64 })
+        );
+        assert!(user_ban(&json!({ "reason": "x" })).is_err());
+        assert!(user_ban(&json!({ "player": kim, "expires": "tomorrow" })).is_err());
+        assert_eq!(
+            ip_ban(&json!({ "ip": "203.0.113.7", "source": "Bot" })).unwrap(),
+            json!({ "ip": "203.0.113.7", "reason": null, "source": "Bot", "expires": null })
+        );
+        assert!(ip_ban(&json!({ "reason": "x" })).is_err());
+        assert_eq!(
+            incoming_ip_ban(&json!({ "player": { "name": "Kim0" } })).unwrap()["player"]["name"],
+            "Kim0"
+        );
+        assert_eq!(
+            operator(&json!({ "player": { "name": "Kim0" }, "permissionLevel": 2 })).unwrap(),
+            json!({ "player": { "id": null, "name": "Kim0" }, "permissionLevel": 2, "bypassesPlayerLimit": null })
+        );
+        assert!(operator(&json!({ "player": { "name": "Kim0" }, "permissionLevel": 5 })).is_err());
+        assert!(
+            operator(&json!({ "player": { "name": "Kim0" }, "bypassesPlayerLimit": 1 })).is_err()
+        );
+        assert_eq!(list_or_none(&Value::Null).unwrap(), Vec::<Value>::new());
     }
 
     #[test]

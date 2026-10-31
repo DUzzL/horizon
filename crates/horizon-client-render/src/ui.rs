@@ -34,9 +34,16 @@ fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
         let g = |k: &str| border[k].as_u64().unwrap_or(0) as u32;
         [g("left"), g("top"), g("right"), g("bottom")]
     };
+    let (width, height) = (size("width")?, size("height")?);
+    // `NineSlice.validate`: borders that meet leave no centre slice, so the
+    // sprite has no nine-slice metadata (vanilla draws it as a stretch).
+    let [l, t, r, b] = border;
+    if l.saturating_add(r) >= width || t.saturating_add(b) >= height {
+        return None;
+    }
     Some(NineSlice {
-        width: size("width")?,
-        height: size("height")?,
+        width,
+        height,
         border,
         stretch_inner: s["stretch_inner"].as_bool().unwrap_or(false),
     })
@@ -1456,6 +1463,17 @@ mod tests {
         assert_eq!(q.len(), 2);
         assert_quad(q[0], ([0.0, 5.0, 32.0, 7.0], [0.0, 0.0, 1.0, 1.0]));
         assert_quad(q[1], ([32.0, 5.0, 40.0, 7.0], [0.0, 0.0, 0.25, 1.0]));
+    }
+    #[test]
+    fn a_border_that_leaves_no_centre_slice_is_no_metadata() {
+        // NineSlice.validate rejects 12 + 12 >= 20, so the sprite has none.
+        let json = serde_json::json!({"gui": {"scaling": {
+            "type": "nine_slice", "width": 20, "height": 20, "border": 12}}});
+        assert!(parse_nine_slice(&json).is_none());
+        // 9 + 9 < 20 still leaves a centre slice.
+        let json = serde_json::json!({"gui": {"scaling": {
+            "type": "nine_slice", "width": 20, "height": 20, "border": 9}}});
+        assert_eq!(parse_nine_slice(&json).unwrap().border, [9; 4]);
     }
     #[test]
     fn a_high_resolution_button_slices_in_its_gui_units() {
