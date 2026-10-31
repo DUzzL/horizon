@@ -2324,7 +2324,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 if let Some(nightly) = horizon_core::release::nightly_label() {
                     batch.text(atlas, &nightly, 2.0, 2.0, u32::MAX, true);
                 }
-                let notice = "Not affiliated with Mojang or Microsoft";
+                let notice = &lang::get_or(
+                    "horizon.title.not_affiliated",
+                    "Not affiliated with Mojang or Microsoft",
+                );
                 // TitleScreen.init's `PlainTextButton`: the text's width wide, 10
                 // high at `height - 10`; `extractContents` underlines it while
                 // hovered or focused, and its press opens the credits.

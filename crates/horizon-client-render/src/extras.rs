@@ -394,25 +394,67 @@ pub enum Item {
     /// On the Horizon Settings page.
     DiscordPresence,
 }
-/// The Extras page: headers and items.
+/// The Extras page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
     vec![
-        Err("Lighting"),
+        Err("horizon.extras.header.lighting"),
         Ok(Fullbright),
         Ok(DynamicLights),
-        Err("Third person"),
+        Err("horizon.extras.header.third_person"),
         Ok(OwnNameTag),
-        Err("Inventory"),
+        Err("horizon.extras.header.inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
         Ok(Sort),
         Ok(SortKey),
-        Err("Multiplayer"),
+        Err("horizon.extras.header.multiplayer"),
         Ok(AutoReconnect),
     ]
 }
 impl Item {
+    /// The language key of the caption (`horizon.*`, assets/horizon/lang).
+    pub fn caption_key(self) -> &'static str {
+        match self {
+            Item::Fullbright => "horizon.extras.fullbright",
+            Item::DynamicLights => "horizon.extras.dynamic_lights",
+            Item::OwnNameTag => "horizon.extras.own_name_tag",
+            Item::AutoReconnect => "horizon.extras.auto_reconnect",
+            Item::MouseTweaks => "horizon.extras.mouse_tweaks",
+            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel",
+            Item::Sort => "horizon.extras.sort",
+            Item::SortKey => "horizon.extras.sort_key",
+            Item::NoAi => "horizon.extras.no_ai",
+            Item::AgentControl => "horizon.extras.agent_control",
+            Item::DiscordPresence => "horizon.extras.discord_presence",
+        }
+    }
+    /// The language key of the description shown as the row's tooltip.
+    pub fn description_key(self) -> &'static str {
+        match self {
+            Item::Fullbright => "horizon.extras.fullbright.tooltip",
+            Item::DynamicLights => "horizon.extras.dynamic_lights.tooltip",
+            Item::OwnNameTag => "horizon.extras.own_name_tag.tooltip",
+            Item::AutoReconnect => "horizon.extras.auto_reconnect.tooltip",
+            Item::MouseTweaks => "horizon.extras.mouse_tweaks.tooltip",
+            Item::MouseTweaksWheel => "horizon.extras.mouse_tweaks_wheel.tooltip",
+            Item::Sort => "horizon.extras.sort.tooltip",
+            Item::SortKey => "horizon.extras.sort_key.tooltip",
+            Item::NoAi => "horizon.extras.no_ai.tooltip",
+            Item::AgentControl => "horizon.extras.agent_control.tooltip",
+            Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
+        }
+    }
+    /// The caption in the current language (English when the key is missing).
+    pub fn caption_text(self) -> String {
+        crate::lang::get_or(self.caption_key(), self.caption())
+    }
+    /// The description in the current language (English when the key is missing).
+    pub fn description_text(self) -> String {
+        crate::lang::get_or(self.description_key(), self.description())
+    }
+    /// The English caption: the fallback of [`Item::caption_text`], and the text of
+    /// `horizon.extras.*` in en_us.json.
     pub fn caption(self) -> &'static str {
         match self {
             Item::Fullbright => "Fullbright",
@@ -440,7 +482,7 @@ impl Item {
             }
         })
     }
-    /// What the row says under its caption.
+    /// The English description: the fallback of [`Item::description_text`].
     pub fn description(self) -> &'static str {
         match self {
             Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
@@ -509,8 +551,8 @@ impl Item {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             other => match other.switch(e) {
-                Some(true) => "On".into(),
-                _ => "Off".into(),
+                Some(true) => crate::lang::get_or("On", "On"),
+                _ => crate::lang::get_or("Off", "Off"),
             },
         }
     }
