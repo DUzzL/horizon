@@ -1,0 +1,13 @@
+# An API mod (docs/native-mods.md, "API mods"): no mixin, only a crate the game calls from its hook
+# points. Building or changing it never recompiles horizon-client.
+[mod]
+id = "api_demo"
+version = "0.1.0"
+
+[api]
+crate = "engine"
+entry = "create"
+
+[[crate]]
+id = "engine"
+path = "engine"

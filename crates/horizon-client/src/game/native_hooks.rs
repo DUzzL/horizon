@@ -2539,6 +2539,7 @@ impl Game<'_> {
     pub(super) fn list_native_mods(&mut self) {
         let mut mods = Vec::new();
         self.native_mods(&mut mods);
+        self.api_mod_rows(&mut mods);
         // A WebAssembly mod of the same id: the native row stands for it,
         // and alone toggles its `mod.<id>` line.
         self.settings

@@ -21,6 +21,54 @@ pub struct Manifest {
     /// `horizon` is only the revision it was tested on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<u32>,
+    /// An API mod: its code is a crate using `horizon-mod-api` that the game calls from its hook
+    /// points, with no mixin, so building it never recompiles horizon-client
+    /// (docs/native-mods.md, "API mods").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<Api>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Api {
+    /// The `[[crate]]` of `horizon-mixin.toml` (its `id`) holding the mod.
+    #[serde(rename = "crate")]
+    pub krate: String,
+    /// A public `fn() -> Box<dyn horizon_mod_api::Mod>` in that crate.
+    pub entry: String,
+}
+
+/// Whether `path` is a Rust path within a crate (`create`, `mods::create`).
+fn rust_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.split("::").all(|p| {
+            p.bytes().next().is_some_and(|b| !b.is_ascii_digit())
+                && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+}
+
+/// The folder (in `mixins/<id>/`) of an API mod's crate: the `[[crate]]` its `api` names. An API
+/// mod has no `[[injection]]`, so nothing of it is applied to horizon-client's source.
+pub fn api_crate(id: &str, api: &Api, mixin: &toml::Value) -> Result<String, String> {
+    if mixin.get("injection").is_some() {
+        return Err(format!(
+            "{id}: an API mod (\"api\" in {MANIFEST}) has no [[injection]]"
+        ));
+    }
+    mixin
+        .get("crate")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(api.krate.as_str()))
+        .and_then(|c| c.get("path").and_then(|v| v.as_str()))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!(
+                "{id}: its API crate {} is not a [[crate]] of horizon-mixin.toml",
+                api.krate
+            )
+        })
 }
 
 pub fn revision(value: &str) -> bool {
@@ -39,6 +87,10 @@ impl Manifest {
             || !revision(&self.horizon)
             || !revision(&self.mixins)
             || self.hooks == Some(0)
+            || self
+                .api
+                .as_ref()
+                .is_some_and(|api| !valid_id(&api.krate) || !rust_path(&api.entry))
         {
             return Err(
                 "invalid native manifest: schema 1, id, version, game and exact revisions required"
@@ -169,6 +221,9 @@ impl Bundle {
         {
             return Err("native manifest and mixin identity/revision differ".into());
         }
+        if let Some(api) = &manifest.api {
+            api_crate(&manifest.id, api, &source)?;
+        }
         Ok(Self { manifest, files })
     }
 }
@@ -187,6 +242,7 @@ mod tests {
             horizon: "a".repeat(40),
             mixins: "b".repeat(40),
             hooks: None,
+            api: None,
         }
     }
     fn read(name: &str, extras: &[(&str, &[u8])], mixin: &str) -> Result<Bundle, String> {
@@ -313,5 +369,58 @@ mod tests {
             ..manifest()
         };
         assert!(zero.check().is_err());
+    }
+    #[test]
+    fn an_api_mod_names_its_crate_and_has_no_injection() {
+        let api = Manifest {
+            api: Some(Api {
+                krate: "engine".into(),
+                entry: "create".into(),
+            }),
+            ..manifest()
+        };
+        assert!(api.check().is_ok());
+        let text = serde_json::to_string(&api).unwrap();
+        assert!(
+            text.contains(r#""api":{"crate":"engine","entry":"create"}"#),
+            "{text}"
+        );
+        assert!(!serde_json::to_string(&manifest()).unwrap().contains("api"));
+        for entry in ["", "1create", "a::", "cr-eate"] {
+            let mut bad = api.clone();
+            bad.api.as_mut().unwrap().entry = entry.into();
+            assert!(bad.check().is_err(), "{entry}");
+        }
+        let crate_toml = |extra: &str| -> toml::Value {
+            toml::from_str(&format!(
+                "{}[[crate]]
+id = \"engine\"
+path = \"engine\"
+{extra}",
+                mixin()
+            ))
+            .unwrap()
+        };
+        let engine = api.api.as_ref().unwrap();
+        assert_eq!(
+            api_crate("veinminer", engine, &crate_toml("")).unwrap(),
+            "engine"
+        );
+        let injected = crate_toml(
+            "[[injection]]
+id = \"frame\"
+hook = \"frame\"
+",
+        );
+        assert!(
+            api_crate("veinminer", engine, &injected)
+                .unwrap_err()
+                .contains("no [[injection]]")
+        );
+        let other = Api {
+            krate: "other".into(),
+            entry: "create".into(),
+        };
+        assert!(api_crate("veinminer", &other, &crate_toml("")).is_err());
     }
 }

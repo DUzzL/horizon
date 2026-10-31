@@ -10,6 +10,9 @@ use std::process::Command;
 
 /// Where horizon-mixins stages the mods' crates, in the workspace it writes.
 pub(super) const DIR: &str = "native-crates";
+/// The crate API mods build against: Horizon's own, staged as a path (`api.rs`), so not in the
+/// allow list of downloaded crates.
+pub(super) const API_CRATE: &str = "horizon-mod-api";
 /// The post-build steps it found, in mod order.
 const POST_BUILD: &str = "native-post-build.json";
 
@@ -74,6 +77,9 @@ pub(super) fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
         }
         for (key, dep) in tables.iter().filter_map(|t| t.as_table()).flatten() {
             let get = |name: &str| dep.get(name).and_then(|v| v.as_str());
+            if get("package").unwrap_or(key) == API_CRATE {
+                continue;
+            }
             out.push(Wanted {
                 mod_id: mod_id.clone(),
                 name: get("package").unwrap_or(key).to_owned(),

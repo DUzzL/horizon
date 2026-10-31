@@ -296,6 +296,23 @@ impl Game<'_> {
         });
         self.native_send(uuid, packet)
     }
+    /// A system line in the chat of the player whose action a hook hears (a click is theirs,
+    /// swapped in, so `native_feedback` would reach the server's own chat), else
+    /// `native_feedback`'s.
+    pub(super) fn acting_chat(&mut self, line: Text) {
+        if self.chat_capture.is_none()
+            && let Some(player) = self.native_acting_player()
+        {
+            let packet = C::SystemChat(play::SystemChat {
+                content: component_nbt(&line.component()),
+                overlay: false,
+            });
+            if self.native_send(player.uuid, packet) {
+                return;
+            }
+        }
+        self.native_feedback(line);
+    }
     /// Sends `packet` to that player, also when they are the acting player
     /// (their packets then go after the hook); false when they aren't on.
     fn native_send(&mut self, uuid: u128, packet: C) -> bool {

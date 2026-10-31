@@ -1124,6 +1124,7 @@ dependencies = [
  "horizon-friends",
  "horizon-hdr",
  "horizon-items",
+ "horizon-mod-api",
  "horizon-mods",
  "horizon-protocol",
  "horizon-server-files",
@@ -1276,6 +1277,13 @@ dependencies = [
  "horizon-world",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "horizon-mod-api"
+version = "0.1.0"
+dependencies = [
+ "horizon-items",
 ]
 
 [[package]]

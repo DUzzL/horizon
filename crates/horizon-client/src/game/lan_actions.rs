@@ -1457,6 +1457,7 @@ impl Game<'_> {
                         let state = g.world.block(a.pos[0], a.pos[1], a.pos[2]);
                         let mut canceled = false;
                         g.native_left_click_block(a.pos, face, state, &mut canceled);
+                        g.api_left_click_block(a.pos, face, state, &mut canceled);
                         canceled
                     });
                     if canceled == Some(true) {

@@ -1,10 +1,14 @@
 //! Horizon native client: resources, world streaming, rendering and the
 //! bindings between the validated simulation pieces and the game loop.
 #![forbid(unsafe_code)]
+// The game names this crate by its package name, as it did from the executable.
+extern crate self as horizon_client;
 pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
 pub mod arrows;
+pub mod entry;
+pub mod game;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_entities, block_entity_anim,
     block_entity_render, border_render, breaking, brewing, camera, chat, chunk, chunk_map, clouds,

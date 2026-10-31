@@ -14,6 +14,7 @@ horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
+horizon-mod-api = { path = "../horizon-mod-api" }
 horizon-core = { path = "../horizon-core" }
 # The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
 horizon-threads = { path = "../horizon-threads" }
