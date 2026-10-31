@@ -578,6 +578,46 @@ impl Game<'_> {
         ))
     }
 
+    fn remote_player_id(&self) -> Option<u32> {
+        self.remote
+            .as_ref()
+            .and_then(|r| u32::try_from(r.entity_id).ok())
+    }
+
+    /// `FireworkRocketEntity.tick` for the rockets attached to this client's
+    /// own player, once the player has moved (it ticks before them in
+    /// `ClientLevel.tickEntities`): the glide is boosted, the rocket sits at
+    /// the rocket hand (`getHandHoldingItemAngle`) and its spark goes there.
+    /// Placed before the move, the spark was left where the camera had been.
+    pub(super) fn tick_own_rockets(&mut self) {
+        let Some(me) = self.remote_player_id() else {
+            return;
+        };
+        if !self.clock.world_runs() || !self.rockets.iter().any(|r| r.attached_to == Some(me)) {
+            return;
+        }
+        let hand = self.rocket_hand_angle();
+        let look = view_vector(self.yaw, self.pitch);
+        let mut rockets = std::mem::take(&mut self.rockets);
+        for r in rockets.iter_mut().filter(|r| r.attached_to == Some(me)) {
+            let Some(p) = self.player.as_mut() else {
+                break;
+            };
+            if p.fall_flying {
+                let m = p.velocity;
+                p.velocity = Vec3::new(
+                    m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
+                    m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
+                    m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
+                );
+            }
+            r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
+            r.velocity = p.velocity;
+            self.rocket_spark(r);
+        }
+        self.rockets = rockets;
+    }
+
     /// One tick of interpolation, as `tick_remote_objects`.
     pub(super) fn tick_remote_projectiles(&mut self, mut step: impl FnMut(u32, Vec3) -> Vec3) {
         self.tick_remote_fangs();
@@ -646,13 +686,10 @@ impl Game<'_> {
             .collect();
         self.smoke_trails(trails);
         self.shulker_bullet_trails();
-        // FireworkRocketEntity.tick: a rocket attached to an entity follows it
-        // and boosts it client-side too (attachedToEntity.isFallFlying), and
-        // every rocket leaves its spark trail on a client.
-        let me = self
-            .remote
-            .as_ref()
-            .and_then(|r| u32::try_from(r.entity_id).ok());
+        // FireworkRocketEntity.tick: a rocket attached to another entity
+        // follows it, and every rocket leaves its spark trail on a client. One
+        // boosting this client's own player ticks after it (`tick_own_rockets`).
+        let me = self.remote_player_id();
         let mut rockets = std::mem::take(&mut self.rockets);
         for r in &mut rockets {
             r.remote_step(&mut SceneCollisions {
@@ -662,20 +699,9 @@ impl Game<'_> {
             });
             if let Some(target) = r.attached_to {
                 if me == Some(target) {
-                    if let Some(p) = self.player.as_mut() {
-                        if p.fall_flying {
-                            let look = view_vector(self.yaw, self.pitch);
-                            let m = p.velocity;
-                            p.velocity = Vec3::new(
-                                m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
-                                m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
-                                m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
-                            );
-                        }
-                        r.position = p.position;
-                        r.velocity = p.velocity;
-                    }
-                } else if let Some(m) = self.mobs.iter().find(|m| m.id == target) {
+                    continue;
+                }
+                if let Some(m) = self.mobs.iter().find(|m| m.id == target) {
                     // Another player's motion is not known here: its step.
                     r.velocity = Vec3::new(
                         m.position.x - r.previous.x,
@@ -685,17 +711,7 @@ impl Game<'_> {
                     r.position = m.position;
                 }
             }
-            let g = |g: &mut horizon_core::random::LegacyRandom| g.next_gaussian() * 0.05;
-            let v = [
-                g(&mut self.world.random),
-                -r.velocity.y * 0.5,
-                g(&mut self.world.random),
-            ];
-            self.particles.add(
-                &ParticleOptions::simple(ParticleType::Firework),
-                [r.position.x, r.position.y, r.position.z],
-                v,
-            );
+            self.rocket_spark(r);
         }
         self.rockets = rockets;
         for c in &mut self.crystals {

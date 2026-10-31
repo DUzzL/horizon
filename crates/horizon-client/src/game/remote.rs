@@ -5804,6 +5804,8 @@ impl Game<'_> {
         // was the client's alone, and the server saw a jump its keys didn't allow.
         let auto_jumped = self.player.as_ref().is_some_and(|p| p.was_auto_jump);
         self.remote_send_state(input | u8::from(auto_jumped) << 4);
+        // The rockets boosting this player tick after it.
+        self.tick_own_rockets();
         Ok(())
     }
 

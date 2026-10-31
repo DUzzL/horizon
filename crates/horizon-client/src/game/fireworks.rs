@@ -254,7 +254,7 @@ impl Game<'_> {
     /// player: half a block out towards the hand holding the rocket while
     /// gliding, zero otherwise. The main arm is the right one (the only arm
     /// this client has), so a rocket only in the offhand is in the left hand.
-    fn rocket_hand_angle(&self) -> [f64; 3] {
+    pub(super) fn rocket_hand_angle(&self) -> [f64; 3] {
         if !self.player.as_ref().is_some_and(|p| p.fall_flying) {
             return [0.0; 3];
         }
@@ -265,6 +265,19 @@ impl Game<'_> {
         let arm = if offhand_only { -80 } else { 80 };
         let v = view_vector(self.yaw + arm as f32, 0.0);
         [v[0] * 0.5, v[1] * 0.5, v[2] * 0.5]
+    }
+    /// The trail (`FireworkRocketEntity.tick` on a client): a spark each tick
+    /// at the rocket, drifting against its motion.
+    pub(super) fn rocket_spark(&mut self, r: &Rocket) {
+        let g = |g: &mut horizon_core::random::LegacyRandom| g.next_gaussian() * 0.05;
+        let v = [
+            g(&mut self.world.random),
+            -r.velocity.y * 0.5,
+            g(&mut self.world.random),
+        ];
+        let at = [r.position.x, r.position.y, r.position.z];
+        self.particles
+            .add(&ParticleOptions::simple(ParticleType::Firework), at, v);
     }
     /// `FireworkRocketItem.use` while gliding: a rocket attached to the player.
     pub(super) fn boost_firework(&mut self, stack: &ItemStack) -> bool {
@@ -376,15 +389,7 @@ impl Game<'_> {
                 );
             }
             r.life += 1;
-            // The trail: a spark each tick drifting against the rocket's motion.
-            let g = |g: &mut horizon_core::random::LegacyRandom| g.next_gaussian() * 0.05;
-            let v = [
-                g(&mut self.world.random),
-                -r.velocity.y * 0.5,
-                g(&mut self.world.random),
-            ];
-            self.particles
-                .add(&ParticleOptions::simple(ParticleType::Firework), at, v);
+            self.rocket_spark(&r);
             if r.life > r.lifetime {
                 self.explode_rocket(&r);
                 continue;
