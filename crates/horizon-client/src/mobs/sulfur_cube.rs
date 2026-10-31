@@ -704,7 +704,7 @@ fn deal_default_knockback(m: &mut Mob, source: &Damage, damage: f32) {
     if source.attacker.is_some() {
         knockback(m, (xd, zd), source.from, damage);
     } else {
-        m.knockback(f64::from(0.4_f32), xd, zd);
+        m.knockback(f64::from(0.4_f32), xd, zd, source);
     }
 }
 /// `SulfurCube.knockback` with a block and a causing entity: the archetype's powers, turned by
