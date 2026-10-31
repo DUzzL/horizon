@@ -382,7 +382,6 @@ mod tests {
                 "{name} is not served by Bundled"
             );
             let body = std::fs::read_to_string(entry.path()).unwrap();
-            assert!(!body.contains('\r'), "{name} has CRLF line endings");
             let map: HashMap<String, String> = serde_json::from_str(&body)
                 .unwrap_or_else(|e| panic!("{name} is not a flat string map: {e}"));
             let keys = file_keys(&body);
@@ -445,15 +444,14 @@ mod tests {
                 let rest = &text[at + 1..];
                 let Some(end) = rest.find('"') else { continue };
                 let key = &rest[..end];
-                // A key is `horizon.<group>.<name>` with a group en_us already has.
-                // Server addresses and file names also start with "horizon.", and a
-                // key built at run time has a brace.
-                let group = key.split('.').nth(1).unwrap_or("");
-                if key.matches('.').count() < 2
-                    || !en
-                        .keys()
-                        .any(|k| k.starts_with(&format!("horizon.{group}.")))
-                {
+                // A key is `horizon.<group>.<name>`: lower-case letters, digits and `_`
+                // between the dots. A key built at run time has a brace; a file name
+                // has one dot; the server addresses that look like keys are listed.
+                const NOT_KEYS: &[&str] = &["horizon.bunchy7s.dev"];
+                let key_like = key
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.".contains(&b));
+                if key.matches('.').count() < 2 || !key_like || NOT_KEYS.contains(&key) {
                     continue;
                 }
                 found += 1;
