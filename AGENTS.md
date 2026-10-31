@@ -39,7 +39,7 @@ Game workspace (root `Cargo.toml`); `launcher/` and `crates/horizon-telemetry-se
 
 | Crate | Owns |
 |---|---|
-| `horizon-client` | The game: a lib (`src/lib.rs`, ~100 flat modules: gameplay, networking, title screens) and the bin (`src/main.rs` → `game.rs` + `game/`), plus `horizon-ctl` (`src/bin/horizon-ctl/`). Also the dedicated server (`--dedicated`) |
+| `horizon-client` | The game: a lib (`src/lib.rs`, ~100 flat modules: gameplay, networking, title screens) including `game.rs` + `game/` and `entry.rs`, and a thin bin (`src/main.rs` calls `entry::main`), plus `horizon-ctl` (`src/bin/horizon-ctl/`). Also the dedicated server (`--dedicated`) |
 | `horizon-items` | Blocks and items below gameplay: `blocks.rs` (block facts), `items.rs`, `item_data.rs` (components), `enchant.rs`, `cooldowns.rs`, `bundle.rs`, `item_nbt.rs`. Re-exported as `horizon_client::items`... |
 | `horizon-command` | Command parsing (Brigadier): the vanilla tree, argument types, selectors, suggestions, the tree's network form. Re-exported as `horizon_client::command` |
 | `horizon-client-core` | The client lib's bottom layer: `text.rs`, `lang.rs`, `snbt.rs`, `nbt_path.rs`, `component.rs`, `scoreboard.rs`, `bossbar.rs`, `gamerules.rs`, `block_entity_nbt.rs`, registry/particle/sound tables. Re-exported under the old paths (`horizon_client::text`...) |
@@ -101,8 +101,9 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
   or the game binary with a fixture env var (`game/dispense_fixture.rs`, `game/sculk_fixture.rs`,
   `game/command_harness.rs`, `game/net_harness.rs`). Copy a nearby harness for a new one.
 - Probes build into `.local/parity-target/`; harnesses find binaries via `lab.cargo_target()`, never `target/`.
-- What a change reruns (of 329 harnesses, measured 2026-10-23): a file of the game binary (`game.rs`, `game/`)
-  ~25, a file of the client lib ~103, of `horizon-world` ~103–109, of `horizon-core` ~119. Plan for it.
+- What a change reruns (of 329 harnesses, measured 2026-10-23): a gameplay file (`game.rs`, `game/`)
+  ~25 by harness selection, a file of the client lib ~103, of `horizon-world` ~103–109, of `horizon-core` ~119. Gameplay is now in the library, so a gameplay edit also recompiles library users
+  (`horizon-ctl` and client probes), even when their harnesses are not selected. Plan for it.
 - Rust integration tests: `crates/horizon-client/tests/` (`lan_bot.rs`, `generation_saves.rs`, `streaming_meshes.rs`).
 - Linux needs `libasound2-dev libudev-dev`; `--no-default-features` drops audio and controllers (the server build).
 - Run and drive the game (starts the `horizon-client` beside `horizon-ctl`; other arguments go to the game):
@@ -127,8 +128,11 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
 ## horizon-client: where things live
 
 `L:` = lib (`crates/horizon-client/src/`, or `crates/horizon-client-render/src/` for the modules that crate holds, under
-the same `horizon_client::<module>` paths), `G:` = bin (`crates/horizon-client/src/game/`). The lib can't see
-`Game`; bin code reaches the lib as `horizon_client::<module>`.
+the same `horizon_client::<module>` paths), `G:` = gameplay (`crates/horizon-client/src/game/`), also in the lib in normal builds.
+Gameplay keeps its `horizon_client::<module>` imports through a self-crate alias. The executable
+contains only the allocator, mod API marker and a call to `entry::main`. For unit tests, the lib
+excludes `entry` and `game`, and the executable test target owns `game` so its process-wide test
+state stays separate from the library tests. This compiles gameplay twice for executable tests.
 
 | Subsystem | Files |
 |---|---|
@@ -159,7 +163,7 @@ the same `horizon_client::<module>` paths), `G:` = bin (`crates/horizon-client/s
 
 - `struct Game` (game.rs, ~290 fields) holds everything. Its methods are spread over ~180 files: game.rs keeps
   the core (tick, render, input, inventory, world open/close) and each `game/<feature>.rs` adds an
-  `impl Game<'_>` block for one feature, with its own state types. Fields are private to the bin.
+  `impl Game<'_>` block for one feature, with its own state types. Fields stay private to the gameplay module and its descendants.
 - Find a feature's code: `grep -rn "fn tick_<thing>\|fn <verb>_<thing>" crates/horizon-client/src/game*`;
   the file is usually `game/<thing>s.rs`. Who calls it: grep the name in game.rs's `fn tick` / `fn tick_world`.
 - Fields that say which mode runs: `remote` (this window is a client of a server: multiplayer, LAN guest, or

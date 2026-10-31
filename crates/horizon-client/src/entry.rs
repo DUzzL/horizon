@@ -1,9 +1,7 @@
-//! The game's entry point, in the library so a build with API mods can link it from an
-//! executable of its own: the mods are then that executable's dependencies, not this crate's.
+//! The game's entry point, shared by the thin executable and future native-mod link modes.
 use crate::{crash, game, logging};
 
-/// The program's `main`: the plain game's and that of a build with API mods
-/// (docs/native-mods.md, "API mods"), whose executables only add their allocator and mods.
+/// Start the game. The executable supplies the allocator and retains the mod API marker.
 pub fn main() {
     horizon_threads::configure_allocator();
     horizon_client::telemetry::mark_start();

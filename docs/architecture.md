@@ -4,6 +4,12 @@ The 40 areas changed most often in the 30 days to 2026-10-23 (commits on main to
 counted only for the game loop because nearly every gameplay change touches it). The crate map, how `Game` is
 organised and how to build and test are in [AGENTS.md](../AGENTS.md).
 
+The game lives in the client library in normal builds; `main.rs` is a thin executable calling
+`entry::main`. Gameplay fields remain private to the game module. Unit tests compile gameplay
+in the executable test target, separately from the library tests, to isolate process-wide state.
+Executable test builds therefore compile gameplay twice. Gameplay changes also invalidate library
+users, including `horizon-ctl` and client probes, beyond the harness selection below.
+
 Paths: `L/` = `crates/horizon-client/src/`, `G/` = `crates/horizon-client/src/game/`, `W/` =
 `crates/horizon-world/src/`, `K/` = `crates/horizon-client-core/src/`, `C/` = `crates/horizon-command/src/`,
 `I/` = `crates/horizon-items/src/`, `R/` = `crates/horizon-client-render/src/`, `N/` = `crates/horizon-client-input/src/`.
@@ -12,7 +18,7 @@ Checks: a bare name is a harness (`python3 tools/parity.py <name>`, script `tool
 
 For the full set of harnesses a file can affect, ask the runner:
 `printf '%s\n' <paths> > /tmp/p.txt && python3 tools/parity.py --changed-files /tmp/p.txt --list`.
-Any file of the game binary (`game.rs`, `game/`) selects the ~25 harnesses that run the binary; a client lib
+Any gameplay file (`game.rs`, `game/`) selects the ~25 harnesses that run the binary; a client lib
 file selects ~103.
 
 | # | Area (commits) | Files | Checks |

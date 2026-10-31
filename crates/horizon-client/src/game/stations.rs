@@ -2494,7 +2494,6 @@ impl Game<'_> {
         // tooltip the stack hides stays hidden.
         if !nested && !lines.is_empty() {
             self.native_tooltip(stack, &mut lines);
-            self.api_tooltip(stack, &mut lines);
         }
         lines
     }

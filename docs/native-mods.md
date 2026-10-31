@@ -524,37 +524,6 @@ and its `.ogg` files). `minecraft:` events must still be registered. Bundles tha
 
 API 62 adds nicknames for server mods: `native_set_nickname(uuid, Option<&str>)` shows a name in place of a player's in chat (their messages, `/me`, `/msg`) and the Tab list, the real name on hover and everywhere else; `native_text_allowed(text)` asks the server's chat filter. Both outside a player's hook. Bundles need "hooks": 62.
 
-### API mods (no mixins)
-
-A mod that only reacts to the game's events needs no mixin. It names its crate and the crate's entry function,
-`[api]` in `horizon-mixin.toml` (`"api"` in the `.hnmod`'s `horizon-native.json`), and has no `[[injection]]`:
-
-```toml
-[mod]
-id = "wand"
-version = "0.1.0"
-
-[api]
-crate = "engine"   # the [[crate]] below
-entry = "create"   # pub fn create() -> Box<dyn horizon_mod_api::Mod>
-
-[[crate]]
-id = "engine"
-path = "engine"
-```
-
-The crate depends on `horizon-mod-api` (any version or path: the build points it at Horizon's own) and implements
-`horizon_mod_api::Mod`. Each of its events is named after the hook point it follows (`use_item`, `use_item_on`,
-`right_click_block`, `left_click_block`, `destroy_block`, `place_block`, `tooltip`): the game asks the API mods
-right after that hook point, once its mixin mods are done, and only when none of them claimed or canceled it.
-`Action::Handled` sets the hook's `claimed` or `canceled`. A `Host` reads and sets blocks, gives items and answers
-the acting player. A mod turned off in Options > Mods is skipped at once, with no build.
-
-horizon-mixins never sees an API mod. Its crate is staged as `native-crates/<mod>/<crate>/`, and the game's
-executable becomes a generated package, `native-game/`, which links the horizon-client library and the API mods,
-so horizon-client never depends on them: changing an API mod recompiles that mod and the small package and links
-the game, while horizon-client stays compiled. A build with only API mods doesn't install horizon-mixins.
-
 ## What the launcher does
 
 In the window: install a native mod from the Mods page, into the instance picked on the left ("Installs into

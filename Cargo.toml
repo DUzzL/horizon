@@ -27,7 +27,6 @@ members = [
     "crates/horizon-friends",
     "crates/horizon-relay",
     "crates/horizon-mods",
-    "crates/horizon-mod-api",
     "crates/cargo-horizon-mod",
     "crates/horizon-port-pack",
     "crates/horizon-shaders",
