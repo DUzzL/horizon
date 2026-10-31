@@ -72,6 +72,16 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/tr_tr.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/tr_tr.json")
             }
+            "assets/horizon/lang/de_de.json"
+            | "assets/horizon/lang/de_at.json"
+            | "assets/horizon/lang/de_ch.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/de_de.json")
+            }
+            "assets/horizon/lang/fr_fr.json"
+            | "assets/horizon/lang/fr_ca.json"
+            | "assets/horizon/lang/fr_ch.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fr_fr.json")
+            }
             "assets/horizon/lang/es_es.json"
             | "assets/horizon/lang/es_ar.json"
             | "assets/horizon/lang/es_cl.json"
@@ -316,6 +326,57 @@ mod tests {
         assert_eq!(tr.get("horizon.options.controller"), Some("Kontrolcü"));
         let es = Language::load(&[&empty], "es_es");
         assert_eq!(es.get("horizon.options.controller"), Some("Mando"));
+        // Horizon's captions in the languages that have the whole file: the
+        // title footer, the Extras page and the Options page's buttons.
+        for (code, footer, graphics) in [
+            (
+                "de_de",
+                "Nicht mit Mojang oder Microsoft verbunden",
+                "Horizon-Grafik …",
+            ),
+            (
+                "de_at",
+                "Nicht mit Mojang oder Microsoft verbunden",
+                "Horizon-Grafik …",
+            ),
+            (
+                "fr_fr",
+                "Non affilié à Mojang ou à Microsoft",
+                "Graphismes Horizon...",
+            ),
+            (
+                "fr_ca",
+                "Non affilié à Mojang ou à Microsoft",
+                "Graphismes Horizon...",
+            ),
+            (
+                "pl_pl",
+                "Niepowiązane z Mojang ani Microsoft",
+                "Grafika Horizon…",
+            ),
+            (
+                "uk_ua",
+                "Не пов’язано з Mojang чи Microsoft",
+                "Графіка Horizon…",
+            ),
+        ] {
+            let lang = Language::load(&[&empty], code);
+            assert_eq!(
+                lang.get("horizon.title.not_affiliated"),
+                Some(footer),
+                "{code}"
+            );
+            assert_eq!(
+                lang.get("horizon.pages.open.horizon_graphics"),
+                Some(graphics),
+                "{code}"
+            );
+            assert_ne!(
+                lang.get("horizon.extras.fullbright"),
+                en.get("horizon.extras.fullbright"),
+                "{code}"
+            );
+        }
         let es_ve = Language::load(&[&empty], "es_ve");
         assert_eq!(
             es_ve.get("horizon.options.on_screen_keyboard"),
