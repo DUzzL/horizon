@@ -722,7 +722,6 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     if y + h + 3.0 > batch.height {
         y = batch.height - h - 3.0;
     }
-    y = y.max(4.0);
     nine_slice(
         batch,
         atlas,

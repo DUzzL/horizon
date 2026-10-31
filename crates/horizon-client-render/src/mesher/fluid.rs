@@ -240,7 +240,7 @@ pub(super) fn tesselate(
     let emission = if water {
         0
     } else {
-        crate::mesher::INCANDESCENT
+        crate::mesher::hdr_tier("lava", 15)
     };
     let color = |by: f32| {
         let rgb = [16, 8, 0].map(|shift| lighting::scale((tint >> shift & 255) as i32, by) as u32);

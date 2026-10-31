@@ -143,10 +143,9 @@ fn forward(shared: &Shared, settings: &Settings) {
     }
 }
 
-/// One line of chat: coloured runs, and who said it.
+/// One line of chat: coloured runs.
 #[derive(Debug, PartialEq)]
 struct Line {
-    player: Option<(String, String)>,
     runs: Vec<Run>,
 }
 
@@ -185,15 +184,11 @@ impl Line {
             "death" => legacy(text("message"), WHITE),
             _ => return None,
         };
-        Some(Self {
-            player: Some((name, text("uuid").to_owned())),
-            runs,
-        })
+        Some(Self { runs })
     }
 
     fn note(text: &str) -> Self {
         Self {
-            player: None,
             runs: vec![Run::plain(text, GRAY)],
         }
     }
@@ -284,24 +279,7 @@ enum Failure {
 fn payload(lines: &[Line], picture: bool) -> Value {
     let alt: String = lines.iter().map(Line::plain).collect::<Vec<_>>().join("\n");
     let mut payload = json!({ "allowed_mentions": { "parse": [] } });
-    // One player's lines carry their name and head (a public skin service, by UUID).
-    if let Some((name, uuid)) = lines[0].player.as_ref()
-        && lines
-            .iter()
-            .all(|l| l.player.as_ref().is_some_and(|p| p.0 == *name))
-    {
-        // Discord refuses webhook names containing these words.
-        let lower = name.to_ascii_lowercase();
-        if !lower.contains("discord")
-            && !lower.contains("clyde")
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
-            payload["username"] = name.as_str().into();
-        }
-        if !uuid.is_empty() && uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-            payload["avatar_url"] = format!("https://mc-heads.net/avatar/{uuid}/64").into();
-        }
-    }
+    // Every post comes from the webhook's own name and avatar (one identity for the server), never a player's.
     // Discord's limits: 1024 characters of alt text, 2000 of message.
     if picture {
         let alt = truncate(&defuse(&alt, false), 1000);

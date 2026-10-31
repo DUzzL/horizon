@@ -121,9 +121,9 @@ The narration is built from what the screens draw, which comes close to
 vanilla's widget trees but not always all the way:
 
 - Focus comes from a click (as `mouseClicked` focuses), a text field's caret,
+  keyboard navigation (Tab, the arrows and Enter, [controllers.md](controllers.md)),
   the controller's focus ring and the screens that track focus (lists, tabs).
-  Keyboard Tab and arrow navigation narrates through the same focus where
-  the menus support it.
+  Tab follows reading order rather than vanilla's add order.
 - "Screen element i out of n" counts widgets in the order screens record
   them; most follow vanilla's add order, a few approximate it.
 - Some screens narrate less than vanilla's: a dialog's body text, the

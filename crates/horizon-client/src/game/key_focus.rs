@@ -234,6 +234,16 @@ pub(super) fn keyboard_targets(targets: Vec<Target>, inventory: bool) -> Vec<Tar
         .collect()
 }
 
+/// The focus in a newly drawn frame: the same widget, or one the screen
+/// moved a little (a list scrolled); else the screen changed and the focus
+/// starts again on the first widget (`Screen.setInitialFocus` after a key).
+pub(super) fn follow(focus: Target, targets: &[Target]) -> Option<Target> {
+    let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
+    gamepad::refind(focus.rect, &rects, 12.0)
+        .or_else(|| tab_step(targets, None, true))
+        .map(|i| targets[i])
+}
+
 /// Where a click focuses a text field with its caret at the end of the
 /// text, as Tab leaves it (`EditBox.setFocused` keeps the cursor, which
 /// `setValue` put at the end): the box's right end.
@@ -464,6 +474,18 @@ mod tests {
         let b = button(0.0, 0.0);
         assert_eq!(keyboard_targets(vec![slot, tab, b], true), vec![b]);
         assert_eq!(keyboard_targets(vec![slot, tab, b], false), vec![tab, b]);
+    }
+
+    #[test]
+    fn focus_follows_its_widget_or_starts_again() {
+        let a = button(0.0, 0.0);
+        let moved = button(0.0, 4.0);
+        let far = button(200.0, 100.0);
+        assert_eq!(follow(a, &[far, moved]), Some(moved));
+        // Gone (another screen): the first in tab order.
+        let first = button(0.0, 50.0);
+        assert_eq!(follow(a, &[far, first]), Some(first));
+        assert_eq!(follow(a, &[]), None);
     }
 
     #[test]

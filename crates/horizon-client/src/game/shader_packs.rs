@@ -361,18 +361,29 @@ impl Game<'_> {
     }
 
     fn mark_entity_part(&self, start: usize, name: &str, translucent: bool) {
-        if let Some(ids) = &self.pack_ids {
-            let id = ids.entities.get(name).copied();
-            self.push_span(start, "ENTITIES", id.unwrap_or(ids.missing_entity));
-            if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
-                last.translucent = translucent;
-            }
+        let id = match &self.pack_ids {
+            Some(ids) => ids
+                .entities
+                .get(name)
+                .copied()
+                .unwrap_or(ids.missing_entity),
+            None if native_spans() => name_id(name),
+            None => return,
+        };
+        self.push_span(start, "ENTITIES", id);
+        if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
+            last.translucent = translucent;
         }
     }
 
     /// Starts a span for the block entity of block state `state`.
     pub(super) fn mark_block_entity(&self, start: usize, state: u32) {
-        let Some(ids) = &self.pack_ids else { return };
+        let Some(ids) = &self.pack_ids else {
+            if native_spans() {
+                self.push_span(start, "BLOCK_ENTITIES", state as i32);
+            }
+            return;
+        };
         let id = *ids
             .block_states
             .borrow_mut()
@@ -402,7 +413,7 @@ impl Game<'_> {
     /// pack's shadow pass draws it.
     pub(super) fn mark_player(&self, start: usize, hidden: bool) {
         self.mark_entity(start, "minecraft:player");
-        if self.pack_ids.is_some()
+        if (self.pack_ids.is_some() || native_spans())
             && let Some(last) = self.entity_spans.borrow_mut().last_mut()
         {
             last.player = true;
@@ -418,7 +429,7 @@ impl Game<'_> {
 
     /// Starts a span of geometry that is not an entity (`PARTICLES`, `DESTROY`...).
     pub(super) fn mark_stage(&self, start: usize, stage: &str) {
-        if self.pack_ids.is_some() {
+        if self.pack_ids.is_some() || native_spans() {
             self.push_span(start, stage, 0);
         }
     }
@@ -437,6 +448,22 @@ impl Game<'_> {
             _ => spans.push(span),
         }
     }
+}
+
+/// Spans for a native mod (`native_render::RenderNeeds::entity_spans`), without a pack.
+fn native_spans() -> bool {
+    horizon_client::gfx::native_render::render_needs().entity_spans
+}
+
+/// A span's id for entity type `name` without a pack: stable, so a mod can match runs from one
+/// frame to the next.
+fn name_id(name: &str) -> i32 {
+    // FNV-1a.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in name.bytes() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash as i32
 }
 
 /// `mc_Entity` (x, y) of each block sprite layer, as (id, fluid) pairs: terrain vertices carry

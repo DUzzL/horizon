@@ -163,6 +163,8 @@ fn serve(
     Ok(())
 }
 
+static CONNECTIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn connection(shared: &Arc<Shared>, settings: &Settings, stream: &TcpStream) {
     let link = match &settings.tls {
         Some(tls) => Link::tls(stream, tls.config.clone()),
@@ -188,8 +190,10 @@ fn connection(shared: &Arc<Shared>, settings: &Settings, stream: &TcpStream) {
     let Ok(socket) = Socket::new(link) else {
         return;
     };
+    // `Connection`'s `ClientInfo`: the connections are numbered from 1, as the log lines show them.
+    let client = CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     while let Ok(Some(text)) = socket.read_text() {
-        match receive(shared, &text) {
+        match receive(shared, client, &text) {
             Some(Ok(reply)) => {
                 if socket.send_text(&reply.to_string()).is_err() {
                     return;
@@ -288,20 +292,20 @@ fn error(id: Value, code: i32, data: Option<&str>) -> Value {
 
 /// `Connection.channelRead0`: the reply to one message, if any. `Err` closes the connection, as vanilla's
 /// does when a batch holds something other than an object.
-pub fn receive(shared: &Shared, text: &str) -> Option<Result<Value, ()>> {
+pub fn receive(shared: &Shared, client: u32, text: &str) -> Option<Result<Value, ()>> {
     let message: Value = match serde_json::from_str(text) {
         Ok(message) => message,
         Err(e) => return Some(Ok(error(Value::Null, PARSE_ERROR, Some(&e.to_string())))),
     };
     Some(Ok(match message {
-        Value::Object(object) => return handle(shared, &object).map(Ok),
+        Value::Object(object) => return handle(shared, client, &object).map(Ok),
         Value::Array(batch) => {
             let mut replies = Vec::new();
             for request in batch {
                 let Value::Object(object) = request else {
                     return Some(Err(()));
                 };
-                replies.extend(handle(shared, &object));
+                replies.extend(handle(shared, client, &object));
             }
             Value::Array(replies)
         }
@@ -312,7 +316,7 @@ pub fn receive(shared: &Shared, text: &str) -> Option<Result<Value, ()>> {
 type Object = serde_json::Map<String, Value>;
 
 /// `Connection.handleJsonObject`.
-fn handle(shared: &Shared, object: &Object) -> Option<Value> {
+fn handle(shared: &Shared, client: u32, object: &Object) -> Option<Value> {
     let id = object.get("id");
     let method = match object.get("method") {
         None | Some(Value::Null) => None,
@@ -331,7 +335,7 @@ fn handle(shared: &Shared, object: &Object) -> Option<Value> {
                 let data = "Invalid request id - only String, Number and NULL supported";
                 return Some(error(Value::Null, INVALID_REQUEST, Some(data)));
             }
-            let reply = dispatch(shared, &method, object.get("params"));
+            let reply = dispatch(shared, client, &method, object.get("params"));
             let id = id?.clone();
             Some(match reply {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -367,7 +371,12 @@ fn identifier(name: &str) -> Option<String> {
 }
 
 /// `Connection.dispatchIncomingRequest` and `IncomingRpcMethod.apply`.
-fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Value, Failure> {
+fn dispatch(
+    shared: &Shared,
+    client: u32,
+    method: &str,
+    params: Option<&Value>,
+) -> Result<Value, Failure> {
     let Some(name) = identifier(method) else {
         return Err((
             INVALID_REQUEST,
@@ -423,7 +432,7 @@ fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Val
     if short == "rpc.discover" {
         return Ok(schema::discover());
     }
-    crate::management_methods::call(shared, short, &argument)
+    crate::management_methods::call(shared, client, short, &argument)
 }
 
 #[cfg(test)]
@@ -524,7 +533,7 @@ mod tests {
     #[test]
     fn requests_fail_as_vanillas_connection_says() {
         let shared = shared();
-        let reply = |text: &str| receive(&shared, text);
+        let reply = |text: &str| receive(&shared, 1, text);
         let error = |text: &str| reply(text).unwrap().unwrap()["error"].clone();
         assert_eq!(error("{nope")["code"], PARSE_ERROR);
         assert_eq!(

@@ -125,6 +125,8 @@ mod vertex_tests {
         assert_eq!(super::emitting(rgb, 0), rgb);
         assert_eq!(super::emitting(rgb, super::INCANDESCENT), 0xFD56_3412);
         assert_eq!(super::emitting(rgb, super::VERY_BRIGHT), 0xFB56_3412);
+        assert_eq!(super::emitting(rgb, super::LOW | super::WHOLE), 0xFA56_3412);
+        assert_eq!(super::emitting(rgb, super::WHOLE), rgb);
         assert_eq!(
             super::emitting(rgb, super::VERY_BRIGHT) | super::EMISSION_BITS,
             rgb
@@ -132,14 +134,16 @@ mod vertex_tests {
     }
     #[test]
     fn light_sources_shine_by_kind_not_light_level() {
-        use super::{BRIGHT, INCANDESCENT, LOW, hdr_tier};
+        use super::{BRIGHT, INCANDESCENT, LOW, WHOLE, hdr_tier};
         assert_eq!(hdr_tier("glowstone", 15), BRIGHT);
         // A candle's flame is a particle: the block keeps only its wick.
         assert_eq!(hdr_tier("torch", 14), INCANDESCENT);
         assert_eq!(hdr_tier("red_candle", 3), LOW);
         assert_eq!(hdr_tier("glow_lichen", 7), 0);
         assert_eq!(hdr_tier("stone", 0), 0);
-        assert_eq!(hdr_tier("ochre_froglight", 15), LOW);
+        assert_eq!(hdr_tier("ochre_froglight", 15), LOW | WHOLE);
+        assert_eq!(hdr_tier("lava", 15), INCANDESCENT | WHOLE);
+        assert_eq!(hdr_tier("red_candle_cake", 3), 0);
         assert_eq!(hdr_tier("respawn_anchor", 3), INCANDESCENT);
         assert_eq!(hdr_tier("waxed_copper_bulb", 15), LOW);
         assert_eq!(hdr_tier("sea_pickle", 15), 0);
@@ -862,9 +866,10 @@ mod reuse_tests;
 /// Set on a terrain vertex's sprite layer when its texture alpha must be ignored.
 pub const OPAQUE_LAYER: u16 = 1 << 15;
 /// The bits of `TerrainVertex::color`'s alpha byte that hold how brightly its face shines
-/// in HDR output (`gfx/hdr.rs`): 15 minus the tier, so the usual 0xFF means none. The
-/// byte's high nibble carries the fluid face flags (`fluid_face`); the shaders ignore the
-/// vertex alpha, so both travel to the material stage untouched.
+/// in HDR output (`gfx/hdr.rs`): 15 minus the tier, plus 4 for one that shines all over
+/// (`WHOLE`), so the usual 0xFF means none. The byte's high nibble carries the fluid face
+/// flags (`fluid_face`); the shaders ignore the vertex alpha, so both travel to the
+/// material stage untouched.
 pub const EMISSION_BITS: u32 = 0x0F00_0000;
 /// HDR tiers, by the kind of light rather than its level: a candle's flame is as bright as
 /// a torch's, it only lights less around it. 0 stays as in SDR.
@@ -873,9 +878,18 @@ pub const INCANDESCENT: u8 = 2;
 pub const BRIGHT: u8 = 3;
 /// The sun and lightning.
 pub const VERY_BRIGHT: u8 = 4;
-/// `color` marked as shining at `tier` (0 to `VERY_BRIGHT`).
+/// Added to a tier: the light source shines all over (a froglight), not only where its
+/// sprite is brightest (a torch's flame, not its handle). See `gfx/hdr.rs` `Masks`.
+pub const WHOLE: u8 = 8;
+/// `color` marked as shining at `tier` (0 to `VERY_BRIGHT`, plus `WHOLE`).
 pub fn emitting(color: u32, tier: u8) -> u32 {
-    color & !EMISSION_BITS | u32::from(15 - tier.min(VERY_BRIGHT)) << 24
+    let level = (tier & !WHOLE).min(VERY_BRIGHT);
+    let code = if level > 0 && tier & WHOLE != 0 {
+        level + 4
+    } else {
+        level
+    };
+    color & !EMISSION_BITS | u32::from(15 - code) << 24
 }
 /// The high nibble of `TerrainVertex::color`'s alpha byte: 8 plus the face (`Direction`
 /// as usize) on a fluid quad, 0xF on every other. `terrain.wgsl` reads only the low nibble
@@ -892,26 +906,36 @@ pub fn fluid_face(color: u32, face: usize) -> u32 {
 pub fn hdr_tier(name: &str, level: u8) -> u8 {
     match name {
         _ if level == 0 => 0,
-        "glowstone" | "jack_o_lantern" | "campfire" | "soul_campfire" | "soul_lantern"
-        | "soul_torch" | "soul_wall_torch" | "soul_fire" | "beacon" | "end_rod" | "furnace"
-        | "redstone_lamp" => BRIGHT,
-        "torch" | "wall_torch" | "lantern" | "lava" | "crying_obsidian" | "fire"
-        | "sea_lantern" => INCANDESCENT,
+        "glowstone"
+        | "soul_lantern"
+        | "soul_torch"
+        | "soul_wall_torch"
+        | "beacon"
+        | "end_rod"
+        | "furnace"
+        | "redstone_lamp"
+        | "brewing_stand"
+        | "enchanting_table"
+        | "medium_amethyst_bud"
+        | "small_amethyst_bud" => BRIGHT,
+        "campfire" | "soul_campfire" | "soul_fire" | "lava_cauldron" | "crying_obsidian"
+        | "amethyst_cluster" | "large_amethyst_bud" => BRIGHT | WHOLE,
+        "torch" | "wall_torch" | "lantern" | "sea_lantern" => INCANDESCENT,
+        "fire" | "lava" => INCANDESCENT | WHOLE,
         // Glowing at every charge, not only the brighter ones.
         "respawn_anchor" => INCANDESCENT,
-        "redstone_torch"
-        | "redstone_wall_torch"
-        | "magma_block"
-        | "ochre_froglight"
-        | "verdant_froglight"
-        | "pearlescent_froglight"
-        | "shroomlight" => LOW,
-        // Its flame is a particle.
-        _ if name.ends_with("candle") || name.ends_with("candle_cake") => LOW,
+        "ochre_froglight" | "verdant_froglight" | "pearlescent_froglight" | "jack_o_lantern" => {
+            LOW | WHOLE
+        }
+        "redstone_torch" | "redstone_wall_torch" | "magma_block" | "shroomlight" => LOW,
+        // Its flame is a particle; the cake's frosting must not shine in daylight.
+        _ if name.ends_with("candle_cake") => 0,
+        _ if name.ends_with("candle") => LOW,
         // One tier at every oxidation stage, waxed or not.
         _ if name.ends_with("copper_bulb") => LOW,
         // A faint glow in the dark, as in SDR.
-        "glow_lichen" | "sea_pickle" | "brown_mushroom" | "dragon_egg" | "end_portal_frame" => 0,
+        "glow_lichen" | "sea_pickle" | "brown_mushroom" | "dragon_egg" | "end_portal_frame"
+        | "ender_chest" => 0,
         _ if level >= 10 => INCANDESCENT,
         _ => LOW,
     }
@@ -1209,7 +1233,9 @@ impl Mesher<'_> {
         state: &Info,
     ) {
         let q = &face.quad;
-        let tier = state.tier.max(hdr_tier("", q.light_emission));
+        // A quad's own light (a model's glowing part) may raise the tier; whether it
+        // shines all over stays the block's.
+        let tier = (state.tier & !WHOLE).max(hdr_tier("", q.light_emission)) | state.tier & WHOLE;
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
         let directional = if self.shader_pack_lighting {
             1.0

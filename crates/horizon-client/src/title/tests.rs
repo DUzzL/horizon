@@ -67,6 +67,23 @@ impl Fixture {
         self.title.enter_singleplayer();
         self.title.click(240.0, 60.0, (480.0, 262.0));
     }
+    /// Create New World, past the preparing read: the screen the pack
+    /// screens hand their selection to.
+    fn enter_create_world_for_packs(&mut self) {
+        // A world, so Singleplayer opens the list and its Create New World
+        // goes through preparing (an empty list opens Create directly).
+        self.world("World", "World");
+        self.title.enter_singleplayer();
+        // The Select screen's Create button reads the worldgen data first
+        // (`openCreateWorldScreen` behind `createWorld.preparing`).
+        assert_eq!(self.click_with_sound("Create New World").0, Action::None);
+        assert!(
+            self.title.preparing(),
+            "Create New World goes through preparing"
+        );
+        self.title.finish_preparing();
+        assert!(matches!(self.title.creation_packs(), Some((_, _))));
+    }
     fn finish_backup(&mut self) {
         self.title.backup_shown.set(true);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -573,9 +590,12 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
     // Create New World prepares the world generation first
     // (`CreateWorldScreen.openCreateWorldScreen`); the game opens the
     // screen once that is done.
-    if f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None && f.title.preparing() {
-        f.title.finish_preparing();
-    }
+    assert!(f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None);
+    assert!(
+        f.title.preparing(),
+        "Create New World goes through preparing"
+    );
+    f.title.finish_preparing();
     // The Game tab's game mode cycle button.
     let mode = f
         .title
@@ -590,6 +610,93 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
     assert_eq!(f.click_with_sound("Cancel"), (Action::None, true));
     assert_eq!(f.click_with_sound("Back"), (Action::None, true));
     assert_eq!(f.click_with_sound("Options..."), (Action::Options, true));
+}
+
+/// A feature pack the resources root ships (`PackSource.FEATURE`).
+fn feature_pack(root: &Path) {
+    let pack = root.join("data/minecraft/datapacks/test_feature");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"t"}}"#).unwrap();
+}
+
+#[test]
+fn offer_data_packs_without_a_feature_applies_at_once() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "file/t.zip".into()]);
+    // `tryApplyNewDataPacks`: no confirm screen, the selection applies and
+    // the data is read again.
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned(), "file/t.zip".to_owned()])
+    );
+}
+
+#[test]
+fn offer_data_packs_with_a_feature_asks_and_the_confirm_screen_decides() {
+    let mut f = Fixture::new();
+    feature_pack(&f.root);
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "test_feature".into()]);
+    // The confirm screen is up, the selection waits.
+    assert!(f.title.confirm_experiments.borrow().is_some());
+    assert!(!f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned()])
+    );
+    // Back (`onAbort`): the Data Packs screen reopens with the selection
+    // it had, the confirm screen is gone.
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    // confirm_experiments::footer_pair's Back, for a 480-wide screen
+    // (COLUMN_SPACING is 10).
+    let back_x = ((480.0_f32 - (150.0 * 2.0 + 10.0)) / 2.0).trunc() + 150.0 + 10.0 + 1.0;
+    f.title
+        .press_rules(&atlas, (back_x, 262.0 - 45.0 + 1.0), (480.0, 262.0));
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.take_reopen_data_packs());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned()])
+    );
+    // The screen is offered again, and Proceed applies the selection and
+    // asks for the read.
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "test_feature".into()]);
+    // The Proceed button, left of the pair.
+    let proceed_x = ((480.0_f32 - (150.0 * 2.0 + 10.0)) / 2.0).trunc() + 1.0;
+    f.title
+        .press_rules(&atlas, (proceed_x, 262.0 - 45.0 + 1.0), (480.0, 262.0));
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned(), "test_feature".to_owned()])
+    );
+}
+
+#[test]
+fn preparing_takes_no_input() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "file/t.zip".into()]);
+    assert!(f.title.preparing());
+    // Escape during the read: nothing closes, the options survive
+    // (GenericMessageScreen.shouldCloseOnEsc is false).
+    f.title.escape();
+    assert!(f.title.preparing());
+    assert!(f.title.creation_packs().is_some());
+    // Typed text doesn't reach the focused field either.
+    let before = format!("{:?}", f.title.mode);
+    f.title.type_text("typed during the read");
+    assert_eq!(format!("{:?}", f.title.mode), before);
+    f.title.finish_preparing();
+    assert!(!f.title.preparing());
 }
 
 #[test]

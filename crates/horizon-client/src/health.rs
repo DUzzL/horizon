@@ -41,6 +41,8 @@ pub enum Hurting<'a> {
     Player(i32, HurtSource<'a>),
     /// A mob, and what hurts it.
     Mob(&'a crate::mobs::Mob, &'a crate::mobs::Damage),
+    /// The ender dragon, by its entity id.
+    Dragon(i32, HurtSource<'a>),
 }
 /// The game's native damage hook (`native_living_incoming_damage`), set once by the
 /// game: `LivingEntity.hurtServer` once its guards passed. It may change the
@@ -969,7 +971,9 @@ mod tests {
         use super::Hurting;
         fn hook(hurting: Hurting<'_>, amount: &mut f32) -> bool {
             let (entity, seen) = match hurting {
-                Hurting::Player(e, s) => (e, format!("{} {}", s.damage_type, s.causing)),
+                Hurting::Player(e, s) | Hurting::Dragon(e, s) => {
+                    (e, format!("{} {}", s.damage_type, s.causing))
+                }
                 Hurting::Mob(mob, source) => (mob.id as i32, format!("{:?}", source.kind)),
             };
             if !matches!(entity, 9001..=9004 | 9011..=9013) {

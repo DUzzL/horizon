@@ -966,7 +966,8 @@ pub(super) fn split_sampler(ty: &str) -> (String, &'static str) {
 
 /// Parses and validates one stage; errors at the pack's files and lines.
 fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Module, Vec<Error>> {
-    let at = |span: naga::Span, message: String| {
+    // `text` is the source the span is in: the rewrites below keep its lines.
+    let at = |text: &str, span: naga::Span, message: String| {
         let start = span.to_range().map_or(0, |r| r.start);
         let line = text[..start.min(text.len())].matches('\n').count();
         match line
@@ -990,14 +991,33 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
             },
         }
     };
-    let module = Frontend::default()
-        .parse(&Options::from(stage.kind), text)
-        .map_err(|e| {
-            e.errors
-                .into_iter()
-                .map(|e| at(e.meta, e.kind.to_string()))
-                .collect::<Vec<_>>()
-        })?;
+    let parse = |text: &str| {
+        Frontend::default()
+            .parse(&Options::from(stage.kind), text)
+            .map_err(|e| {
+                e.errors
+                    .into_iter()
+                    .map(|e| at(text, e.meta, e.kind.to_string()))
+                    .collect::<Vec<_>>()
+            })
+    };
+    // naga's frontend refuses a few things GL takes: a scalar's swizzle (`f.x`, GLSL 4.20), a
+    // matrix column's component written to (`m[1].y =`) and `min`/`max`/`clamp` of a `uint` and
+    // integer literals. Each refusal is rewritten where naga points, and the source parsed again.
+    let mut text = std::borrow::Cow::Borrowed(text);
+    let mut tries = 0;
+    let module = loop {
+        tries += 1;
+        match Frontend::default().parse(&Options::from(stage.kind), &text) {
+            Ok(m) => break m,
+            Err(e) => match (e.errors.iter())
+                .find_map(|e| scalar_swizzle(&text, e).or_else(|| unsigned_literals(&text, e)))
+            {
+                Some(fixed) if tries < 256 => text = fixed.into(),
+                _ => return parse(&text),
+            },
+        }
+    };
     Validator::new(ValidationFlags::all(), Capabilities::all())
         .subgroup_operations(naga::valid::SubgroupOperationSet::all())
         .subgroup_stages(naga::valid::ShaderStages::all())
@@ -1012,9 +1032,116 @@ fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Modul
                 write!(message, ": {s}").unwrap();
                 source = s.source();
             }
-            vec![at(span, message)]
+            vec![at(&text, span, message)]
         })?;
     Ok(module)
+}
+
+/// `text` without the scalar swizzle naga's frontend refused (`e`, GLSL 4.20's `f.x`, `f.xx`): one
+/// component dropped, more a vector constructor of the scalar.
+fn scalar_swizzle(text: &str, e: &naga::front::glsl::Error) -> Option<String> {
+    if !e
+        .kind
+        .to_string()
+        .starts_with("Can't lookup field on this type")
+    {
+        return None;
+    }
+    let r = e.meta.to_range()?;
+    let field = text.get(r.clone())?.strip_prefix('.')?;
+    let one = |c: char| field.chars().all(|f| f == c);
+    let indexed = text[..r.start].trim_end().ends_with(']');
+    let component = field.len() == 1 && "xyzwrgbastpq".contains(field);
+    if field.is_empty()
+        || field.len() > 4
+        || !(one('x') || one('r') || one('s') || indexed && component)
+    {
+        return None;
+    }
+    let mut out = text.to_owned();
+    if field.len() == 1 && indexed {
+        // A matrix column's component, written to: `m[1].y` as `m[1][1]`.
+        let k = "xyzwrgbastpq".find(field).map(|k| k % 4)?;
+        out.replace_range(r, &format!("[{k}]"));
+    } else if field.len() == 1 {
+        out.replace_range(r, "");
+    } else {
+        let start = expression_start(text, r.start)?;
+        out.replace_range(r, ")");
+        out.insert_str(start, &format!("vec{}(", field.len()));
+    }
+    Some(out)
+}
+
+/// `text` with the integer literals of the `min`/`max`/`clamp` call naga found ambiguous (`e`)
+/// made unsigned: with a `uint` beside them GL takes the `uint` overload.
+fn unsigned_literals(text: &str, e: &naga::front::glsl::Error) -> Option<String> {
+    let kind = e.kind.to_string();
+    let f = kind
+        .strip_prefix("Ambiguous best function for '")?
+        .trim_end_matches('\'');
+    if !matches!(f, "min" | "max" | "clamp") {
+        return None;
+    }
+    let r = e.meta.to_range()?;
+    let call = text.get(r.clone())?;
+    let b = call.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'.';
+    let mut out = String::with_capacity(call.len() + 8);
+    let mut i = 0;
+    let mut changed = false;
+    while i < b.len() {
+        if b[i].is_ascii_digit() && (i == 0 || !word(b[i - 1])) {
+            let start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            out.push_str(&call[start..i]);
+            if i == b.len() || !(word(b[i])) {
+                out.push('u');
+                changed = true;
+            }
+            continue;
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    changed.then(|| format!("{}{out}{}", &text[..r.start], &text[r.end..]))
+}
+
+/// Where the operand that ends right before byte `end` begins: a name, a call or an index (with
+/// what it is of), or a bracketed expression.
+fn expression_start(text: &str, end: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    let mut i = end;
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    loop {
+        match b.get(i.checked_sub(1)?) {
+            Some(b')') | Some(b']') => {
+                let mut level = 0i32;
+                loop {
+                    i = i.checked_sub(1)?;
+                    match b[i] {
+                        b')' | b']' => level += 1,
+                        b'(' | b'[' => {
+                            level -= 1;
+                            if level == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some(c) if c.is_ascii_alphanumeric() || *c == b'_' || *c == b'.' => i -= 1,
+            _ => return Some(i),
+        }
+        if i == 0 {
+            return Some(0);
+        }
+    }
 }
 
 /// The uniform block's size and member offsets, from naga's layout.
@@ -1665,6 +1792,19 @@ mod tests {
         );
     }
 
+    /// Swizzled scalars, GLSL 4.20's (Kappa's weather map: `noise(p).x`).
+    #[test]
+    fn scalar_swizzles_translate() {
+        let fsh = "#version 430\nout vec4 color;\nfloat noise(vec2 p) { return fract(p.x * 3.1); }\n\
+                   void main() {\n    float a = noise(gl_FragCoord.xy * 0.1).x;\n    float s = a.r * 2.0;\n    \
+                   vec2 w = s.xx + noise(vec2(a)).ss;\n    color = vec4(w, a, s);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
+
     /// `x / 0.0` and `sqrt(-1.0)` are GL's infinity and NaN at run time; naga folds them into
     /// constants and refuses them (Mellow, Bloop). `texelFetch2D` is GL_EXT_gpu_shader4's name
     /// (Bliss).
@@ -1675,6 +1815,23 @@ mod tests {
                    color = texelFetch2D(noisetex, t, 0) + vec4(-1.0 / 0.0) + vec4(sqrt(-1.0));\n}\n";
         let p = program(
             &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
+
+    /// A matrix varying's column written by component, and `uint` with integer literals in
+    /// `max`, `min` and `clamp` (Kappa, Hysteria).
+    #[test]
+    fn matrix_columns_and_unsigned_overloads_translate() {
+        let vsh = "#version 330 compatibility\nout mat2x2 uv;\nvoid main() {\n    \
+                   uv = mat2x2(gl_MultiTexCoord0.xy, gl_MultiTexCoord1.xy);\n    \
+                   uv[1].y = uv[1].y * 0.5;\n    gl_Position = ftransform();\n}\n";
+        let fsh = "#version 330\nin mat2x2 uv;\nout vec4 color;\nvoid main() {\n    uint n = 3u;\n    \
+                   uint s = max(n, 1);\n    s = min(s, 32) + uint(clamp(n, 0, 7));\n    \
+                   color = vec4(uv[0], uv[1]) / float(s);\n}\n";
+        let p = program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
             Target::Buffers,
         );
         assert!(p.is_ok(), "{:?}", p.err());

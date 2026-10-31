@@ -1,6 +1,8 @@
 //! The methods of vanilla's management protocol (`management.rs`), as vanilla 26.3's `methods/*Service` answer
-//! them: the players, the server's state, and the lists. What changes the game goes through its console, so
-//! it logs and saves as an operator's command would.
+//! them: the players, the server's state, and the lists. Kicks, saves and messages go through the game's
+//! console, so they log and save as an operator's command would; the lists change through the game's
+//! `management` request (game/dedicated/management.rs), which finds the players and sends the shut-out away as
+//! vanilla's services do.
 
 use crate::{
     api::{Phase, Shared},
@@ -11,8 +13,9 @@ use serde_json::{Value, json};
 use std::{path::Path, sync::atomic::Ordering};
 
 /// A method's result (`short`: its name without `minecraft:`).
-pub fn call(shared: &Shared, short: &str, argument: &Value) -> Result<Value, Failure> {
+pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Result<Value, Failure> {
     let (game, lists) = (Game { shared }, Lists(&shared.dir));
+    let edit = |entries: Vec<Value>| game.edit(client, short, entries);
     match short {
         "players" => Ok(Value::Array(game.online()?)),
         "players/kick" => game.kick(argument),
@@ -33,6 +36,30 @@ pub fn call(shared: &Shared, short: &str, argument: &Value) -> Result<Value, Fai
         "bans" => Ok(lists.bans()),
         "ip_bans" => Ok(lists.ip_bans()),
         "operators" => Ok(lists.operators()),
+        "allowlist/add" | "allowlist/remove" | "allowlist/set" => {
+            edit(players(argument)?)?;
+            Ok(lists.allowlist())
+        }
+        "allowlist/clear" => {
+            edit(Vec::new())?;
+            Ok(lists.allowlist())
+        }
+        "bans/add" | "bans/set" => {
+            let bans = list(argument)?
+                .iter()
+                .map(user_ban)
+                .collect::<Result<_, _>>()?;
+            edit(bans)?;
+            Ok(lists.bans())
+        }
+        "bans/remove" => {
+            edit(players(argument)?)?;
+            Ok(lists.bans())
+        }
+        "bans/clear" => {
+            edit(Vec::new())?;
+            Ok(lists.bans())
+        }
         _ => Err((
             INTERNAL_ERROR,
             Some(format!("minecraft:{short} isn't in Horizon yet")),
@@ -77,6 +104,50 @@ fn player_dto(value: &Value) -> Result<(Option<u128>, Option<String>), Failure> 
     Ok((id, name))
 }
 
+fn list(argument: &Value) -> Result<&Vec<Value>, Failure> {
+    argument
+        .as_array()
+        .ok_or_else(|| invalid_params("Not a list"))
+}
+
+/// `PlayerDto`s, as the game takes them: the id in 32 hex digits.
+fn players(argument: &Value) -> Result<Vec<Value>, Failure> {
+    list(argument)?.iter().map(player).collect()
+}
+
+fn player(value: &Value) -> Result<Value, Failure> {
+    let (id, name) = player_dto(value)?;
+    Ok(json!({ "id": id.map(|id| format!("{id:032x}")), "name": name }))
+}
+
+/// A `UserBanDto`: the player, and the reason, source and end when given (the end as an ISO-8601 instant).
+fn user_ban(value: &Value) -> Result<Value, Failure> {
+    let Some(dto) = value.get("player") else {
+        return Err(invalid_params("No key player"));
+    };
+    let text = |key: &str| match value.get(key) {
+        None => Ok(None),
+        Some(v) => v
+            .as_str()
+            .map(|s| Some(s.to_owned()))
+            .ok_or_else(|| invalid_params(format!("Not a string: {v}"))),
+    };
+    let expires = match text("expires")? {
+        None => None,
+        Some(at) => Some(
+            chrono::DateTime::parse_from_rfc3339(&at)
+                .map_err(|e| invalid_params(format!("Failed to parse instant {at}: {e}")))?
+                .timestamp_millis(),
+        ),
+    };
+    Ok(json!({
+        "player": player(dto)?,
+        "reason": text("reason")?,
+        "source": text("source")?,
+        "expires": expires,
+    }))
+}
+
 /// `Message.asComponent` as a JSON text component; `None` when it has neither text nor key.
 fn component(message: &Value) -> Option<Value> {
     if let Some(key) = message["translatable"].as_str() {
@@ -109,6 +180,16 @@ impl Game<'_> {
 
     fn console(&self, line: &str) -> Result<Value, Failure> {
         self.ask(&format!("console {line}"))
+    }
+
+    /// A list edit, which the game makes as vanilla's services make it.
+    fn edit(&self, client: u32, method: &str, entries: Vec<Value>) -> Result<(), Failure> {
+        let request = json!({ "method": method, "entries": entries });
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        match reply["error"].as_str() {
+            Some(error) => Err((INTERNAL_ERROR, Some(error.to_owned()))),
+            None => Ok(()),
+        }
     }
 
     /// `PlayerService.get`: the players online, as `PlayerDto`s.
@@ -330,6 +411,7 @@ mod tests {
         let shared = shared();
         let reply = crate::management::receive(
             &shared,
+            1,
             r#"{"jsonrpc":"2.0","id":null,"method":"server/status"}"#,
         );
         assert_eq!(

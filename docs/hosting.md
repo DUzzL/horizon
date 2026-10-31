@@ -155,6 +155,7 @@ enforce_whitelist = false
 view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
+admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
 
 [world]
 name = "world"
@@ -192,6 +193,13 @@ The defaults are vanilla 26.3's. Unknown keys and values vanilla would refuse ar
 start instead of being ignored. When the game changes a setting itself (`/whitelist on`), the change is copied
 back into `server.toml` when it stops, and your comments are kept. Changes to the file apply at the next
 restart: there is no live reload yet.
+
+### Operators' commands: `admin_feedback_to_ops`
+
+On by default, as vanilla: when an operator runs a command that reports to admins (`/gamemode`, `/give`, `/tp`...),
+the other operators read `[name: ...]` in gray, and the console logs it. Players who aren't operators never see it
+either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
+while each operator still reads their own command's answer.
 
 ### Seeing further: `max_view_distance`
 
@@ -360,9 +368,9 @@ enabled = true                                     # false pauses it and keeps t
 The lines of each 2 seconds are drawn as one picture of the in-game chat (transparent, shadowed letters, colours
 included), and a channel gets at most one post every 2 seconds (more when Discord asks for it: a burst beyond 20
 lines is counted, not drawn). Only `chat` is forwarded, never a message the server's chat filter held back. Posts
-never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. One player's lines
-carry their head as the avatar (mc-heads.net, by UUID); players' addresses are never sent, and a player is always
-named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
+never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. Every post comes
+from the webhook's own name and avatar (set them in Discord), never a player's; players' addresses are never sent,
+and a player is always named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
 the API and the panel show the webhook as `(set)`. The letters are Pixelify Sans (SIL Open Font License,
 `crates/horizon-theme/fonts`), not Minecraft's font.
 

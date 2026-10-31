@@ -48,6 +48,10 @@ struct Globals {
 @group(0) @binding(9) var sprites_5: texture_2d_array<f32>;
 @group(0) @binding(10) var sprites_6: texture_2d_array<f32>;
 @group(0) @binding(11) var sprites_7: texture_2d_array<f32>;
+// Per block sprite (x the layer in its array, y the array), the brightness its
+// pixels must reach to shine in HDR output: r where the bright parts shine, g
+// where all of it does (gfx/hdr_stats.rs, measured from the sprite itself).
+@group(0) @binding(12) var emission_thresholds: texture_2d<f32>;
 // How many sprite arrays hold layers (a pipeline constant): 1 for vanilla,
 // which then samples exactly as before.
 override SPRITE_ARRAYS: u32 = 1u;
@@ -148,7 +152,8 @@ struct TerrainOut {
     @location(2) color: vec4<f32>,
     @location(3) spherical: f32,
     @location(4) cylindrical: f32,
-    // The light the face emits, 0 to 15 (mesher.rs's `EMISSION_BITS`).
+    // How the face shines in HDR output (mesher.rs's `EMISSION_BITS`): 0 not
+    // at all, 1 to 4 the tier with its bright parts, 5 to 8 the tier all over.
     @location(5) @interpolate(flat) emission: u32,
     @location(6) @interpolate(flat) fade: u32,
     // A distant tile's tile-relative position, for its fade (`faded`).
@@ -330,6 +335,12 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
                 linear_fog(cylindrical, globals.fog.z, globals.fog.w));
     return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
 }
+// hdr.wgsl's brightness: the mean of luminance and the brightest channel, in
+// linear light.
+fn brightness(c: vec3<f32>) -> f32 {
+    let l = pow(max(c, vec3(0.0)), vec3(2.2));
+    return 0.5 * (dot(l, vec3(0.2126, 0.7152, 0.0722)) + max(l.r, max(l.g, l.b)));
+}
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     return solid_color(in);
 }
@@ -344,14 +355,25 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dy = dpdy(in.local);
     if faded(in.fade, in.local, dx, dy) { discard; }
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
-    var color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    var color = texel * in.color;
     // terrain.fsh: the fade-in mixes toward the fog colour.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
-    // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's bright
-    // pixels may shine, and at which tier (mesher::hdr_tier): 0.525 at the
-    // lowest, 0 at the brightest. Nothing else reads the frame's alpha.
-    let emissive = select(1.0, 0.7 * f32(4u - min(in.emission, 4u)) / 4.0, in.emission > 0u);
+    // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel may
+    // shine, and at which tier (mesher::hdr_tier): 0.525 at the lowest, 0 at the
+    // brightest. Only pixels as bright as their sprite's threshold may: its
+    // bright parts, or all of it. Nothing else reads the frame's alpha.
+    var emissive = 1.0;
+    if in.emission > 0u {
+        let whole = in.emission > 4u;
+        let tier = select(in.emission, in.emission - 4u, whole);
+        let l = in.layer & 0x7fffu;
+        let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
+        if brightness(texel.rgb) >= select(t.r, t.g, whole) {
+            emissive = 0.7 * f32(4u - min(tier, 4u)) / 4.0;
+        }
+    }
     if in.emissive_layer != 0xffffffffu {
         let mask = sprite(in.uv, in.emissive_layer);
         return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, 0.1, mask.a)), in.spherical, in.cylindrical);

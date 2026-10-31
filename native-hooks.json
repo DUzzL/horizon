@@ -405,6 +405,16 @@
       "name": "player_logged_out",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player_logged_out"
+    },
+    {
+      "name": "world_drawn",
+      "version": 1,
+      "target": "horizon_client_render::gfx::native_render::native_world_drawn"
+    },
+    {
+      "name": "render_needs",
+      "version": 1,
+      "target": "horizon_client_render::gfx::native_render::native_render_needs"
     }
   ]
 }

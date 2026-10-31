@@ -14,7 +14,8 @@ sent the same things over TLS, and every answer is compared exactly:
   unparsable method names, a bad request id, wrong parameters, a notification (no answer), a batch, an
   answer to nothing, `rpc.discover` (its document must also equal `reports/json-rpc-api-schema.json` from
   vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
-  `server/system_message` with no one online, and `server/stop`;
+  `server/system_message` with no one online, the allowlist and the bans changed (`add`, `remove`, `set`,
+  `clear`; with no profile service, players named resolve to offline players on both), and `server/stop`;
 - the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications vanilla
@@ -58,6 +59,9 @@ LISTS = {
                          'expires': 'forever', 'reason': 'Banned by an operator.'}],
 }
 KEYSTORE_PASSWORD = 'harness-keystore-password'
+# Nothing listens there: neither server finds a profile service, so names resolve to offline players on both,
+# whatever the network answers.
+NO_SERVICES = 'http://127.0.0.1:9'
 # What both servers are sent over the socket, in order; None marks what must get no answer.
 MESSAGES = [
     '{nope',
@@ -91,6 +95,19 @@ MESSAGES = [
     '"params":[{"message":{"translatable":"chat.type.announcement","translatableParams":["a","b"]},'
     '"overlay":true,"receivingPlayers":[]}]}',
     '{"jsonrpc":"2.0","id":22,"method":"minecraft:server/system_message","params":[{"message":{},"overlay":false}]}',
+    # The lists changed: players found by name (offline players here) or by an id the user cache knows.
+    '{"jsonrpc":"2.0","id":23,"method":"minecraft:allowlist/add","params":[[{"name":"Kim0"}]]}',
+    '{"jsonrpc":"2.0","id":24,"method":"minecraft:allowlist/remove","params":{"players":[{"name":"Lou0"}]}}',
+    '{"jsonrpc":"2.0","id":25,"method":"minecraft:allowlist/set","params":[[{"name":"Ann0"},'
+    '{"id":"93e029a5-04a0-349d-90b2-f7e145b2644f"}]]}',
+    '{"jsonrpc":"2.0","id":26,"method":"minecraft:allowlist/clear"}',
+    '{"jsonrpc":"2.0","id":27,"method":"minecraft:bans/add","params":[[{"player":{"name":"Kim0"},"reason":"spam",'
+    '"expires":"2027-01-01T00:00:00Z"},{"player":{"name":"Ann0"}}]]}',
+    '{"jsonrpc":"2.0","id":28,"method":"minecraft:bans/remove","params":[[{"name":"Lou0"}]]}',
+    '{"jsonrpc":"2.0","id":29,"method":"minecraft:bans/set","params":[[{"player":{"name":"Kim0"},"reason":"spam",'
+    '"expires":"2027-01-01T00:00:00Z"},{"player":{"name":"Ann0"},"source":"Moderator"}]]}',
+    '{"jsonrpc":"2.0","id":30,"method":"minecraft:bans"}',
+    '{"jsonrpc":"2.0","id":31,"method":"minecraft:bans/clear"}',
 ]
 
 
@@ -272,6 +289,7 @@ def main():
                    '-p', 'horizon-server', '--bin', 'horizon-server'], build, 'compile-rust')
     target = lab.cargo_target() / 'fast'
     work = Path(tempfile.mkdtemp(prefix='hz-management-'))
+    os.environ['HORIZON_API_DISCOVERY'] = NO_SERVICES
     try:
         keystore, context = make_keystore(work)
         sides = {}
@@ -285,7 +303,8 @@ def main():
                      **management_properties(management, keystore)}
             if side == 'vanilla':
                 (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
-                command = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp',
+                command = ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={NO_SERVICES}',
+                           '-cp',
                            os.pathsep.join(map(str, [jars['server'], *libraries])), 'net.minecraft.server.Main',
                            'nogui']
             else:

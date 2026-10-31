@@ -869,6 +869,13 @@ fn mob_meta(
             }
             defaults.push((18, serializer::INT, Value::Int(0)));
         }
+        // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+        "minecraft:ocelot" => {
+            if e.trusting {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
+        }
         // Mannequin.DATA_PROFILE, DATA_IMMOVABLE and DATA_DESCRIPTION (after Avatar's two):
         // `updateDescription` keeps the last as a component, or none when hidden.
         "minecraft:mannequin" => {

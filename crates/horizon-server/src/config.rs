@@ -29,6 +29,7 @@ enforce_whitelist = false    # kick online players taken off the whitelist
 view_distance = 10           # chunks sent around each player
 simulation_distance = 10     # chunks around each player where mobs, crops and redstone tick
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (never generated; 0: off)
+admin_feedback_to_ops = true # operators see each other's commands ([name: ...], vanilla); false: only the log
 
 [world]
 name = "world"               # the world folder
@@ -91,7 +92,7 @@ enabled = true               # false pauses it and keeps the webhook
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
-pub(crate) const TYPED: [(&str, &str, &str); 15] = [
+pub(crate) const TYPED: [(&str, &str, &str); 16] = [
     ("server", "motd", "motd"),
     ("server", "port", "server-port"),
     ("server", "bind", "server-ip"),
@@ -102,6 +103,11 @@ pub(crate) const TYPED: [(&str, &str, &str); 15] = [
     ("server", "view_distance", "view-distance"),
     ("server", "simulation_distance", "simulation-distance"),
     ("server", "max_view_distance", "horizon-max-view-distance"),
+    (
+        "server",
+        "admin_feedback_to_ops",
+        "horizon-admin-feedback-to-ops",
+    ),
     ("world", "name", "level-name"),
     ("world", "seed", "level-seed"),
     ("world", "game_mode", "gamemode"),
@@ -162,6 +168,9 @@ pub struct Server {
     pub simulation_distance: u32,
     /// Horizon's far ring (docs/hosting.md): saved chunks sent past `view_distance`, up to this; 0 is off.
     pub max_view_distance: u32,
+    /// Whether operators get each other's command feedback (`[name: ...]`, vanilla's broadcastToAdmins);
+    /// false leaves it to the console's log, so nobody in game sees an operator's commands.
+    pub admin_feedback_to_ops: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -307,6 +316,7 @@ impl Default for Server {
             view_distance: 10,
             simulation_distance: 10,
             max_view_distance: 0,
+            admin_feedback_to_ops: true,
         }
     }
 }
@@ -699,9 +709,15 @@ mod tests {
         let vanilla =
             ServerProperties::new(Properties::default(), &mut SystemEntropy::default()).unwrap();
         for (key, value) in Config::default().vanilla() {
-            // Horizon's own (off by default), which vanilla doesn't have.
+            // Horizon's own, which vanilla doesn't have: their defaults behave as vanilla does
+            // (the far ring off, operators told of each other's commands).
             if key.starts_with("horizon-") {
-                assert_eq!(value, "0", "{key}");
+                let vanilla_like = if key == "horizon-admin-feedback-to-ops" {
+                    "true"
+                } else {
+                    "0"
+                };
+                assert_eq!(value, vanilla_like, "{key}");
                 continue;
             }
             assert_eq!(vanilla.raw.get(&key), Some(value.as_str()), "{key}");

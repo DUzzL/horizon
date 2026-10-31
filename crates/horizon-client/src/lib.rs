@@ -7,7 +7,12 @@ pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
 pub mod arrows;
+// The game's own unit tests stay in the executable's test build (main.rs), as before the game moved
+// here: they set process-wide state (`health::HURT_SERVER`, the sulfur cube archetypes) that the
+// library's tests must not share a process with.
+#[cfg(not(test))]
 pub mod entry;
+#[cfg(not(test))]
 pub mod game;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_entities, block_entity_anim,

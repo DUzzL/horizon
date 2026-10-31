@@ -3710,7 +3710,7 @@ impl Game<'_> {
                 }
                 // Villager 12, 13 and 14, TamableAnimal and AbstractHorse 6 and
                 // 7, Animal and Allay 18: the particles about the mob.
-                if matches!(p.event, 6 | 7 | 12 | 13 | 14 | 18) {
+                if matches!(p.event, 6 | 7 | 12 | 13 | 14 | 18 | 40 | 41) {
                     self.entity_event_particles(p.id as u32, p.event);
                 }
                 // Snowball and ThrownEgg.handleEntityEvent 3: the crumbs where

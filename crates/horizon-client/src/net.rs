@@ -1468,8 +1468,10 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let worker = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
+                // Generous: a debug build's key generation on a busy CI runner takes seconds. A pass
+                // never waits for these.
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(Duration::from_secs(60)))
                     .unwrap();
                 let mut server = Connection::from_stream(stream).unwrap();
                 server.recv().unwrap(); // intention
@@ -1524,7 +1526,7 @@ mod tests {
             let reason = loop {
                 if let Event::Disconnected { reason, .. } = session
                     .events
-                    .recv_timeout(Duration::from_secs(10))
+                    .recv_timeout(Duration::from_secs(60))
                     .unwrap()
                 {
                     break reason;

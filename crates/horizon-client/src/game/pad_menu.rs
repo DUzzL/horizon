@@ -1247,6 +1247,19 @@ impl Game<'_> {
         }
     }
 
+    /// The keyboard focus the title had while resources loaded
+    /// (`StartupMenu`), carried into the game's.
+    pub(super) fn key_focus_adopt(&mut self, focus: Target, slider_edit: bool) {
+        let screen = self.key_screen();
+        let menu = &mut self.pad.menu;
+        menu.key_screen = screen;
+        menu.key_restart = None;
+        menu.keyboard = true;
+        menu.focus = Some(focus);
+        menu.slider_edit = slider_edit;
+        menu.pos = Some(self.cursor);
+    }
+
     // ---- text fields ----
 
     /// A text field has keyboard focus: chat, a sign, a book being written,

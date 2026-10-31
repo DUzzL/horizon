@@ -147,6 +147,8 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Cat.IS_LYING and RELAX_STATE_ONE.
             (Species::Cat, 21, Value::Bool(lying)) => m.extra.flag = *lying,
             (Species::Cat, 22, Value::Bool(relaxing)) => m.extra.relax_one = *relaxing,
+            // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+            (Species::Ocelot, 18, Value::Bool(trusting)) => m.extra.trusting = *trusting,
             // Wolf.DATA_INTERESTED_ID: begging, which tilts the head.
             (Species::Wolf, 20, Value::Bool(begging)) => m.extra.flag = *begging,
             // Wolf.DATA_COLLAR_COLOR and Cat's.
@@ -897,6 +899,19 @@ mod tests {
             &[(17, s::RESOLVABLE_PROFILE, Value::Profile(profile.clone()))],
         );
         assert_eq!(m.profile, Some(profile));
+    }
+
+    /// `Ocelot.DATA_TRUSTING` (after AgeableMob's two).
+    #[test]
+    fn an_ocelot_takes_its_trusting_flag() {
+        let Some(mut m) = mob("minecraft:ocelot") else {
+            return;
+        };
+        assert!(!m.extra.trusting);
+        apply(&mut m, &[(18, s::BOOLEAN, Value::Bool(true))]);
+        assert!(m.extra.trusting);
+        apply(&mut m, &[(18, s::BOOLEAN, Value::Bool(false))]);
+        assert!(!m.extra.trusting);
     }
 
     /// `Mannequin.DATA_IMMOVABLE` and `DATA_DESCRIPTION`: the default component is the default
