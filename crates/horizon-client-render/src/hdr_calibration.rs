@@ -18,6 +18,7 @@
 //! or Escape leaves them as they were.
 use crate::{
     hud::{HudAtlas, HudBatch, rgba},
+    lang,
     settings::Settings,
     text::Text,
     ui,
@@ -64,14 +65,19 @@ impl Step {
             Step::PaperWhite => (10.0, 480.0, 10.0),
         }
     }
-    fn name(self) -> &'static str {
+    /// The English name, which is also its key in the language table.
+    fn name_key(self) -> &'static str {
         match self {
             Step::Black => "Black Level",
             Step::Peak => "Peak Brightness",
             Step::PaperWhite => "Paper White",
         }
     }
-    fn hint(self) -> &'static str {
+    fn name(self) -> String {
+        lang::get(self.name_key())
+    }
+    /// The English hint, which is also its key in the language table.
+    fn hint_key(self) -> &'static str {
         match self {
             Step::Black => "Lower it until the logo just disappears into the black.",
             Step::Peak => "Raise it until the logo just disappears into the bright square.",
@@ -139,10 +145,16 @@ impl Calibration {
     }
     fn label(&self) -> Text {
         let v = self.values[self.step];
-        Text::literal(match self.current() {
-            Step::Black => format!("Black Level: {v:.2} nits"),
-            step => format!("{}: {v:.0} nits", step.name()),
-        })
+        let step = self.current();
+        let nits = match step {
+            Step::Black => format!("{v:.2}"),
+            _ => format!("{v:.0}"),
+        };
+        Text::literal(format!(
+            "{}: {}",
+            step.name(),
+            lang::tr("%s nits", &[&nits])
+        ))
     }
     /// The step, its nits and where the controls start (a share of the height), for
     /// HDR output's test picture.
@@ -160,14 +172,12 @@ impl Calibration {
         batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 255));
         batch.fill(atlas, 0.0, l.top, w, h - l.top, rgba(24, 24, 24, 255));
         let step = self.current();
-        let title = Text::literal(format!(
-            "HDR Calibration {}/{}: {}",
-            self.step + 1,
-            STEPS.len(),
-            step.name()
+        let title = Text::literal(lang::tr(
+            "HDR Calibration %s/%s: %s",
+            &[&(self.step + 1), &STEPS.len(), &step.name()],
         ));
         ui::centered_text(batch, atlas, &title, 0.0, l.top + 6.0, w, u32::MAX);
-        let hint = Text::literal(step.hint());
+        let hint = Text::literal(lang::get(step.hint_key()));
         ui::centered_text(
             batch,
             atlas,
@@ -192,10 +202,12 @@ impl Calibration {
             self.dragging,
         );
         let last = self.step + 1 == STEPS.len();
+        let save = lang::get_or("selectWorld.edit.save", "Save");
+        let next = lang::get("Next");
         for (rect, label, active) in [
-            (l.cancel, "Cancel", true),
-            (l.back, "Back", self.step > 0),
-            (l.next, if last { "Save" } else { "Next" }, true),
+            (l.cancel, lang::get_or("gui.cancel", "Cancel"), true),
+            (l.back, lang::get_or("gui.back", "Back"), self.step > 0),
+            (l.next, if last { save } else { next }, true),
         ] {
             let hover = over(cursor, rect) && active;
             ui::button(
