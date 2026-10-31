@@ -18,8 +18,12 @@ Checks: a bare name is a harness (`python3 tools/parity.py <name>`, script `tool
 
 For the full set of harnesses a file can affect, ask the runner:
 `printf '%s\n' <paths> > /tmp/p.txt && python3 tools/parity.py --changed-files /tmp/p.txt --list`.
-Any gameplay file (`game.rs`, `game/`) selects the ~25 harnesses that run the binary; a client lib
-file selects ~103.
+The historical ~25 game-binary / ~103 client-lib counts predate the build split. Gameplay now
+appears in every rebuilt client probe's dep-info: conservative selection can grow to roughly 130
+harnesses with that old inventory. The default runner also narrows dependencies to code reachable
+from known probe entry points, so exact selection depends on current records and reachability.
+Use `--changed-files` on refreshed records to measure it; gameplay is not guaranteed to select ~25.
+Regardless of harness selection, gameplay edits also invalidate the library's other users.
 
 | # | Area (commits) | Files | Checks |
 |---|---|---|---|

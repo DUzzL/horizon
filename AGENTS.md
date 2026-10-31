@@ -101,9 +101,15 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
   or the game binary with a fixture env var (`game/dispense_fixture.rs`, `game/sculk_fixture.rs`,
   `game/command_harness.rs`, `game/net_harness.rs`). Copy a nearby harness for a new one.
 - Probes build into `.local/parity-target/`; harnesses find binaries via `lab.cargo_target()`, never `target/`.
-- What a change reruns (of 329 harnesses, measured 2026-10-23): a gameplay file (`game.rs`, `game/`)
-  ~25 by harness selection, a file of the client lib ~103, of `horizon-world` ~103–109, of `horizon-core` ~119. Gameplay is now in the library, so a gameplay edit also recompiles library users
-  (`horizon-ctl` and client probes), even when their harnesses are not selected. Plan for it.
+- Harness selection uses Cargo dep-info and reachable-code narrowing (`tools/parity_reach.py`).
+  The old counts (329 harnesses, 2026-10-23: game binary ~25, client lib ~103) predate the build split.
+  Gameplay is now in the library, so every rebuilt client probe's dep-info includes `game.rs` and
+  `game/`. Without reachability narrowing, gameplay edits can select the client-lib harnesses too
+  (~130 with that old inventory). Default selection can discard unreachable gameplay when probe
+  entry points are known; unknown records and the reachability budget keep selection conservative.
+  Measure current selection with `tools/parity.py --changed-files paths.txt --list`; do not assume
+  gameplay still selects ~25. Library users (`horizon-ctl` and client probes) also recompile after
+  a gameplay edit, even when reachability narrowing excludes their harnesses.
 - Rust integration tests: `crates/horizon-client/tests/` (`lan_bot.rs`, `generation_saves.rs`, `streaming_meshes.rs`).
 - Linux needs `libasound2-dev libudev-dev`; `--no-default-features` drops audio and controllers (the server build).
 - Run and drive the game (starts the `horizon-client` beside `horizon-ctl`; other arguments go to the game):
