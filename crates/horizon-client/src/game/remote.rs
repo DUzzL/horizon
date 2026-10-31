@@ -7232,6 +7232,14 @@ impl Game<'_> {
     /// A cushion succeeds where it may be placed and spawns on the server.
     /// Whether the item's use succeeded, which ends the click.
     fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
+        // FireworkRocketItem.useOn: SUCCESS on the client too (only the
+        // server launches it), so this hand swings and neither UseItem nor
+        // the off hand follows. It passes while gliding (the use boosts
+        // instead) and in adventure mode (ItemStack.useOn, without
+        // can_place_on).
+        if &*stack.item == "minecraft:firework_rocket" {
+            return self.may_build() && !self.player.as_ref().is_some_and(|p| p.fall_flying);
+        }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
             f64::from(hit.pos[1]) + 0.5,
@@ -7694,6 +7702,12 @@ impl Game<'_> {
             return false;
         }
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
+        // FireworkRocketItem.use while gliding: SUCCESS (SwingSource.PREDICTED),
+        // so startUseItem swings this hand itself; a vanilla server swings it
+        // for the other players only.
+        if gliding && &*held.item == "minecraft:firework_rocket" {
+            self.with_hand(hand, Game::swing_arm);
+        }
         // A stack's own `blocks_attacks` raises it as a shield's does.
         use_ends_click(&info, gliding) || self.blocks_attacks(&held).is_some()
     }
