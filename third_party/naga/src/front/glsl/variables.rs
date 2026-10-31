@@ -208,6 +208,10 @@ impl Frontend {
                     "gl_SampleID" => BuiltIn::SampleIndex,
                     "gl_LocalInvocationIndex" => BuiltIn::LocalInvocationIndex,
                     "gl_DrawID" => BuiltIn::DrawIndex,
+                    "gl_SubgroupSize" => BuiltIn::SubgroupSize,
+                    "gl_SubgroupInvocationID" => BuiltIn::SubgroupInvocationId,
+                    "gl_SubgroupID" => BuiltIn::SubgroupId,
+                    "gl_NumSubgroups" => BuiltIn::NumSubgroups,
                     _ => return Ok(None),
                 };
 
@@ -250,10 +254,16 @@ impl Frontend {
         meta: Span,
     ) -> Result<Handle<Expression>> {
         let (ty, is_pointer) = match *ctx.resolve_type(expression, meta)? {
-            TypeInner::Pointer { base, .. } => (&ctx.module.types[base].inner, true),
-            ref ty => (ty, false),
+            TypeInner::Pointer { base, .. } => (ctx.module.types[base].inner.clone(), true),
+            // A matrix column through a pointer (`m[1].x`).
+            TypeInner::ValuePointer {
+                size: Some(size),
+                scalar,
+                ..
+            } => (TypeInner::Vector { size, scalar }, true),
+            ref ty => (ty.clone(), false),
         };
-        match *ty {
+        match ty {
             TypeInner::Struct { ref members, .. } => {
                 let index = members
                     .iter()

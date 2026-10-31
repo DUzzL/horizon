@@ -332,6 +332,13 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             (Species::Mannequin, 17, Value::Profile(profile)) => {
                 m.profile = Some(profile.clone());
             }
+            // Mannequin.DATA_IMMOVABLE and DATA_DESCRIPTION (an empty one is hidden).
+            (Species::Mannequin, 18, Value::Bool(immovable)) => m.extra.immovable = *immovable,
+            (Species::Mannequin, 19, Value::OptText(description)) => {
+                m.extra.description = horizon_client::mobs::MannequinDescription::from_component(
+                    description.as_ref(),
+                );
+            }
             _ => {}
         }
     }
@@ -890,6 +897,40 @@ mod tests {
             &[(17, s::RESOLVABLE_PROFILE, Value::Profile(profile.clone()))],
         );
         assert_eq!(m.profile, Some(profile));
+    }
+
+    /// `Mannequin.DATA_IMMOVABLE` and `DATA_DESCRIPTION`: the default component is the default
+    /// description, an empty one hides it, any other is the server's own.
+    #[test]
+    fn a_mannequin_takes_its_immovable_flag_and_description() {
+        use horizon_client::mobs::MannequinDescription as D;
+        let Some(mut m) = mob("minecraft:mannequin") else {
+            return;
+        };
+        assert_eq!(
+            (m.extra.immovable, m.extra.description.clone()),
+            (false, D::Default)
+        );
+        let own = horizon_protocol::text::literal("Guard");
+        apply(
+            &mut m,
+            &[
+                (18, s::BOOLEAN, Value::Bool(true)),
+                (19, s::OPTIONAL_COMPONENT, Value::OptText(Some(own.clone()))),
+            ],
+        );
+        assert_eq!(
+            (m.extra.immovable, m.extra.description.clone()),
+            (true, D::Custom(own))
+        );
+        apply(&mut m, &[(19, s::OPTIONAL_COMPONENT, Value::OptText(None))]);
+        assert_eq!(m.extra.description, D::Hidden);
+        let default = D::Default.component();
+        apply(
+            &mut m,
+            &[(19, s::OPTIONAL_COMPONENT, Value::OptText(default))],
+        );
+        assert_eq!(m.extra.description, D::Default);
     }
 
     /// `LivingEntity.getDimensions`: the pose's box times `minecraft:scale` —

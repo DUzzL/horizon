@@ -800,6 +800,12 @@ impl PlayerMotion {
     }
     pub fn set_sprinting(&mut self, sprinting: bool) -> Result<()> {
         self.sprinting = sprinting;
+        self.set_sprint_modifier(sprinting)
+    }
+    /// The movement speed's `minecraft:sprinting` modifier alone, the flag left as it is:
+    /// `ClientPacketListener.handleUpdateAttributes` takes the server's modifiers as sent, so a
+    /// client can sprint without it.
+    pub fn set_sprint_modifier(&mut self, sprinting: bool) -> Result<()> {
         let key = self
             .attributes
             .key("minecraft:movement_speed")
@@ -824,6 +830,20 @@ impl PlayerMotion {
             })
             .map_err(attribute_error)?;
         Ok(())
+    }
+    /// Whether the movement speed has the `minecraft:sprinting` modifier.
+    pub fn has_sprint_modifier(&self) -> bool {
+        let Some(key) = self.attributes.key("minecraft:movement_speed") else {
+            return false;
+        };
+        self.attributes
+            .lookup(Some(&key))
+            .and_then(|h| self.attributes.instance(&h).ok())
+            .is_some_and(|i| {
+                i.modifiers()
+                    .iter()
+                    .any(|m| m.id() == "minecraft:sprinting")
+            })
     }
     /// Local input sprint phase (`LocalPlayer.aiStep`'s sprint decisions).
     /// Vehicle bindings remain separate; hunger, flight, water, collision, the

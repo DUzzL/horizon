@@ -24,6 +24,10 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
+    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_count: vec4<u32>,
+    emissive_layers: array<vec4<u32>, 32>,
+    emissive_count: vec4<u32>,
     // The sunrise fan's 16 triangles (gfx/sunrise_fan.rs): xyz the apex weight's normal, w the
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
     sunrise_fan: array<vec4<f32>, 32>,
@@ -153,6 +157,7 @@ struct TerrainOut {
     @location(8) visibility: f32,
     // The camera-relative height, for the water mirror's cut at the plane.
     @location(9) height: f32,
+    @location(10) @interpolate(flat) emissive_layer: u32,
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
 // `fade_code`, `fade_out_code`). It fades in, or out, chunk by chunk: each
@@ -223,6 +228,15 @@ fn dynamic_block_light(pos: vec3<f32>) -> f32 {
     }
     return level * 16.0;
 }
+fn native_colored_light(pos: vec3<f32>) -> vec3<f32> {
+    var rgb = vec3(0.0);
+    for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
+        let at = globals.colored_lights[i][0];
+        let color = globals.colored_lights[i][1];
+        rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
+    }
+    return min(rgb, vec3(1.0));
+}
 fn sample_lightmap(sky: f32, block: f32) -> vec4<f32> {
     let uv = vec2(block, sky) * 16.0;
     return textureSampleLevel(lightmap, lightmap_sampler,
@@ -284,8 +298,18 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     out.local = position;
     out.uv = uv;
     out.layer = layer;
+    out.emissive_layer = 0xffffffffu;
+    for (var i = 0u; i < min(globals.emissive_count.x, 32u); i++) {
+        if globals.emissive_layers[i].x == (layer & 0x7fffu) {
+            out.emissive_layer = globals.emissive_layers[i].y;
+            break;
+        }
+    }
     let block = max(f32(light.y), dynamic_block_light(pos));
     out.color = vec4(color.rgb, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    if globals.colored_count.x > 0u {
+        out.color = vec4(min(out.color.rgb + color.rgb * native_colored_light(pos), vec3(1.0)), out.color.a);
+    }
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
     out.height = pos.y;
     out.spherical = length(pos);
@@ -328,6 +352,10 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     // pixels may shine, and at which tier (mesher::hdr_tier): 0.525 at the
     // lowest, 0 at the brightest. Nothing else reads the frame's alpha.
     let emissive = select(1.0, 0.7 * f32(4u - min(in.emission, 4u)) / 4.0, in.emission > 0u);
+    if in.emissive_layer != 0xffffffffu {
+        let mask = sprite(in.uv, in.emissive_layer);
+        return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, 0.1, mask.a)), in.spherical, in.cylindrical);
+    }
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);
 }
 // Water, glass and other see-through faces draw whole as they fade in, the

@@ -70,6 +70,9 @@ pub struct World {
     pub light_edits: Vec<((i32, i32, i32), u32, u32)>,
     /// Saved entities of chunks that just loaded, spawned by the game.
     pub loaded_entities: Vec<((i32, i32), Vec<horizon_world::nbt::Tag>)>,
+    /// Chunks that just came into this level from a worker, and whether each
+    /// was generated rather than read from the save: the game tells native mods.
+    pub loaded_chunks: Vec<(i32, i32, bool)>,
     /// Chunks changed since the last save.
     pub modified: FxHashSet<(i32, i32)>,
     /// Block entities, and the order they tick in.
@@ -109,6 +112,10 @@ pub struct World {
     /// The moving-piston block entities of the level, by position, copied
     /// from the block ticks after each tick: collision and rendering read them.
     pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    /// The `ShulkerBoxBlockEntity` lid state of the level, by position, copied
+    /// from the block entities after each tick: the collision queries read it
+    /// (`ShulkerBoxBlockEntity.getBoundingBox`), as `moving_pistons` for pistons.
+    pub shulkers: FxHashMap<[i32; 3], crate::block_entity_anim::Shulker>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
@@ -188,6 +195,7 @@ impl World {
             dirty_light: Default::default(),
             light_edits: Vec::new(),
             loaded_entities: Vec::new(),
+            loaded_chunks: Vec::new(),
             modified: FxHashSet::default(),
             block_entities: Default::default(),
             chest_openers: FxHashMap::default(),
@@ -203,6 +211,7 @@ impl World {
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
+            shulkers: FxHashMap::default(),
             pois: Default::default(),
         }
     }

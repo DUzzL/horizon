@@ -30,14 +30,14 @@ pub(crate) struct NativeServerPlayer {
     /// Health points, 20 at full; 0 once dead. API 21.
     pub(crate) health: f32,
     /// Where they look, in degrees (`yRot`, `xRot`), as their last move told
-    /// the server. API @API:native-sidebar@.
+    /// the server. API 49.
     pub(crate) yaw: f32,
     pub(crate) pitch: f32,
 }
 
 /// A sidebar a server mod shows one player (`native_sidebar`): its title and
 /// up to 15 lines, top first, each a text on the left and, where the score's
-/// number would be, an optional text on the right. API @API:native-sidebar@.
+/// number would be, an optional text on the right. API 49.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeSidebar {
@@ -340,7 +340,7 @@ impl Game<'_> {
     /// see it, and it is gone when they leave (a mod sends it again when
     /// they come back). It takes the sidebar's place from an objective the
     /// world shows there, for this player, until they rejoin. False when
-    /// they aren't on. API @API:native-sidebar@.
+    /// they aren't on. API 49.
     pub(super) fn native_sidebar(&mut self, uuid: u128, sidebar: Option<&NativeSidebar>) -> bool {
         let objective = SIDEBAR_OBJECTIVE.to_owned();
         // Removed first, so the new one's lines replace all the old ones.
@@ -382,7 +382,7 @@ impl Game<'_> {
     }
     /// The lines over and under that player's list of players (Tab):
     /// `ClientboundTabListPacket`, an empty text for none. False when they
-    /// aren't on. API @API:native-sidebar@.
+    /// aren't on. API 49.
     pub(super) fn native_tab_list(&mut self, uuid: u128, header: &Text, footer: &Text) -> bool {
         let packet = C::TabList(play::TabList {
             header: component_nbt(&header.component()),
@@ -393,7 +393,7 @@ impl Game<'_> {
     /// The server's tick rate (20 unless `/tick rate` changed it) and the
     /// milliseconds its ticks took on average lately, as `/tick query`
     /// reports them. The ticks a second it keeps up is the rate, or
-    /// 1000 / milliseconds when that is lower. API @API:native-sidebar@.
+    /// 1000 / milliseconds when that is lower. API 49.
     pub(super) fn native_tick_stats(&self) -> (f32, f64) {
         (
             self.clock.rate(),
@@ -405,7 +405,7 @@ impl Game<'_> {
     /// needs asleep, as a spectator is (an away-from-keyboard mod). Kept
     /// until a mod sets it back or the server stops, also if they leave and
     /// come back. Only where no player's state is swapped in, as
-    /// `native_run_command`; false there and when they aren't on. API @API:native-sidebar@.
+    /// `native_run_command`; false there and when they aren't on. API 49.
     pub(super) fn native_sleep_ignored(&mut self, uuid: u128, ignored: bool) -> bool {
         let Some(host) = &mut self.lan else {
             return false;

@@ -1898,6 +1898,38 @@ impl HudRenderer {
             *previous = state;
         }
     }
+    /// Stage `patches` into the shared atlas texture.
+    pub fn upload_patches(
+        &self,
+        uploads: &mut crate::gfx::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        patches: &[crate::font::Patch],
+    ) {
+        if let Some(texture) = &self.atlas_texture {
+            for p in patches {
+                if p.x.saturating_add(p.width) <= texture.width()
+                    && p.y.saturating_add(p.height) <= texture.height()
+                {
+                    uploads.texture(
+                        encoder,
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: p.x,
+                                y: p.y,
+                                z: 0,
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        p.width,
+                        p.height,
+                        &p.rgba,
+                    );
+                }
+            }
+        }
+    }
     /// Stage the batch's atlas patches, vertices and uniform: before the
     /// frame's first pass, so the copies share one command buffer.
     pub fn prepare(
@@ -1908,26 +1940,7 @@ impl HudRenderer {
         batch: &HudBatch,
         size: [u32; 2],
     ) {
-        if let Some(texture) = &self.atlas_texture {
-            for p in &batch.patches {
-                uploads.texture(
-                    encoder,
-                    wgpu::TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
-                            x: p.x,
-                            y: p.y,
-                            z: 0,
-                        },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    p.width,
-                    p.height,
-                    &p.rgba,
-                );
-            }
-        }
+        self.upload_patches(uploads, encoder, &batch.patches);
         if batch.vertices.is_empty() || size.contains(&0) {
             return;
         }

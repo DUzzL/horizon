@@ -110,8 +110,10 @@ pub(super) fn blast_spares_decorations(
     mob_griefing: bool,
     interaction: BlockInteraction,
     by_mob: bool,
+    source_in_water: bool,
 ) -> bool {
-    !mob_griefing && (interaction == BlockInteraction::Keep || by_mob)
+    // `BlockAttachedEntity.ignoreExplosion`: a source in water first.
+    source_in_water || (!mob_griefing && (interaction == BlockInteraction::Keep || by_mob))
 }
 
 /// A mob in a blast's reach: `hurtServer` when its team allows the damage
@@ -327,6 +329,9 @@ impl Game<'_> {
     /// whole, this push in it, once their server copy has travelled
     /// (Entity.markHurt, then ServerEntity.sendChanges), and replaces what the
     /// packet would add.
+    ///
+    /// `cause` is the blast's source as predicates see it, read before the
+    /// guests' turns swap their own combat state in.
     pub(super) fn explosion_hurt_player(
         &mut self,
         center: [f64; 3],
@@ -334,6 +339,7 @@ impl Game<'_> {
         damage_type: &str,
         exploding: Option<u32>,
         attacker: Option<&(u32, Text)>,
+        cause: Option<&horizon_client::advancements::EntityView>,
     ) -> Option<[f64; 3]> {
         let diameter = f64::from(radius * 2.0);
         // Blast protection: `EXPLOSION_KNOCKBACK_RESISTANCE` (0.15 per level and
@@ -354,7 +360,7 @@ impl Game<'_> {
             return None;
         }
         // ServerPlayer.onExplosionHit: the blast that hit the player is theirs.
-        self.adv.marks.blast = Some((feet, self.combat.explosion_cause.clone()));
+        self.adv.marks.blast = Some((feet, cause.cloned()));
         let w = f64::from(p.dimensions.width) / 2.0;
         let h = f64::from(p.dimensions.height);
         let eye = [
@@ -480,10 +486,18 @@ impl Game<'_> {
         };
         // The player, then every other player in the level (LAN guests),
         // each swapped in as the player. In a guest's turn (their hit on an
-        // end crystal) the player is that guest.
+        // end crystal) the player is that guest. The blast's source is the
+        // same for all of them (`onExplosionHit(this.source)`).
         let attacker = self.blast_attacker();
-        let own =
-            self.explosion_hurt_player(center, radius, damage_type, exploding, attacker.as_ref());
+        let blast_source = self.combat.explosion_cause.clone();
+        let own = self.explosion_hurt_player(
+            center,
+            radius,
+            damage_type,
+            exploding,
+            attacker.as_ref(),
+            blast_source.as_ref(),
+        );
         let mut pushed: Vec<_> = self.lan_acting.zip(own).into_iter().collect();
         if let Some(mut host) = self.lan.take() {
             let guests: Vec<u32> = host
@@ -501,6 +515,7 @@ impl Game<'_> {
                         damage_type,
                         exploding,
                         attacker.as_ref(),
+                        blast_source.as_ref(),
                     )
                 });
                 if let Some(Some(push)) = push {
@@ -567,6 +582,7 @@ impl Game<'_> {
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
+        let before = self.dropped_ids();
         let mut items = std::mem::take(&mut self.dropped);
         items.retain_mut(|item| {
             let feet = [item.position.x, item.position.y, item.position.z];
@@ -593,9 +609,11 @@ impl Game<'_> {
             true
         });
         self.dropped = items;
+        self.native_items_left_since(&before);
         // Experience orbs: `ExperienceOrb.hurtServer` takes the damage off
         // their 5 health, and `pushFromExplosion` moves the ones that stay
         // (a 0.5 x 0.5 box, the eyes at 0.85 of its height).
+        let orbs_before = self.orb_ids();
         let mut orbs = std::mem::take(&mut self.orbs);
         orbs.retain_mut(|o| {
             let feet = [o.position.x, o.position.y, o.position.z];
@@ -622,6 +640,7 @@ impl Game<'_> {
             true
         });
         self.orbs = orbs;
+        self.native_orbs_left_since(&orbs_before);
         // Primed TNT: knockback only, from its position (not its eyes).
         let mut tnts = std::mem::take(&mut self.tnts);
         for t in &mut tnts {
@@ -684,7 +703,18 @@ impl Game<'_> {
     /// mob (`blast_attacker`) is the source's entity.
     pub(super) fn blast_spares_decorations(&self, interaction: BlockInteraction) -> bool {
         let by_mob = self.blast_attacker().is_some();
-        blast_spares_decorations(self.ui.rules.bool("mob_griefing"), interaction, by_mob)
+        blast_spares_decorations(
+            self.ui.rules.bool("mob_griefing"),
+            interaction,
+            by_mob,
+            self.combat.explosion_in_water,
+        )
+    }
+    /// `Entity.isInWater` for an entity box: `updateFluidInteraction` over the box.
+    pub(super) fn bounds_in_water(&self, bounds: horizon_core::geometry::Aabb) -> bool {
+        self.mob_world_base(&[])
+            .fluids(bounds, bounds.max_position().y)
+            .in_water
     }
     /// `ServerExplosion.hurtEntities` for paintings, cushions and armour
     /// stands (item frames: `explosion_breaks_frames`). A painting or cushion
@@ -693,17 +723,41 @@ impl Game<'_> {
     /// neither invisible nor a marker breaks (`ArmorStand.hurtServer` with
     /// `IS_EXPLOSION`: `brokenByAnything`, then `kill`): its equipment drops,
     /// the stand itself does not.
-    /// Not ported: `BlockAttachedEntity.ignoreExplosion` also spares paintings
-    /// and cushions when the exploding entity is in water.
     fn explosion_breaks_decorations(
         &mut self,
         center: [f64; 3],
         diameter: f64,
         interaction: BlockInteraction,
     ) {
-        if self.blast_spares_decorations(interaction) {
+        // An armour stand is no `BlockAttachedEntity`: a source in water does not spare it.
+        let by_mob = self.blast_attacker().is_some();
+        let spares_stands = blast_spares_decorations(
+            self.ui.rules.bool("mob_griefing"),
+            interaction,
+            by_mob,
+            false,
+        );
+        if !self.blast_spares_decorations(interaction) {
+            self.explosion_breaks_hanging(center, diameter);
+        }
+        if spares_stands {
             return;
         }
+        let mut i = 0;
+        while i < self.armor_stands.len() {
+            let a = &self.armor_stands[i];
+            let p = a.position;
+            if !super::armor_stands::spared_by_blast(a)
+                && blast_reaches(center, diameter, [p.x, p.y, p.z])
+            {
+                self.break_armor_stand_by_anything(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    /// Paintings and cushions in reach (`BlockAttachedEntity.hurtServer`).
+    fn explosion_breaks_hanging(&mut self, center: [f64; 3], diameter: f64) {
         let mut i = 0;
         while i < self.paintings.len() {
             // HangingEntity.recalculateBoundingBox: a painting stands at the
@@ -721,18 +775,6 @@ impl Game<'_> {
             let p = self.cushions[i].position;
             if blast_reaches(center, diameter, [p.x, p.y, p.z]) {
                 self.break_cushion(i, false);
-            } else {
-                i += 1;
-            }
-        }
-        let mut i = 0;
-        while i < self.armor_stands.len() {
-            let a = &self.armor_stands[i];
-            let p = a.position;
-            if !super::armor_stands::spared_by_blast(a)
-                && blast_reaches(center, diameter, [p.x, p.y, p.z])
-            {
-                self.break_armor_stand_by_anything(i);
             } else {
                 i += 1;
             }
@@ -1074,14 +1116,32 @@ mod tests {
     fn mob_griefing_off_spares_decorations_from_kept_and_mob_blasts() {
         use BlockInteraction::{Destroy, DestroyWithDecay, Keep};
         // mobGriefing on: every blast breaks them, a creeper's included.
-        assert!(!blast_spares_decorations(true, DestroyWithDecay, true));
-        assert!(!blast_spares_decorations(true, Keep, true));
+        assert!(!blast_spares_decorations(
+            true,
+            DestroyWithDecay,
+            true,
+            false
+        ));
+        assert!(!blast_spares_decorations(true, Keep, true, false));
         // Off: TNT still breaks them (ExplosionInteraction.TNT destroys blocks).
-        assert!(!blast_spares_decorations(false, Destroy, false));
-        assert!(!blast_spares_decorations(false, DestroyWithDecay, false));
+        assert!(!blast_spares_decorations(false, Destroy, false, false));
+        assert!(!blast_spares_decorations(
+            false,
+            DestroyWithDecay,
+            false,
+            false
+        ));
         // Off: a blast that keeps blocks, or one a mob causes, does not.
-        assert!(blast_spares_decorations(false, Keep, false));
-        assert!(blast_spares_decorations(false, Destroy, true));
+        assert!(blast_spares_decorations(false, Keep, false, false));
+        assert!(blast_spares_decorations(false, Destroy, true, false));
+        // A source in water spares them whatever the rules (`BlockAttachedEntity.ignoreExplosion`).
+        assert!(blast_spares_decorations(
+            true,
+            DestroyWithDecay,
+            false,
+            true
+        ));
+        assert!(blast_spares_decorations(true, Destroy, true, true));
     }
 
     /// The type a blast hurts with and the attacker its death message names

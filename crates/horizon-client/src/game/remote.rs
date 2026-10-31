@@ -54,6 +54,61 @@ use std::{
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
 
+/// `ChatType`'s two decorations: how a message shows in the chat, and what
+/// the narrator says of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Decoration {
+    Chat,
+    Narration,
+}
+
+/// `ChatTypeDecoration.decorate` of a chat type's `chat` or `narration`
+/// entry: its translation, with the sender, the target or the message as its
+/// parameters, in its style. A chat type the registry lacks decorates as
+/// `minecraft:chat` (`chat.type.text`, narrated `chat.type.text.narrate`).
+fn chat_type_decorate(
+    chat_type: Option<&Tag>,
+    decoration: Decoration,
+    bound: &play::ChatTypeBound,
+    content: &serde_json::Value,
+) -> serde_json::Value {
+    use horizon_client::scoreboard::tag_to_json;
+    let (field, default_key) = match decoration {
+        Decoration::Chat => ("chat", "chat.type.text"),
+        Decoration::Narration => ("narration", "chat.type.text.narrate"),
+    };
+    let decoration = chat_type.and_then(|t| t.get(field));
+    let key = match decoration.and_then(|d| d.get("translation_key")) {
+        Some(Tag::String(s)) => s.to_string_lossy(),
+        _ => default_key.into(),
+    };
+    let parameter = |name: &str| match name {
+        "sender" => tag_to_json(&bound.name),
+        "target" => bound
+            .target
+            .as_ref()
+            .map_or_else(|| serde_json::Value::from(""), tag_to_json),
+        _ => content.clone(),
+    };
+    let with: Vec<serde_json::Value> = match decoration.and_then(|d| d.get("parameters")) {
+        Some(Tag::List(list)) => list
+            .iter()
+            .map(|p| match p {
+                Tag::String(s) => parameter(&s.to_string_lossy()),
+                _ => serde_json::Value::from(""),
+            })
+            .collect(),
+        _ => vec![parameter("sender"), parameter("content")],
+    };
+    let mut component = match decoration.and_then(|d| d.get("style")) {
+        Some(style @ Tag::Compound(_)) => tag_to_json(style),
+        _ => serde_json::json!({}),
+    };
+    component["translate"] = key.into();
+    component["with"] = with.into();
+    component
+}
+
 /// A text component the server sent, for the HUD.
 pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     use horizon_client::scoreboard::{comp_text, tag_to_json};
@@ -109,12 +164,14 @@ fn menu_title(tag: &Tag) -> horizon_client::text::Text {
     remote_text(tag).resolve_legacy()
 }
 
-/// A player message Chat Delay holds back, its signature and trust level.
+/// A player message Chat Delay holds back, its signature and trust level,
+/// and what the narrator says of it once it shows.
 type QueuedChat = (
     horizon_client::text::Text,
     horizon_client::chat::ChatSource,
     Option<Signature>,
     ChatTrust,
+    String,
 );
 
 /// `ChatTrustLevel`; a modified message keeps the signed content it was
@@ -399,7 +456,8 @@ pub(super) struct Remote {
     /// Lines received since joining, for the control socket's events.
     pub chat_received: u64,
     /// `ChatListener.delayedMessageQueue`: player chat held back by Chat
-    /// Delay, with the signature a deletion names it by.
+    /// Delay, with the signature a deletion names it by and what the
+    /// narrator says once it shows.
     chat_queue: VecDeque<QueuedChat>,
     /// `ClientPacketListener.messageSignatureCache`: the signatures packed
     /// ones index, as the server's copy for this connection holds them.
@@ -415,6 +473,8 @@ pub(super) struct Remote {
     chat_sessions: HashMap<u128, Option<(u128, i64, Vec<u8>, Vec<u8>)>>,
     /// `PlayerInfo.messageValidator` of the players whose chat has been read.
     chat_validators: HashMap<u128, secure_chat::MessageValidator>,
+    /// `ConnectScreen.lastNarration`: when "Joining the world" was last said.
+    joining_narrated: Option<Instant>,
     /// The tree the chat colours, completes and parses with: the server's
     /// (ClientboundCommandsPacket) once it has sent one, else the game's own,
     /// plus the commands native mods own (`chat::chat_tree_for`). Rebuilt where
@@ -663,6 +723,9 @@ impl Game<'_> {
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
+        // A server's own biomes come over the connection; the last local
+        // world's packed table must not name its ids.
+        self.world_biomes = None;
         let root = self.options.resources.clone();
         let builtin = Builtin::find(&root)
             .and_then(|p| Builtin::load(&p).ok())
@@ -871,6 +934,7 @@ impl Game<'_> {
             services_keys,
             chat_sessions: HashMap::new(),
             chat_validators: HashMap::new(),
+            joining_narrated: None,
             chat_tree,
             chat_tree_received: false,
             secure_chat: Default::default(),
@@ -941,13 +1005,15 @@ impl Game<'_> {
         // Vanilla's Hud also ticks on the title and connect screens, so the
         // action bar has run out by the next world; Horizon's ticks in one.
         self.titles.overlay_time = 0;
-        // GameRenderer.resetData (Minecraft.disconnect).
+        // GameRenderer.resetData and narrator.clear (Minecraft.disconnect).
         self.item_activation.reset();
+        self.clear_narrator();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
+        super::lan::forget_sync_data();
         self.gui.atlas.object_skins.clear();
         self.server_packs_disconnect();
         self.code_of_conduct = None;
@@ -1107,8 +1173,15 @@ impl Game<'_> {
     /// are, so tooltips and models see every field.
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
+        let stack = s.as_ref()?;
+        if !horizon_protocol::item::custom::permitted(stack, r.registries.custom_components)
+            .unwrap_or(false)
+        {
+            log::warn!("Dropping a stack with unnegotiated custom components");
+            return None;
+        }
         Some(horizon_client::item_sync::from_network(
-            s.as_ref()?,
+            stack,
             &r.builtin,
             &r.registries,
         ))
@@ -1122,8 +1195,23 @@ impl Game<'_> {
         // components go back, as a vanilla client keeps them.
         if let Some((stack, patch)) = s.as_ref().and_then(|s| Some((s, s.wire_patch()?))) {
             let mut out = Stack::new(self.item_id(&stack.item), stack.count as i32);
-            out.wire = horizon_protocol::item::WirePatch(Some(patch));
-            return Some(out);
+            let safe = r.registries.custom_components
+                || horizon_protocol::item::custom::entries().next().is_none()
+                || horizon_protocol::item::WirePatch::decode(&patch)
+                    .and_then(|(added, removed)| {
+                        let decoded = Stack {
+                            added,
+                            removed,
+                            ..Stack::new(out.item, out.count)
+                        };
+                        horizon_protocol::item::custom::permitted(&decoded, false)
+                    })
+                    .unwrap_or(false);
+            if safe {
+                out.wire = horizon_protocol::item::WirePatch(Some(patch));
+                return Some(out);
+            }
+            log::warn!("Cannot send cached custom components to this peer");
         }
         horizon_client::lan::guest::stack_to_network(
             |name| self.item_id(name),
@@ -1133,6 +1221,12 @@ impl Game<'_> {
                     .get(registry)
                     .and_then(|ids| ids.id(name))
                     .or_else(|| r.registries.id(registry, name))
+                    .or_else(|| {
+                        (r.registries.custom_components
+                            && registry == "minecraft:data_component_type")
+                            .then(|| horizon_protocol::item::custom::id(name))
+                            .flatten()
+                    })
             },
             s,
         )
@@ -1208,20 +1302,23 @@ impl Game<'_> {
     }
 
     /// `ChatListener.handleMessage` for player and disguised chat: held in the
-    /// queue while Chat Delay is set, shown at once otherwise.
+    /// queue while Chat Delay is set, shown at once otherwise. `narration` is
+    /// the chat type's narration of it (`decorateNarration`).
     pub(super) fn handle_player_chat(
         &mut self,
         line: horizon_client::text::Text,
         signature: Option<Signature>,
         trust: ChatTrust,
+        narration: String,
     ) {
         let source = horizon_client::chat::ChatSource::Player;
         if self.chat_delay_ms() > 0 {
             if let Some(r) = self.remote.as_mut() {
-                r.chat_queue.push_back((line, source, signature, trust));
+                r.chat_queue
+                    .push_back((line, source, signature, trust, narration));
             }
         } else {
-            self.accept_chat(line, source, signature, trust);
+            self.accept_chat(line, source, signature, trust, &narration);
         }
     }
 
@@ -1244,8 +1341,12 @@ impl Game<'_> {
             "color": "red",
             "italic": true,
         });
-        let line = self.format_chat(chat_type, error);
-        self.handle_player_chat(line, None, ChatTrust::Error);
+        let line = self.decorate_chat(chat_type, &error, Decoration::Chat);
+        // saySystemChatQueued(boundChatType.decorateNarration(CHAT_VALIDATION_ERROR)).
+        let narration = self
+            .decorate_chat(chat_type, &error, Decoration::Narration)
+            .plain();
+        self.handle_player_chat(line, None, ChatTrust::Error, narration);
     }
 
     /// `ChatTrustLevel.evaluate` of a player message, with
@@ -1311,7 +1412,7 @@ impl Game<'_> {
         r.secure_chat.ignore_pending(&signature);
         let queued = r.chat_queue.len();
         r.chat_queue
-            .retain(|(_, _, s, _)| s.as_ref() != Some(&signature));
+            .retain(|(_, _, s, _, _)| s.as_ref() != Some(&signature));
         if r.chat_queue.len() == queued {
             self.ui
                 .chat
@@ -1320,20 +1421,44 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// A message's `accept`: shown, it starts the Chat Delay wait again.
+    /// A message's `accept`: shown, it is narrated (`narrateChatMessage`) and
+    /// starts the Chat Delay wait again.
     fn accept_chat(
         &mut self,
         line: horizon_client::text::Text,
         source: horizon_client::chat::ChatSource,
         signature: Option<Signature>,
         trust: ChatTrust,
+        narration: &str,
     ) -> bool {
-        let shown = self.signed_chat_line(line, source, signature, trust);
+        let shown = self.player_chat_line(line, source, signature, trust, narration);
         if let Some(signature) = &signature {
             self.mark_message_processed(signature, shown);
         }
         if shown && let Some(r) = self.remote.as_mut() {
             r.chat_previous = Some(Instant::now());
+        }
+        shown
+    }
+
+    /// `showMessageToPlayer`: the line joins the chat if the Chat option and
+    /// Only Show Secure Chat let it through, and the narrator says it
+    /// (`sayChatQueued`).
+    fn player_chat_line(
+        &mut self,
+        line: horizon_client::text::Text,
+        source: horizon_client::chat::ChatSource,
+        signature: Option<Signature>,
+        trust: ChatTrust,
+        narration: &str,
+    ) -> bool {
+        // handleChatMessageError says its line as system chat.
+        let error = matches!(trust, ChatTrust::Error);
+        let shown = self.signed_chat_line(line, source, signature, trust);
+        if shown && error {
+            self.say_system_chat_queued(&horizon_client::text::Text::literal(narration));
+        } else if shown {
+            self.say_chat_queued(narration);
         }
         shown
     }
@@ -1377,10 +1502,10 @@ impl Game<'_> {
         }
         // A message the Chat option hides is dropped and the next one is tried,
         // until one shows.
-        while let Some((line, source, signature, trust)) =
+        while let Some((line, source, signature, trust, narration)) =
             self.remote.as_mut().and_then(|r| r.chat_queue.pop_front())
         {
-            if self.accept_chat(line, source, signature, trust) {
+            if self.accept_chat(line, source, signature, trust, &narration) {
                 break;
             }
         }
@@ -1396,8 +1521,8 @@ impl Game<'_> {
         else {
             return;
         };
-        for (line, source, signature, trust) in queue {
-            self.accept_chat(line, source, signature, trust);
+        for (line, source, signature, trust, narration) in queue {
+            self.accept_chat(line, source, signature, trust, &narration);
         }
         if let Some(r) = self.remote.as_mut() {
             r.chat_previous = None;
@@ -1602,6 +1727,8 @@ impl Game<'_> {
                     // no waypoints (its own ClientWaypointManager: a proxy's next
                     // server never untracks the last one's), and its new
                     // ClientSuggestionProvider with no custom chat completions.
+                    // clearClientLevel clears the narrator.
+                    self.clear_narrator();
                     self.hud_disconnected();
                     self.score.board = Default::default();
                     self.clear_waypoints();
@@ -1745,7 +1872,7 @@ impl Game<'_> {
             .get("minecraft:worldgen/biome")
             .map(|list| {
                 list.iter()
-                    .map(|(name, _)| self.res.biomes().id(name))
+                    .map(|(name, _)| world_biomes!(self).id(name))
                     .collect()
             })
             .unwrap_or_default();
@@ -3688,6 +3815,7 @@ impl Game<'_> {
                 let shown = self.remote.as_ref().is_none_or(|r| r.show_death_screen);
                 if p.health <= 0.0 && shown && self.screen != Screen::Dead && self.player.is_some()
                 {
+                    self.close_dialogs();
                     self.screen = Screen::Dead;
                     self.ui.death_time = 0;
                     self.ui.death_confirm = None;
@@ -3708,6 +3836,7 @@ impl Game<'_> {
                 // once when it is hidden.
                 if me && self.screen != Screen::Dead && self.player.is_some() {
                     if self.remote.as_ref().is_none_or(|r| r.show_death_screen) {
+                        self.close_dialogs();
                         self.screen = Screen::Dead;
                         self.ui.death_time = 0;
                         self.ui.death_confirm = None;
@@ -4001,9 +4130,11 @@ impl Game<'_> {
                 // language. ChatListener.handleOverlay for the action bar.
                 let text = remote_text(&p.content);
                 if p.overlay {
+                    self.say_system_queued(&text);
                     self.titles.set_overlay(text, false);
-                } else {
-                    self.chat_line(text, horizon_client::chat::ChatSource::Server);
+                } else if self.chat_line(text.clone(), horizon_client::chat::ChatSource::Server) {
+                    // handleSystemMessage: said once the chat takes it.
+                    self.say_system_chat_queued(&text);
                 }
             }
             C::PlayerChat(p) => {
@@ -4081,12 +4212,21 @@ impl Game<'_> {
                 let signature = signature.filter(|_| validated == secure_chat::Validated::Signed);
                 // ChatListener.handlePlayerChatMessage: Only Show Secure Chat
                 // shows the signed content, never the server's replacement.
-                let content = p
+                // The narrator says the message's own decorated content
+                // (`narrateChatMessage(boundChatType, message.decoratedContent())`).
+                let decorated = p
                     .unsigned_content
                     .as_ref()
-                    .filter(|_| !self.settings.file.bool("onlyShowSecureChat"))
                     .map_or_else(|| serde_json::Value::from(p.content.as_str()), tag_to_json);
-                let line = self.format_chat(&p.chat_type, content);
+                let content = if self.settings.file.bool("onlyShowSecureChat") {
+                    serde_json::Value::from(p.content.as_str())
+                } else {
+                    decorated.clone()
+                };
+                let narration = self
+                    .decorate_chat(&p.chat_type, &decorated, Decoration::Narration)
+                    .plain();
+                let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
                 let trust = self.chat_trust(
                     p.sender,
                     signature.is_some(),
@@ -4095,12 +4235,15 @@ impl Game<'_> {
                     p.unsigned_content.as_ref(),
                     &line,
                 );
-                self.handle_player_chat(line, signature, trust);
+                self.handle_player_chat(line, signature, trust, narration);
             }
             C::DisguisedChat(p) => {
                 let content = horizon_client::scoreboard::tag_to_json(&p.message);
-                let line = self.format_chat(&p.chat_type, content);
-                self.handle_player_chat(line, None, ChatTrust::Secure);
+                let narration = self
+                    .decorate_chat(&p.chat_type, &content, Decoration::Narration)
+                    .plain();
+                let line = self.decorate_chat(&p.chat_type, &content, Decoration::Chat);
+                self.handle_player_chat(line, None, ChatTrust::Secure, narration);
             }
             C::DeleteChat(p) => self.handle_delete_chat(&p.signature)?,
             C::PlayerInfoUpdate(p) => {
@@ -4538,7 +4681,7 @@ impl Game<'_> {
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
-    fn update_remote_skins(&mut self) {
+    pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
@@ -4603,7 +4746,7 @@ impl Game<'_> {
             && let Some((rgba, is_slim)) = horizon_client::skins::offline_skin()
         {
             const OFFLINE: &str = "horizon/offline_skin";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.clone());
             }
             if *is_slim {
@@ -4616,7 +4759,7 @@ impl Game<'_> {
             && let Some(rgba) = horizon_client::skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.to_vec());
             }
             capes.insert(local, OFFLINE.into());
@@ -4800,7 +4943,8 @@ impl Game<'_> {
         uuid: u128,
         (skin, slim): (String, bool),
     ) -> (String, bool) {
-        if skin.starts_with("skins/") && !self.again_skin(&skin) {
+        if (skin.starts_with("skins/") || skin == "horizon/offline_skin") && !self.again_skin(&skin)
+        {
             let skin = horizon_client::tab_list::default_skin(uuid);
             return (skin.to_owned(), skin.contains("/slim/"));
         }
@@ -4810,51 +4954,21 @@ impl Game<'_> {
     pub(super) fn face_skin(&mut self, uuid: u128, skin: &str) -> String {
         self.drawn_skin(uuid, (skin.to_owned(), false)).0
     }
-    /// ChatType decoration: `chat.translation_key` with sender/content parameters.
-    /// ChatType.Bound.decorate: the chat type's translation, with the
-    /// sender, the target and the message as its parameters, in its style.
-    fn format_chat(
+    /// ChatType.Bound.decorate (`Decoration::Chat`) and `decorateNarration`
+    /// (`Decoration::Narration`): the chat type's decoration from the
+    /// server's registry, applied to `content`.
+    fn decorate_chat(
         &self,
         bound: &play::ChatTypeBound,
-        content: serde_json::Value,
+        content: &serde_json::Value,
+        decoration: Decoration,
     ) -> horizon_client::text::Text {
-        use horizon_client::scoreboard::{comp_text, tag_to_json};
+        use horizon_client::scoreboard::comp_text;
         let Some(r) = self.remote.as_ref() else {
-            return comp_text(&content);
+            return comp_text(content);
         };
-        let decoration = r
-            .registries
-            .data("minecraft:chat_type", bound.chat_type)
-            .and_then(|t| t.get("chat"));
-        let key = match decoration.and_then(|d| d.get("translation_key")) {
-            Some(Tag::String(s)) => s.to_string_lossy(),
-            _ => "chat.type.text".into(),
-        };
-        let parameter = |name: &str| match name {
-            "sender" => tag_to_json(&bound.name),
-            "target" => bound
-                .target
-                .as_ref()
-                .map_or_else(|| serde_json::Value::from(""), tag_to_json),
-            _ => content.clone(),
-        };
-        let with: Vec<serde_json::Value> = match decoration.and_then(|d| d.get("parameters")) {
-            Some(Tag::List(list)) => list
-                .iter()
-                .map(|p| match p {
-                    Tag::String(s) => parameter(&s.to_string_lossy()),
-                    _ => serde_json::Value::from(""),
-                })
-                .collect(),
-            _ => vec![parameter("sender"), parameter("content")],
-        };
-        let mut component = match decoration.and_then(|d| d.get("style")) {
-            Some(style @ Tag::Compound(_)) => tag_to_json(style),
-            _ => serde_json::json!({}),
-        };
-        component["translate"] = key.into();
-        component["with"] = with.into();
-        comp_text(&component)
+        let chat_type = r.registries.data("minecraft:chat_type", bound.chat_type);
+        comp_text(&chat_type_decorate(chat_type, decoration, bound, content))
     }
     fn remote_item_data(&mut self, id: i32, stack: &Option<Stack>) {
         let Some(stack) = self.to_stack(stack) else {
@@ -4888,6 +5002,7 @@ impl Game<'_> {
             pickup_delay: 0,
             bob_offset,
             ticks: 0,
+            needs_sync: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -5133,6 +5248,11 @@ impl Game<'_> {
             r.loaded_sent = true;
             self.send(S::PlayerLoaded(Empty));
         }
+        // LevelLoadingScreen.onClose.
+        self.say_system_now(&horizon_client::text::Text::translate(
+            "narrator.ready_to_play",
+            &[],
+        ));
         self.capture_loaded_world();
     }
 
@@ -5270,7 +5390,7 @@ impl Game<'_> {
             .remote
             .as_ref()
             .is_some_and(|r| r.level_load.is_active());
-        let playing = self.screen == Screen::Playing && !loading;
+        let playing = self.screen == Screen::Playing && !loading && !self.dialog_open();
         let held = |k| playing && self.keys.contains(&k);
         let mut keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -7588,7 +7708,10 @@ impl Game<'_> {
         };
         let mut input = std::mem::take(&mut r.input);
         let stop = std::mem::take(&mut r.stop_mining);
-        let ready = r.loaded_sent && self.screen == Screen::Playing && self.sleeping.is_none();
+        let ready = r.loaded_sent
+            && self.screen == Screen::Playing
+            && self.sleeping.is_none()
+            && !self.dialog_open();
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -8429,23 +8552,40 @@ impl Game<'_> {
     }
 
     /// Connecting / loading screens; true when it covered the frame.
-    pub(super) fn remote_overlay(&self, batch: &mut HudBatch) -> bool {
+    pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
         let Some(r) = &self.remote else { return false };
         let loading = r.level_load.is_active();
         if self.player.is_some() && !loading {
             return false;
         }
-        let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         if let Some(since) = r.reconfiguring {
+            // ServerReconfigScreen narrates its title.
+            horizon_client::widgets::begin_screen(|| {
+                horizon_client::widgets::ScreenInfo::new(
+                    "reconfiguring",
+                    super::screen_info::tr("connect.reconfiguring", &[]),
+                )
+            });
             self.draw_reconfiguring(batch, since);
             return true;
         }
         if r.joined || loading {
             // LevelLoadingScreen: the world's terrain comes in. A server's
             // chunk status view and progress are the integrated server's alone
-            // (`LevelLoadTracker.statusView`, `hasProgress`).
+            // (`LevelLoadTracker.statusView`, `hasProgress`), and so is what
+            // the narrator says of it.
+            let progress = self
+                .integrated
+                .as_ref()
+                .map(|i| i.load_view())
+                .filter(|v| v.has_progress())
+                .map(|v| v.server_progress());
+            horizon_client::widgets::begin_screen(|| {
+                super::screen_info::level_loading(progress, &super::screen_info::tr)
+            });
             self.draw_level_loading_background(batch, r.level_load.reason);
+            let atlas = &self.gui.atlas;
             match self.integrated.as_ref().map(|i| i.load_view()) {
                 Some(view) => {
                     let status = |x: i32, z: i32| view.status(x, z);
@@ -8457,6 +8597,31 @@ impl Game<'_> {
             return true;
         }
         let cancel = self.connect_cancel((w, h)).is_some();
+        // ConnectScreen.extractRenderState: "Joining the world" every 2 s (a
+        // server's: single player's isn't joined through ConnectScreen).
+        if self.integrated.is_none()
+            && let Some(r) = self.remote.as_mut()
+            && r.joining_narrated
+                .is_none_or(|t| t.elapsed() > Duration::from_millis(2000))
+        {
+            r.joining_narrated = Some(Instant::now());
+            self.say_system_now(&horizon_client::text::Text::translate(
+                "narrator.joining",
+                &[],
+            ));
+        }
+        let Some(r) = &self.remote else { return false };
+        // ConnectScreen: `GameNarrator.NO_TITLE`, then its Cancel; single
+        // player's server is joined under its LevelLoadingScreen.
+        let single_player = self.integrated.is_some();
+        horizon_client::widgets::begin_screen(|| {
+            if single_player {
+                super::screen_info::level_loading(None, &super::screen_info::tr)
+            } else {
+                horizon_client::widgets::ScreenInfo::new("connect", "")
+            }
+        });
+        let atlas = &self.gui.atlas;
         let status = horizon_client::text::Text::literal(r.status.as_str());
         horizon_client::level_loading::draw_connecting(batch, atlas, &status, self.cursor, cancel);
         true
@@ -9269,6 +9434,42 @@ mod tests {
     fn matching_flags_leave_a_running_use_alone() {
         assert_eq!(synced_local_use(Some((2, 7)), 1, 2, |_| true), Some((2, 7)));
         assert_eq!(synced_local_use(None, 0, 2, |_| true), None);
+    }
+
+    /// `ChatType.Bound.decorate` and `decorateNarration`: a private message
+    /// shows as "Steve whispers to you: hi" and is narrated "Steve says hi";
+    /// a chat type the registry lacks is `minecraft:chat`'s.
+    #[test]
+    fn chat_is_narrated_with_its_chat_types_narration_decoration() {
+        use super::{Decoration, chat_type_decorate, play};
+        use horizon_world::nbt::{JavaString, Tag, parse_snbt};
+        use serde_json::json;
+        let bound = play::ChatTypeBound {
+            chat_type: 0,
+            name: Tag::String(JavaString::from("Steve")),
+            target: None,
+        };
+        let content = json!("hi");
+        let (incoming, _) = parse_snbt(
+            r#"{chat:{translation_key:"commands.message.display.incoming",parameters:["sender","content"],style:{color:"gray",italic:1b}},narration:{translation_key:"chat.type.text.narrate",parameters:["sender","content"]}}"#,
+        )
+        .unwrap();
+        let chat = chat_type_decorate(Some(&incoming), Decoration::Chat, &bound, &content);
+        assert_eq!(chat["translate"], "commands.message.display.incoming");
+        assert_eq!(chat["color"], "gray");
+        assert_eq!(chat["with"], json!(["Steve", "hi"]));
+        assert_eq!(
+            chat_type_decorate(Some(&incoming), Decoration::Narration, &bound, &content),
+            json!({"translate": "chat.type.text.narrate", "with": ["Steve", "hi"]})
+        );
+        assert_eq!(
+            chat_type_decorate(None, Decoration::Narration, &bound, &content),
+            json!({"translate": "chat.type.text.narrate", "with": ["Steve", "hi"]})
+        );
+        assert_eq!(
+            chat_type_decorate(None, Decoration::Chat, &bound, &content)["translate"],
+            "chat.type.text"
+        );
     }
 
     /// An NPC plugin lists the NPC, spawns it, and takes the entry off the list:

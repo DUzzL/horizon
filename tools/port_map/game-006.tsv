@@ -95,7 +95,7 @@ LivingEntity.getLocalBoundsForPose	missing		minor: no pose boxes; a dismounting 
 LivingEntity.wouldNotSuffocateAtTargetPose	port	crates/horizon-client/src/pose.rs::MotionWorld::can_fit_pose	gap: minor: the player's poses only; a camel changing pose is not checked
 LivingEntity.canUsePortal	port	crates/horizon-client/src/game/nether_portal.rs::Game::mob_can_use_portal	gap: minor: a sleeping mob is not excluded
 LivingEntity.setPosToBed	port	crates/horizon-client/src/mobs/villager.rs::start_sleeping	x and z at the bed's centre, y 0.6875 above its base (sleep height plus 0.125)
-LivingEntity.entityEventForEquipmentBreak	missing		player: on a server another player's or mob's tool or armor breaking (entity events 47 to 52, 65 and 68) makes no break sound or crumbs
+LivingEntity.entityEventForEquipmentBreak	inline	crates/horizon-client/src/game/creatures.rs::Game::hurt_mob_armor	a mob's worn armour that breaks from a hit broadcasts 49 to 52 (armour) and 65 (body); the player's own hands (47, 48), the saddle (68) and a guest's tool breaking on the host are not broadcast yet
 LivingEntity.onEquippedItemBroken	inline	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: the stack is cleared and modifiers rebuilt, but no break event is broadcast
 LivingEntity.stopLocationBasedEffects	inline	crates/horizon-client/src/game.rs::Game::apply_equipment	all applied modifiers are dropped and re-added from what is worn
 LivingEntity.getEquipmentSlotForItem	inline	crates/horizon-client/src/game/mob_gear.rs::Game::equip_from_table	resolveSlot: the item's equip_slot, else the main hand

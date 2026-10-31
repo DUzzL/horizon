@@ -177,6 +177,9 @@ pub struct Frontend {
     layouter: Layouter,
 
     errors: Vec<Error>,
+
+    /// Globals and struct fields accessed by atomic functions, whose types become atomic.
+    atomic_upgrades: crate::front::atomic_upgrade::Upgrades,
 }
 
 impl Frontend {
@@ -188,6 +191,7 @@ impl Frontend {
         self.global_variables.clear();
         self.entry_args.clear();
         self.layouter.clear();
+        self.atomic_upgrades = Default::default();
     }
 
     /// Parses a shader either outputting a shader [`Module`] or a list of
@@ -205,7 +209,17 @@ impl Frontend {
         let mut ctx = ParsingContext::new(lexer);
 
         match ctx.parse(self) {
-            Ok(module) => {
+            Ok(mut module) => {
+                let upgrades: crate::front::atomic_upgrade::Upgrades =
+                    core::mem::take(&mut self.atomic_upgrades);
+                if !upgrades.is_empty() {
+                    if let Err(e) = module.upgrade_atomics(&upgrades) {
+                        self.errors.push(Error {
+                            kind: ErrorKind::SemanticError(alloc::format!("{e}").into()),
+                            meta: Span::default(),
+                        });
+                    }
+                }
                 if self.errors.is_empty() {
                     Ok(module)
                 } else {

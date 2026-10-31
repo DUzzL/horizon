@@ -118,6 +118,12 @@ pub fn effect(id: &str) -> Option<&'static EffectDef> {
         None => mod_effect(id),
     }
 }
+/// A content mod's effect id (`<ns>:<path>`), not vanilla's with or
+/// without `minecraft:`.
+#[inline]
+pub fn is_mod_effect(id: &str) -> bool {
+    !id.starts_with("minecraft:") && id.bytes().any(|b| b == b':')
+}
 /// Out of line, so vanilla's lookups (every frame, every tick) stay as they were.
 #[cold]
 #[inline(never)]
@@ -365,6 +371,8 @@ mod tests {
             (0xFF0000, Category::Neutral, false)
         );
         assert!(effect("glow").is_none() && effect("ruby:late").is_none());
+        assert!(is_mod_effect(glow.id) && !is_mod_effect("speed"));
+        assert!(!is_mod_effect(namespaced("speed")));
         assert_eq!(namespaced(glow.id), "ruby:glow");
         assert_eq!(effect("minecraft:speed").unwrap().id, "speed");
         let ids: Vec<_> = all_effects().map(|e| e.id).collect();

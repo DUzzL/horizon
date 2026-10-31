@@ -227,8 +227,14 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
+    /// Sprite layers emitted while building this mesh. Kept distinct before
+    /// upload so the renderer does not rescan every terrain vertex.
+    pub sprite_layers: Vec<u16>,
     /// Axis-aligned bounding box [min, max] of actual terrain mesh vertices in section-local space [0, 16].
     pub bounds: Option<[glam::Vec3; 2]>,
+    /// A far mesh was clipped around finer tiles or resident chunks. Keep
+    /// the previous GPU mesh while its replacements fade in.
+    pub keep: bool,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -238,11 +244,27 @@ impl Default for SectionMesh {
             translucent: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
+            sprite_layers: Vec::new(),
             bounds: None,
+            keep: false,
         }
     }
 }
 impl SectionMesh {
+    /// Record a sprite layer used by a quad. Opaque is a vertex-only flag and
+    /// is removed here so the renderer can compare the actual atlas layer.
+    pub fn note_sprite_layer(&mut self, layer: u16) {
+        let layer = layer & !crate::mesher::OPAQUE_LAYER;
+        if !self.sprite_layers.contains(&layer) {
+            self.sprite_layers.push(layer);
+        }
+    }
+    /// Finish the compact layer list after meshing has emitted all faces.
+    pub fn finish_sprite_layers(&mut self) {
+        self.sprite_layers.sort_unstable();
+        self.sprite_layers.dedup();
+    }
+
     /// Padding applied to mesh vertex bounds to prevent clipping at the frustum
     /// boundary when shader packs with vertex displacement (e.g. waving foliage, water) are active.
     pub const BOUNDS_PAD: f32 = 0.5;
@@ -252,14 +274,17 @@ impl SectionMesh {
         self.solid.clear();
         self.translucent.clear();
         self.block_entities.clear();
+        self.sprite_layers.clear();
         self.sides = Sides::default();
         self.visibility = ALL_VISIBLE;
         self.bounds = None;
+        self.keep = false;
     }
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.translucent.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.block_entities.capacity() * std::mem::size_of::<([i32; 3], u32)>()
+            + self.sprite_layers.capacity() * std::mem::size_of::<u16>()
     }
     /// Sorts the solid quads by the side they face, for the renderer to
     /// leave out those facing away from the eye (`sides`).
@@ -465,6 +490,7 @@ pub struct MeshTables {
     water_overlay: u16,
     lava_still: u16,
     lava_flow: u16,
+    animated_layers: Vec<bool>,
 }
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
@@ -499,6 +525,11 @@ impl MeshTables {
                 .map(|&l| l as u16)
                 .ok_or_else(|| format!("missing fluid sprite {name}").into())
         };
+        let max_animated = render.animations.iter().map(|a| a.layer).max().unwrap_or(0);
+        let mut animated_layers = vec![false; max_animated as usize + 1];
+        for animation in &render.animations {
+            animated_layers[animation.layer as usize] = true;
+        }
         let mut covers = std::collections::HashMap::new();
         let mut info = Vec::with_capacity(facts.states.len());
         for (id, s) in facts.states.iter().enumerate() {
@@ -621,7 +652,15 @@ impl MeshTables {
             water_overlay: layer("minecraft:block/water_overlay")?,
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
+            animated_layers,
         })
+    }
+    /// Whether a terrain sprite layer has an animated clip.
+    pub fn is_animated(&self, layer: u16) -> bool {
+        self.animated_layers
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn facts(&self, state: BlockStateId) -> Option<MeshFacts> {
         let i = self.info.get(state.0 as usize)?;
@@ -1136,6 +1175,7 @@ impl Mesher<'_> {
                 }
             }
         }
+        out.finish_sprite_layers();
         out
     }
     /// `BlockColors` tint source `index`, or `None` for an untinted (-1) layer.
@@ -1191,6 +1231,9 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
+        if self.tables.is_animated(face.layer as u16) {
+            out.note_sprite_layer(face.layer as u16);
+        }
         let target = if face.translucent {
             &mut out.translucent
         } else {

@@ -1,5 +1,6 @@
 //! The interactive title before world resources exist. Uses only the menu
 //! atlas/panorama; transfers the actual screen and queued entry to Game.
+use super::event_loop::EventLoopCtl;
 use super::*;
 use horizon_client::{
     clipboard::{self, AppendSelection, SystemClipboard},
@@ -22,6 +23,13 @@ pub(super) struct StartupMenu {
     dragging: bool,
     clipboard: SystemClipboard,
     selection: AppendSelection,
+    /// The narrator's `NARRATOR_TOGGLE` toast, handed to the game with the title.
+    narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The screens' narration, handed to the game with the title (which
+    /// stays the screen already opened).
+    narration: horizon_client::screen_narrator::ScreenNarrator,
+    /// Frames drawn, for `widgets::end_frame`.
+    frames: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
     pub perf: horizon_client::telemetry::Session,
@@ -98,6 +106,8 @@ impl StartupMenu {
         game.clipboard = std::mem::take(&mut self.clipboard);
         game.text_selection = std::mem::take(&mut self.selection);
         game.perf = std::mem::take(&mut self.perf);
+        game.narrator_toast = self.narrator_toast.take();
+        game.narration = std::mem::take(&mut self.narration);
         // Preserve an existing resource-error screen opened by start_game.
         if self.options_open {
             let resource_error = game.ui.options.resource_error.take();
@@ -108,6 +118,15 @@ impl StartupMenu {
             game.options_from_title = true;
             game.dragging = self.dragging;
         }
+    }
+
+    /// After a frame is drawn: its widgets become the last frame's, and the
+    /// open screen's narration reads them (`Gui.update`'s
+    /// `handleDelayedNarration`). `gui` is the GUI size.
+    pub(super) fn frame_drawn(&mut self, gui: (f32, f32)) {
+        self.frames += 1;
+        horizon_client::widgets::end_frame(self.frames);
+        self.narration.frame(gui, self.cursor, None);
     }
 
     fn queue_entry(&mut self, action: Action, player_name: String) {
@@ -159,7 +178,7 @@ impl StartupMenu {
     }
 
     /// `Screen.keyPressed` on the title screens: the action a key starts (Enter confirms, see `confirm_key` in title.rs).
-    fn title_key(&mut self, event: &KeyEvent) -> Action {
+    fn title_key(&mut self, event: &KeyEvent, viewport: (f32, f32)) -> Action {
         let shortcut = self.shortcut(event);
         let Some(title) = &mut self.title else {
             return Action::None;
@@ -181,10 +200,16 @@ impl StartupMenu {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
-            PhysicalKey::Code(KeyCode::Tab) => title.tab(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => return title.confirm_key(),
-            PhysicalKey::Code(KeyCode::Space) if title.list_focused() => {
-                return title.confirm_key();
+            PhysicalKey::Code(KeyCode::Tab) => {
+                title.tab_dir(self.modifiers.shift_key(), viewport);
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                return title.confirm_key_size(viewport).0;
+            }
+            PhysicalKey::Code(KeyCode::Space)
+                if title.list_focused() || title.focused_button.is_some() =>
+            {
+                return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace
@@ -199,6 +224,14 @@ impl StartupMenu {
                     self.modifiers.control_key(),
                     self.modifiers.shift_key(),
                 );
+            }
+            PhysicalKey::Code(
+                key @ (KeyCode::ArrowLeft
+                | KeyCode::ArrowRight
+                | KeyCode::ArrowUp
+                | KeyCode::ArrowDown),
+            ) => {
+                title.arrow_key(key, viewport);
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -314,6 +347,7 @@ impl Loading {
             renderer.set_present_mode(self.settings.vsync, self.settings.horizon.present_mode);
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
+        super::narrator::sync(&self.settings);
         if let Some(gui) = &mut self.gui {
             gui.atlas.font.uniform = self.settings.force_unicode;
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
@@ -425,8 +459,9 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -443,6 +478,18 @@ impl Loading {
                         horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
                 Event::ShaderPack => self.save_menu_settings(),
+                Event::OpenShaderOptions => {
+                    self.settings.shader_options = super::shader_packs::read_shader_options(
+                        &self.settings.horizon.shader_pack,
+                        &self.settings.language,
+                        &horizon_shaders::Macros::standard(),
+                    );
+                }
+                Event::ShaderOptions => {
+                    if let Some(options) = self.settings.shader_options.take() {
+                        super::shader_packs::write_shader_options(&options);
+                    }
+                }
                 Event::OpenShaderPackFolder => {
                     let dir = Game::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
@@ -463,6 +510,10 @@ impl Loading {
                         self.menu.win = Some((screen, Instant::now()));
                     }
                 }
+                Event::Narrator => super::narrator::update_status(
+                    self.settings.narrator(),
+                    &mut self.menu.narrator_toast,
+                ),
                 // Mods' settings pages open only in a running game.
                 Event::NativeSettings(_) | Event::NativeButton(..) => {}
                 // The startup menu runs before the game opens a control socket,
@@ -472,10 +523,51 @@ impl Loading {
         }
     }
 
+    /// `Game::narrator_hotkey` on the startup menu's screens.
+    fn menu_narrator_hotkey(&mut self, event: &KeyEvent) {
+        let letter = clipboard::shortcut_letter(&event.logical_key, event.physical_key);
+        if letter != Some('b') {
+            return;
+        }
+        let menu = &mut self.menu;
+        let control_with_quirk = if cfg!(target_os = "macos") {
+            menu.modifiers.super_key()
+        } else {
+            menu.modifiers.control_key()
+        };
+        let edit_box_focused = if menu.options_open {
+            menu.options.typing()
+        } else if menu.win.is_some() || menu.pending.is_some() {
+            false
+        } else {
+            menu.title
+                .as_mut()
+                .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some())
+        };
+        let hotkey = super::narrator::is_hotkey(
+            event.state == ElementState::Pressed,
+            control_with_quirk,
+            letter,
+            edit_box_focused,
+            horizon_narrator::is_active(),
+            self.settings.file.bool("narratorHotkey"),
+        );
+        if !hotkey {
+            return;
+        }
+        let was_disabled = super::narrator::cycle_status(&mut self.settings);
+        super::narrator::update_status(self.settings.narrator(), &mut self.menu.narrator_toast);
+        self.save_menu_settings();
+        self.menu
+            .narration
+            .status_changed(was_disabled, horizon_narrator::screen::Trigger::Keyboard);
+    }
+
     fn menu_options_click(&mut self, drag: bool, right: bool) {
         let size = self.menu_size();
         let batch = HudBatch::new(size);
         let Some(gui) = &self.gui else { return };
+        self.menu.options.shift = self.menu.modifiers.shift_key();
         let events = self.menu.options.click(
             &mut self.settings,
             &gui.atlas,
@@ -489,7 +581,7 @@ impl Loading {
         self.menu_option_events(events);
     }
 
-    fn menu_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
+    fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
         match action {
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_menu_options(Page::Main),
@@ -520,7 +612,7 @@ impl Loading {
 
     pub(super) fn menu_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         event: WindowEvent,
     ) -> Result<()> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -531,6 +623,15 @@ impl Loading {
             } else {
                 self.menu.physical_keys.remove(&key);
             }
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = &event {
+            self.menu_narrator_hotkey(event);
+        }
+        // Fullscreen (F11) is the window's: not the screen's input.
+        let f11 = matches!(&event, WindowEvent::KeyboardInput { event, .. }
+            if event.physical_key == PhysicalKey::Code(KeyCode::F11));
+        if !f11 {
+            super::narrator::narrate_input(&mut self.menu.narration, &event, self.menu.cursor);
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -553,6 +654,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();
@@ -696,7 +804,8 @@ impl Loading {
                         self.menu_option_events(events);
                     }
                 } else {
-                    let action = self.menu.title_key(&event);
+                    let batch = HudBatch::new(self.menu_size());
+                    let action = self.menu.title_key(&event, (batch.width, batch.height));
                     self.menu_action(event_loop, action);
                 }
             }
@@ -726,6 +835,7 @@ impl Loading {
             // 20 ticks a second: the startup menu runs no tick rate.
             let delta_ticks = now.duration_since(*frame).as_secs_f32() * 20.0;
             *frame = now;
+            horizon_client::widgets::begin_screen(|| win.screen_info());
             win.draw(batch, &gui.atlas, delta_ticks, Default::default());
             if win.finished(batch.height) {
                 self.menu.win = None;
@@ -745,6 +855,9 @@ impl Loading {
                 self.settings.save(&Game::options_path());
             }
             let _ = title.update_toast(self.settings.notification_display_time);
+            for found in title.lan_found_narrations((batch.width, batch.height)) {
+                horizon_narrator::say_system_queued(&found.plain());
+            }
             let items = match &self.loaded {
                 Some(Ok(loaded)) => Some(&*loaded.pack.item_renderer),
                 _ => None,
@@ -757,6 +870,16 @@ impl Loading {
                 self.settings.file.bool("hideSplashTexts"),
             );
         }
+        // Over every screen, as the game's; no sound before the sound engine.
+        let title_toast = self.menu.title.as_ref().is_some_and(|t| t.has_toast());
+        super::narrator::draw_toast(
+            &mut self.menu.narrator_toast,
+            u32::from(title_toast),
+            f64::from(self.settings.notification_display_time),
+            &gui.atlas,
+            batch,
+            false,
+        );
     }
 
     pub(super) fn restart_menu_resources(&mut self) -> Result<()> {

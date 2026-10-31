@@ -327,6 +327,7 @@ impl Game<'_> {
         // upload into it again instead of naming sprites it does not have.
         self.skin_slots.forget();
         self.maps.slots.forget();
+        self.map_patches.clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles

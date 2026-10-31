@@ -464,12 +464,17 @@ impl Game<'_> {
                     }
                     k if super::minecarts::CartKind::from_id(k).is_some() => {
                         let kind = super::minecarts::CartKind::from_id(k).unwrap();
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         let id = self.next_entity + 1;
                         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
                             self.roll_cart_loot(&mut c, &tag);
                             self.next_entity = id;
                             self.remember(id, uuid, tag);
                             self.carts.push(c);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     "minecraft:ominous_item_spawner" => self.load_ominous_item_spawner(tag),
@@ -572,10 +577,12 @@ impl Game<'_> {
             horizon_client::mobs::camel::finish_load(&mut m, self.world.game_time);
         }
         // `NeutralMob.readPersistentAngerSaveData`: the anger runs until its
-        // end time, and the mob is angry at the target again.
+        // end time, and the mob is angry at the target again, through
+        // `Mob.setTarget` -> `asValidTarget`: a player the golem cannot attack
+        // (`IronGolem.canAttack`) comes back as no target.
         m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
         if m.extra.anger > 0 && m.extra.angry_at.is_some() {
-            m.ai.target = Some(horizon_client::mobs::Who::Player);
+            m.ai.target = (!m.built_by_player()).then_some(horizon_client::mobs::Who::Player);
         }
         m.extra.mount = mount;
         m.extra.passenger = mount.is_some();
@@ -648,18 +655,7 @@ impl Game<'_> {
             .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
             .collect();
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
-        if let Tag::Compound(c) = tag {
-            let mut list = match c.get(&"Passengers".into()) {
-                Some(Tag::List(l)) => l.clone(),
-                _ => Vec::new(),
-            };
-            list.extend(riders);
-            if list.is_empty() {
-                c.remove(&"Passengers".into());
-            } else {
-                c.insert("Passengers".into(), Tag::List(list));
-            }
-        }
+        add_passengers(tag, riders);
     }
     /// An entity of a type Horizon does not simulate, kept as its compound.
     fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
@@ -731,9 +727,77 @@ impl Game<'_> {
         }
         i
     }
-    /// `RootVehicle.Attach` names the immediate mount, not the root of its tree.
-    pub(super) fn root_vehicle_uuid(&mut self, id: Option<u32>) -> Option<[i32; 4]> {
-        Some(self.uuid_for(id?))
+    /// `Entity.getVehicle` of entity `id`: the mob, boat or minecart a mob
+    /// rides (only a mob rides another entity here).
+    fn vehicle_of(&self, id: u32) -> Option<u32> {
+        let v = self.mobs.iter().find(|m| m.id == id)?.extra.mount?;
+        let there = self.mobs.iter().any(|m| m.id == v)
+            || self.boats.iter().any(|b| b.id == v)
+            || self.carts.iter().any(|c| c.id == v);
+        there.then_some(v)
+    }
+    /// The root vehicle `root` with its passengers (`Entity.save`).
+    fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
+        if let Some(i) = self.mobs.iter().position(|m| m.id == root) {
+            return Some(self.mob_tree_nbt(i));
+        }
+        if self.boats.iter().any(|b| b.id == root) {
+            let uuid = self.uuid_for(root);
+            let b = self.boats.iter().find(|b| b.id == root)?;
+            let mut tag = entity_nbt::boat_to_nbt(
+                &b.entity_type(),
+                b.position,
+                b.velocity,
+                b.yaw,
+                uuid,
+                self.persist.raw.get(&root),
+                b.chest.then_some(&b.items[..]),
+            );
+            self.put_mob_passengers(&mut tag, root);
+            return Some(tag);
+        }
+        if !self.carts.iter().any(|c| c.id == root) {
+            return None;
+        }
+        let uuid = self.uuid_for(root);
+        let c = self.carts.iter().find(|c| c.id == root)?;
+        let mut tag = c.to_nbt(uuid, self.persist.raw.get(&root));
+        self.put_mob_passengers(&mut tag, root);
+        Some(tag)
+    }
+    /// `ServerPlayer.saveParentVehicle`: a player riding `vehicle` saves
+    /// RootVehicle {Attach: that mount's UUID, Entity: the root vehicle with
+    /// its passengers}, only while it is the root's one player passenger
+    /// (`Entity.hasExactlyOnePlayerPassenger`); `others` are the vehicles the
+    /// other players in the level ride. With the root and the mount's UUID.
+    pub(super) fn parent_vehicle_tag(
+        &mut self,
+        vehicle: Option<u32>,
+        others: &[u32],
+    ) -> Option<(Tag, u32, [i32; 4])> {
+        let vehicle = vehicle?;
+        let root = parent_vehicle_root(vehicle, others, |id| self.vehicle_of(id))?;
+        let entity = self.vehicle_tree_nbt(root)?;
+        let attach = self.uuid_for(vehicle);
+        Some((root_vehicle_tag(attach, entity), root, attach))
+    }
+    /// `PlayerList.remove`: the root vehicle and its passengers leave the
+    /// world with the player (`setRemoved(UNLOADED_WITH_PLAYER)`).
+    pub(super) fn remove_vehicle_tree(&mut self, root: u32) {
+        // The mobs `put_mob_passengers` saves under each vehicle of the tree.
+        let mounts: Vec<(u32, Option<u32>)> = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive())
+            .map(|m| (m.id, m.extra.mount))
+            .collect();
+        let gone = vehicle_tree(root, &mounts);
+        self.mobs.retain(|m| !gone.contains(&m.id));
+        self.boats.retain(|b| !gone.contains(&b.id));
+        self.carts.retain(|c| !gone.contains(&c.id));
+        for g in gone {
+            self.forget_entity(g);
+        }
     }
     /// The vehicle with this UUID, among the ones in the world.
     pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
@@ -941,10 +1005,9 @@ impl Game<'_> {
         let mobs: Vec<usize> = (0..self.mobs.len())
             .filter(|&i| {
                 self.mob_root(i) == i
-                    && self.mobs[i]
-                        .extra
-                        .mount
-                        .is_none_or(|v| self.boats.iter().all(|b| b.id != v))
+                    && self.mobs[i].extra.mount.is_none_or(|v| {
+                        self.boats.iter().all(|b| b.id != v) && self.carts.iter().all(|c| c.id != v)
+                    })
                     && keys.contains(&chunk_of(self.mobs[i].position))
                     && self.mobs[i].alive()
                     && !self.mobs[i].removed
@@ -1080,17 +1143,21 @@ impl Game<'_> {
                 out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
-        for c in &self.carts {
-            if keys.contains(&chunk_of(c.position)) {
-                let uuid = self
-                    .persist
-                    .uuids
-                    .get(&c.id)
-                    .copied()
-                    .unwrap_or_else(random_uuid);
-                let tag = c.to_nbt(uuid, self.persist.raw.get(&c.id));
-                out.entry(chunk_of(c.position)).or_default().push(tag);
-            }
+        let carts: Vec<usize> = (0..self.carts.len())
+            .filter(|&i| keys.contains(&chunk_of(self.carts[i].position)))
+            .collect();
+        for i in carts {
+            let id = self.carts[i].id;
+            let at = self.carts[i].position;
+            let uuid = self
+                .persist
+                .uuids
+                .get(&id)
+                .copied()
+                .unwrap_or_else(random_uuid);
+            let mut tag = self.carts[i].to_nbt(uuid, self.persist.raw.get(&id));
+            self.put_mob_passengers(&mut tag, id);
+            out.entry(chunk_of(at)).or_default().push(tag);
         }
         for a in &self.armor_stands {
             if keys.contains(&chunk_of(a.position)) {
@@ -1252,6 +1319,7 @@ impl Game<'_> {
                 }
                 keep
             });
+            let (items_before, orbs_before) = (self.dropped_ids(), self.orb_ids());
             self.dropped.retain(|e| {
                 let keep = !gone(e.position);
                 if !keep {
@@ -1260,6 +1328,9 @@ impl Game<'_> {
                 keep
             });
             self.orbs.retain(|o| !gone(o.position));
+            // Unloaded with their chunk: PersistentEntitySectionManager.stopTracking.
+            self.native_items_left_since(&items_before);
+            self.native_orbs_left_since(&orbs_before);
             self.creatures
                 .projectiles
                 .retain(|p| p.arrow.is_none() || !gone(p.position));
@@ -1334,10 +1405,135 @@ fn strip_finalize(tag: &mut Tag) {
         c.remove(&"horizon:finalize".into());
     }
 }
+/// `riders` under `tag`'s `Passengers`, after the passengers it kept from
+/// loading (`Entity.saveWithoutId`).
+fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
+    if let Tag::Compound(c) = tag {
+        let mut list = match c.get(&"Passengers".into()) {
+            Some(Tag::List(l)) => l.clone(),
+            _ => Vec::new(),
+        };
+        list.extend(riders);
+        if list.is_empty() {
+            c.remove(&"Passengers".into());
+        } else {
+            c.insert("Passengers".into(), Tag::List(list));
+        }
+    }
+}
+/// `Entity.getRootVehicle`: up the vehicles `vehicle_of` gives, from `id`.
+fn root_vehicle(id: u32, vehicle_of: impl Fn(u32) -> Option<u32>) -> u32 {
+    let mut root = id;
+    // A bound against a loop of mounts.
+    for _ in 0..16 {
+        match vehicle_of(root) {
+            Some(v) if v != root => root = v,
+            _ => break,
+        }
+    }
+    root
+}
+/// `ServerPlayer.saveParentVehicle`'s root: that of `vehicle`, while no
+/// other player rides its tree (`Entity.hasExactlyOnePlayerPassenger`);
+/// `others` are the vehicles the other players ride.
+fn parent_vehicle_root(
+    vehicle: u32,
+    others: &[u32],
+    vehicle_of: impl Fn(u32) -> Option<u32>,
+) -> Option<u32> {
+    let root = root_vehicle(vehicle, &vehicle_of);
+    let shared = others.iter().any(|&o| root_vehicle(o, &vehicle_of) == root);
+    (!shared).then_some(root)
+}
+/// RootVehicle {Attach: the mount's UUID, Entity: the root's tree}.
+fn root_vehicle_tag(attach: [i32; 4], entity: Tag) -> Tag {
+    Tag::compound([
+        ("Attach", Tag::IntArray(attach.to_vec())),
+        ("Entity", entity),
+    ])
+}
+/// `Entity.getPassengersAndSelf` of `root`, from each rider's mount.
+fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
+    let mut tree = vec![root];
+    let mut k = 0;
+    while k < tree.len() {
+        let v = tree[k];
+        let riders: Vec<u32> = mounts
+            .iter()
+            .filter(|(id, m)| *m == Some(v) && !tree.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        tree.extend(riders);
+        k += 1;
+    }
+    tree
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{Tag, mark_fresh, take_fresh};
+    use super::*;
+
+    const MOUNT: [i32; 4] = [1, 2, 3, 4];
+
+    fn entity(kind: &str) -> Tag {
+        Tag::compound([("id", Tag::String(kind.into()))])
+    }
+    fn passengers(tag: &Tag) -> Vec<String> {
+        match tag.get("Passengers") {
+            Some(Tag::List(l)) => l.iter().filter_map(entity_nbt::kind).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_lone_rider_saves_the_horse() {
+        let horse = 7;
+        assert_eq!(parent_vehicle_root(horse, &[], |_| None), Some(horse));
+        let tag = root_vehicle_tag(MOUNT, entity("minecraft:horse"));
+        assert_eq!(tag.get("Attach"), Some(&Tag::IntArray(MOUNT.to_vec())));
+        let saved = tag.get("Entity").and_then(entity_nbt::kind);
+        assert_eq!(saved.as_deref(), Some("minecraft:horse"));
+        assert_eq!(vehicle_tree(horse, &[]), vec![horse]);
+    }
+
+    #[test]
+    fn two_players_on_one_boat_save_nothing() {
+        let boat = 3;
+        assert_eq!(parent_vehicle_root(boat, &[boat], |_| None), None);
+        // A player on a mob in the same boat shares its tree too.
+        let pig = 4;
+        let of = |id| (id == pig).then_some(boat);
+        assert_eq!(parent_vehicle_root(boat, &[pig], of), None);
+        assert_eq!(parent_vehicle_root(boat, &[9], of), Some(boat));
+    }
+
+    #[test]
+    fn a_mob_in_a_boat_rides_under_the_boat() {
+        let (boat, pig) = (3, 4);
+        let of = |id| (id == pig).then_some(boat);
+        assert_eq!(parent_vehicle_root(pig, &[], of), Some(boat));
+        assert_eq!(vehicle_tree(boat, &[(pig, Some(boat))]), vec![boat, pig]);
+        let mut tag = entity("minecraft:oak_boat");
+        add_passengers(&mut tag, vec![entity("minecraft:pig")]);
+        assert_eq!(passengers(&tag), ["minecraft:pig"]);
+    }
+
+    #[test]
+    fn a_cart_saves_and_takes_its_mob() {
+        let (cart, zombie, chicken) = (5, 6, 8);
+        // A chicken on a zombie in the cart: the cart is the root.
+        let mounts = [(zombie, Some(cart)), (chicken, Some(zombie)), (9, None)];
+        let of = |id| mounts.iter().find(|m| m.0 == id).and_then(|m| m.1);
+        assert_eq!(parent_vehicle_root(chicken, &[], of), Some(cart));
+        assert_eq!(vehicle_tree(cart, &mounts), vec![cart, zombie, chicken]);
+        let mut tag = entity("minecraft:minecart");
+        add_passengers(&mut tag, vec![entity("minecraft:zombie")]);
+        assert_eq!(passengers(&tag), ["minecraft:zombie"]);
+        // No rider leaves no empty list.
+        let mut tag = entity("minecraft:minecart");
+        add_passengers(&mut tag, Vec::new());
+        assert!(tag.get("Passengers").is_none());
+    }
 
     /// A portal arrival or a `/summon` is told as a fresh add, and the mark
     /// never reaches the entity's kept or saved compound.

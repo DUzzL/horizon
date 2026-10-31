@@ -112,6 +112,13 @@ pub fn run(dir: &Path) -> Result<(), String> {
     let _lock = lock(dir)?;
     let shared = Shared::new(dir);
     let _endpoint = api::start(shared.clone())?;
+    if let Some(address) = crate::management::start(shared.clone())? {
+        note(
+            &shared,
+            "INFO",
+            &format!("Json-RPC Management connection listening on {address}"),
+        );
+    }
     match config.panel.address() {
         Ok(Some(address)) => match crate::panel::start(shared.clone(), address) {
             Ok(()) => note(
@@ -132,6 +139,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
     }
     sample(shared.clone());
     crate::events::poll_game(shared.clone());
+    crate::discord::start(shared.clone(), config.discord.clone());
     schedule_backups(shared.clone());
     check_updates(shared.clone());
     let console = console_lines();

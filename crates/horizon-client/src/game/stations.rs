@@ -1508,6 +1508,7 @@ impl Game<'_> {
                     .and_then(|s| self.world.block_names.get(&(s.pos[0], s.pos[1], s.pos[2])));
                 Text::literal(named.cloned().unwrap_or(default)).resolve_legacy()
             });
+            super::screen_info::name_container(|| title.plain());
             let tw = atlas.font.width_text(&title);
             batch.text_styled(
                 atlas,
@@ -1540,6 +1541,7 @@ impl Game<'_> {
             let title = self
                 .remote_menu_title()
                 .unwrap_or_else(|| Text::literal(self.translate(kind.title_key(), "")));
+            super::screen_info::name_container(|| title.plain());
             {
                 let atlas = &self.gui.atlas;
                 Self::part(
@@ -2910,6 +2912,7 @@ const ANVIL_NAME_CHARS: usize = 50;
 
 fn anvil_box() -> horizon_client::ui::EditBox {
     let mut edit = horizon_client::ui::EditBox::new(0.0, 0.0, 103.0, 12.0);
+    edit.message = super::screen_info::tr("container.repair", &[]);
     edit.bordered = false;
     edit.max_length = ANVIL_NAME_CHARS;
     edit.text_color = u32::MAX;

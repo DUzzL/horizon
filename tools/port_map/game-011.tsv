@@ -48,7 +48,7 @@ Horse.applyImplicitComponent	missing		minor: a horse/variant component on a spaw
 Horse.playGallopSound	missing		player: a ridden horse never plays the gallop and the now and then breathing sound
 Horse.mobInteract	inline	crates/horizon-client/src/game/mounts.rs::Game::interact_mount	gap: player: an untamed horse with a non-food item in hand is mounted instead of rearing angrily, a full health tame horse with food in hand is mounted instead of ignoring the click, and a golden dandelion on a foal does nothing
 Horse.canMate	inline	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	horse or donkey partner, both tame, adult, not ridden and at full health
-Horse.hurtArmor	missing		player: horse armour never loses durability when the horse is hurt (the body item is only an id)
+Horse.hurtArmor	port	crates/horizon-client/src/mobs.rs::Mob::damage_with	a hit that lands on a body-armour mob reports the wear (MobEvent::ArmorHurt); game/creatures.rs::Game::hurt_mob_armor takes max(1, damage / 4) off it, Unbreaking and the fire-resistant spare applied
 Horse.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	random coat and markings, the herd shares the coat
 Llama.setStrength	inline	crates/horizon-client/src/mobs/llama.rs::from_nbt	strength kept in variant2 and clamped to 1 to 5 where it is set (from_nbt, offspring, apply_offspring)
 Llama.setRandomStrength	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	one in 25 llamas rolls up to 5, else up to 3

@@ -3,9 +3,10 @@
 use super::guest::{Guest, SavedBody};
 use crate::{
     items::ItemStack,
-    save::{Level, read_dat, write_dat},
+    save::{Level, put, read_dat, uuid_from_tag, write_dat},
 };
 use horizon_protocol::crypto::uuid_string;
+use horizon_world::nbt::Tag;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -130,13 +131,14 @@ pub fn apply(guest: &mut Guest, level: &Level) {
     }
 }
 
-/// Save a guest (PlayerDataStorage.save).
-pub fn save(guest: &Guest, world: &Path, vehicle: Option<[i32; 4]>) {
+/// Save a guest (PlayerDataStorage.save) who has left: the vehicle it took
+/// along is in its `saved` compound already (`take_parent_vehicle`).
+pub fn save(guest: &Guest, world: &Path) {
     let mut level = Level {
         player_uuid: Some(uuid_ints(guest.uuid)),
         ..Level::default()
     };
-    store(guest, &mut level, vehicle);
+    store(guest, &mut level, None);
     let file = path(world, guest.uuid);
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -144,8 +146,9 @@ pub fn save(guest: &Guest, world: &Path, vehicle: Option<[i32; 4]>) {
     let _ = write_dat(&file, level.player_tag());
 }
 
-/// Put a guest's state in `level`'s player fields.
-pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<[i32; 4]>) {
+/// Put a guest's state in `level`'s player fields; `vehicle` is the
+/// RootVehicle compound of the ride (`ServerPlayer.saveParentVehicle`).
+pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
     level.position = Some(guest.position);
     level.dimension = guest.dimension.clone();
     level.rotation = [guest.yaw, guest.pitch];
@@ -174,8 +177,16 @@ pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<[i32; 4]>) {
     level.post_effects.clone_from(&guest.post_effects);
     level.last_death = guest.last_death.clone();
     level.player_extra = guest.saved.clone();
-    // The vehicle the player rides (`ServerPlayer.saveParentVehicle`).
-    level.root_vehicle = vehicle.or(guest.saved_vehicle);
+    // The vehicle the player rides (`ServerPlayer.saveParentVehicle`), or
+    // the one its file names that has not come back yet (kept in `saved`).
+    level.root_vehicle = guest.saved_vehicle;
+    if let Some(vehicle) = vehicle {
+        level.root_vehicle = uuid_from_tag(vehicle.get("Attach"));
+        let extra = level
+            .player_extra
+            .get_or_insert_with(|| Tag::Compound(Default::default()));
+        put(extra, "RootVehicle", vehicle);
+    }
     // The live body's fire, air and fall distance (Entity.saveWithoutId),
     // or what the file had while the player has no body yet.
     let body = guest
@@ -347,19 +358,32 @@ mod tests {
 
     #[test]
     fn a_saved_root_vehicle_comes_back() {
-        // A player saved riding a horse (#1474): the file names the vehicle
-        // (ServerPlayer.saveParentVehicle's RootVehicle), and the next login
-        // finds it and rides it again.
+        // A player saved riding a horse (#1474): the file holds the vehicle
+        // (ServerPlayer.saveParentVehicle's RootVehicle {Attach, Entity}),
+        // and the next login spawns it and rides it again.
         let vehicle = [1, 2, 3, 4];
+        let horse = Tag::compound([
+            ("id", Tag::String("minecraft:horse".into())),
+            ("UUID", Tag::IntArray(vehicle.to_vec())),
+        ]);
+        let root = Tag::compound([
+            ("Attach", Tag::IntArray(vehicle.to_vec())),
+            ("Entity", horse),
+        ]);
         let g = guest();
         let mut level = Level::default();
-        store(&g, &mut level, Some(vehicle));
+        store(&g, &mut level, Some(root.clone()));
         let tag = level.player_tag();
+        assert_eq!(tag.get("RootVehicle"), Some(&root));
         let mut read = Level::default();
         read.read_player(&tag);
         read.player_extra = Some(tag);
         let mut back = guest();
         apply(&mut back, &read);
         assert_eq!(back.saved_vehicle, Some(vehicle));
+        // Saved again before the horse is back, the file keeps it whole.
+        let mut again = Level::default();
+        store(&back, &mut again, None);
+        assert_eq!(again.player_tag().get("RootVehicle"), Some(&root));
     }
 }

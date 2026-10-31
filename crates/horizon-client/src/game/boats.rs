@@ -2,7 +2,7 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
-use super::{Game, Keys, entity_culling::at, view_vector};
+use super::{Game, InteractTarget, Keys, entity_culling::at, view_vector};
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -938,13 +938,18 @@ impl Game<'_> {
         }
         best
     }
-    /// `AbstractBoat.interact`: board the boat under the crosshair.
-    pub(super) fn interact_boat(&mut self) -> bool {
-        let Some((i, d)) = self.boat_hit() else {
+    /// `AbstractBoat.interact`: board the boat under the crosshair, or the one
+    /// a guest's interact packet named.
+    pub(super) fn interact_boat(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.boats, t.id, |b| b.id).map(|i| (i, 0.0)),
+            None => self.boat_hit(),
+        }) else {
             return false;
         };
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
-        if !self.before_block(d) {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none() && !self.before_block(d) {
             return false;
         }
         // AbstractBoat.interact starts with Entity.interact: the lead.

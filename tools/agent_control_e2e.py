@@ -70,11 +70,11 @@ class Failed(Exception):
 
 def game_env(screen, home=None):
     """The environment of a game: lab.game_env with HORIZON_HOME `home` (a scratch folder when None), no live-count
-    ping, and on Linux the virtual screen `screen`."""
+    ping, and on Linux the virtual screen `screen` (macOS and Windows have none)."""
     extra = {'HORIZON_TELEMETRY_URL': 'off'}  # no live-count ping from test games
     if home is not None:
         extra['HORIZON_HOME'] = home
-    if sys.platform == 'darwin':
+    if sys.platform in ('darwin', 'win32'):
         return lab.game_env(**extra)
     if not shutil.which('vscreen') and os.environ.get('DISPLAY'):
         return lab.game_env(**extra)
@@ -714,7 +714,7 @@ def scratch(mode, resources):
     work = Path(tempfile.mkdtemp(prefix=f'hzac-{mode}-'))
     (work / '.local').mkdir()
     (work / '.local/horizon-client').mkdir()
-    os.symlink(resources, work / '.local/horizon-client' / lab.VERSION)
+    lab.link_dir(resources, work / '.local/horizon-client' / lab.VERSION)
     # A first launch shows the accessibility onboarding before the title (Gui.addInitialScreens): these
     # scenarios start at the title, as a player does after it.
     (work / 'options.txt').write_text('onboardAccessibility:false\n')

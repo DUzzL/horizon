@@ -470,9 +470,20 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   undone carry MCP's `destructiveHint`. It's the same idea as the game's `horizon-ctl`
   (docs/agent-control.md): an AI can run and diagnose a server, and every action it takes shows in the log.
 - **Vanilla's own management protocol.** Vanilla 26.3 has a server management protocol: JSON-RPC over a
-  WebSocket, set up by the `management-server-*` keys in server.properties. Horizon's engine already parses
-  those keys but doesn't serve the protocol. Serving it later, on the engine or the supervisor, would let tools
-  written for vanilla manage a Horizon server too. That is not part of the MVP.
+  WebSocket, set up by the `management-server-*` keys in server.properties, so tools written for vanilla can
+  manage a Horizon server too. The supervisor serves it (`management.rs`, the WebSocket in `websocket.rs`, std
+  only like `http.rs`; TLS, on by default as in vanilla, through rustls in `management_tls.rs`, from a PKCS12
+  keystore, or a self-signed one Horizon makes when none is set), so it answers while the game restarts
+  (`server/status` says `started: false` then); calls that change the game go through its console.
+  Authentication, errors and replies follow vanilla's `net.minecraft.server.jsonrpc` (`AuthenticationHandler`,
+  `Connection`, `methods/*Service`), and `rpc.discover` gives vanilla's OpenRPC document (`management_schema.rs`).
+  `tools/test_management_protocol_parity.py` sends vanilla's server and Horizon's the same messages over TLS
+  (one keystore for both) and compares the answers, and the document with the data generator's
+  `json-rpc-api-schema.json`.
+  - built: the WebSocket and its authentication, TLS, `rpc.discover`, `players`, `players/kick`,
+    `server/{status,save,stop,system_message}`, the getters of the four lists;
+  - planned: changing the lists (through the game, so the source, expiry and kicks are vanilla's),
+    `serversettings/*` and `gamerules`, the notifications and heartbeat (from the event stream).
 
 ## 9. Benchmark plan (bots against vanilla and Paper)
 

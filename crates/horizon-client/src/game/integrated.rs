@@ -326,6 +326,19 @@ impl Game<'_> {
         options.server = None;
         options.world = None;
         self.join_world_rest()?;
+        // The window plays against the world's own biome table (its chunks
+        // carry the packs' ids past the built-in list, `set_registries`
+        // names them through it), as the server thread's copy does.
+        let world = std::env::current_dir()?.join("saves").join(folder);
+        let enabled_features = horizon_client::save::Level::read(&world)
+            .map(|l| l.enabled_features)
+            .unwrap_or_default();
+        self.world_biomes = Some(super::world_loading::packed_biomes(
+            &world,
+            &self.options.resources,
+            self.res.biomes(),
+            &enabled_features,
+        ));
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());
         let flags = Arc::new(Flags::default());
         flags
@@ -524,6 +537,7 @@ impl Game<'_> {
     ) -> Result<()> {
         let result = self.run_integrated_inner(launch, flags, tasks, ready, opening);
         if let Err(error) = &result {
+            self.native_players_leaving();
             self.native_lifecycle_close_failed(&error.to_string());
         }
         result
@@ -728,6 +742,7 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(false);
+        self.native_players_leaving();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -736,9 +751,7 @@ impl Game<'_> {
             self.flush_native_net(&mut host);
             // PlayerList.removeAll: the owner and every guest leave the game.
             host.award_leave_game_to_all();
-            for g in &host.hub.guests {
-                self.save_guest(&host, g);
-            }
+            self.save_leaving_guests(&mut host);
             let conns: Vec<u32> = host.hub.guests.iter().map(|g| g.conn).collect();
             for conn in conns {
                 host.hub.kick(

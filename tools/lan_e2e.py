@@ -106,6 +106,16 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - clicks:    with real mouse presses (not click-slot, which skips the screen's press and drag
              handling), the guest puts a stack into a chest and a furnace, drags planks across
              its crafting grid and gathers a stack with a double click; the server has each.
+- shift-double-click: a 32 diamond stack on the cursor, Shift held and two left clicks under 250 ms
+             apart on a chest's 8 diamonds: what 26.3 moves, same pair 400 ms apart as control.
+- recipe-shift: in a crafting table, 20 diamonds and craftable-only book: Shift-click on the
+             diamond block recipe fills the grid with the max sets, then a Shift-click on the
+             result crafts them (#4166).
+- shift-drag: a 20 diamond stack dragged over three slots of a crafting table spreads 6 each with
+             the left button and 1 each with the right, with Shift held over the drag or not; the
+             server hands the rest back when the table closes (#4166).
+- modifier-release: a Shift tap or the control socket's release command leaves the next real
+             inventory click as a normal pickup, rather than a stuck Shift transfer (#4166).
 - wheel:     with the Mouse Tweaks extra on, real wheel events and a right-drag in a furnace, a
              crafting table, a hopper and a dropper: fuel and smeltables go to their slots, nothing
              into a result slot, and down over a result takes it. The server has each.
@@ -350,7 +360,7 @@ SERVER_THREAD = True
 CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
-          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
+          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
@@ -365,7 +375,7 @@ class Game:
         self.name = name
         self.work = Path(tempfile.mkdtemp(prefix=f'hzlan-{name}-'))
         (self.work / '.local/horizon-client').mkdir(parents=True)
-        os.symlink(resources, self.work / '.local/horizon-client' / lab.VERSION)
+        lab.link_dir(resources, self.work / '.local/horizon-client' / lab.VERSION)
         self.socket = self.work / 'c.sock'
         env = game_env(os.environ.get('VSCREEN', 'lan-e2e'), home=self.work / 'home')
         env = game_environment(env, self.work)
@@ -2324,8 +2334,18 @@ def slot_point(game, slot):
 
 
 def mouse(game, *slots, right=False):
-    """Press over the first slot, move over the others and release: one click, or a drag."""
-    points = [f'{v:.1f}' for s in slots for v in slot_point(game, s)]
+    """Press over the first slot, move over the others and release: one click, or a drag.
+
+    A drag crosses every slot: `mouseDragged` takes the slots the pointer is over as move events
+    land, so each leg gets a second point a couple of pixels into the same slot -- a single point
+    drag would skip the start slot no mouse held still on. One slot stays a plain click."""
+    if len(slots) <= 1:
+        points = [f'{v:.1f}' for s in slots for v in slot_point(game, s)]
+    else:
+        points = []
+        for s in slots:
+            x, y = slot_point(game, s)
+            points += [f'{x:.1f}', f'{y:.1f}', f'{x + 2:.1f}', f'{y + 1:.1f}']
     game.raw('drag-at', *(['right'] if right else []), *points)
     game.wait(4)
 
@@ -2397,6 +2417,304 @@ def check_clicks(host, guest, out):
         f'the drag left the grid as {grid}'
     assert counts.get('minecraft:stick') == 4 and 'minecraft:cobblestone' not in counts, f'inventory after: {counts}'
     return {'chest': in_chest, 'furnace': in_furnace, 'grid': grid, 'inventory': counts}
+
+
+def held(game):
+    """The stack on the cursor of the open screen, as (item, count)."""
+    c = game('screen').get('carried') or {}
+    return (c.get('item'), c.get('count'))
+
+
+def container_of(game, n):
+    """The open container's (most) slots by container index, Horizon's slots 300 and up."""
+    return {s['slot'] - 300: (s.get('item'), s.get('count'))
+            for s in game('screen').get('slots', []) if 300 <= s.get('slot', 0) < 300 + n}
+
+
+def grid_of(game, first, last):
+    """The open screen's slots `first..last-1` (empties included) as (item, count)."""
+    return {s['slot']: (s.get('item'), s.get('count'))
+            for s in game('screen').get('slots', []) if first <= s.get('slot', 0) < last}
+
+
+def result_of(game):
+    """The crafting result of the open screen, as (item, count)."""
+    s = grid_of(game, 200, 201).get(200, (None, None))
+    return s
+
+
+def check_modifier_release(host, guest, out):
+    """Agent key taps and release must clear Shift before the next mouse pickup."""
+    guest('command', command='gamemode survival')
+    grab(host)
+    seen = {}
+    for case in ('tap', 'release'):
+        guest('command', command='clear @s')
+        guest('command', command='give @s minecraft:diamond 10')
+        guest.wait(5)
+        guest.raw('key', 'e', 'tap')
+        guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+        guest.wait(5)
+        try:
+            if case == 'tap':
+                guest.raw('key', 'shift', 'tap')
+            else:
+                guest.raw('key', 'shift', 'down')
+                guest.raw('release')
+            mouse(guest, hotbar_slot(guest, 'minecraft:diamond'))
+            seen[case] = held(guest)
+            guest.shot(out, f'modifier-release-{case}')
+            assert seen[case] == ('minecraft:diamond', 10), \
+                f'{case} left Shift held: the click carried {seen[case]}'
+        finally:
+            guest.raw('release')
+            guest.raw('key', 'esc', 'tap')
+            guest.wait(5)
+        assert server_count(guest, 'diamond') == 10, 'modifier cleanup lost items'
+    host_unaffected(host, "the guest's modifier cleanup")
+    return seen
+
+
+def check_shift_double_click(host, guest, out):
+    """A stack on the cursor, Shift held and two left clicks under 250 ms apart on one chest stack:
+    what 26.3 moves (mouseReleased's double click, #4166). The same pair with the clicks too far
+    apart is the control: only the first release's Shift click happens."""
+    guest('command', command='gamemode survival')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    chest = (x, y, z + 2)
+    guest('command', command=f'setblock {chest[0]} {chest[1]} {chest[2]} minecraft:chest')
+    guest.wait(10)
+    grab(host)
+    timings = {}
+    seen = {}
+
+    def reset():
+        guest('command', command='clear @s')
+        guest('command', command='give @s minecraft:diamond 32')
+        for i, n in enumerate((8, 13, 21)):
+            guest('command', command=f'item replace block {chest[0]} {chest[1]} {chest[2]} container.{i} '
+                                     f'with minecraft:diamond {n}')
+        guest('command', command=f'item replace block {chest[0]} {chest[1]} {chest[2]} container.3 '
+                                 f'with minecraft:coal 5')
+        guest.wait(10)
+        guest.raw('interact', *chest)
+        guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
+        guest.wait(5)
+        # Take the 32 on the cursor, then a wait past Horizon's 250 ms double click window.
+        mouse(guest, hotbar_slot(guest, 'minecraft:diamond'))
+        time.sleep(0.4)
+
+    def clicks(gap):
+        point = slot_point(guest, 300)
+        guest.raw('key', 'shift', 'down')
+        try:
+            started = time.monotonic()
+            guest.raw('drag-at', f'{point[0]:.1f}', f'{point[1]:.1f}')
+            if gap:
+                time.sleep(gap)
+            guest.raw('drag-at', f'{point[0]:.1f}', f'{point[1]:.1f}')
+            return round((time.monotonic() - started) * 1000)
+        finally:
+            guest.raw('key', 'shift', 'up')
+            guest.wait(10)
+
+    reset()
+    timings['slow'] = clicks(0.4)
+    seen['slow chest'] = container_of(guest, 4)
+    seen['slow carried'] = held(guest)
+    guest.raw('key', 'esc', 'tap')
+    guest.wait(5)
+    seen['slow after'] = server_count(guest, 'diamond')
+    reset()
+    timings['fast'] = clicks(0)
+    seen['fast chest'] = container_of(guest, 4)
+    seen['fast carried'] = held(guest)
+    guest.shot(out, 'shift-double-click')
+    guest.raw('key', 'esc', 'tap')
+    guest.wait(5)
+    # Closing returns the carried stack to the inventory: the server's own count.
+    seen['fast after'] = server_count(guest, 'diamond')
+    empty = (None, None)
+    # Vanilla 26.3's verdict, from AbstractContainerScreen.mouseReleased's double click:
+    # the pair's first release QUICK_MOVEs the clicked stack (lastQuickMoved), the second
+    # (Shift held) QUICK_MOVEs every stack of that item in the clicked slot's container;
+    # the carried stack waits on the cursor and closing hands it back.
+    want = {'fast chest': {0: empty, 1: empty, 2: empty, 3: ('minecraft:coal', 5)},
+            'fast carried': ('minecraft:diamond', 32), 'fast after': 74,
+            'slow chest': {0: empty, 1: ('minecraft:diamond', 13), 2: ('minecraft:diamond', 21),
+                           3: ('minecraft:coal', 5)},
+            'slow carried': ('minecraft:diamond', 32), 'slow after': 40}
+    assert seen == want, f'the Shift clicks left {seen}'
+    for at in (chest,):
+        guest('command', command=f'setblock {at[0]} {at[1]} {at[2]} minecraft:air')
+    host_unaffected(host, "the guest's Shift double click")
+    return {**seen, 'click interval ms': timings}
+
+
+def check_recipe_shift(host, guest, out):
+    """Shift-clicking a recipe book button fills the crafting grid with as many sets as the
+    inventory makes, and Shift-clicking the result crafts them all (#4166)."""
+    guest('command', command='gamemode survival')
+    guest('command', command='clear @s')
+    guest('command', command='recipe give @s minecraft:diamond_block')
+    guest('command', command='give @s minecraft:diamond 20')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    table = (x, y, z + 2)
+    guest('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:crafting_table')
+    guest.wait(10)
+    grab(host)
+    guest.raw('interact', *table)
+    guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)  # a table screen reads 'inventory'
+    guest.wait(5)
+    assert guest('screen').get('craft_size') == 3, 'the table opened without its 3x3 grid'
+    book = guest('screen')['recipe_book']
+    seen = {'book open': book['open']}
+    # The book button, then the visible recipes.
+    def recipes():
+        targets = guest('screen')['recipe_book']['targets']
+        return [t for t in targets if abs(t[2] - 25.0) < 0.001 and abs(t[3] - 25.0) < 0.001]
+    if not book['open']:
+        for t in guest('screen')['recipe_book']['targets']:
+            if abs(t[2] - 20.0) < 0.001 and abs(t[3] - 18.0) < 0.001:
+                guest.raw('click-at', f'{t[0] + 10:.1f}', f'{t[1] + 9:.1f}')
+                guest.wait(5)
+                seen['book open'] = guest('screen')['recipe_book']['open']
+                break
+    # Filter to craftable recipes before choosing the Building Blocks tab.
+    if not guest('screen')['recipe_book']['filtering']:
+        for t in guest('screen')['recipe_book']['targets']:
+            if abs(t[2] - 26.0) < 0.001 and abs(t[3] - 16.0) < 0.001:
+                guest.raw('click-at', f'{t[0] + 13:.1f}', f'{t[1] + 8:.1f}')
+                guest.wait(5)
+                break
+    # Diamond armour is also craftable; select a tab with only the block recipe.
+    buttons = recipes()
+    for t in (t for t in guest('screen')['recipe_book']['targets']
+              if abs(t[2] - 35.0) < 0.001 and abs(t[3] - 27.0) < 0.001):
+        guest.raw('click-at', f'{t[0] + 17:.1f}', f'{t[1] + 13:.1f}')
+        guest.wait(5)
+        buttons = recipes()
+        seen['buttons'] = len(buttons)
+        if len(buttons) == 1:
+            break
+    assert len(buttons) == 1, (f'with the craftable filter and its tabs the book shows '
+                               f'{len(buttons)} recipes, not 1',
+                              [t for t in guest('screen')['recipe_book']['targets']],
+                              guest('screen')['recipe_book']['filtering'])
+    centre = (buttons[0][0] + 12.5, buttons[0][1] + 12.5)
+    guest.raw('key', 'shift', 'down')
+    try:
+        guest.raw('click-at', f'{centre[0]:.1f}', f'{centre[1]:.1f}')
+    finally:
+        guest.raw('key', 'shift', 'up')
+    guest.wait(10)
+    seen['grid'] = grid_of(guest, 100, 109)
+    seen['result'] = result_of(guest)
+    seen['carried'] = held(guest)
+    seen['inventory'] = guest('inventory')['counts'].get('minecraft:diamond', 0)
+    guest.shot(out, 'recipe-shift-filled')
+    # Take all available crafts with a real Shift click on the result.
+    guest.raw('key', 'shift', 'down')
+    try:
+        point = slot_point(guest, 200)
+        guest.raw('click-at', f'{point[0]:.1f}', f'{point[1]:.1f}')
+    finally:
+        guest.raw('key', 'shift', 'up')
+    guest.wait(10)
+    seen['after grid'] = grid_of(guest, 100, 109)
+    seen['after result'] = result_of(guest)
+    seen['after carried'] = held(guest)
+    guest.shot(out, 'recipe-shift-crafted')
+    guest.raw('key', 'esc', 'tap')
+    guest.wait(5)
+    seen['after blocks'] = server_count(guest, 'diamond_block')
+    seen['after diamonds'] = server_count(guest, 'diamond')
+    guest('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:air')
+    host_unaffected(host, "the guest's recipe Shift clicks")
+    filled = {s: ('minecraft:diamond', 2) for s in range(100, 109)}
+    blank = {s: (None, None) for s in range(100, 109)}
+    # Vanilla 26.3: RecipeBookComponent's Shift click sends PlaceRecipe with useMaxItems and
+    # ServerPlaceRecipe fills the grid with as many sets as the inventory makes (18 diamonds,
+    # 2 left); the result shows one craft. The result's Shift click is QUICK_MOVE: it crafts
+    # every set the grid allows (2 blocks), leaves the grid empty and 2 diamonds.
+    want = {'book open': True, 'buttons': 1, 'grid': filled, 'result': ('minecraft:diamond_block', 1),
+            'carried': (None, None), 'inventory': 2, 'after grid': blank, 'after result': (None, None),
+            'after carried': (None, None), 'after blocks': 2, 'after diamonds': 2}
+    assert seen == want, f'the recipe Shift clicks left {seen}'
+    return seen
+
+
+def check_shift_drag(host, guest, out):
+    """A 20 diamond stack dragged over three slots of a crafting table spreads 6 each with the left
+    button and 1 each with the right, with Shift held over the drag or not; closing hands the rest
+    back to the guest's inventory (#4166)."""
+    guest('command', command='gamemode survival')
+    guest('command', command='clear @s')
+    guest('command', command='give @s minecraft:diamond 20')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    table = (x, y, z + 2)
+    guest('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:crafting_table')
+    guest.wait(10)
+    grab(host)
+    guest.raw('interact', *table)
+    guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)  # a table screen reads 'inventory'
+    guest.wait(5)
+    assert guest('screen').get('craft_size') == 3, 'the table opened without its 3x3 grid'
+
+    def drag(right, shift):
+        mouse(guest, hotbar_slot(guest, 'minecraft:diamond'))
+        guest.wait(5)
+        if shift:
+            guest.raw('key', 'shift', 'down')
+        try:
+            mouse(guest, 100, 101, 102, right=right)
+        finally:
+            if shift:
+                guest.raw('key', 'shift', 'up')
+        grid = grid_of(guest, 100, 109)
+        carried = held(guest)
+        guest.raw('key', 'esc', 'tap')
+        guest.wait(10)
+        return grid, carried
+
+    seen = {}
+    seen['left'], seen['left carried'] = drag(False, False)
+    seen['after'] = server_count(guest, 'diamond')
+    guest.raw('interact', *table)
+    guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)  # a table screen reads 'inventory'
+    guest.wait(5)
+    assert guest('screen').get('craft_size') == 3, 'the table opened without its 3x3 grid'
+    seen['right'], seen['right carried'] = drag(True, False)
+    guest.raw('interact', *table)
+    guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)  # a table screen reads 'inventory'
+    guest.wait(5)
+    assert guest('screen').get('craft_size') == 3, 'the table opened without its 3x3 grid'
+    seen['left shift'], seen['left shift carried'] = drag(False, True)
+    guest.raw('interact', *table)
+    guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)  # a table screen reads 'inventory'
+    guest.wait(5)
+    assert guest('screen').get('craft_size') == 3, 'the table opened without its 3x3 grid'
+    seen['right shift'], seen['right shift carried'] = drag(True, True)
+    seen['after shift'] = server_count(guest, 'diamond')
+    guest.shot(out, 'shift-drag')
+    guest('command', command=f'setblock {table[0]} {table[1]} {table[2]} minecraft:air')
+    host_unaffected(host, "the guest's Shift drag")
+    left = {**{s: ('minecraft:diamond', 6) for s in range(100, 103)},
+            **{s: (None, None) for s in range(103, 109)}}
+    right = {**{s: ('minecraft:diamond', 1) for s in range(100, 103)},
+             **{s: (None, None) for s in range(103, 109)}}
+    # Vanilla 26.3: a carried press starts the quick craft drag whatever Shift does
+    # (AbstractContainerScreen.mouseClicked); mouseDragged selects slots regardless of Shift.
+    # The left drag
+    # over three slots divides the stack as it does without it, the right one drops one
+    # each; the table hands the rest back when it closes.
+    want = {'left': left, 'left carried': ('minecraft:diamond', 2), 'after': 20,
+            'right': right, 'right carried': ('minecraft:diamond', 17),
+            'left shift': left, 'left shift carried': ('minecraft:diamond', 2),
+            'right shift': right, 'right shift carried': ('minecraft:diamond', 17),
+            'after shift': 20}
+    assert seen == want, f'the Shift drag left {seen}'
+    return seen
 
 
 def wheel(game, slot, steps):
@@ -6054,7 +6372,9 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'cartography': check_cartography, 'hurt': check_hurt, 'commands': check_commands,
              'recipes': check_recipes, 'trials': check_trials, 'walls': check_walls,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance,
-             'clicks': check_clicks, 'wheel': check_wheel, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,
+             'clicks': check_clicks, 'shift-double-click': check_shift_double_click, 'recipe-shift': check_recipe_shift,
+             'shift-drag': check_shift_drag, 'wheel': check_wheel, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,
+             'modifier-release': check_modifier_release,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,

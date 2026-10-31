@@ -53,7 +53,17 @@ fn item_name(builtin: &Builtin, id: i32) -> Arc<str> {
 
 /// The item's patched components as vanilla's `components` compound.
 fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag> {
-    let name = |id: i32| builtin.get("minecraft:data_component_type")?.name(id);
+    let name = |id: i32| {
+        builtin
+            .get("minecraft:data_component_type")
+            .and_then(|types| types.name(id))
+            .or_else(|| {
+                synced
+                    .custom_components
+                    .then(|| horizon_protocol::item::custom::name(id))
+                    .flatten()
+            })
+    };
     let mut entries: Vec<(&str, Tag)> = Vec::new();
     for (kind, c) in &s.added {
         let Some(key) = name(*kind) else {
@@ -259,7 +269,20 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
         };
         entries.push((key, value));
     }
-    Some(Tag::compound(entries))
+    let mut out = Tag::compound(entries);
+    if let Tag::Compound(map) = &mut out {
+        for id in &s.removed {
+            if synced.custom_components
+                && let Some(name) = horizon_protocol::item::custom::name(*id)
+            {
+                map.insert(
+                    format!("!{name}").as_str().into(),
+                    Tag::Compound(Default::default()),
+                );
+            }
+        }
+    }
+    Some(out)
 }
 
 /// An `ItemStackTemplate` as its NBT codec writes it: id, count and components.

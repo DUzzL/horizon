@@ -258,6 +258,26 @@ alone): it is asked when a chunk holding it is sent and when its block changes, 
 copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
 menus have their own data slots. Bundles that use it need `"hooks": 45`.
 
+API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
+colored-light requests. Rims trace the client's existing block outline edges,
+depth-tested against terrain. Lights add camera-local RGB illumination to the
+normal terrain/entity shaders, not gameplay light. Only the first eight rims
+and eight lights are examined; positions must be within 32 blocks of the player,
+values must be finite and bounded, and source chunks must be loaded. At most
+256 rim edges and 16 colored lights are rendered. Requests are frame-local,
+so disabling a native mod or leaving the world clears them without a retained
+state. Helpers `native_lit_block_name` and `native_flame_particle` read loaded
+blocks and emit a nearby vanilla flame particle; native mods must rate-limit
+emission. It also adds `native_emissive`: a world-frame hook for at most 32 pairs of
+already-loaded terrain sprites. Transparent pixels in an overlay leave its
+base unchanged; opaque pixels are drawn full-bright without changing gameplay
+light or the surrounding rock. The source pack must supply the overlay texture
+under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
+the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 46`.
+When a native mod bundles a Horizon shader pack, naming its folder
+`native-<mod-id>` makes the Mods On/Off control pause that pack too (without
+changing the player's saved shader selection); other packs are unaffected.
+
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
@@ -371,6 +391,112 @@ one, stops the build instead of skipping the steps. When a step fails, so does t
 step failed …") and the version folder is removed. It runs on the player's computer like the rest of the mod's code: only the
 launcher runs it, never horizon-mixins.
 
+API 47 adds `native_entity_join_level(dimension, entity, kind, pos, loaded_from_disk, canceled)`, an entity joining a
+server level (NeoForge's `EntityJoinLevelEvent`, vanilla's `PersistentEntitySectionManager.addEntity`):
+`loaded_from_disk` is true when it comes back with its chunk, false for a fresh add (a drop, an orb, `/summon`, an
+arrival through a portal into another level). The entity is already in the level's lists when the hook runs; `canceled` takes it back
+out, and a `/summon` of it fails with vanilla's "duplicate UUIDs" message. It tells item entities and experience
+orbs so far; later APIs add other kinds, so check `kind`. Bundles that use it need `"hooks": 47`.
+
+API 48 adds [a block's items](#a-blocks-items) for server mods, what a pipe or a machine needs to pull from other blocks: `native_container_slots`, `native_extract_item`
+and `native_move_items`, and `native_dimension` for a machine's tick to name its level. `native_insert_item` now goes one item at a time, so it no longer overfills a slot,
+leaves a client's copy of the world alone, and can't reach a machine's own slots during its tick, where what went in was lost. Bundles that use the new helpers need `"hooks": 48`.
+
+API 49 adds what a server mod needs for a public server's screens: `native_sidebar(uuid, sidebar)` shows one
+player a sidebar of up to 15 lines (a text, and one where the score would be) that only their client holds (the
+server's scoreboard never sees it; a mod sends it again when they rejoin), or takes it away with `None`;
+`native_tab_list(uuid, header, footer)` sets the lines over and under their Tab list; `native_tick_stats()` reads the
+server's tick rate and average tick time in ms (`/tick query`'s); and `native_sleep_ignored(uuid, ignored)` leaves a
+player out of `players_sleeping_percentage`'s count until they are in bed (players away from the keyboard), outside a
+player's hook only. The players `native_server_players` lists carry where they look (`yaw`, `pitch`). Bundles that
+use them need `"hooks": 49`.
+
+API 50 adds damage a mod can change or cancel through `native_living_incoming_damage` (NeoForge's
+`LivingIncomingDamageEvent`): where `LivingEntity.hurtServer` starts, once its guards passed (invulnerable, dead or
+dying, fire with fire resistance; Horizon's mobs don't check the fire resistance effect there yet), with the hurt
+entity's id and type (`minecraft:player` for a player), the damage type (`minecraft:fall`), the source's causing
+entity (`causing`, vanilla's `DamageSource.getEntity`: a skeleton for its arrow) and direct entity (`direct`,
+`getDirectEntity`: the arrow; the attacker itself in melee), and the amount. The entity ids are 0 for none, and for
+the sources listed below that Horizon doesn't track yet. A mod may change the amount, or set `canceled`: nothing of
+`hurtServer` itself happens then (no damage, hurt sound, knockback, invulnerable time, statistics or criteria), and
+the caller acts as on a refused hit, so a blast still pushes a mob whose hit was canceled, as vanilla pushes one that
+refused it. A ghast's canceled hit by a fireball it was sent back counts as landed (`Ghast.hurtServer`). A negative
+amount hurts by 0 and a NaN or infinite one by `Float.MAX_VALUE`, as vanilla clamps them. It fires for the players and
+mobs the game hurts; the ender dragon doesn't reach it yet. It has no `self`: the game is in the middle of the hit. It
+runs on the thread that ticks the world (the server thread; the window's on the deprecated in-frame path), so state a
+mod shares with its render thread hooks needs synchronising. On the in-frame path the window's player has id 0, or the
+host's id once the world is open to LAN. `/kill` and `native_kill_mob` don't reach it yet: they set the health to 0
+instead of hurting with `minecraft:generic_kill` as vanilla does.
+
+A player's damage type is the source's own. A mob's comes from the kind of damage Horizon keeps for the hit, which
+doesn't tell every vanilla type apart yet:
+
+- A trident's hit on a mob is `minecraft:arrow`, not `minecraft:trident`
+- A wither skull's hit on a mob is `minecraft:magic`, not `minecraft:wither_skull`
+- Evoker fangs on a mob are `minecraft:magic`, not `minecraft:indirect_magic`
+- A fireball nobody shot is `minecraft:fireball`, not `minecraft:unattributed_fireball`
+- A shulker bullet's hit has no `minecraft:mob_projectile`
+- A bed or respawn anchor blast on a mob is `minecraft:explosion`, not `minecraft:bad_respawn_point`
+- A blast from TNT a player lit is `minecraft:explosion` on a mob, not `minecraft:player_explosion`
+
+The causing and direct entities are 0 for now in these cases:
+
+- A player's direct entity, always
+- A player's causing entity, except for a mob that shot the projectile, the mob `/damage` names, an evoker that summoned
+  the fangs, a slime or magma cube that touched the player, and a mob that exploded (a sulfur cube's is guessed until
+  its blast names its source)
+- A mob's causing and direct entities when a player is behind the hit (melee, arrows, tridents, blasts, TNT a player
+  lit)
+- A mob's direct entity when it isn't the causing one (a projectile, a blast, a potion)
+- A falling block on a mob, whose causing and direct entity is the block in vanilla
+- `/damage` on a mob `by` an entity with a damage type that isn't melee: the direct entity is 0, not that entity
+
+And `/damage` on a mob `by` one entity `from` another with a melee damage type gives the `from` entity as the direct
+one, where vanilla gives the `by` one.
+
+Bundles that use it need `"hooks": 50`.
+
+API 51 adds `native_menu_button_v2`: a mod container's menu button (`AbstractContainerMenu.clickMenuButton(Player, int)`) with the clicking player's cursor stack, read and written, so a widget outside the slots can take or give what the player carries (a tank taking a bucket). It fires right after `native_menu_button`, on the server, for single player and LAN guests alike. Bundles need "hooks": 51.
+
+API 52 adds `native_block_entity_sync(pos)`, which sends the block and its update tag to clients again
+(`Level.sendBlockUpdated`): with the level's block changes, to the players who see its chunk, once per position
+however often it is called in a tick. A change made in a block entity's tick reaches clients at the start of the
+next tick, as in vanilla. Call it when what clients show changes, not for every tick's progress: a menu's data slots
+carry that. Bundles that use it need `"hooks": 52`.
+
+API 53 adds `native_entity_leave_level(dimension, entity, kind)`, an entity leaving a server level (NeoForge's
+`EntityLeaveLevelEvent`, vanilla's `onTrackingEnd`): removed for any reason or its chunk unloading, not the entities
+still loaded when the server stops. It only hears. It tells item entities and experience orbs so far; check `kind`.
+Bundles that use it need `"hooks": 53`.
+
+API 54 adds fluid tanks on a mod block's block entity, and the fluid helpers that read and change them, in millibuckets (a
+bucket is a thousand). `native_block_entity_fluids` declares the tanks, as `native_block_entity_container` declares the slots: each tank's capacity, the
+tanks each face reaches, and which a fill may reach and a drain may take; the tanks' contents live in the entity's saved compound under
+`fluids`, so they survive restarts, and the block's own tick reads them there. `native_fluid_tanks` reads them through a side, `native_fluid_insert`
+fills (first into tanks holding the same fluid, then into empty ones) and answers what did not fit, `native_fluid_extract` drains and answers what it
+took; both also work a cauldron, which gives and takes whole thirds of a bucket and never more than was asked (less than its top third gives nothing), a lava one only whole, and powder snow none, as it is no fluid. Water and lava
+(`minecraft:water`, `minecraft:lava`) are the fluids; a tank holds one at a time. Bundles that use them need `"hooks": 54`.
+
+API 55 adds moving a block's fluids to another block. `native_move_fluids(dimension, from, from_face, to, to_face, max)`
+moves up to `max` millibuckets between two blocks, one fluid, and what the target won't take goes back into the
+source, past the fill sides' leave: the source's tanks just gave the fluid up, so they have the room, and a
+cauldron levels back up by the thirds it gave, which a drain hands out whole. None where `native_fluid_tanks`
+is none at the source, where nothing drainable is, where the target holds no fluids, and within one block.
+Bundles that use it need "hooks": 55.
+
+API 56 adds what the mob effects of a content mod ([mods.md](mods.md)) do, named after vanilla's `MobEffect` methods,
+or NeoForge's event where it has one. On the server, each tick a player or a mob has one,
+`native_should_apply_effect_tick_this_tick` says whether it acts (vanilla's base answer is no) and
+`native_apply_effect_tick` acts, and may end it, before it counts down, as in `MobEffectInstance.tickServer`. These
+two take `&self`: during a mob's tick the mob world borrows the game, so `&mut self` would alias that borrow, and the
+game doesn't hold the mobs being ticked, nor the player's effects. `native_on_effect_added` hears it given to an
+entity that didn't have it, and `native_mob_effect_added` (NeoForge's `MobEffectEvent.Added`) every time it is given.
+A mob is its `Entity.getId`; a player is None, with their state swapped in (`native_acting_player`). Vanilla's effects
+never reach them. Bundles that use them need `"hooks": 56`.
+
+API 57 adds chunks and players coming and going, on the server: `native_chunk_load` (with whether the chunk is new), `native_chunk_unload`, and
+`native_player_logged_in` and `native_player_logged_out`, which come in pairs however a player leaves, the server stopping included. Bundles that use them need `"hooks": 57`.
+
 ### API mods (no mixins)
 
 A mod that only reacts to the game's events needs no mixin. It names its crate and the crate's entry function,
@@ -401,6 +527,7 @@ horizon-mixins never sees an API mod. Its crate is staged as `native-crates/<mod
 executable becomes a generated package, `native-game/`, which links the horizon-client library and the API mods,
 so horizon-client never depends on them: changing an API mod recompiles that mod and the small package and links
 the game, while horizon-client stays compiled. A build with only API mods doesn't install horizon-mixins.
+
 
 ## What the launcher does
 

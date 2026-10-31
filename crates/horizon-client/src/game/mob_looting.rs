@@ -68,7 +68,7 @@ impl Game<'_> {
                 let e = &mut self.dropped[j];
                 e.stack.count -= taken;
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    self.remove_dropped(j);
                 } else {
                     j += 1;
                 }

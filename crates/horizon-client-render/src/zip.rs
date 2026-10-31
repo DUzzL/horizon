@@ -146,6 +146,11 @@ impl Zip {
             len,
         })
     }
+    /// The central directory on, as read at opening: every entry's name, sizes
+    /// and checksum, so what changes with the archive's content.
+    pub fn directory(&self) -> Arc<[u8]> {
+        self.archive.clone().into_inner().tail
+    }
     /// The files, as `FilePackResources.listResources` lists them (folder
     /// entries skipped).
     pub fn names(&self) -> impl Iterator<Item = &str> {

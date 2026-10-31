@@ -71,6 +71,12 @@ pub fn identity(root: &Path) -> Result<[u8; 32], IdentityError> {
             }
         }
     }
+    let components: Vec<_> = horizon_protocol::item::custom::entries()
+        .map(|(id, name)| (id as u64, name.to_owned()))
+        .collect();
+    if !components.is_empty() {
+        hash = hash_entries(hash, "horizon:nbt_components/v1", &components);
+    }
     identities.insert(root.to_owned(), hash);
     Ok(hash)
 }

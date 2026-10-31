@@ -320,12 +320,16 @@ pub(super) fn tesselate(
     } else {
         &mut out.solid
     };
+    let mut sprite_layers = Vec::new();
     let mut quad = |v: [([f32; 3], [f32; 2]); 4],
                     layer: u16,
                     color: u32,
                     light: u16,
                     back: bool,
                     face: usize| {
+        if tables.is_animated(layer) && !sprite_layers.contains(&layer) {
+            sprite_layers.push(layer);
+        }
         let color = fluid_face(color, face);
         let vertex = |(pos, uv)| TerrainVertex::new(pos, uv, layer, color, light);
         target.extend(v.map(vertex));
@@ -455,6 +459,7 @@ pub(super) fn tesselate(
             d as usize,
         );
     }
+    out.sprite_layers.extend(sprite_layers);
 }
 
 #[cfg(test)]

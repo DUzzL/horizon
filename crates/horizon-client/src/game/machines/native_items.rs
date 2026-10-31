@@ -1,5 +1,5 @@
 //! Items in a block's container for native server mods (docs/native-mods.md,
-//! API @API:block_items@): read them through a side, take them and move them, by the rules
+//! API 48): read them through a side, take them and move them, by the rules
 //! hoppers follow. They act where the world is simulated, never on a client's
 //! copy, and only on the level in place, which those that read or take name by
 //! its `dimension` (`minecraft:overworld`), as `native_set_block` does.
@@ -29,12 +29,13 @@ fn takes_from(view: &View) -> bool {
 #[allow(dead_code)]
 impl Game<'_> {
     /// The level in place (`minecraft:overworld`), for a hook that isn't told
-    /// which it runs in. API @API:block_items@.
+    /// which it runs in. API 48.
     pub(in crate::game) fn native_dimension(&self) -> &'static str {
         self.dim.id()
     }
-    /// Whether this game simulates a world, as `native_set_block` asks.
-    fn native_simulates(&self) -> bool {
+    /// Whether this game simulates a world, as `native_set_block` asks
+    /// (the fluid helpers ask it too).
+    pub(super) fn native_simulates(&self) -> bool {
         self.serving.is_some() || self.options.dedicated.is_some()
     }
     /// The container at `pos` in the level in place, `dimension`, if this
@@ -111,7 +112,7 @@ impl Game<'_> {
     /// their stacks. None where no container is: another dimension, a chunk
     /// that isn't loaded, a block without slots, a composter, or the mod block
     /// entity ticking now (it's out of the world, and has its items in hand).
-    /// A double chest's slots are both halves'. API @API:block_items@.
+    /// A double chest's slots are both halves'. API 48.
     pub(in crate::game) fn native_container_slots(
         &self,
         dimension: &str,
@@ -137,7 +138,7 @@ impl Game<'_> {
     /// Takes up to `count` items out of slot `slot` of the container at `pos`,
     /// through its side `face`; they're the mod's to place then, as a hopper's
     /// are: to hand them on without losing any, use `native_move_items`. None
-    /// when nothing can be taken: see `native_container_slots`. API @API:block_items@.
+    /// when nothing can be taken: see `native_container_slots`. API 48.
     pub(in crate::game) fn native_extract_item(
         &mut self,
         dimension: &str,
@@ -174,7 +175,7 @@ impl Game<'_> {
     /// none is lost. `item` (`minecraft:coal`) takes only that item. How many
     /// moved: 0 where `native_container_slots` is none at `from`, where no
     /// container is at `to`, and within one container. A composter takes one
-    /// a call. API @API:block_items@.
+    /// a call. API 48.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::game) fn native_move_items(
         &mut self,

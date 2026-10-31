@@ -6,7 +6,7 @@ Frontend parsers that consume binary and text shaders and load them into [`Modul
 pub(crate) mod interpolator;
 mod type_gen;
 
-#[cfg(feature = "spv-in")]
+#[cfg(any(feature = "spv-in", feature = "glsl-in"))]
 pub mod atomic_upgrade;
 #[cfg(feature = "glsl-in")]
 pub mod glsl;

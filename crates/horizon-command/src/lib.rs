@@ -298,6 +298,18 @@ pub enum Suggests {
     /// SuggestionProviders.ASK_SERVER: the server completes the node
     /// (ClientSuggestionProvider.customSuggestion); nothing locally.
     AskServer,
+    /// OpCommand: the online players who are not operators.
+    NonOperators,
+    /// DeOpCommands: the operators' names (PlayerList.getOpNames).
+    Operators,
+    /// PardonCommand: the banned players' names (UserBanList.getUserList).
+    BannedPlayers,
+    /// PardonIpCommand: the banned addresses (IpBanList.getUserList).
+    BannedIps,
+    /// WhitelistCommand `add`: the online players who are not whitelisted.
+    NonWhitelisted,
+    /// WhitelistCommand `remove`: the whitelisted names (PlayerList.getWhiteListNames).
+    Whitelisted,
 }
 impl Node {
     pub fn name(&self) -> &str {
@@ -688,6 +700,25 @@ impl Suggests {
             }
             Suggests::Triggers => {
                 builder.suggest_matching(reg.trigger_objectives.iter().map(String::as_str))
+            }
+            Suggests::NonOperators => {
+                let listed = |name: &&String| !reg.ops.iter().any(|o| o.eq_ignore_ascii_case(name));
+                builder.suggest_matching(reg.players.iter().filter(listed).map(String::as_str))
+            }
+            Suggests::Operators => builder.suggest_matching(reg.ops.iter().map(String::as_str)),
+            Suggests::BannedPlayers => {
+                builder.suggest_matching(reg.banned_players.iter().map(String::as_str))
+            }
+            Suggests::BannedIps => {
+                builder.suggest_matching(reg.banned_ips.iter().map(String::as_str))
+            }
+            Suggests::NonWhitelisted => {
+                let listed =
+                    |name: &&String| !reg.whitelisted.iter().any(|w| w.eq_ignore_ascii_case(name));
+                builder.suggest_matching(reg.players.iter().filter(listed).map(String::as_str))
+            }
+            Suggests::Whitelisted => {
+                builder.suggest_matching(reg.whitelisted.iter().map(String::as_str))
             }
             Suggests::Nothing | Suggests::AskServer => {}
         }

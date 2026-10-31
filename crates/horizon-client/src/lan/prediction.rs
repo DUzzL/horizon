@@ -115,6 +115,9 @@ impl Replay {
         (body.position, body.old_position, body.velocity) = (at, at, Vec3::ZERO);
         body.fall_distance = 0.0;
         body.events.clear();
+        // The server's body carries the sprint modifier while the player sprints, but its flag only
+        // while the game handles the player: the replay's first tick sprints as the client did.
+        let _ = body.set_sprint_modifier(body.sprinting);
         Self {
             body,
             said: at,
@@ -265,13 +268,16 @@ impl Replay {
         match change {
             Change::Velocity(v) => body.velocity = vector(v),
             Change::Knockback(k) => body.velocity = body.velocity.add_vector(vector(k)),
-            Change::State => {
-                // ClientPacketListener.handleUpdateAttributes: the client takes the server's
-                // modifiers, its sprint modifier included, and goes on sprinting or not as it was
-                // (a sprint modifier gone while it sprints stays gone until it stops).
+            Change::Attributes { sprint } => {
+                // ClientPacketListener.handleUpdateAttributes: the client takes the modifiers of
+                // the attributes sent, the sprint modifier included, and goes on sprinting or not
+                // as it was (a sprint modifier gone while it sprints stays gone until it stops);
+                // an attribute not sent keeps its own.
+                let sprint = sprint.unwrap_or_else(|| body.has_sprint_modifier());
                 body.attributes = server.attributes.clone();
-                body.status = server.status.clone();
+                let _ = body.set_sprint_modifier(sprint);
             }
+            Change::Effects => body.status = server.status.clone(),
             // `sync` takes them every tick.
             Change::Abilities => {}
         }
@@ -488,6 +494,9 @@ mod tests {
         burst: Option<(usize, usize)>,
         /// Blocks set in the scene after the floor.
         blocks: Vec<([i32; 3], &'static str)>,
+        /// On tick `.0`, the server sends the player attributes (the server's body has no sprint
+        /// modifier): `.1` as in [`Change::Attributes`], which the client takes.
+        attributes: Option<(usize, Option<bool>)>,
     }
 
     impl Run {
@@ -501,6 +510,7 @@ mod tests {
                 teleport: None,
                 burst: None,
                 blocks: Vec::new(),
+                attributes: None,
             }
         }
     }
@@ -578,6 +588,7 @@ mod tests {
         let mut played = Vec::new();
         let run_teleport = run.teleport;
         let run_burst = run.burst;
+        let run_attributes = run.attributes;
         let mut back = start;
         for (i, (input, yaw)) in run.script.into_iter().enumerate() {
             let tick = i as u64;
@@ -588,6 +599,12 @@ mod tests {
                 }
                 if push.taken {
                     client.velocity = Vec3::new(velocity[0], velocity[1], velocity[2]);
+                }
+            }
+            if let Some((_, sprint)) = run_attributes.filter(|&(at, _)| at == i) {
+                record.changed(tick, Change::Attributes { sprint });
+                if let Some(kept) = sprint {
+                    client.set_sprint_modifier(kept).unwrap();
                 }
             }
             record.pong(tick, tick);
@@ -669,6 +686,29 @@ mod tests {
         )
         .unwrap();
         assert!(fly.iter().all(|p| p.offset > 0.05), "{fly:?}");
+    }
+
+    /// Attributes sent mid sprint-jump: one without the movement speed leaves the client's sprint
+    /// modifier alone (the server's body, which never sprinted here, has none to copy); one with the
+    /// movement speed but no sprint modifier takes it away while the client sprints on.
+    #[test]
+    fn attributes_sent_mid_sprint_are_played_as_the_client_takes_them() {
+        for sprint in [None, Some(false), Some(true)] {
+            let run = Run {
+                attributes: Some((25, sprint)),
+                ..Run::walk()
+            };
+            let Some(steps) = steps_in(run, |_, _, honest| honest, None) else {
+                return;
+            };
+            for (i, s) in steps.iter().enumerate() {
+                assert!(
+                    s.played.offset <= EXACT,
+                    "{sprint:?}, tick {i}: {:?}",
+                    s.played
+                );
+            }
+        }
     }
 
     /// A knockback (ClientboundSetEntityMotionPacket) mid-walk: the replay applies it on the first
@@ -790,9 +830,7 @@ mod tests {
             script,
             pitch: 10.0,
             glider: true,
-            teleport: None,
-            burst: None,
-            blocks: Vec::new(),
+            ..Run::walk()
         };
         let Some(steps) = steps_in(run, |_, _, honest| honest, None) else {
             return;

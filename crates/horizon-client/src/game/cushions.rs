@@ -6,7 +6,7 @@
 //! A cushion is a `BlockAttachedEntity`, not a block: it has no block state,
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
-use super::{Game, Hit};
+use super::{Game, Hit, InteractTarget};
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
 use horizon_client::mobs::anim::Poses;
@@ -307,12 +307,19 @@ impl Game<'_> {
         true
     }
 
-    /// `Cushion.interact`: sit down unless sneaking or already occupied.
-    pub(super) fn interact_cushion(&mut self) -> bool {
-        let Some((i, d, _)) = self.cushion_hit() else {
+    /// `Cushion.interact`: sit down unless sneaking or already occupied. The
+    /// cushion under the crosshair, or the one a guest's interact packet named.
+    pub(super) fn interact_cushion(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d, _)) = (match target {
+            Some(t) => {
+                Self::named_entity(&self.cushions, t.id, |c| c.id).map(|i| (i, 0.0, [0.0; 3]))
+            }
+            None => self.cushion_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none() && !self.before_block(d) {
             return false;
         }
         // isSecondaryUseActive.

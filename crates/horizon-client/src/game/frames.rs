@@ -2,7 +2,7 @@
 //! `ItemFrame.survives`, `interact` (put an item in, then rotate it),
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
-use super::{Game, Hit};
+use super::{Game, Hit, InteractTarget};
 use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
 use horizon_core::{
@@ -210,12 +210,17 @@ impl Game<'_> {
                 > distance
         })
     }
-    /// `ItemFrame.interact` for the frame under the crosshair.
-    pub(super) fn interact_frame(&mut self) -> bool {
-        let Some((i, d)) = self.frame_hit() else {
+    /// `ItemFrame.interact` for the frame under the crosshair, or the one a
+    /// guest's interact packet named.
+    pub(super) fn interact_frame(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.item_frames, t.id, |f| f.id).map(|i| (i, 0.0)),
+            None => self.frame_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) || self.item_frames[i].fixed {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if (target.is_none() && !self.before_block(d)) || self.item_frames[i].fixed {
             return false;
         }
         let at = center(&self.item_frames[i]);
@@ -314,8 +319,6 @@ impl Game<'_> {
     /// is killed and dropped with its item (`BlockAttachedEntity.hurtServer`).
     /// A fixed frame is not hurt by an explosion, and `blast_spares_decorations`
     /// keeps every frame without `mobGriefing`.
-    /// Not ported: `ignoreExplosion` also spares frames when the exploding
-    /// entity is in water.
     pub(super) fn explosion_breaks_frames(
         &mut self,
         blast: [f64; 3],

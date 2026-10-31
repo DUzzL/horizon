@@ -291,7 +291,7 @@ impl Game<'_> {
         let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
         let c = self.world.chunks.get(&(x >> 4, z >> 4))?;
         Some(
-            self.res.biomes().list[c.biome(x, y, z) as usize]
+            world_biomes!(self).list[c.biome(x, y, z) as usize]
                 .name
                 .clone(),
         )

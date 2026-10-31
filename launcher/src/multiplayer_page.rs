@@ -120,7 +120,7 @@ impl Launcher {
                     .gap(px(8.))
                     .px(px(14.))
                     .py(px(10.))
-                    .child(self.field(Field::ServerName, "Minecraft Server", 220., cx))
+                    .child(self.field(Field::ServerName, tr("Minecraft Server"), 220., cx))
                     .child(self.field(Field::ServerAddress, "play.example.com", 300., cx))
                     .child(button("server-save", "Add", Kind::Secondary, &t).on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -132,11 +132,9 @@ impl Launcher {
         }
         let list = self.multiplayer.list.clone();
         if list.is_empty() && !self.multiplayer.adding {
-            section = section.child(
-                text(theme::CAPTION)
-                    .text_color(t.muted)
-                    .child("No servers yet: add one here or in the game's Multiplayer screen."),
-            );
+            section = section.child(text(theme::CAPTION).text_color(t.muted).child(tr(
+                "No servers yet: add one here or in the game's Multiplayer screen.",
+            )));
         }
         for (i, (server, icon)) in list.into_iter().enumerate() {
             section = section.child(self.server_row(i, server, icon, cx));
@@ -171,7 +169,7 @@ impl Launcher {
                 .child(
                     text(theme::CAPTION)
                         .text_color(t.danger)
-                        .child("Remove it from the list?"),
+                        .child(tr("Remove it from the list?")),
                 )
                 .child(
                     button(

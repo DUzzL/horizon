@@ -1699,6 +1699,171 @@ fn shapes_reject_unknown_or_missing_template_values() {
     fs::remove_dir_all(scratch).unwrap();
 }
 
+/// An old chunk's saved jigsaw start comes back with its pieces (`StructureStart.loadStaticStart`):
+/// a village this seed makes, saved as an older version would have, is loaded from its `Children`
+/// and has the same pieces, boxes and positions, so the neighbours can place what crosses into
+/// them. A legacy structure with no loader is the generator's own start when it has the same
+/// pieces' box, and name and box alone when it has not.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn an_old_chunks_saved_village_comes_back_with_its_pieces() {
+    use horizon_core::position::ChunkPos;
+    use horizon_world::{
+        nbt::Tag,
+        worldgen::blending::{OldWorld, SavedStart},
+    };
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let open = || {
+        crate::vanillagen::VanillaTerrain::new(
+            &base.join("worldgen"),
+            assets.registry,
+            &biomes,
+            1234,
+        )
+        .unwrap()
+    };
+    let villages: Vec<String> = ["plains", "desert", "savanna", "snowy", "taiga"]
+        .iter()
+        .map(|k| format!("minecraft:village_{k}"))
+        .collect();
+    let made = open();
+    let (name, at) = made
+        .locate(&villages, [0, 64, 0], 100)
+        .expect("a village near the origin");
+    let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+    let original = made
+        .starts_at(cx, cz)
+        .into_iter()
+        .find(|s| s.name == name)
+        .expect("the village start");
+    assert!(original.pieces.len() > 1);
+    // Saved the way a chunk keeps it: the start's tag, its Children and their union box.
+    let Some(Tag::Compound(saved)) = original.save() else {
+        panic!("the village saves");
+    };
+    let Some(Tag::List(children)) = saved.get(&"Children".into()).cloned() else {
+        panic!("Children");
+    };
+    let bounds = original
+        .pieces
+        .iter()
+        .map(|p| p.bounding_box())
+        .fold(None::<[i32; 6]>, |u, b| {
+            let [x0, y0, z0, x1, y1, z1] =
+                [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]];
+            Some(match u {
+                None => [x0, y0, z0, x1, y1, z1],
+                Some(u) => [
+                    u[0].min(x0),
+                    u[1].min(y0),
+                    u[2].min(z0),
+                    u[3].max(x1),
+                    u[4].max(y1),
+                    u[5].max(z1),
+                ],
+            })
+        });
+    struct Saved {
+        chunk: (i32, i32),
+        start: SavedStart,
+    }
+    impl OldWorld for Saved {
+        fn is_old_chunk_around(&self, center: ChunkPos, range: i32) -> bool {
+            (center.x - self.chunk.0).abs() <= range && (center.z - self.chunk.1).abs() <= range
+        }
+        fn blending(
+            &self,
+            _: i32,
+            _: i32,
+        ) -> Option<std::sync::Arc<horizon_world::worldgen::blending::BlendingData>> {
+            None
+        }
+        fn old_biomes(
+            &self,
+            _: i32,
+            _: i32,
+        ) -> Option<
+            std::sync::Arc<
+                horizon_world::worldgen::biome_chunk::BiomeChunk<
+                    horizon_world::worldgen::biome::BiomeId,
+                >,
+            >,
+        > {
+            None
+        }
+        fn saved_starts(&self, x: i32, z: i32) -> Vec<SavedStart> {
+            if (x, z) == self.chunk {
+                vec![self.start.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+    let loaded = open();
+    loaded.set_old_world(std::sync::Arc::new(Saved {
+        chunk: (cx, cz),
+        // No box to compare: the pieces can only come from the Children.
+        start: SavedStart {
+            name: name.clone(),
+            bounds: None,
+            pieces: children.clone(),
+        },
+    }));
+    let back = loaded
+        .starts_at(cx, cz)
+        .into_iter()
+        .find(|s| s.name == name)
+        .expect("the saved start");
+    assert_eq!(
+        back.pieces.len(),
+        original.pieces.len(),
+        "every piece is loaded"
+    );
+    for (a, b) in original.pieces.iter().zip(&back.pieces) {
+        assert_eq!(a.bounding_box(), b.bounding_box());
+        assert_eq!(a.type_name(), b.type_name());
+        assert_eq!(a.save(), b.save(), "a piece saves as it was loaded");
+    }
+    assert_eq!(back.bounding_box, original.bounding_box);
+    // No pieces to load and a box no generated start has: the name and the box only.
+    let odd = open();
+    odd.set_old_world(std::sync::Arc::new(Saved {
+        chunk: (cx, cz),
+        start: SavedStart {
+            name: name.clone(),
+            bounds: Some([0, 0, 0, 1, 1, 1]),
+            pieces: Vec::new(),
+        },
+    }));
+    let stub = odd
+        .starts_at(cx, cz)
+        .into_iter()
+        .find(|s| s.name == name)
+        .unwrap();
+    assert!(stub.pieces.is_empty());
+    assert_eq!(stub.bounding_box.min, [0, 0, 0]);
+    // The box of the start this generator makes there: it is that start.
+    let same = open();
+    same.set_old_world(std::sync::Arc::new(Saved {
+        chunk: (cx, cz),
+        start: SavedStart {
+            name: name.clone(),
+            bounds,
+            pieces: Vec::new(),
+        },
+    }));
+    let rebuilt = same
+        .starts_at(cx, cz)
+        .into_iter()
+        .find(|s| s.name == name)
+        .unwrap();
+    assert_eq!(rebuilt.pieces.len(), original.pieces.len());
+}
+
 /// A recipe's `result` is a stack's fields or a bare item id, as vanilla's `ItemStackTemplate`
 /// codec reads it (#4904): a mod's recipes make its own items either way.
 #[test]
@@ -1870,4 +2035,439 @@ fn creative_tabs_come_on_their_own_page() {
     creative.select(0);
     assert_eq!(creative.page, 0);
     fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// A block that gives each of its template's states a run moves a template
+/// state to the first of its own: the combination every declared property is
+/// at its default for, which is the one the id cursor points at first.
+#[test]
+fn a_fan_out_rename_moves_a_template_state_to_its_first_state() {
+    let mut r = Rename::new("minecraft:test", "testmod:test");
+    r.states = 10..12;
+    r.first = 100;
+    r.fanout = 6;
+    assert_eq!(
+        (r.id(9), r.id(10), r.id(11), r.id(12)),
+        (None, Some(100), Some(106), None)
+    );
+}
+
+/// A base root of one template with two states, and a mod that adds a block
+/// to it. `declarations` go in as the block file.
+fn block_base(tag: &str, declarations: &[&str]) -> (PathBuf, Vec<ContentMod>) {
+    block_base_of(
+        tag,
+        declarations,
+        r#"{"states":[
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"x"}}],
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"y"}}]],
+      "defaults":{"minecraft:test":0}}"#,
+    )
+}
+
+/// The same over a base root whose `facts.json` is `facts`: the other tables
+/// the plan reads are built from its state count, so a template can have one
+/// state and no properties of its own (a `stone`) as easily as two.
+fn block_base_of(tag: &str, declarations: &[&str], facts: &str) -> (PathBuf, Vec<ContentMod>) {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(base.join("facts.json"), facts).unwrap();
+    let count = match serde_json::from_str::<J>(facts).unwrap().get("states") {
+        Some(J::Arr(rows)) => rows.len(),
+        _ => panic!("{tag}: facts.json has no states"),
+    };
+    let rows = vec![r#"{"item":"minecraft:test"}"#; count].join(",");
+    fs::write(
+        base.join("gameplay-facts.json"),
+        format!(r#"{{"states":[{rows}]}}"#),
+    )
+    .unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:test":{}}"#).unwrap();
+    fs::write(
+        base.join("registries.json"),
+        r#"{"minecraft:item":{"entries":{"minecraft:test":{"protocol_id":0}}},"minecraft:block":{"entries":{"minecraft:test":{"protocol_id":0}}}}"#,
+    )
+    .unwrap();
+    let mods: Vec<ContentMod> = declarations
+        .iter()
+        .enumerate()
+        .map(|(i, declaration)| {
+            let dir = scratch.join(format!("mod{i}"));
+            folder_mod(
+                &dir,
+                &[
+                    ("horizon-mod.toml", &manifest("testmod", "")),
+                    ("data/testmod/horizon/block/test.json", *declaration),
+                ],
+            )
+        })
+        .collect();
+    (base, mods)
+}
+
+/// A block's states are its template's times the combinations of the state
+/// properties it declares, in a fixed order with every default first.
+#[test]
+fn content_block_state_properties_fan_out_its_states() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"},
+        "facing":{"type":"enum","values":["north","south","east"]}}}"#;
+    let (base, mods) = block_base("block-states", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    // Two template states times the six combinations, after the template's.
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(rows.len(), 2 + 12);
+    // The default is the first combination of the template's default state.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    let properties = |i: usize| -> BTreeMap<String, String> {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        let Some((_, J::Obj(p))) = state.iter().find(|(k, _)| k == "properties") else {
+            panic!("row {i} has no properties")
+        };
+        p.iter()
+            .map(|(k, v)| match v {
+                J::Str(s) => (k.clone(), s.clone()),
+                _ => panic!("{k} is not a string"),
+            })
+            .collect()
+    };
+    // By name `facing` varies slowest, and each one's default comes first.
+    assert_eq!(
+        properties(2),
+        BTreeMap::from([
+            ("axis".to_owned(), "x".to_owned()),
+            ("facing".to_owned(), "north".to_owned()),
+            ("lit".to_owned(), "false".to_owned()),
+        ])
+    );
+    // And the last is the second template state and the last combination.
+    assert_eq!(
+        properties(13),
+        BTreeMap::from([
+            ("axis".to_owned(), "y".to_owned()),
+            ("facing".to_owned(), "east".to_owned()),
+            ("lit".to_owned(), "true".to_owned()),
+        ])
+    );
+    // Every state of the block is a different one: the registry indexes
+    // states by their name and properties, so a repeat would be a collision.
+    let states: BTreeSet<BTreeMap<String, String>> = (2..14).map(properties).collect();
+    assert_eq!(states.len(), 12);
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// The declared default comes first in the run, so its id is the block's
+/// default with no arithmetic of its own.
+#[test]
+fn content_block_state_properties_put_the_declared_default_first() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"facing":{"type":"enum","values":["north","south","east"]}},
+      "default_state":{"facing":"south"}}"#;
+    let (base, mods) = block_base("block-default-first", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    // Two template states times three values.
+    assert_eq!(rows.len(), 2 + 6);
+    let facing = |i: usize| -> String {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        match state
+            .iter()
+            .find(|(k, _)| k == "properties")
+            .map(|(_, p)| p)
+        {
+            Some(p) => match p.get("facing") {
+                Some(J::Str(s)) => s.clone(),
+                _ => panic!("row {i} has no facing"),
+            },
+            None => panic!("row {i} has no properties"),
+        }
+    };
+    // The declared default is the block's default, and it comes first.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    assert_eq!(facing(2), "south");
+    // The rest keep their declared order, rotated to start at the default.
+    assert_eq!(
+        (facing(3), facing(4)),
+        ("east".to_owned(), "north".to_owned())
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// What a declaration may not do: shadow its template's property, name a
+/// value its own property does not have, or ask for more states than a world
+/// holds.
+#[test]
+fn content_block_state_properties_are_validated() {
+    // The template's `axis` is not the mod's to redefine.
+    let (base, mods) = block_base(
+        "block-shadow",
+        &[r#"{"template":"minecraft:test","state_properties":{"axis":{"type":"boolean"}}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a shadowed template property was accepted"),
+    };
+    assert!(error.contains("axis is already on"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // A default is one of the values the block declared.
+    let (base, mods) = block_base(
+        "block-bad-default",
+        &[r#"{"template":"minecraft:test",
+             "state_properties":{"lit":{"type":"boolean"}},"default_state":{"lit":"maybe"}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a default outside a property's values was accepted"),
+    };
+    assert!(error.contains("is not one of its values"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // Twenty-one booleans are more combinations than a world can hold, and
+    // are refused before the product is built.
+    let declared: Vec<String> = (0..21)
+        .map(|i| format!(r#""p{i}":{{"type":"boolean"}}"#))
+        .collect();
+    let declaration = format!(
+        r#"{{"template":"minecraft:test","item":false,"state_properties":{{{}}}}}"#,
+        declared.join(",")
+    );
+    let (base, mods) = block_base("block-too-many", &[&declaration]);
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("more states than a world holds were accepted"),
+    };
+    assert!(
+        error.contains("more than the") && error.contains("world can hold"),
+        "{error}"
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// A `default_state` that names only properties the block itself declares
+/// asks the template for nothing: `stone` has a single state and no properties
+/// at all, and a block that gives it `lit` can still default `lit`.
+#[test]
+fn a_declared_property_defaults_on_a_template_with_none() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "default_state":{"lit":"true"}}"#;
+    let (base, mods) = block_base_of(
+        "block-propertyless-default",
+        &[declaration],
+        r#"{"states":[["minecraft:test",true,true,"",{"id":"minecraft:test"}]],
+      "defaults":{"minecraft:test":0}}"#,
+    );
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut doc: J =
+        serde_json::from_str(&fs::read_to_string(base.join("facts.json")).unwrap()).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    // One template state times the two combinations of `lit`.
+    assert_eq!(rows.len(), 1 + 2);
+    let lit = |i: usize| -> Option<String> {
+        let J::Arr(row) = rows.get(i)? else {
+            return None;
+        };
+        let J::Obj(state) = row.get(4)? else {
+            return None;
+        };
+        let (_, properties) = state.iter().find(|(k, _)| k == "properties")?;
+        match properties.get("lit") {
+            Some(J::Str(s)) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    // The declared default opens the block's run, and the other value follows.
+    assert_eq!(lit(1).as_deref(), Some("true"));
+    assert_eq!(lit(2).as_deref(), Some("false"));
+    // The block's default state is the first of its run.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(1.into()))
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// An NBT state row for the two-state `minecraft:test` template, the shape
+/// `BlockState::to_nbt` writes.
+fn test_state_row(axis: &str) -> Tag {
+    Tag::Compound(Compound::from([
+        (
+            JavaString::from("id"),
+            Tag::String(JavaString::from("minecraft:test")),
+        ),
+        (
+            JavaString::from("properties"),
+            Tag::Compound(Compound::from([(
+                JavaString::from("axis"),
+                Tag::String(JavaString::from(axis)),
+            )])),
+        ),
+    ]))
+}
+
+/// The NBT tables fan out like the JSON ones: `cached-collision.nbt`,
+/// `occlusion.nbt` and the rest get one row per combination, so `states` and
+/// `cached_shapes` stay the same length, and each row carries the properties
+/// its combination declares.
+#[test]
+fn the_nbt_tables_fan_out_with_the_states() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}}}"#;
+    let (base, mods) = block_base("block-nbt-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (JavaString::from("cached_shapes"), Tag::IntArray(vec![7, 9])),
+    ]));
+    plan.nbt(&mut tag);
+    let Some(Tag::List(states)) = tag.get("states") else {
+        panic!("no states")
+    };
+    let Some(Tag::IntArray(shapes)) = tag.get("cached_shapes") else {
+        panic!("no cached_shapes")
+    };
+    // Two template states times the two combinations of `lit`, and the shapes
+    // stay parallel to the states — that is what makes the file load.
+    assert_eq!(states.len(), 2 + 4);
+    assert_eq!(shapes.len(), states.len());
+    // A combination keeps the shape of the template state it came from.
+    assert_eq!(shapes, &vec![7, 9, 7, 7, 9, 9]);
+    let properties = |i: usize| -> BTreeMap<String, String> {
+        let Some(Tag::Compound(c)) = states.get(i) else {
+            panic!("row {i} is not a compound")
+        };
+        let Some(Tag::Compound(p)) = c.get(&JavaString::from("properties")) else {
+            panic!("row {i} has no properties")
+        };
+        p.iter()
+            .filter_map(|(k, v)| match v {
+                Tag::String(s) => Some((k.to_string_lossy(), s.to_string_lossy())),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut expected: Vec<String> = Vec::new();
+    for axis in ["x", "y"] {
+        for lit in ["false", "true"] {
+            expected.push(format!("{axis}/{lit}"));
+        }
+    }
+    let seen: Vec<String> = (2..states.len())
+        .map(|i| {
+            let p = properties(i);
+            // The declared properties are the only ones on the row.
+            assert_eq!(p.len(), 2, "row {i} is {p:?}");
+            let axis = p.get("axis").cloned().unwrap_or_default();
+            let lit = p.get("lit").cloned().unwrap_or_default();
+            format!("{axis}/{lit}")
+        })
+        .collect();
+    assert_eq!(seen, expected);
+    for i in 2..states.len() {
+        let Some(Tag::String(id)) = states[i].get("id") else {
+            panic!("row {i} has no id")
+        };
+        assert_eq!(id.to_string_lossy(), "testmod:test");
+    }
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// A block's shape and its count in `structure-blocks.json` cover every
+/// combination too: the table's declared total and the lengths of its lists
+/// grow by the fan-out, and every state of the block maps to a shape.
+#[test]
+fn a_shape_and_the_state_count_cover_every_combination() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "shapes":{"property":"axis","values":{"x":[[0,0,0,1,1,1]],"y":[[0,0,0,0.5,1,1]]}}}"#;
+    let (base, mods) = block_base("block-shape-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    // The template's two states, no shapes yet, every vanilla state unmapped.
+    // `nbt` grows the arrays to the block's four states and `collision_shapes`
+    // writes into them, in the order the real path applies them.
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (JavaString::from("shapes"), Tag::List(Vec::new())),
+        (
+            JavaString::from("cached_shapes"),
+            Tag::IntArray(vec![-1, -1]),
+        ),
+    ]));
+    plan.nbt(&mut tag);
+    plan.collision_shapes(&mut tag).unwrap();
+    let Some(Tag::List(entries)) = tag.get("shapes") else {
+        panic!("no shapes")
+    };
+    let Some(Tag::IntArray(mapping)) = tag.get("cached_shapes") else {
+        panic!("no cached_shapes")
+    };
+    // One shape per template state, shared by that state's combinations.
+    assert_eq!(entries.len(), 2);
+    assert_eq!(mapping.len(), 2 + 4);
+    let added = &mapping[2..];
+    assert!(added.iter().all(|id| *id >= 0), "{added:?}");
+    assert_eq!((added[0], added[1]), (added[0], added[0]));
+    assert_eq!((added[2], added[3]), (added[2], added[2]));
+    assert_ne!(added[0], added[2]);
+
+    let rows = "[[false,false],[false,false]]";
+    let text = format!(r#"{{"rotate":{rows},"mirror":{rows},"full_block":{rows},"states":2}}"#);
+    let mut doc: J = serde_json::from_str(&text).unwrap();
+    plan.json("worldgen/blocks/structure-blocks.json", &mut doc)
+        .unwrap();
+    for key in ["rotate", "mirror", "full_block"] {
+        let Some(J::Arr(list)) = doc.get(key) else {
+            panic!("{key} is not a list")
+        };
+        assert_eq!(list.len(), 2 + 4, "{key}");
+    }
+    // The declared total agrees with the lists, which is what a loader checks.
+    assert_eq!(doc.get("states"), Some(&J::Num(6.into())));
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 }

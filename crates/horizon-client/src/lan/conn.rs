@@ -936,16 +936,22 @@ fn login_and_configure(
             _ => {}
         }
     };
-    // horizon-clients-only: the brand the client sent ("vanilla" when it sent
-    // none) must be Horizon's.
-    if shared.config.horizon_clients_only && brand != "horizon" {
-        let text = super::HORIZON_CLIENTS_ONLY_REASON;
+    // Custom component IDs need Horizon's registry check. The server may also
+    // require Horizon clients even when it has no custom components.
+    if brand != "horizon"
+        && (shared.config.horizon_clients_only
+            || horizon_protocol::item::custom::entries().next().is_some())
+    {
+        let text = if shared.config.horizon_clients_only {
+            super::HORIZON_CLIENTS_ONLY_REASON
+        } else {
+            crate::content_identity::MISMATCH
+        };
         let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(text));
         let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
         if let Some(log) = &shared.config.log {
-            let line = format!(
-                "Disconnecting {name}: its client is \"{brand}\", not Horizon (horizon-clients-only)"
-            );
+            let line =
+                format!("Disconnecting {name}: its client is \"{brand}\", not Horizon ({text})");
             (log.write)("Server thread", "INFO", &line);
         }
         lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);

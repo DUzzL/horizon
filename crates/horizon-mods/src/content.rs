@@ -83,6 +83,37 @@ pub struct BlockShapes {
     pub values: BTreeMap<String, Vec<[f64; 6]>>,
 }
 
+/// A state property a block declares on its own, beside its template's.
+/// A block's states become the template's states times these values, so a
+/// pipe can have a connection per side without a template that has one.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum StateProperty {
+    /// `false` and `true`, in vanilla's spelling.
+    Boolean,
+    /// A list of values, in the order the state space is built in.
+    Enum { values: Vec<String> },
+}
+
+impl StateProperty {
+    /// Its values, in the order the state space is built in; a boolean's two
+    /// come `false` first, as vanilla orders them.
+    pub fn values(&self) -> Vec<&str> {
+        match self {
+            StateProperty::Boolean => vec!["false", "true"],
+            StateProperty::Enum { values } => values.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+/// A vanilla state property's name, and a value's: lower case, digits and
+/// underscores (`minecraft:oak_log` is `axis`, a repeater is `delay`).
+fn state_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockFile {
@@ -90,6 +121,8 @@ struct BlockFile {
     #[serde(default)]
     properties: BlockProperties,
     shapes: Option<BlockShapes>,
+    #[serde(default)]
+    state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
     #[serde(default = "yes")]
@@ -111,6 +144,8 @@ pub struct Block {
     pub template: String,
     pub properties: BlockProperties,
     pub shapes: Option<BlockShapes>,
+    /// State properties of its own, which its template does not have.
+    pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
     pub default_state: BTreeMap<String, String>,
     /// Also add a block item with the same id.
@@ -408,6 +443,7 @@ impl Content {
                 template: file.template,
                 properties: file.properties,
                 shapes: file.shapes,
+                state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
                 components: file.components,
@@ -537,6 +573,35 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
             }
         }
     }
+    for (name, property) in &file.state_properties {
+        if !state_name(name) {
+            return Err(format!(
+                "state property {name:?} is lower case letters, digits and underscores"
+            ));
+        }
+        let values = property.values();
+        if values.is_empty() {
+            return Err(format!("state property {name:?} needs a value"));
+        }
+        let mut seen = BTreeSet::new();
+        for value in values {
+            if !state_name(value) {
+                return Err(format!(
+                    "state property {name:?}: value {value:?} is lower case letters, digits and underscores"
+                ));
+            }
+            if !seen.insert(value) {
+                return Err(format!("state property {name:?}: value {value:?} repeats"));
+            }
+        }
+    }
+    for key in file.default_state.keys() {
+        if !state_name(key) {
+            return Err(format!(
+                "default_state key {key:?} is lower case letters, digits and underscores"
+            ));
+        }
+    }
     let p = &file.properties;
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
     if !finite(p.hardness) || !finite(p.explosion_resistance) || !finite(p.friction) {
@@ -659,6 +724,7 @@ capabilities = ["registries"]
                 id: "ruby:ruby_block".into(),
                 template: "minecraft:iron_block".into(),
                 shapes: None,
+                state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {
                     hardness: Some(4.0),

@@ -10,8 +10,14 @@ use crate::{
     items::ItemStack,
     world::World,
 };
-use horizon_core::geometry::{Aabb, Direction, Vec3};
-use horizon_world::block_collision::BlockCollisionRegistry;
+use horizon_core::{
+    geometry::{Aabb, Direction, Vec3, VoxelShape},
+    position::BlockPos,
+};
+use horizon_world::{
+    block_collision::BlockCollisionRegistry,
+    level::portal_travel::{BorderBounds, find_free_position},
+};
 
 /// Gravity applied each tick when the item is not in a fluid (`ItemEntity.tick`).
 const ITEM_GRAVITY: f64 = 0.04;
@@ -76,6 +82,9 @@ pub struct ItemEntity {
     /// `Entity.tickCount`: ticks since the item entered the level, which
     /// paces `ItemEntity.mergeWithNeighbours`.
     pub ticks: u32,
+    /// `Entity.needsSync` / `syncPosition`: immediate `ServerEntity.sendChanges`
+    /// after a bounce or velocity jump (`> 0.1` in `ItemEntity.tick`).
+    pub needs_sync: bool,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -232,6 +241,7 @@ impl ItemEntity {
             self.pickup_delay -= 1;
         }
         let (water_height, lava_height) = self.update_fluids(world, fluids);
+        let old_velocity = self.velocity;
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
             // ItemEntity.setUnderwaterMovement
@@ -329,6 +339,9 @@ impl ItemEntity {
                 &mut self.velocity,
             );
         }
+        if self.velocity.subtract(old_velocity).length_squared() > 0.01 {
+            self.needs_sync = true;
+        }
         self.age += 1;
         // ItemEntity.tick refreshes immersion after moving.
         self.update_fluids(world, fluids);
@@ -341,6 +354,7 @@ impl ItemEntity {
     pub fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
         self.on_ground = false;
+        self.needs_sync = true;
     }
     /// `HoneyBlock.entityInside` for the honey blocks this item's box is in
     /// (`Entity.checkInsideBlocks`, deflated by `1.0E-5`). Slide sounds and
@@ -541,16 +555,54 @@ impl ExperienceOrb {
         self.health = (self.health as f32 - damage) as i32;
         self.health <= 0
     }
-    pub fn bounds(&self) -> Aabb {
+    /// The box of an orb whose `position` (the bottom of the box) is `at`.
+    pub fn box_at(at: Vec3) -> Aabb {
         let h = 0.25;
         Aabb::new(
-            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
-            Vec3::new(
-                self.position.x + h,
-                self.position.y + 0.5,
-                self.position.z + h,
-            ),
+            Vec3::new(at.x - h, at.y, at.z - h),
+            Vec3::new(at.x + h, at.y + 0.5, at.z + h),
         )
+    }
+    pub fn bounds(&self) -> Aabb {
+        Self::box_at(self.position)
+    }
+    /// `Entity.unstuckIfPossible`, which `ExperienceOrb`'s constructor runs as
+    /// `if (!level.noCollision(box)) unstuckIfPossible(box.getSize())`: the free
+    /// spot nearest the box's centre, searched in a cube of the box's size
+    /// around it. `None` when the box is already free (the orb then keeps its
+    /// exact position) or when nothing free is that close. `shape(p)` is the
+    /// block's collision shape at `p`, in world coordinates.
+    pub fn unstuck(
+        at: Vec3,
+        border: &BorderBounds,
+        mut shape: impl FnMut(BlockPos) -> Option<VoxelShape>,
+    ) -> Option<Vec3> {
+        let bounds = Self::box_at(at);
+        let size = bounds.average_size();
+        let lo = bounds.min_position();
+        let cells = |v: f64| (v - 1.0e-7).floor() as i32 - 1..=(v + 1.0e-7).floor() as i32 + 1;
+        // noCollision(box): a block shape reaching into it leaves the orb stuck.
+        let mut stuck = false;
+        'cells: for x in cells(lo.x) {
+            for y in cells(lo.y) {
+                for z in cells(lo.z) {
+                    if shape(BlockPos::new(x, y, z))
+                        .is_some_and(|s| s.boxes().iter().any(|b| b.intersects(bounds)))
+                    {
+                        stuck = true;
+                        break 'cells;
+                    }
+                }
+            }
+        }
+        if !stuck {
+            return None;
+        }
+        // `AABB.ofSize(center, size, size, size)`: where the box's centre may
+        // go, a cube of the box's mean size around its centre.
+        let allowed = Aabb::of_size(bounds.center(), Vec3::new(size, size, size));
+        find_free_position(allowed, bounds.center(), bounds.size(), border, shape)
+            .map(|p| p.subtract(Vec3::new(0.0, bounds.size().y / 2.0, 0.0)))
     }
     /// `ExperienceOrb.canMerge(orb, id, value)` for an orb that is not removed:
     /// the same value and ids a multiple of 40 apart.
@@ -1171,6 +1223,7 @@ mod fire_environment_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
+            needs_sync: false,
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
@@ -1268,6 +1321,7 @@ mod merge_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: age,
+            needs_sync: false,
         }
     }
     fn max_stack(stack: &ItemStack) -> u32 {
@@ -1541,6 +1595,7 @@ mod honey_slide_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 10,
+            needs_sync: false,
         }
     }
 
@@ -1668,6 +1723,7 @@ mod slime_bounce_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 10,
+            needs_sync: false,
         }
     }
 
@@ -1677,9 +1733,12 @@ mod slime_bounce_tests {
         item.piston_slime_bounce(Direction::Up);
         assert_eq!(item.velocity, Vec3::new(0.0, 1.0, 0.0));
         assert!(!item.on_ground);
+        assert!(item.needs_sync);
+        item.needs_sync = false;
         item.piston_slime_bounce(Direction::East);
         assert_eq!(item.velocity, Vec3::new(1.0, 1.0, 0.0));
         assert!(!item.on_ground);
+        assert!(item.needs_sync);
     }
 
     #[test]
@@ -1689,5 +1748,101 @@ mod slime_bounce_tests {
         let bounced = item_vertical_collision_velocity(-1.0, true) * 0.98;
         assert!(bounced > 0.0);
         assert_eq!(bounced, 0.8 * 0.98);
+    }
+
+    #[test]
+    fn a_slime_bounce_marks_the_item_for_immediate_sync() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let slime = assets
+            .registry
+            .default_state("minecraft:slime_block")
+            .unwrap();
+        for x in 19..=21 {
+            for z in 19..=21 {
+                world.set(x, 3, z, slime).unwrap();
+            }
+        }
+        // ItemEntity.tick sets needsSync when getDeltaMovement().subtract(oldMovement).lengthSqr() > 0.01.
+        let mut falling = grounded_item();
+        falling.position = Vec3::new(20.5, 4.2, 20.5);
+        falling.previous = falling.position;
+        falling.velocity = Vec3::new(0.0, -0.5, 0.0);
+        falling.on_ground = false;
+        falling.age = 0;
+        falling.id = 1;
+        falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        assert_eq!(falling.position.y, 4.0);
+        assert!(falling.velocity.y > 0.0);
+        assert!(falling.on_ground);
+        assert!(falling.needs_sync);
+
+        // An idle tick where velocity only steps by -0.04 (0.04^2 = 0.0016 <= 0.01)
+        // does not set needs_sync.
+        falling.velocity = Vec3::ZERO;
+        falling.needs_sync = false;
+        falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        assert!(!falling.needs_sync);
+    }
+}
+
+#[cfg(test)]
+mod unstuck_tests {
+    use super::*;
+
+    const BORDER: BorderBounds = BorderBounds {
+        min_x: -1.0e6,
+        min_z: -1.0e6,
+        max_x: 1.0e6,
+        max_z: 1.0e6,
+    };
+
+    /// A level of full blocks at `solid`; every other cell is air.
+    fn shapes(solid: &[(i32, i32, i32)]) -> impl FnMut(BlockPos) -> Option<VoxelShape> + '_ {
+        move |p| {
+            if solid.contains(&(p.x, p.y, p.z)) {
+                VoxelShape::from_box(Aabb::block(p)).ok()
+            } else {
+                None
+            }
+        }
+    }
+
+    /// `level.noCollision(box)` over the same cells the search reads.
+    fn free(solid: &[(i32, i32, i32)], b: Aabb) -> bool {
+        !solid
+            .iter()
+            .any(|&(x, y, z)| Aabb::block(BlockPos::new(x, y, z)).intersects(b))
+    }
+
+    #[test]
+    fn an_orb_spawned_in_a_block_moves_to_a_free_box() {
+        // One block at y 0..1 and an orb standing in its upper half, as a mob
+        // killed inside one leaves it: its box overlaps the block by 0.1.
+        let solid = [(0, 0, 0)];
+        let at = Vec3::new(0.5, 0.9, 0.5);
+        let moved = ExperienceOrb::unstuck(at, &BORDER, shapes(&solid)).expect("the orb moves");
+        // The nearest free box sits on the block's top face.
+        assert_eq!(moved, Vec3::new(0.5, 1.0, 0.5));
+        assert!(!ExperienceOrb::box_at(moved).intersects(Aabb::block(BlockPos::new(0, 0, 0))));
+    }
+
+    #[test]
+    fn an_orb_in_open_air_keeps_its_position() {
+        let solid = [(0, 0, 0)];
+        let at = Vec3::new(0.5, 2.0, 0.5);
+        assert!(free(&solid, ExperienceOrb::box_at(at)));
+        // Nothing to move for: the spawn sites keep the position as given.
+        assert_eq!(ExperienceOrb::unstuck(at, &BORDER, shapes(&solid)), None);
     }
 }

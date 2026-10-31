@@ -120,6 +120,21 @@ pub struct ModContainer {
     pub outputs: Vec<usize>,
     pub menu: Option<String>,
 }
+/// The fluid tanks of a mod block's block entity, in the container's shape:
+/// each tank's capacity in millibuckets, the tanks each face reaches, and
+/// the tanks a fill may reach and a drain may take. The tanks' contents are
+/// not here: they live in the entity's saved compound, under `fluids`, so
+/// they survive restarts and the block's own tick reads them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModFluidTanks {
+    /// Each tank's capacity in millibuckets, in tank order.
+    pub tanks: Vec<i32>,
+    pub faces: [Vec<usize>; 6],
+    /// The tanks a fill may reach (`canPlaceItemThroughFace`).
+    pub inputs: Vec<usize>,
+    /// The tanks a drain may take from (`canTakeItemThroughFace`).
+    pub outputs: Vec<usize>,
+}
 /// The vanilla menus a mod container can open, with the slot count each
 /// shows: slot grids, and the furnaces' (input, fuel, result), whose four
 /// data slots draw the flame (`data[0]` of `data[1]`) and the arrow

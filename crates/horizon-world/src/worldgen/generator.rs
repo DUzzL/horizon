@@ -204,6 +204,13 @@ pub struct GeneratorData {
     /// Placed-feature decoration by biome source (see `decoration_for`),
     /// most recent last.
     decorations: Mutex<Vec<(String, DecorationSlot)>>,
+    /// What `BlendingData` asks of the blocks of an old chunk, by state.
+    old_chunk_facts: OnceLock<OldChunkFacts>,
+}
+/// `BlendingData.isGround` and `SURFACE_BLOCKS`, by block state id.
+struct OldChunkFacts {
+    ground: Vec<bool>,
+    surface: Vec<bool>,
 }
 type RingCacheEntry = ((i64, String), Arc<OnceLock<super::structure::start::Rings>>);
 /// Generators whose ring positions are kept: the dimensions of a few worlds.
@@ -564,6 +571,7 @@ impl GeneratorData {
             feature_resources,
             ring_cache: Mutex::new(Vec::new()),
             decorations: Mutex::new(Vec::new()),
+            old_chunk_facts: OnceLock::new(),
             bound_block_tags: std::sync::OnceLock::new(),
         }))
     }
@@ -669,6 +677,83 @@ impl GeneratorData {
     }
     pub fn biome_names(&self) -> &[Arc<str>] {
         &self.biome_names
+    }
+    fn old_chunk_facts(&self) -> &OldChunkFacts {
+        self.old_chunk_facts.get_or_init(|| {
+            let members = |tag: &str| -> std::collections::HashSet<&str> {
+                self.block_tags
+                    .get(tag)
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+                    .collect()
+            };
+            let (leaves, logs) = (members("minecraft:leaves"), members("minecraft:logs"));
+            let collision = self
+                .feature_resources
+                .as_ref()
+                .and_then(|resources| resources.blocks.as_ref())
+                .map(|blocks| &blocks.collision);
+            let surface_names = [
+                "minecraft:podzol",
+                "minecraft:gravel",
+                "minecraft:grass_block",
+                "minecraft:stone",
+                "minecraft:coarse_dirt",
+                "minecraft:sand",
+                "minecraft:red_sand",
+                "minecraft:mycelium",
+                "minecraft:snow_block",
+                "minecraft:terracotta",
+                "minecraft:dirt",
+            ];
+            let (mut ground, mut surface) = (Vec::new(), Vec::new());
+            for index in 0..self.registry.len() {
+                let id = BlockStateId(index as u32);
+                let name = self.registry.state(id).map_or("", |s| s.name.as_str());
+                surface.push(surface_names.contains(&name));
+                // An empty collision shape: air, the liquids (no entity stands
+                // on them), powder snow and the like; and leaves, logs and
+                // huge mushrooms, which `isGround` leaves out.
+                let excluded = self.states.get(id).air
+                    || leaves.contains(name)
+                    || logs.contains(name)
+                    || matches!(
+                        name,
+                        "minecraft:brown_mushroom_block"
+                            | "minecraft:red_mushroom_block"
+                            | "minecraft:water"
+                            | "minecraft:lava"
+                            | "minecraft:powder_snow"
+                    );
+                ground.push(
+                    !excluded
+                        && match collision {
+                            Some(registry) => registry
+                                .collision_block(id)
+                                .map_or(true, |block| !block.empty_shape),
+                            None => self.states.get(id).motion,
+                        },
+                );
+            }
+            OldChunkFacts { ground, surface }
+        })
+    }
+    /// `BlendingData.isGround` of a block state of an old chunk.
+    pub fn is_old_chunk_ground(&self, state: BlockStateId) -> bool {
+        self.old_chunk_facts()
+            .ground
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+    /// Whether the block state is one of `BlendingData.SURFACE_BLOCKS`.
+    pub fn is_old_chunk_surface(&self, state: BlockStateId) -> bool {
+        self.old_chunk_facts()
+            .surface
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn biome_name(&self, id: BiomeId) -> &str {
         &self.biome_names[id.0 as usize]
@@ -826,6 +911,8 @@ struct Pipeline<R: RandomSource> {
     pub(super) structures: Option<super::generator_structures::StructureState>,
     /// The noise settings' `spawn_target` points.
     spawn_target: Vec<SpawnTargetPoint>,
+    /// The chunks an older version generated, which new chunks blend with.
+    old_world: std::sync::OnceLock<Arc<dyn super::blending::OldWorld>>,
     /// The noise settings' `debug_functions`: label and sampler.
     debug_density: Vec<(String, Arc<dyn DensitySampler>)>,
     spawn_position: std::sync::OnceLock<[i32; 2]>,
@@ -1083,6 +1170,7 @@ where
             decoration: None,
             structures: None,
             spawn_target,
+            old_world: std::sync::OnceLock::new(),
             debug_density,
             spawn_position: std::sync::OnceLock::new(),
         };
@@ -1109,6 +1197,18 @@ where
             self.settings.sea_level,
         )
     }
+    /// `Blender.of(region)` for the chunk at `pos`.
+    fn blender_at(&self, pos: ChunkPos) -> Arc<super::blending::Blender> {
+        // `SharedConstants.DEBUG_DISABLE_BLENDING`.
+        static DISABLED: OnceLock<bool> = OnceLock::new();
+        if *DISABLED.get_or_init(|| std::env::var_os("HORIZON_DISABLE_BLENDING").is_some()) {
+            return Arc::new(super::blending::Blender::empty());
+        }
+        Arc::new(match self.old_world.get() {
+            Some(world) => super::blending::Blender::of(world.as_ref(), pos),
+            None => super::blending::Blender::empty(),
+        })
+    }
     fn biome_chunk(
         &self,
         worker: &mut WorkerState,
@@ -1127,6 +1227,14 @@ where
     ) -> Result<Option<Arc<BiomeChunk<BiomeId>>>, GeneratorError> {
         if let Some(chunk) = self.biome_cache.lock().unwrap().get(&(pos.x, pos.z)) {
             return Ok(Some(chunk.clone()));
+        }
+        // An old chunk keeps the biomes it was saved with.
+        if let Some(old) = self
+            .old_world
+            .get()
+            .and_then(|world| world.old_biomes(pos.x, pos.z))
+        {
+            return Ok(Some(old));
         }
         let work = self.biome_work.at((pos.x, pos.z));
         let _work = if wait {
@@ -1160,11 +1268,18 @@ where
             )
             .map_err(stage("biomes"))?;
         let ids = &self.data.biome_ids;
+        let blender = self.blender_at(pos);
         // Names point into the source's parameter list: neighbouring quarts
         // mostly resolve to the same entry, so skip the map lookup for it.
         let mut last: Option<(*const str, BiomeId)> = None;
         chunk
             .fill(min, min + height - 1, |quart| -> Result<BiomeId, String> {
+                // `Blender.getBiomeResolver`: an old chunk's biome near it.
+                if !blender.is_empty()
+                    && let Some(old) = blender.blend_biome(quart[0], quart[1], quart[2])
+                {
+                    return Ok(old);
+                }
                 let name = resolver
                     .sample_prepared(context, volume.as_ref(), quart)
                     .map_err(|e| e.to_string())?;
@@ -1358,25 +1473,44 @@ where
             }
             None => (Vec::new(), Starts::default()),
         };
-        if let Some(beard) = self
-            .structures
-            .as_ref()
-            .and_then(|s| s.beardifier(&references, pos))
-        {
-            *context = std::mem::take(context).with_world_fields(
-                horizon_core::density::WorldFields::default().with_field(
-                    horizon_core::density::WorldField::Beardifier,
-                    Arc::new(beard),
-                ),
-            );
-        }
-        worker.timings.structures += lap(&mut clock);
         let volume = DensityVolume::new(
             [16, height, 16],
             [pos.x.wrapping_shl(4), min, pos.z.wrapping_shl(4)],
             [1; 3],
         )
         .map_err(stage("noise"))?;
+        let blender = self.blender_at(pos);
+        let beard = self
+            .structures
+            .as_ref()
+            .and_then(|s| s.beardifier(&references, pos));
+        if beard.is_some() || !blender.is_empty() {
+            let mut fields = horizon_core::density::WorldFields::default();
+            if let Some(beard) = beard {
+                fields = fields.with_field(
+                    horizon_core::density::WorldField::Beardifier,
+                    Arc::new(beard),
+                );
+            }
+            if !blender.is_empty() {
+                let buffer = Arc::new(blender.output_buffer(volume));
+                for (field, offset) in [
+                    (horizon_core::density::WorldField::BlendAlpha, false),
+                    (horizon_core::density::WorldField::BlendOffset, true),
+                ] {
+                    fields = fields.with_field(
+                        field,
+                        Arc::new(super::blending::BlendFieldSampler {
+                            buffer: buffer.clone(),
+                            offset,
+                        }),
+                    );
+                }
+                fields = fields.with_blender(blender.clone());
+            }
+            *context = std::mem::take(context).with_world_fields(fields);
+        }
+        worker.timings.structures += lap(&mut clock);
         worker.timings.noise += lap(&mut clock);
         let mut aquifer: Box<dyn TerrainAquifer> = match &self.aquifer {
             Some(samplers) => Box::new(
@@ -1470,7 +1604,7 @@ where
                 },
                 aquifer.as_mut(),
                 &data.carving_blocks,
-                |_| true,
+                |[x, y, z]| blender.carving_filter(x, y, z).unwrap_or(true),
             )
             .map_err(stage("carvers"))?;
         }
@@ -1688,6 +1822,19 @@ impl<R: RandomSource> super::structure::start::StartContext for StructureQueries
 where
     R::Positional: Clone + Send + Sync,
 {
+    fn is_old_chunk(&self, chunk: ChunkPos) -> bool {
+        self.pipeline
+            .old_world
+            .get()
+            .is_some_and(|world| world.is_old_chunk_around(chunk, 0))
+    }
+    fn saved_starts(&self, chunk: ChunkPos) -> Vec<super::blending::SavedStart> {
+        self.pipeline
+            .old_world
+            .get()
+            .map(|world| world.saved_starts(chunk.x, chunk.z))
+            .unwrap_or_default()
+    }
     fn seed(&self) -> i64 {
         self.pipeline.seed
     }
@@ -2117,6 +2264,8 @@ trait SeededPipeline: Send + Sync {
         radius: i32,
         skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])>;
+    /// The chunks an older version generated, for `Blender.of`.
+    fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>);
     /// `NoiseBasedChunkGenerator.addDebugScreenInfo`.
     fn debug_density_line(&self, feet: [i32; 3]) -> Option<String>;
     fn find_closest_biome(
@@ -2296,6 +2445,9 @@ where
             radius,
             skip,
         )
+    }
+    fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
+        let _ = self.old_world.set(world);
     }
     /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the labelled values of
     /// the settings' `debug_functions` at `feet`, three decimals each.
@@ -2892,6 +3044,11 @@ pub struct OverworldGenerator {
     noise_clamped: Option<(NoiseSettings, NoiseSettings)>,
 }
 impl OverworldGenerator {
+    /// The chunks an older version generated, which new chunks blend with
+    /// (`Blender.of`); set once, before chunks are generated.
+    pub fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
+        self.pipeline.set_old_world(world);
+    }
     /// The `minecraft:overworld` dimension of the `minecraft:normal` world preset.
     pub fn new(data: Arc<GeneratorData>, seed: i64) -> Result<Self, GeneratorError> {
         Self::for_dimension(data, seed, "minecraft:normal", "minecraft:overworld")

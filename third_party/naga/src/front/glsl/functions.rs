@@ -637,7 +637,13 @@ impl Frontend {
                     // While storage access mismatch is an error it isn't one that causes
                     // the overload matching to fail so we defer the error and consider
                     // that the images match exactly
-                    if !call_access.contains(overload_access) {
+                    // An image GLSL lets both load and store also takes atomics.
+                    let needed = if overload_access.contains(crate::StorageAccess::ATOMIC) {
+                        crate::StorageAccess::LOAD | crate::StorageAccess::STORE
+                    } else {
+                        overload_access
+                    };
+                    if !call_access.contains(needed) {
                         self.errors.push(Error {
                             kind: ErrorKind::SemanticError(
                                 format!(
@@ -783,6 +789,11 @@ impl Frontend {
 
         let mut arguments = Vec::with_capacity(args.len());
         let mut proxy_writes = Vec::new();
+        // An atomic function works on the memory itself, never on a copy.
+        let atomic = matches!(
+            kind,
+            FunctionKind::Macro(super::builtins::MacroCall::Atomic(_))
+        );
 
         // Iterate through the function call arguments applying transformations as needed
         for (((parameter_info, call_argument), expr), parameter) in parameters_info
@@ -791,6 +802,11 @@ impl Frontend {
             .zip(raw_args)
             .zip(&parameters)
         {
+            if parameter_info.qualifier.is_lhs() && atomic {
+                let (handle, _) = ctx.lower_expect_inner(stmt, self, *expr, ExprPos::Lhs)?;
+                arguments.push(handle);
+                continue;
+            }
             if parameter_info.qualifier.is_lhs() {
                 // Reprocess argument in LHS position
                 let (handle, meta) = ctx.lower_expect_inner(stmt, self, *expr, ExprPos::Lhs)?;
@@ -886,6 +902,7 @@ impl Frontend {
         proxy_writes: &mut Vec<ProxyWrite>,
         arguments: &mut Vec<Handle<Expression>>,
     ) -> Result<()> {
+        let whole_local = matches!(ctx.expressions[original], Expression::LocalVariable(_));
         let original_ty = ctx.resolve_type(original, meta)?;
         let original_pointer_space = original_ty.pointer_space();
 
@@ -905,11 +922,13 @@ impl Frontend {
             // indirection through a local variable is needed to align the address
             // spaces of the call argument and the overload parameter.
             TypeInner::Pointer { base, space } if space != AddressSpace::Function => Some(base),
-            TypeInner::ValuePointer {
-                size,
-                scalar,
-                space,
-            } if space != AddressSpace::Function => {
+            // A pointer into a struct or an array (`f(s.field)`, `f(a[i])`): the SPIR-V
+            // writer passes only whole variables by pointer, so it is spilled too.
+            TypeInner::Pointer { base, .. } if !whole_local => Some(base),
+            // A pointer into a vector or a matrix: MSL and WGSL can't pass a vector element
+            // by reference, so it is spilled whatever its address space (GLSL copies `out`
+            // and `inout` arguments in and out anyway).
+            TypeInner::ValuePointer { size, scalar, .. } => {
                 let inner = match size {
                     Some(size) => TypeInner::Vector { size, scalar },
                     None => TypeInner::Scalar(scalar),
@@ -1028,6 +1047,72 @@ impl Frontend {
         }
 
         Ok(())
+    }
+
+    /// Records the global or struct field `pointer` reaches, so its type becomes atomic.
+    pub(crate) fn record_atomic_access(
+        &mut self,
+        ctx: &mut Context,
+        pointer: Handle<Expression>,
+        meta: Span,
+    ) -> Result<Handle<Type>> {
+        match ctx[pointer] {
+            Expression::Access { base, .. } => {
+                let ty = self.record_atomic_access(ctx, base, meta)?;
+                match ctx.module.types[ty].inner {
+                    TypeInner::Array { base, .. } => Ok(base),
+                    _ => Ok(ty),
+                }
+            }
+            Expression::AccessIndex { base, index } => {
+                let ty = self.record_atomic_access(ctx, base, meta)?;
+                match ctx.module.types[ty].inner {
+                    TypeInner::Struct { ref members, .. } => {
+                        let member = members[index as usize].ty;
+                        self.atomic_upgrades.insert_field(ty, index as usize);
+                        Ok(member)
+                    }
+                    TypeInner::Array { base, .. } => Ok(base),
+                    _ => Ok(ty),
+                }
+            }
+            Expression::GlobalVariable(h) => {
+                self.atomic_upgrades.insert_global(h);
+                Ok(ctx.module.global_variables[h].ty)
+            }
+            _ => Err(Error {
+                kind: ErrorKind::SemanticError(
+                    "atomic functions take a buffer or shared variable".into(),
+                ),
+                meta,
+            }),
+        }
+    }
+
+    /// Adds atomic access to the storage image global `image`.
+    pub(crate) fn image_atomic_access(&mut self, ctx: &mut Context, image: Handle<Expression>) {
+        let Expression::GlobalVariable(h) = ctx[image] else {
+            return;
+        };
+        let ty = ctx.module.global_variables[h].ty;
+        if let TypeInner::Image {
+            dim,
+            arrayed,
+            class: crate::ImageClass::Storage { format, access },
+        } = ctx.module.types[ty].inner
+        {
+            let inner = TypeInner::Image {
+                dim,
+                arrayed,
+                class: crate::ImageClass::Storage {
+                    format,
+                    access: access | crate::StorageAccess::ATOMIC,
+                },
+            };
+            let name = ctx.module.types[ty].name.clone();
+            let span = ctx.module.types.get_span(ty);
+            ctx.module.global_variables[h].ty = ctx.module.types.insert(Type { name, inner }, span);
+        }
     }
 
     pub(crate) fn add_function(

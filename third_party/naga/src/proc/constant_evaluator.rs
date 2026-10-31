@@ -2751,6 +2751,7 @@ impl<'a> ConstantEvaluator<'a> {
     ) -> Result<Handle<Expression>, ConstantEvaluatorError> {
         let left = self.eval_zero_value_and_splat(left, span)?;
         let right = self.eval_zero_value_and_splat(right, span)?;
+        let glsl = matches!(self.behavior, Behavior::Glsl(_));
 
         // Note: in most cases constant evaluation checks for overflow, but for
         // i32/u32, it uses wrapping arithmetic. See
@@ -2811,7 +2812,10 @@ impl<'a> ConstantEvaluator<'a> {
                         }),
                         (Literal::I16(a), Literal::U32(b)) => Literal::I16(match op {
                             BinaryOperator::ShiftLeft => {
-                                if (if a.is_negative() { !a } else { a }).leading_zeros() <= b {
+                                // GLSL drops the bits shifted out; WGSL forbids losing any.
+                                if !glsl
+                                    && (if a.is_negative() { !a } else { a }).leading_zeros() <= b
+                                {
                                     return Err(ConstantEvaluatorError::Overflow("<<".to_string()));
                                 }
                                 a.checked_shl(b)
@@ -2838,6 +2842,9 @@ impl<'a> ConstantEvaluator<'a> {
                             _ => return Err(ConstantEvaluatorError::InvalidBinaryOpArgs),
                         }),
                         (Literal::U16(a), Literal::U32(b)) => Literal::U16(match op {
+                            BinaryOperator::ShiftLeft if glsl => a
+                                .checked_shl(b)
+                                .ok_or(ConstantEvaluatorError::ShiftedMoreThan32Bits)?,
                             BinaryOperator::ShiftLeft => a
                                 .checked_mul(
                                     1u16.checked_shl(b)
@@ -2874,7 +2881,10 @@ impl<'a> ConstantEvaluator<'a> {
                         }),
                         (Literal::I32(a), Literal::U32(b)) => Literal::I32(match op {
                             BinaryOperator::ShiftLeft => {
-                                if (if a.is_negative() { !a } else { a }).leading_zeros() <= b {
+                                // GLSL drops the bits shifted out; WGSL forbids losing any.
+                                if !glsl
+                                    && (if a.is_negative() { !a } else { a }).leading_zeros() <= b
+                                {
                                     return Err(ConstantEvaluatorError::Overflow("<<".to_string()));
                                 }
                                 a.checked_shl(b)
@@ -2898,6 +2908,9 @@ impl<'a> ConstantEvaluator<'a> {
                             BinaryOperator::And => a & b,
                             BinaryOperator::ExclusiveOr => a ^ b,
                             BinaryOperator::InclusiveOr => a | b,
+                            BinaryOperator::ShiftLeft if glsl => a
+                                .checked_shl(b)
+                                .ok_or(ConstantEvaluatorError::ShiftedMoreThan32Bits)?,
                             BinaryOperator::ShiftLeft => a
                                 .checked_mul(
                                     1u32.checked_shl(b)

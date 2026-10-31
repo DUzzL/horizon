@@ -129,7 +129,7 @@ pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
 }
 
 /// Whether frames without a shader pack's terrain draw flat: where the backend
-/// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11's Vulkan
+/// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11/Gen12's Vulkan
 /// driver, or with `HORIZON_FLAT_DRAWS=1`. Elsewhere per-section draws stay.
 pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
     std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
@@ -137,15 +137,34 @@ pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
         || is_broken_intel_vulkan(info)
 }
 
-/// Intel Gen11 (Ice Lake) ANV Vulkan driver has broken `first_instance` for instance-step
-/// vertex attributes (#3529), causing terrain sections to be drawn with another section's origin
-/// and flicker.
+/// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,
+/// Raptor Lake) ANV Vulkan drivers have broken `first_instance` for
+/// instance-step vertex attributes (#3529, #4599), causing terrain sections to
+/// be drawn with another section's origin and flicker.
 pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Vulkan
         && info.vendor == 0x8086
-        && (info.name.contains("ICL")
-            || info.name.contains("Ice Lake")
-            || (info.device >= 0x8a50 && info.device <= 0x8a71))
+        && (matches!(
+            info.device,
+            0x8a50..=0x8a71 // Gen11: Ice Lake
+                | 0x9a40..=0x9a7f // Gen12: Tiger Lake
+                | 0x4c80..=0x4c9a // Gen12: Rocket Lake
+                | 0x4600..=0x46ff // Gen12: Alder Lake (incl. 0x46a8 in #4599)
+                | 0xa700..=0xa7ff // Gen12: Raptor Lake
+        ) || [
+            "ICL",
+            "Ice Lake",
+            "TGL",
+            "Tiger Lake",
+            "RKL",
+            "Rocket Lake",
+            "ADL",
+            "Alder Lake",
+            "RPL",
+            "Raptor Lake",
+        ]
+        .iter()
+        .any(|tag| info.name.contains(tag)))
 }
 
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
@@ -723,6 +742,23 @@ impl Flat {
             self.bind_page(pass, call.page, &vertices);
             page(pass, call.page);
             pass.draw_indexed(call.first..call.first + call.count, 0, 0..1);
+        }
+    }
+    /// Draws `calls` without their index buffer, `instances` times: a shader pack's geometry
+    /// stage reads the indices itself (`hz_indices`) and stands for one emitted triangle per
+    /// instance.
+    pub fn draw_geometry<'a>(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        calls: &[Call],
+        vertices: impl Fn(u32) -> &'a wgpu::Buffer,
+        page: impl Fn(&mut wgpu::RenderPass<'_>, u32),
+        instances: u32,
+    ) {
+        for call in calls {
+            self.bind_page(pass, call.page, &vertices);
+            page(pass, call.page);
+            pass.draw(call.first..call.first + call.count, 0..instances);
         }
     }
     /// Draws phase 2's calls, as `flatten_phase2` left them.

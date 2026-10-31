@@ -1,8 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "a block's items for server mods (`native_container_slots`,\n`native_extract_item`, `native_move_items`, and `native_dimension` for a\nmachine's tick, in `machines/native_items.rs`).",
-  "doc_summary": "[a block's items](#a-blocks-items) for server mods, what a pipe or a machine needs to pull from other blocks: `native_container_slots`, `native_extract_item`\nand `native_move_items`, and `native_dimension` for a machine's tick to name its level. `native_insert_item` now goes one item at a time, so it no longer overfills a slot,\nleaves a client's copy of the world alone, and can't reach a machine's own slots during its tick, where what went in was lost. Bundles that use the new helpers need `\"hooks\": @API:block_items@`.",
-  "comments": [
-    "crates/horizon-client/src/game/machines/native_items.rs"
-  ]
-}

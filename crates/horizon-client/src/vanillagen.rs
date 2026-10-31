@@ -413,6 +413,15 @@ impl VanillaTerrain {
     ) -> Option<(String, [i32; 3])> {
         self.generator.worker().locate(names, from, radius)
     }
+    /// The chunks an older version saved, which new chunks blend with
+    /// (`Blender.of`).
+    pub fn set_old_world(&self, world: Arc<dyn horizon_world::worldgen::blending::OldWorld>) {
+        self.generator.set_old_world(world);
+    }
+    /// The generator's resources, for what reads saved chunks the way it does.
+    pub fn generator_data(&self) -> &Arc<GeneratorData> {
+        self.generator.data()
+    }
     /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: F3's `Density` line at
     /// the feet. It reads the samplers only, not the shared query worker, so
     /// a long `/locate biome` or `/place jigsaw` never holds it up.
@@ -677,6 +686,63 @@ impl ChunkGenerator for VanillaTerrain {
     }
     fn decorates(&self) -> bool {
         true
+    }
+    fn decorates_beside_final(&self) -> bool {
+        true
+    }
+    /// A final chunk's proto chunk: terrain generated again with the final
+    /// chunk's blocks over it, so that features read and write it as they do
+    /// the chunks around it (`ChunkAccess` of a full chunk in the region).
+    fn proto_beside_final(&self, worker: &mut GeneratorWorker, snapshot: &Chunk) -> Option<Proto> {
+        let mut proto = self.proto(worker, snapshot.x, snapshot.z);
+        self.restore_proto(
+            &mut proto,
+            SavedProto {
+                column: snapshot.clone(),
+                decorated: true,
+                block_entities: Vec::new(),
+                entities: Vec::new(),
+            },
+        );
+        Some(proto)
+    }
+    fn final_writes(&self, snapshot: &Chunk, proto: &Proto) -> Vec<([i32; 3], u32)> {
+        let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
+            return Vec::new();
+        };
+        let (bx, bz) = (snapshot.x * 16, snapshot.z * 16);
+        let (lo, hi) = (
+            chunk.terrain.min_y().max(snapshot.min_y()),
+            (chunk.terrain.min_y() + chunk.terrain.height()).min(snapshot.max_y()),
+        );
+        let mut writes = Vec::new();
+        for y in lo..hi {
+            for z in 0..16 {
+                for x in 0..16 {
+                    let state = chunk.block(bx + x, y, bz + z).0;
+                    if state != snapshot.get(x, y, z) {
+                        writes.push(([bx + x, y, bz + z], state));
+                    }
+                }
+            }
+        }
+        writes
+    }
+    fn final_block_entities(
+        &self,
+        proto: &Proto,
+        writes: &[([i32; 3], u32)],
+    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
+        let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
+            return Vec::new();
+        };
+        if chunk.block_entities.is_empty() {
+            return Vec::new();
+        }
+        let (made, _rolled) = crate::structure_blocks::block_entities(chunk, self.loot.as_deref());
+        made.into_iter()
+            .filter(|((x, y, z), _)| writes.iter().any(|(p, _)| *p == [*x, *y, *z]))
+            .collect()
     }
     fn decorate(&self, worker: &mut GeneratorWorker, region: &mut [Proto; 9]) {
         let taken: Vec<Box<VanillaProto>> = region

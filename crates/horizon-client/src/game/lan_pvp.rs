@@ -60,6 +60,9 @@ pub(super) struct Strike {
     knockback_attack: bool,
     /// The attacker's team, for the victim's `Player.canHarmPlayer`.
     team: Option<horizon_client::scoreboard::Team>,
+    /// The attacker's main-hand item with a custom name, for the death
+    /// message's `.item` form.
+    item: Option<horizon_client::text::Text>,
 }
 
 /// A sweep attack's reach to the other players (`Player.doSweepAttack`),
@@ -197,6 +200,7 @@ impl Game<'_> {
             knockback: (strength, xd, zd),
             knockback_attack,
             team: self.player_team().cloned(),
+            item: self.main_hand_custom_name(),
         })
     }
 
@@ -341,7 +345,7 @@ impl Game<'_> {
         let land = |g: &mut Self| {
             g.combat.player_attacker = Some((s.from, s.disable_blocking));
             if let Some((id, name)) = attacker_note.clone() {
-                g.note_named_attacker("minecraft:player_attack", id as u32, name);
+                g.note_player_attacker("minecraft:player_attack", id as u32, name, s.item.clone());
             }
             let hurt = g.mob_hits_player(s.amount, s.from, "minecraft:player_attack");
             g.combat.player_attacker = None;

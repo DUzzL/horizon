@@ -454,6 +454,13 @@ impl Game<'_> {
         let levels = self.beacon_levels();
         let sel = self.station.as_ref().map_or([None; 2], |s| s.beacon);
         let paid = self.station.as_ref().is_some_and(|s| s.inputs[0].is_some());
+        // BeaconScreen draws no title, but has the menu's.
+        super::screen_info::name_container(|| {
+            self.remote_menu_title().map_or_else(
+                || self.translate("container.beacon", "Beacon"),
+                |t| t.plain(),
+            )
+        });
         let atlas = &self.gui.atlas;
         batch.fill(
             atlas,

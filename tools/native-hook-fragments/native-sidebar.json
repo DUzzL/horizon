@@ -1,9 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "in `native_server.rs`, a sidebar and Tab list lines for one\nplayer (`native_sidebar`, `native_tab_list`), the server's tick times\n(`native_tick_stats`), players left out of the sleep count\n(`native_sleep_ignored`), and where players look (`yaw`, `pitch`).",
-  "doc_summary": "what a server mod needs for a public server's screens: `native_sidebar(uuid, sidebar)` shows one\nplayer a sidebar of up to 15 lines (a text, and one where the score would be) that only their client holds (the\nserver's scoreboard never sees it; a mod sends it again when they rejoin), or takes it away with `None`;\n`native_tab_list(uuid, header, footer)` sets the lines over and under their Tab list; `native_tick_stats()` reads the\nserver's tick rate and average tick time in ms (`/tick query`'s); and `native_sleep_ignored(uuid, ignored)` leaves a\nplayer out of `players_sleeping_percentage`'s count until they are in bed (players away from the keyboard), outside a\nplayer's hook only. The players `native_server_players` lists carry where they look (`yaw`, `pitch`). Bundles that\nuse them need `\"hooks\": @API:native-sidebar@`.",
-  "comments": [
-    "crates/horizon-client/src/game/native_server.rs",
-    "docs/smp.md"
-  ]
-}
