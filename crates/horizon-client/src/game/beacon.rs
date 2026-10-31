@@ -141,7 +141,12 @@ impl Game<'_> {
             .world
             .block_entities
             .iter()
-            .filter_map(|(k, e)| matches!(e, BlockEntity::Beacon(_)).then_some(*k))
+            // LevelChunk.isTicking: inside the world border.
+            .filter(|(k, e)| {
+                matches!(e, BlockEntity::Beacon(_))
+                    && self.border.contains(f64::from(k.0), f64::from(k.2))
+            })
+            .map(|(k, _)| *k)
             .collect();
         for key in keys {
             let Some(BlockEntity::Beacon(mut b)) = self.world.block_entities.take(&key) else {

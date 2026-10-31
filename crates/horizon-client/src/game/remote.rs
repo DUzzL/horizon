@@ -2187,6 +2187,9 @@ impl Game<'_> {
                     new.spin = old.spin;
                     new.o_spin = old.o_spin;
                 }
+                // So is a beacon's beam: a fresh one draws nothing until the next
+                // tick walks it again.
+                (Some(BlockEntity::Beacon(old)), BlockEntity::Beacon(new)) => new.keep_beam(old),
                 _ => {}
             }
             let command_block = matches!(loaded, BlockEntity::CommandBlock(_));

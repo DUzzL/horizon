@@ -292,6 +292,15 @@ pub struct Beacon {
     pub checking: Vec<(u32, i32)>,
     pub last_check_y: i32,
 }
+impl Beacon {
+    /// `BeaconBlockEntity.loadAdditional` on a client: an update tag carries
+    /// the powers, not the beam, so the beam this client walked stays.
+    pub fn keep_beam(&mut self, old: &Self) {
+        self.sections.clone_from(&old.sections);
+        self.checking.clone_from(&old.checking);
+        self.last_check_y = old.last_check_y;
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct Jukebox {
     /// `JukeboxBlockEntity`'s one slot (`ContainerSingleItem`), so a hopper or
@@ -587,4 +596,32 @@ pub struct CommandBlock {
     pub powered: bool,
     pub auto: bool,
     pub condition_met: bool,
+}
+
+#[cfg(test)]
+mod beacon_tests {
+    use super::Beacon;
+
+    #[test]
+    fn an_update_keeps_the_beam_and_takes_the_powers() {
+        let old = Beacon {
+            levels: 4,
+            primary: Some("minecraft:speed".into()),
+            sections: vec![(0xF9FFFE, 2)],
+            checking: vec![(0xF9FFFE, 1)],
+            last_check_y: 70,
+            ..Default::default()
+        };
+        let mut new = Beacon {
+            levels: 4,
+            primary: Some("minecraft:haste".into()),
+            last_check_y: i32::MIN / 2,
+            ..Default::default()
+        };
+        new.keep_beam(&old);
+        assert_eq!(new.sections, old.sections);
+        assert_eq!(new.checking, old.checking);
+        assert_eq!(new.last_check_y, 70);
+        assert_eq!(new.primary.as_deref(), Some("minecraft:haste"));
+    }
 }
