@@ -239,7 +239,7 @@
   "Shortcut: %s": "Raccourci : %s",
   "Next": "Suivant",
   "HDR Calibration %s/%s: %s": "Calibrage HDR %s/%s : %s",
-  "Sets the three below full screen, one test picture at a time.": "Règle les trois valeurs ci-dessous en plein écran, image test.",
+  "Sets the three below full screen, one test picture at a time.": "Règle les trois valeurs ci-dessous en plein écran, une image test à la fois.",
   "A key that opens this screen from the game. Not bound at first.": "Une touche qui ouvre cet écran depuis le jeu. Non assignée au départ.",
   "Your display didn't say how bright it gets: calibrate to set it up.": "Votre écran n'a pas indiqué sa luminosité : calibrez-le.",
   "Already set up for your display. Only calibrate if HDR looks wrong.": "Déjà configuré. Calibrez seulement si le HDR semble incorrect.",
