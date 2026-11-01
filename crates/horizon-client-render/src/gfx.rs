@@ -958,6 +958,12 @@ pub struct Renderer {
     /// When each section was first uploaded (`RenderSection.uploadedTime`): kept across meshing
     /// it again, gone with its column. Sections that fade in over far terrain are not in it.
     section_uploaded: crate::fast_hash::FxHashMap<SectionKey, std::time::Instant>,
+    /// When `section_uploaded` last gained a section: once the fade time has passed since,
+    /// every section is whole and frames skip the per-section lookups.
+    newest_upload: Option<std::time::Instant>,
+    /// When a section last began to fade in over far terrain (`SectionGpu::fading`), for the
+    /// same shortcut.
+    newest_lod_fade: Option<std::time::Instant>,
     /// Changes whenever `block_entities` does (unique across renderers).
     block_entity_revision: u64,
     /// The light sources of each section and their revision, for `block_light`.
@@ -3678,6 +3684,8 @@ impl Renderer {
             shadow_runs: page_runs::PageRuns::default(),
             block_entities: Default::default(),
             section_uploaded: Default::default(),
+            newest_upload: None,
+            newest_lod_fade: None,
             block_entity_revision: next_block_entity_revision(),
             light_blocks: Default::default(),
             light_revision: 0,
@@ -4000,12 +4008,17 @@ impl Renderer {
         }
         let fading = match self.sections.find(key) {
             Some(old) => old.fading,
-            None => (!self.lods.is_empty()).then(std::time::Instant::now),
+            None if !self.lods.is_empty() => {
+                let now = std::time::Instant::now();
+                self.newest_lod_fade = Some(now);
+                Some(now)
+            }
+            None => None,
         };
-        if fading.is_none() {
-            self.section_uploaded
-                .entry(key)
-                .or_insert_with(std::time::Instant::now);
+        if fading.is_none() && !self.section_uploaded.contains_key(&key) {
+            let now = std::time::Instant::now();
+            self.section_uploaded.insert(key, now);
+            self.newest_upload = Some(now);
         }
         self.release_section(key);
         let section = self
@@ -4344,13 +4357,31 @@ impl Renderer {
     ) -> impl Iterator<Item = &([i32; 3], u32)> {
         let fade = fade_millis(fade_seconds);
         let now = std::time::Instant::now();
+        let all = !self.sections_fading_in(fade, now);
         self.block_entities
             .iter()
             .filter(move |(key, _)| {
-                chunk_visibility(self.section_elapsed_ms(**key, now), fade)
+                all || chunk_visibility(self.section_elapsed_ms(**key, now), fade)
                     >= CHUNK_VISIBILITY_THRESHOLD
             })
             .flat_map(|(_, blocks)| blocks)
+    }
+    /// Whether a section may still be fading in over `fade_ms` (vanilla's chunk fade): one was
+    /// uploaded more recently than that. Otherwise every section is whole.
+    fn sections_fading_in(&self, fade_ms: u64, now: std::time::Instant) -> bool {
+        fade_ms > 0
+            && self
+                .newest_upload
+                .is_some_and(|t| (now.saturating_duration_since(t).as_millis() as u64) < fade_ms)
+    }
+    /// Whether a section may be fading in or out over far terrain (`SectionGpu::fade`):
+    /// otherwise every section's code is 0.
+    fn sections_fading_over_lods(&self, now: std::time::Instant) -> bool {
+        !self.lod_retiring.is_empty()
+            || !self.lod_leaving.is_empty()
+            || self
+                .newest_lod_fade
+                .is_some_and(|t| now.saturating_duration_since(t) < lod::FADE)
     }
     /// Milliseconds since `key` was uploaded; a section not in `section_uploaded` is old.
     fn section_elapsed_ms(&self, key: SectionKey, now: std::time::Instant) -> u64 {
@@ -4366,6 +4397,8 @@ impl Renderer {
     pub fn clear_sections(&mut self, layout: crate::chunk::ColumnLayout) {
         self.block_entities.clear();
         self.section_uploaded.clear();
+        self.newest_upload = None;
+        self.newest_lod_fade = None;
         self.block_entity_revision = next_block_entity_revision();
         self.sections.clear();
         self.lods.clear();
@@ -5776,11 +5809,21 @@ impl Renderer {
         }
         self.origins.clear();
         let (sections, retiring) = (&self.sections, &self.lod_retiring);
-        // `LevelRenderer.extractSectionDrawGroups`: each section's `getVisibility`.
+        // `LevelRenderer.extractSectionDrawGroups`: each section's `getVisibility`. Once
+        // nothing is fading (the usual frame), every section is whole without a lookup.
         let fade_ms = fade_millis(frame.chunk_fade);
+        let fading_in = self.sections_fading_in(fade_ms, now);
+        let fading_over_lods = self.sections_fading_over_lods(now);
+        let fade_code = move |section: &SectionGpu, key: &SectionKey| {
+            if fading_over_lods {
+                section.fade(now, retiring.contains(key))
+            } else {
+                0
+            }
+        };
         let uploaded = &self.section_uploaded;
-        let visibility = |key: SectionKey| {
-            if fade_ms == 0 {
+        let visibility = move |key: SectionKey| {
+            if !fading_in {
                 return 1.0;
             }
             uploaded.get(&key).map_or(1.0, |t| {
@@ -5794,7 +5837,7 @@ impl Renderer {
             visible
                 .iter()
                 .map(|v| {
-                    let code = sections.get(v.slot).fade(now, retiring.contains(&v.key));
+                    let code = fade_code(sections.get(v.slot), &v.key);
                     section_instance(v.origin, code, visibility(v.key))
                 })
                 .chain(visible_lods.iter().map(|v| lod::instance(v.origin, v.fade)))
@@ -6430,7 +6473,7 @@ impl Renderer {
             {
                 // They read translucent quads in the section arena (`translucent_split`).
                 debug_assert!(self.translucent_arena.is_none(), "flat draws, split");
-                let (sections, retiring) = (&self.sections, &self.lod_retiring);
+                let sections = &self.sections;
                 let lods = &self.lods;
                 let sorted = &self.sorted_indices;
                 let phase2 = self.cull.as_ref().filter(|_| culling).map(|c| &c.phase2);
@@ -6450,7 +6493,7 @@ impl Renderer {
                             .chain(&shadow_visible)
                             .filter_map(|v| {
                                 let section = sections.get(v.slot);
-                                let code = section.fade(now, retiring.contains(&v.key));
+                                let code = fade_code(section, &v.key);
                                 Some((
                                     section.flat_id?,
                                     section_instance(v.origin, code, visibility(v.key)),
