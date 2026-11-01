@@ -32,7 +32,7 @@ pub struct Archetype {
     pub explosion: Option<(i32, f32, bool)>,
     /// `contact_damage` amount (`sulfur_cube_hot`).
     pub contact_damage: Option<f32>,
-    /// The knockback resistance modifier (the attribute clamps to 0..1).
+    /// The knockback resistance modifier (the attribute range is -2..1; negative values add knockback).
     pub knockback_resistance: f64,
     /// `Attributes.BOUNCINESS` (the modifier added to a base of 0).
     pub bounciness: f32,
@@ -634,6 +634,11 @@ fn vertical_hit_angle_power_transfer(
     }
     (powers.0 * (1.0 - ratio), powers.1 * (1.0 + ratio))
 }
+/// The `knockback_resistance` attribute's value: vanilla clamps it to -2..1, and a negative one
+/// (an explosive or bouncy block) adds knockback.
+fn resistance(attribute: f64) -> f32 {
+    attribute.clamp(-2.0, 1.0) as f32
+}
 /// What `SulfurCube.knockback` adds to the cube's movement for a blow of `damage`: the
 /// archetype's `powers` (horizontal, vertical) turned by where the blow came from (`from`, the
 /// direct entity: the direction of the knock) and, with the causing entity's `aim` (eye, view
@@ -717,7 +722,7 @@ pub fn knockback(m: &mut Mob, direction: (f64, f64), from: Option<[f64; 3]>, dam
     let from = from.unwrap_or([m.position.x, m.position.y, m.position.z]);
     let delta = launch(
         (a.horizontal_power, a.vertical_power),
-        a.knockback_resistance.clamp(0.0, 1.0) as f32,
+        resistance(a.knockback_resistance),
         damage,
         direction,
         aim.map_or(from, |a| a.feet),
@@ -842,7 +847,7 @@ fn player_push(m: &mut Mob, p: &super::PlayerView, events: &mut Vec<MobEvent>) {
         return;
     }
     let a = archetype(m);
-    let kb = (1.0 - a.map_or(0.0, |a| a.knockback_resistance.clamp(0.0, 1.0))).max(0.0);
+    let kb = (1.0 - a.map_or(0.0, |a| f64::from(resistance(a.knockback_resistance)))).max(0.0);
     let len = horizontal.max(1.0e-4);
     let speed = (p.velocity.length() * 2.0 * f64::from(0.3f32)).clamp(0.0, 0.5);
     let push = Vec3::new(
@@ -1295,5 +1300,36 @@ mod launch_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod resistance_tests {
+    use super::{launch, resistance};
+
+    #[test]
+    fn negative_resistance_adds_knockback() {
+        assert_eq!(resistance(-1.0), -1.0);
+        assert_eq!(resistance(-2.0), -2.0);
+        assert_eq!(resistance(-5.0), -2.0);
+        assert_eq!(resistance(3.0), 1.0);
+        let push = |r: f64, damage: f32| {
+            launch(
+                (1.0, 0.6),
+                resistance(r),
+                damage,
+                (1.0, 0.0),
+                [0.0, 64.0, 0.0],
+                [1.0, 64.0, 0.0],
+                [1.0, 64.5, 0.0],
+                1.0,
+                None,
+            )
+        };
+        let base = push(0.0, 4.0);
+        let explosive = push(-1.0, 4.0);
+        let bouncy = push(-2.0, 4.0);
+        assert!((explosive[0] / base[0] - 2.0).abs() < 1.0e-6);
+        assert!((bouncy[0] / base[0] - 3.0).abs() < 1.0e-6);
     }
 }
