@@ -22,8 +22,8 @@ use horizon_protocol::packets::play::{self, Clientbound as C};
 pub(super) struct GuestStation {
     pub(super) window: i32,
     state: i32,
-    kind: StationKind,
-    pos: [i32; 3],
+    pub(super) kind: StationKind,
+    pub(super) pos: [i32; 3],
     menu: Box<Menu>,
     /// The data slots the client was last sent.
     sent_data: Vec<i32>,
@@ -43,7 +43,7 @@ pub(super) struct GuestLectern {
 
 /// The `MenuType`, the engine's menu and the input slots
 /// (`clearContainer`'s container) of a station a guest can use.
-fn menu_of(kind: StationKind) -> Option<(&'static str, Kind, std::ops::Range<usize>)> {
+pub(super) fn menu_of(kind: StationKind) -> Option<(&'static str, Kind, std::ops::Range<usize>)> {
     Some(match kind {
         StationKind::Loom => ("minecraft:loom", Kind::Loom, 0..3),
         StationKind::Stonecutter => ("minecraft:stonecutter", Kind::Stonecutter, 0..1),
