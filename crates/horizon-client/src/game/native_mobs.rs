@@ -17,9 +17,17 @@ impl Game<'_> {
     /// `LivingEntity.collectEquipmentChanges` for the mobs that tick: each
     /// slot that holds another stack than the mods last heard is told
     /// (`native_living_equipment_change`). A mob new to the level counts from
-    /// empty, as vanilla's `lastEquipmentItems` does.
+    /// empty, as vanilla's `lastEquipmentItems` does. Only while a mod
+    /// listens (`native_living_equipment_listened`): a mob's first tick after
+    /// that counts from empty too.
     pub(super) fn native_mobs_equipment(&mut self) {
         if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        // Reading every mob's equipment each tick costs: only when a mod listens.
+        let mut listened = false;
+        self.native_living_equipment_listened(&mut listened);
+        if !listened {
             return;
         }
         let ticking = self.entity_ticking_area();
