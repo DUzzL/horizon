@@ -3601,10 +3601,14 @@ impl Game<'_> {
             }
             C::TakeItemEntity(p) => {
                 // ClientPacketListener.handleTakeItemEntity: the pickup sound at
-                // the item or arrow, whoever collects it (the server sends none).
-                // An orb's sound comes from the server, at the orb; an entity
-                // this client doesn't track sounds at this player.
-                let orb = self.orbs.iter().any(|o| o.id == p.item as u32);
+                // the orb, item or arrow, whoever collects it (the server sends
+                // none); an entity this client doesn't track sounds at this player.
+                let orb_at = self
+                    .orbs
+                    .iter()
+                    .find(|o| o.id == p.item as u32)
+                    .map(|o| o.position);
+                let orb = orb_at.is_some();
                 let item = self.dropped.iter().find(|d| d.id == p.item as u32);
                 let shot = self
                     .creatures
@@ -3630,7 +3634,17 @@ impl Game<'_> {
                     }
                     (None, None) => None,
                 };
-                if !orb && let Some(at) = at {
+                if let Some(o) = orb_at {
+                    let pitch = (self.world.random.next_float() - self.world.random.next_float())
+                        * 0.35
+                        + 0.9;
+                    self.audio.play(
+                        "minecraft:entity.experience_orb.pickup",
+                        Some([o.x, o.y, o.z]),
+                        0.1,
+                        pitch,
+                    );
+                } else if let Some(at) = at {
                     let pitch = ((self.world.random.next_float() - self.world.random.next_float())
                         * 0.7
                         + 1.0)

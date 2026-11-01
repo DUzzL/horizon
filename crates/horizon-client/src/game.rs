@@ -13027,18 +13027,24 @@ impl Game<'_> {
             });
         }
         self.orbs = orbs;
-        for o in taken {
-            self.add_pickup(pickups::Taken::Orb(Box::new(o)), pickups::Collector::Player);
-        }
         if gained > 0 {
             gained = self.mending(gained);
         }
-        if gained > 0 {
-            let at = self.eye_position();
+        for o in taken {
+            // ClientPacketListener.handleTakeItemEntity: every orb taken sounds
+            // at the orb, whether mending took its points or not.
             let pitch =
                 (self.world.random.next_float() - self.world.random.next_float()) * 0.35 + 0.9;
-            self.audio
-                .play("minecraft:entity.experience_orb.pickup", at, 0.1, pitch);
+            let at = [o.position.x, o.position.y, o.position.z];
+            self.audio.play(
+                "minecraft:entity.experience_orb.pickup",
+                Some(at),
+                0.1,
+                pitch,
+            );
+            self.add_pickup(pickups::Taken::Orb(Box::new(o)), pickups::Collector::Player);
+        }
+        if gained > 0 {
             self.give_orb_points(gained);
         }
     }
