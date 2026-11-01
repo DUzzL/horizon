@@ -11156,6 +11156,73 @@ CHECKS += ['attack_over_slab']
 CHECK_FNS['attack_over_slab'] = check_attack_over_slab
 
 
+def check_lightning_box(host, guest, out):
+    """A lightning bolt tests the box of every entity against its strike box (3 around, 9 above),
+    not their feet, and destroys boats, minecarts and experience orbs (LightningBolt.tick ->
+    Entity.thunderHit -> VehicleEntity.hurtServer 5 x 10 > 40; ExperienceOrb health 5). Real
+    vanilla 26.3 (same scene): boat, cart, orb and a boat whose feet stand 3.5 out are gone, a cow
+    whose feet stand 3.2 out drops from 10 to 5, a boat 6 out is untouched."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    ox, oy, oz = x + 12, y, z
+    tag = 'dg_bolt'
+    spots = {'boat': ('minecraft:oak_boat', 1.5, 0), 'cart': ('minecraft:minecart', -1.5, 0),
+             'orb': ('minecraft:experience_orb', 0, -1.5), 'edgeboat': ('minecraft:oak_boat', 0, 3.5),
+             'edgecow': ('minecraft:cow', 3.2, 0), 'farboat': ('minecraft:oak_boat', 6.0, 0)}
+    markers = {name: (ox - 8 + i, oy, oz + 12) for i, name in enumerate(spots)}
+
+    def alive(name):
+        if name == 'orb':  # @e does not list experience orbs; the state counts them by kind
+            return remote(host).get('entities', {}).get('minecraft:experience_orb', 0) > 0
+        # Marker blocks: a command the game runs, a block the control reads back.
+        mx, my, mz = markers[name]
+        host('command', command=f'setblock {mx} {my} {mz} minecraft:air')
+        host('command', command=f'execute if entity @e[tag={tag}_{name}] run setblock {mx} {my} {mz} minecraft:gold_block')
+        host.wait(2)
+        return host.raw('block', mx, my, mz).get('block') == 'minecraft:gold_block'
+
+    seen = {}
+    try:
+        host('command', command='gamemode creative')
+        host('command', command='difficulty normal')
+        host('command', command=f'fill {ox - 9} {oy - 1} {oz - 9} {ox + 9} {oy - 1} {oz + 14} minecraft:stone')
+        host('command', command=f'fill {ox - 9} {oy} {oz - 9} {ox + 9} {oy + 6} {oz + 14} minecraft:air')
+        host('command', command=f'kill @e[tag={tag}]')
+        for name, (kind, dx, dz) in spots.items():
+            extra = ',NoAI:1b,PersistenceRequired:1b' if kind == 'minecraft:cow' else ''
+            host('command', command=f'summon {kind} {ox + 0.5 + dx} {oy} {oz + 0.5 + dz} '
+                                    f'{{Tags:["{tag}","{tag}_{name}"]{extra}}}')
+        host.wait(10)
+        seen['before'] = {name: alive(name) for name in spots}
+        assert all(seen['before'].values()), f'the command cannot see every entity before the bolt: {seen}'
+        def cow():
+            near = [m for m in host.raw('entities', 20, 'cow')['entities']
+                    if math.dist(m['pos'], (ox + 3.7, oy, oz + 0.5)) < 1.0]
+            return near[0]['health'] if near else 0.0
+        seen['cow_before'] = cow()
+        host('command', command=f'summon minecraft:lightning_bolt {ox + 0.5} {oy} {oz + 0.5}')
+        seen['cow_series'] = []
+        for _ in range(8):
+            host.wait(1)
+            seen['cow_series'].append(cow())
+        host.wait(2)
+        seen['after'] = {name: alive(name) for name in spots}
+        seen['cow_after'] = min(seen['cow_series'])
+        host.shot(out, 'lightning-box')
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+    # Vanilla: everything but the far boat is gone; the cow is hurt.
+    # (The cow burns on after the strike, so only its health at the strike is compared.)
+    gone = {k: v for k, v in seen['after'].items() if k != 'edgecow'}
+    assert gone == {'boat': False, 'cart': False, 'orb': False, 'edgeboat': False, 'farboat': True}, \
+        f'who survived the bolt: {seen}'
+    assert seen['cow_series'][0] == 5.0, f'the cow with its feet 3.2 out was not struck for 5: {seen}'
+    return seen
+
+
+CHECKS += ['lightning-box']
+CHECK_FNS['lightning-box'] = check_lightning_box
+
+
 def check_boat_submerged(host, guest, out):
     """AbstractBoat.tick ejects players after 60 consecutive underwater ticks on the server."""
     hx, _, hz = pos_of(host)
