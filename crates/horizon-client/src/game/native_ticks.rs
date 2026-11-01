@@ -46,9 +46,15 @@ impl TickRound {
 
 impl Game<'_> {
     /// A round for a family about to tick: on a server only (the server thread or a dedicated
-    /// server, never a client nor the deprecated in-frame path). Its list is kept between ticks.
+    /// server, never a client nor the deprecated in-frame path), and only while a mod listens
+    /// (`native_entity_tick_listened`). Its list is kept between ticks.
     pub(super) fn native_tick_round(&mut self) -> TickRound {
-        let listening = self.serving.is_some() || self.options.dedicated.is_some();
+        let server = self.serving.is_some() || self.options.dedicated.is_some();
+        let mut listened = false;
+        if server {
+            self.native_entity_tick_listened(&mut listened);
+        }
+        let listening = server && listened;
         TickRound {
             listening,
             ticking: if listening {

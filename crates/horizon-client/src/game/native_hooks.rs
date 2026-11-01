@@ -2706,6 +2706,13 @@ impl Game<'_> {
     ) {
         let _ = (dimension, entity, kind, pos, loaded_from_disk, canceled);
     }
+    /// Whether a mod listens to `native_entity_tick_pre` and `native_entity_tick_post`: a mod
+    /// that hooks them hooks this one too and sets `listened` (HEAD, `*listened = true`).
+    /// Without it the game tells no entity's tick, and keeps no list of them. Asked once for
+    /// each family (mobs, items, minecarts, boats) each tick. Server-side. API @API:entity_tick@.
+    pub(super) fn native_entity_tick_listened(&mut self, listened: &mut bool) {
+        let _ = listened;
+    }
     /// An entity of type `kind` (`minecraft:zombie`, `minecraft:item`) with ID `entity` is
     /// about to tick in the server level `dimension` (NeoForge's `EntityTickEvent.Pre`, posted
     /// around `Entity.commonTick` and `tick` in `ServerLevel.tickNonPassenger`). Set `canceled`
