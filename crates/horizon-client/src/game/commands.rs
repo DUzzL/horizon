@@ -2178,6 +2178,7 @@ impl Game<'_> {
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        no_gravity: false,
                         id: self.next_entity,
                         position: Vec3::new(at[0], at[1], at[2]),
                         previous: Vec3::new(at[0], at[1], at[2]),

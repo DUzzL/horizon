@@ -70,6 +70,8 @@ pub(super) struct Boat {
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
+    /// `Entity.noGravity` (`NoGravity` in its save).
+    pub no_gravity: bool,
     pub paddles: [f32; 2],
     pub paddling: [bool; 2],
     /// left, right, up, down
@@ -138,6 +140,7 @@ impl Boat {
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
+            no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
             input: [false; 4],
@@ -578,7 +581,8 @@ impl Game<'_> {
             b.input = [false; 4];
         }
         // floatBoat
-        let mut vspeed = -0.04;
+        // `-getGravity()`: none with NoGravity.
+        let mut vspeed = if b.no_gravity { 0.0 } else { -0.04 };
         let mut buoyancy = 0.0;
         let inv_friction: f32;
         let obstacles = self.boat_move_obstacles(&b);

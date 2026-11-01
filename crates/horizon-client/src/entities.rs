@@ -88,6 +88,8 @@ pub struct ItemEntity {
     /// `Entity.stuckSpeedMultiplier`: set after a move by the cobweb or powder snow
     /// the item is in, scales (and stops) the next one.
     pub stuck: Vec3,
+    /// `Entity.noGravity` (`NoGravity` in its save): `applyGravity` does nothing.
+    pub no_gravity: bool,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -228,7 +230,9 @@ impl ItemEntity {
                 self.velocity.z * 0.95,
             );
         } else {
-            self.velocity.y -= 0.04;
+            if !self.no_gravity {
+                self.velocity.y -= 0.04;
+            }
         }
         let horizontal = self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z;
         // ItemEntity.tick: skip move 3 of 4 ticks while grounded with no
@@ -658,6 +662,8 @@ pub struct ExperienceOrb {
     pub ticks: u32,
     /// `ExperienceOrb.health`: damage wears it down from 5 (`hurtServer`).
     pub health: i32,
+    /// `Entity.noGravity`: `ExperienceOrb.tick`'s `applyGravity` does nothing.
+    pub no_gravity: bool,
 }
 impl ExperienceOrb {
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
@@ -774,7 +780,7 @@ impl ExperienceOrb {
                 (self.velocity.y + 5.0e-4).min(0.06),
                 self.velocity.z * 0.99,
             );
-        } else if !colliding {
+        } else if !colliding && !self.no_gravity {
             self.velocity.y -= 0.03;
         }
         if facts.get(block).fluid == Fluid::Lava {
@@ -1481,6 +1487,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let make = |id: &str| ItemEntity {
+            no_gravity: false,
             id: 1,
             thrower: None,
             target: None,
@@ -1627,6 +1634,7 @@ mod merge_tests {
     fn item(id: &str, count: u32, x: f64, age: u32) -> ItemEntity {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
+            no_gravity: false,
             id: 0,
             thrower: None,
             target: None,
@@ -1965,6 +1973,7 @@ mod honey_slide_tests {
     pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            no_gravity: false,
             id: 1,
             thrower: None,
             target: None,
@@ -2094,6 +2103,7 @@ mod slime_bounce_tests {
     fn grounded_item() -> ItemEntity {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
+            no_gravity: false,
             id: 1,
             thrower: None,
             target: None,
