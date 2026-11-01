@@ -1317,6 +1317,7 @@ mod item_column_tests {
             bob_offset: 0.0,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         }
     }
     /// `hopper_suck`'s test: some item box meets the hopper's SUCK_AABB.

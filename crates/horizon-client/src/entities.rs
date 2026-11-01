@@ -85,6 +85,9 @@ pub struct ItemEntity {
     /// `Entity.needsSync` / `syncPosition`: immediate `ServerEntity.sendChanges`
     /// after a bounce or velocity jump (`> 0.1` in `ItemEntity.tick`).
     pub needs_sync: bool,
+    /// `Entity.stuckSpeedMultiplier`: set after a move by the cobweb or powder snow
+    /// the item is in, scales (and stops) the next one.
+    pub stuck: Vec3,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -238,7 +241,14 @@ impl ItemEntity {
                 binding: collision,
                 subject: None,
             };
-            let wanted = self.velocity;
+            let mut wanted = self.velocity;
+            // Entity.move: a block the item sits in (cobweb, powder snow)
+            // scales this move once and stops it.
+            if self.stuck.length_squared() > 1.0e-7 {
+                wanted = wanted.multiply(self.stuck);
+                self.stuck = Vec3::ZERO;
+                self.velocity = Vec3::ZERO;
+            }
             // Entity.move with noPhysics: straight through, the ground as it was.
             let moved = if no_physics {
                 wanted
@@ -281,6 +291,7 @@ impl ItemEntity {
             // Entity.move -> applyEffectsFromBlocks: honey then bubble columns
             // (before air drag), matching ItemEntity.tick.
             self.apply_honey_slide(world, facts);
+            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
             crate::motion::bubble_column_push(
                 world,
                 registry,
@@ -355,6 +366,32 @@ impl ItemEntity {
         // ItemEntity.tick refreshes immersion after moving.
         self.update_fluids(world, fluids);
         self.age < 6000 && self.position.y > -128.0
+    }
+    /// `Entity.makeStuckInBlock` as `WebBlock.entityInside` and
+    /// `PowderSnowBlock.entityInside` call it for an item (which, unlike a
+    /// living entity, is stuck whatever block its feet are in): the speed
+    /// factor of the last such block the item's box (deflated by `1.0E-5`) is
+    /// in.
+    fn stuck_multiplier(&self, world: &World, facts: &BlockFacts) -> Option<Vec3> {
+        let b = self.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        let mut stuck = None;
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    match &*facts.get(world.block(x, y, z)).name {
+                        "minecraft:cobweb" => {
+                            stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
+                        }
+                        "minecraft:powder_snow" => {
+                            stuck = Some(Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        stuck
     }
     /// `PistonMovingBlockEntity.causeBounce` for a dropped item. Vanilla then
     /// runs `Entity.move(MoverType.PISTON)`, which leaves the ground on an
@@ -1489,6 +1526,7 @@ mod fire_environment_tests {
             bob_offset: 0.0,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
@@ -1634,6 +1672,7 @@ mod merge_tests {
             bob_offset: 0.0,
             ticks: age,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         }
     }
     fn max_stack(stack: &ItemStack) -> u32 {
@@ -1924,6 +1963,7 @@ mod honey_slide_tests {
             bob_offset: 0.0,
             ticks: 10,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         }
     }
 
@@ -2052,6 +2092,7 @@ mod slime_bounce_tests {
             bob_offset: 0.0,
             ticks: 10,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         }
     }
 
@@ -2238,6 +2279,56 @@ mod entity_collision_tests {
             (rest(&[platform]) - 9.0).abs() < 1.0e-6,
             "on top of the box, at its top"
         );
+    }
+
+    /// `WebBlock.entityInside` / `PowderSnowBlock.entityInside` make an item stuck: a
+    /// fast item sliding into a cobweb is stopped inside it, in powder snow it is slowed.
+    #[test]
+    fn a_cobweb_and_powder_snow_slow_an_item() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let state = |n: &str| assets.registry.default_state(n).unwrap();
+        for x in 16..32 {
+            world.set(x, 3, 20, state("minecraft:stone")).unwrap();
+        }
+        let mut slide = |block: Option<&str>| {
+            world
+                .set(21, 4, 20, state(block.unwrap_or("minecraft:air")))
+                .unwrap();
+            let mut item = falling_item(20.5, 4.0, 20.5, 0.4, 0.0, 0.0);
+            item.id = 1;
+            for _ in 0..12 {
+                item.tick(
+                    &world,
+                    assets.registry,
+                    &facts,
+                    &collision,
+                    false,
+                    &fluids,
+                    &[],
+                );
+            }
+            item.position.x
+        };
+        let free = slide(None);
+        let web = slide(Some("minecraft:cobweb"));
+        let snow = slide(Some("minecraft:powder_snow"));
+        assert!(free > 21.4, "an unobstructed item slides on to {free}");
+        assert!(
+            web > 20.8 && web < free - 0.3,
+            "the web holds it: {web} vs {free}"
+        );
+        assert!(snow < free, "powder snow slows it: {snow} vs {free}");
     }
 
     #[test]

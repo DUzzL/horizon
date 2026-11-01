@@ -5147,6 +5147,7 @@ impl Game<'_> {
             bob_offset,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
