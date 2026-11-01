@@ -10965,7 +10965,7 @@ impl Game<'_> {
     /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
     /// and can't be hit critically): knockback when sprinting at full
     /// strength, then strong or weak, or the sweep around the vehicle's
-    /// box `area`. Before `swing_arm` resets the charge.
+    /// box `area`. Before the hit resets the charge (`Player.onAttack`).
     pub(super) fn vehicle_attack_sounds(&mut self, area: Aabb, magic: Option<i32>) {
         self.attack_effects(area, None, mace::Spared::Nothing, magic);
     }
