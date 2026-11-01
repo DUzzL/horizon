@@ -52,6 +52,13 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     if crate::mod_api::MODS.set(mods).is_err() {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
+    let renderers = crate::mod_api::mods()
+        .iter()
+        .filter_map(|m| m.render())
+        .collect();
+    if crate::gfx::native_render::install(renderers).is_err() {
+        log::warn!("Trait renderers already installed; keeping the first list");
+    }
     if horizon_world::native_load_hooks::install(
         horizon_world::native_load_hooks::NativeLoadHooks {
             loot_table_load: |id, table| {

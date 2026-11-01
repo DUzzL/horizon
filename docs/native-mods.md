@@ -1394,6 +1394,11 @@ mod draws come in vanilla's order. `LevelTicksHost` adds scheduling through
 `LevelWriteHost` adds random access and `native_set_block_property`. Whole-block writes wait for a
 later slice that creates block entities, as vanilla's `setBlock` does. The game owns
 the tick queue; mods do not pass it back to these helpers.
+For frame hooks, implement `RenderHooks` and return it from `Hooks::render`. The ordered
+renderer list is installed once alongside the mod list. `render_needs` collects requests;
+`world_drawn` observes the world pass and can encode drawing before the hand and HUD. Both
+run on the render thread while the frame is built, before any deferred GPU submission.
+The renderer module re-exports the game's wgpu types.
 ### Server attachments
 
 A mod can declare an `AttachmentType<T>` once and call its `get`, `set` and `remove`
@@ -1462,10 +1467,11 @@ The following documented `Game` helpers are not in the trait yet:
 
 The following catalog hooks are not in the trait yet:
 
-- `world_drawn` and `render_needs` need a renderer trait.
-- `block_entity_submit` needs a renderer trait.
 - Newly added upstream hooks `player_command`, `perform_console_command`, `item_decorations`,
   `client_resources_reloaded`, `camera_shake`, `screen_key_pressed_pre`, `screen_char_typed_pre`,
   `screen_mouse_scrolled_pre`, `use_duration`, `use_animation`, `can_eat`,
   `living_entity_use_item_start`, `living_entity_use_item_finish`, `render_hand`, `shader_params`
   and `block_highlight` will join a later slice.
+- Newer upstream hooks `biome_colors`, `camera_distance`, `compute_fog_color`, `compute_fov`,
+  `data_pack_files`, `mob_submit`, `mouse_button_pre`, `mouse_button_post`, `player_respawned`
+  and `server_data_loaded` will join a later slice.

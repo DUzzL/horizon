@@ -1610,7 +1610,15 @@ impl Game<'_> {
         entity: &ModBlockEntity,
         draw: &mut BlockEntityDraw,
     ) {
-        let _ = (pos, block, state, entity, draw);
+        mod_api::dispatch_block_entity_submit(
+            self,
+            mod_api::mods(),
+            pos,
+            block,
+            state,
+            entity,
+            draw,
+        );
     }
     /// Where the mod block entity at `pos` draws, for culling
     /// (NeoForge's `getRenderBoundingBox`): `bounds` is min x, y, z then max

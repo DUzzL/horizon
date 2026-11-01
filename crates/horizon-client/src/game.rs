@@ -190,7 +190,7 @@ mod music;
 mod names;
 mod narrator;
 mod native_biome_colors;
-mod native_block_entity_draw;
+pub mod native_block_entity_draw;
 mod native_claimed_items;
 mod native_components;
 mod native_criteria;

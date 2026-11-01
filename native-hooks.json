@@ -1,5 +1,9 @@
 {
   "helpers": [
+    { "name": "draw_quad", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_quad" },
+    { "name": "draw_cube", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_cube" },
+    { "name": "draw_block", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_block" },
+    { "name": "draw_item", "target": "horizon_client::game::native_block_entity_draw::Game<'_>::native_draw_item" },
     {"name":"attachments","target":"horizon_client::game::native_hooks::Game<'_>::native_attachments"},
     {"name":"teleport_mob","target":"horizon_client::game::native_hooks::Game<'_>::native_teleport_mob"},
     {"name":"push_mob","target":"horizon_client::game::native_hooks::Game<'_>::native_push_mob"},
@@ -738,12 +742,14 @@
     {
       "name": "world_drawn",
       "version": 1,
-      "target": "horizon_client_render::gfx::native_render::native_world_drawn"
+      "target": "horizon_client_render::gfx::native_render::native_world_drawn",
+      "mod_api": { "contract": "listen" }
     },
     {
       "name": "render_needs",
       "version": 1,
-      "target": "horizon_client_render::gfx::native_render::native_render_needs"
+      "target": "horizon_client_render::gfx::native_render::native_render_needs",
+      "mod_api": { "contract": "collect", "out": "needs" }
     },
     {
       "name": "item_bar",
@@ -818,7 +824,8 @@
     {
       "name": "block_entity_submit",
       "version": 1,
-      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_submit"
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_submit",
+      "mod_api": { "contract": "listen" }
     },
     {
       "name": "block_entity_render_bounding_box",

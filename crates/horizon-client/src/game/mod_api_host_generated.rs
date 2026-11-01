@@ -3,6 +3,44 @@ use horizon_client::mod_api::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 impl Host for super::Game<'_> {
+    fn draw_quad(
+        &self,
+        draw: &mut BlockEntityDraw,
+        sprite: &str,
+        corners: [[f32; 3]; 4],
+        uv: [f32; 4],
+        tint: u32,
+    ) -> bool {
+        self.native_draw_quad(draw, sprite, corners, uv, tint)
+    }
+    fn draw_cube(
+        &self,
+        draw: &mut BlockEntityDraw,
+        from: [f32; 3],
+        to: [f32; 3],
+        faces: [Option<CubeFace<'_>>; 6],
+        tint: u32,
+    ) -> bool {
+        self.native_draw_cube(draw, from, to, faces, tint)
+    }
+    fn draw_block(
+        &self,
+        draw: &mut BlockEntityDraw,
+        block: &str,
+        properties: &[(&str, &str)],
+    ) -> bool {
+        self.native_draw_block(draw, block, properties)
+    }
+    fn draw_item(
+        &self,
+        draw: &mut BlockEntityDraw,
+        stack: &ItemStack,
+        display: DisplayContext,
+        owner_yaw: Option<f32>,
+        seed: i32,
+    ) -> bool {
+        self.native_draw_item(draw, stack, display, owner_yaw, seed)
+    }
     fn attachments(&mut self, holder: Holder) -> AttachmentResult<&mut Attachments> {
         self.native_attachments(holder)
     }

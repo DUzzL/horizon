@@ -6,7 +6,23 @@
 use super::Vertex;
 use super::pack_draw::EntitySpan;
 use glam::{DVec3, Mat4};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+
+mod generated;
+pub use generated::RenderHooks;
+pub use wgpu;
+
+static RENDERERS: OnceLock<Box<[&'static dyn RenderHooks]>> = OnceLock::new();
+
+/// Install trait mod renderers in dispatch order, once per process.
+pub fn install(
+    renderers: Box<[&'static dyn RenderHooks]>,
+) -> Result<(), Box<[&'static dyn RenderHooks]>> {
+    RENDERERS.set(renderers)
+}
 
 static MODS_BUILT_IN: AtomicBool = AtomicBool::new(false);
 
@@ -18,6 +34,9 @@ pub fn set_mods_built_in(on: bool) {
 /// Whether [`native_world_drawn`] may draw ([`set_mods_built_in`]).
 pub fn world_drawn_hooked() -> bool {
     MODS_BUILT_IN.load(Ordering::Relaxed)
+        || RENDERERS
+            .get()
+            .is_some_and(|renderers| !renderers.is_empty())
 }
 
 /// What a mod can draw with once the world is drawn: after the sky, terrain, entities,
@@ -70,13 +89,13 @@ pub struct RenderNeeds {
 /// The world is drawn (see [`WorldDrawn`]). Not called on the title screen's panorama.
 #[inline(never)]
 pub fn native_world_drawn(world: &mut WorldDrawn<'_>) {
-    let _ = world;
+    generated::dispatch_world_drawn(RENDERERS.get().map_or(&[], |renderers| renderers), world);
 }
 
 /// Asked as a frame is built and drawn: set what your mod needs.
 #[inline(never)]
 pub fn native_render_needs(needs: &mut RenderNeeds) {
-    let _ = needs;
+    generated::dispatch_render_needs(RENDERERS.get().map_or(&[], |renderers| renderers), needs);
 }
 
 /// What the mods need this frame ([`native_render_needs`]).
@@ -84,4 +103,35 @@ pub fn render_needs() -> RenderNeeds {
     let mut needs = RenderNeeds::default();
     native_render_needs(&mut needs);
     needs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Depth;
+    impl RenderHooks for Depth {
+        fn render_needs(&self, needs: &mut RenderNeeds) {
+            needs.world_depth = true;
+        }
+    }
+    struct Spans;
+    impl RenderHooks for Spans {
+        fn render_needs(&self, needs: &mut RenderNeeds) {
+            needs.entity_spans = needs.world_depth;
+        }
+    }
+
+    #[test]
+    fn needs_accumulate_in_mod_order() {
+        let mut needs = RenderNeeds::default();
+        generated::dispatch_render_needs(&[&Depth, &Spans], &mut needs);
+        assert_eq!(
+            needs,
+            RenderNeeds {
+                world_depth: true,
+                entity_spans: true
+            }
+        );
+    }
 }

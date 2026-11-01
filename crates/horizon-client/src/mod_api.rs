@@ -9,10 +9,13 @@ pub use crate::containers::{ModBlockEntity, ModContainer, ModFluidTanks};
 pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
+pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
+pub use crate::gfx::native_render::{RenderHooks, RenderNeeds, WorldDrawn, wgpu};
 pub use crate::hud::HudBatch;
 pub use crate::hud_layout::{GuiDraw, HealthInputs};
 pub use crate::items::ItemStack;
 pub use crate::text::Text;
+pub use horizon_assets::item_model::DisplayContext;
 pub use horizon_core::{
     geometry::Direction,
     position::BlockPos,

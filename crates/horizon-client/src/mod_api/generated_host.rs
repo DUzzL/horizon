@@ -4,6 +4,68 @@ use std::path::PathBuf;
 use std::sync::Arc;
 /// Services supplied by the game to trait mods.
 pub trait Host {
+    /// Draws a quad with `corners` in blocks under `draw`'s pose, in a model
+    /// face's order (top left, bottom left, bottom right, top right as seen
+    /// from its front), textured with the `uv` rectangle (u0, v0, u1, v1 in
+    /// texels of 16 per side) of `sprite` (`mymod:entity/screen`,
+    /// `mymod:block/casing`, `block/stone`) times the 0xRRGGBB `tint`
+    /// (0xFFFFFF for none). False for an unknown sprite. API 71.
+    fn draw_quad(
+        &self,
+        draw: &mut BlockEntityDraw,
+        sprite: &str,
+        corners: [[f32; 3]; 4],
+        uv: [f32; 4],
+        tint: u32,
+    ) -> bool;
+    /// Draws a box from `from` to `to` (texels of 16 per block, as a block
+    /// model's element) under `draw`'s pose, with the faces given, by
+    /// `Direction` (down, up, north, south, west, east), baked as a model
+    /// element's are (`FaceBakery`), times the 0xRRGGBB `tint`. A turned box
+    /// is drawn under a turned pose (`BlockEntityDraw::rotate_about`). False
+    /// when a face's sprite is unknown; that face is left out. API 71.
+    fn draw_cube(
+        &self,
+        draw: &mut BlockEntityDraw,
+        from: [f32; 3],
+        to: [f32; 3],
+        faces: [Option<CubeFace<'_>>; 6],
+        tint: u32,
+    ) -> bool;
+    /// Draws block `block`'s model (`mymod:cog`, any block with a model) in
+    /// the state with `properties` (`[("axis", "x")]`, the rest default)
+    /// under `draw`'s pose, as vanilla's `submitBlockModel` draws a block in
+    /// an entity's place: a block's baked model, with its default tints. A
+    /// moving part is often a block of the mod's own, never placed. False for
+    /// an unknown block or property. API 71.
+    fn draw_block(
+        &self,
+        draw: &mut BlockEntityDraw,
+        block: &str,
+        properties: &[(&str, &str)],
+    ) -> bool;
+    /// Draws `stack` under `draw`'s pose as an item is drawn in the world
+    /// (`ItemModelResolver.updateForTopItem` and `ItemStackRenderState.submit`), centred on the
+    /// pose's origin, in its model's `display` transform: `Fixed` as a
+    /// campfire's or an item frame's, `Ground` as a dropped item's. `seed`
+    /// picks among random models (a campfire passes its slot plus its
+    /// position's hash). `owner_yaw` makes the block entity the item's
+    /// owner (`ItemOwner`), at the block's centre and turned that many
+    /// degrees (`getVisualRotationYInDegrees`), as a shelf is: a compass on
+    /// it points to its target from there. None draws it with no owner, as
+    /// a campfire does. False for an empty stack or one with no model. The
+    /// client's copy of a block entity has no item slots (`entity.items` is
+    /// empty there): send the stacks you draw in
+    /// `native_block_entity_update_tag` and read them from `entity.nbt`.
+    /// API @API:block_entity_draw_item@.
+    fn draw_item(
+        &self,
+        draw: &mut BlockEntityDraw,
+        stack: &ItemStack,
+        display: DisplayContext,
+        owner_yaw: Option<f32>,
+        seed: i32,
+    ) -> bool;
     /// Access a server-owned holder's attachment map.
     fn attachments(&mut self, holder: Holder) -> AttachmentResult<&mut Attachments>;
     /// Moves mob `id` to `pos` at once, as `/tp` does: it dismounts, drops its
