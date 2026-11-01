@@ -1288,28 +1288,28 @@ impl Streaming {
     }
     /// Whether any chunk is queued or on its way from generation to a mesh.
     pub fn busy(&self) -> bool {
-        !(self.generating.is_empty()
-            && self.decorating == 0
-            && self.viewing.is_empty()
-            && self.finishing.is_empty()
-            && self.lighting.is_empty()
-            && self.meshing.is_empty()
-            && self.pending() == 0)
+        self.chunks_in_flight() || !self.meshing.is_empty() || self.pending() != 0
     }
     /// Whether the near terrain is still coming in: chunks generating,
-    /// decorating, finishing or being lit, or sections meshing for the first
-    /// time. Remeshing sections already drawn (block, light and fluid
-    /// updates) is not loading: it kept small machines' far terrain held
-    /// back (`Lod::set_near_loading`) for as long as anything nearby changed.
+    /// decorating, finishing or being lit (or their neighbours' light views),
+    /// or sections meshing for the first time. Each of those is counted from
+    /// when its job is queued, so queued jobs need no separate count.
+    /// Remeshing sections already drawn (block, light and fluid updates) is
+    /// not loading: it kept small machines' far terrain held back
+    /// (`Lod::set_near_loading`) for as long as anything nearby changed.
     pub fn loading(&self) -> bool {
-        !(self.generating.is_empty()
-            && self.decorating == 0
-            && self.finishing.is_empty()
-            && self.lighting.is_empty())
+        self.chunks_in_flight()
             || self
                 .meshing
                 .keys()
                 .any(|section| !self.compile_started.contains_key(section))
+    }
+    fn chunks_in_flight(&self) -> bool {
+        !(self.generating.is_empty()
+            && self.decorating == 0
+            && self.viewing.is_empty()
+            && self.finishing.is_empty()
+            && self.lighting.is_empty())
     }
     /// How much work each stage holds: queued jobs, then what is in flight or
     /// waiting at each step from generation to meshing.

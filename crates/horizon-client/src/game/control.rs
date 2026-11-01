@@ -1270,7 +1270,7 @@ impl Game<'_> {
             .as_ref()
             .map_or((0, 0), |lod| lod.detail_progress());
         status["lod"]["detail_target_columns"] = wanted.into();
-        status["lod"]["detailed_target_columns"] = refined.into();
+        status["lod"]["refined_target_columns"] = refined.into();
         status["pending_uploads"] = self.pending_uploads.len().into();
         status["destroying"] = json!(destroying);
         status["physical_keys"] = json!(physical_keys);
