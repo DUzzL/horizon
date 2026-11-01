@@ -1337,11 +1337,11 @@ impl Mesher<'_> {
         // drawn over it (a few per face at most; more are dropped).
         let connected = &self.render.connected;
         let mut overlays = [None; 8];
+        let mut count = 0;
         let pick = if connected.is_empty() {
             Pick::Keep
         } else {
             let tints = &*tints;
-            let mut count = 0;
             connected.pick(
                 id,
                 face.layer as u16,
@@ -1417,12 +1417,16 @@ impl Mesher<'_> {
         // Overlays: the face again, after it (equal depth passes), tinted as their rule says.
         // `layer=cutout` is an alpha cutout whatever the tile's alpha, but over a translucent
         // face it must be in the translucent pass too, or the face would draw over it.
+        // Most faces have none: nothing below runs for them.
+        if count == 0 {
+            return;
+        }
         let face_translucent = match pick {
             Pick::Keep => self.translucent(own),
             Pick::Tile(t) => self.translucent(tile(t)),
             Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
         };
-        for overlay in overlays.into_iter().flatten() {
+        for overlay in overlays[..count].iter().flatten().copied() {
             let tint = overlay.tint.and_then(|(index, block)| {
                 let info = block
                     .and_then(|b| self.tables.info.get(b as usize))
