@@ -9602,8 +9602,9 @@ fn client_view_distance(render_distance: i32) -> i8 {
     render_distance.clamp(2, i32::from(i8::MAX)) as i8
 }
 
-/// What an update tag leaves of the client's block entity `old` in `new`, the
-/// one decoded from the tag: state the client builds itself is not in it.
+/// `ClientPacketListener.handleBlockEntityData` loads the tag into the existing
+/// block entity, so the state the client builds itself stays: copied from `old`
+/// into `new`, the block entity decoded from the tag.
 fn keep_client_state(old: Option<&BlockEntity>, new: &mut BlockEntity) {
     match (old, new) {
         // The turn of a vault's item and a trial spawner's mob (VaultClientData).
@@ -9615,7 +9616,7 @@ fn keep_client_state(old: Option<&BlockEntity>, new: &mut BlockEntity) {
             new.spin = old.spin;
             new.o_spin = old.o_spin;
         }
-        // A beacon's beam (BeaconBlockEntity.loadAdditional reads only the
+        // A beacon's beam (`BeaconBlockEntity.loadAdditional` reads only the
         // powers): a fresh one draws nothing until the next tick walks it again.
         (Some(BlockEntity::Beacon(old)), BlockEntity::Beacon(new)) => {
             new.sections.clone_from(&old.sections);
