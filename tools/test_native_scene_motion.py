@@ -807,7 +807,7 @@ def main():
     damage_dir=build/'damage';damage_dir.mkdir(exist_ok=True)
     for target, source in [('types.json','damage-types.json'),('tags.json','damage-tags.json')]:
         (damage_dir/target).write_bytes((resources/source).read_bytes())
-    run(['cargo','build','--locked','-p','horizon-client','--example','client_probe'],'compile-rust')
+    run(['cargo','build','--locked','-p','horizon-client-lib','--example','client_probe'],'compile-rust')
     metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--no-deps','--format-version','1'],cwd=lab.ROOT))
     binary=Path(metadata['target_directory'])/'debug/examples'/('client_probe.exe' if os.name=='nt' else 'client_probe')
     run([binary,'scene_motion_probe',resources,build,'--describe'],'describe')
