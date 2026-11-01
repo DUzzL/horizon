@@ -201,6 +201,11 @@ pub struct ItemRenderState {
     pub layers: Vec<LayerRender>,
     pub oversized_in_gui: bool,
     pub animated: bool,
+    /// HDR output's tier of an item that glows (`dynamic_light::Luminance::hdr_tier`).
+    pub hdr_tier: u8,
+    /// In HDR output, the block light of an item that glows: its block's, as a placed one has
+    /// it, so a torch doesn't go dark in the shade while it shines. 0 for the rest.
+    pub hdr_light: u8,
 }
 impl ItemRenderState {
     pub fn is_empty(&self) -> bool {
@@ -717,6 +722,8 @@ impl ItemRenderer {
             layers,
             oversized_in_gui: resolved.oversized_in_gui,
             animated,
+            hdr_tier: 0,
+            hdr_light: 0,
         }
     }
     /// `GrassColor.get` over the loaded colormap.
@@ -816,6 +823,8 @@ pub struct WorldSink<'a> {
     pub lights: Option<(Vec3, Vec3)>,
     /// The `GLINT_TEXTURING` sample for foil quads (`None` leaves them unglinted).
     pub glint: Option<Glint>,
+    /// HDR output's tier (`ItemRenderState::hdr_tier`): rides in the layer's high bits.
+    pub tier: u8,
 }
 impl ItemSink for WorldSink<'_> {
     fn quad(&mut self, q: ItemQuad) {
@@ -853,7 +862,7 @@ impl ItemSink for WorldSink<'_> {
                 normal: if q.cull_back { CULL_BACK } else { [0; 4] },
                 pos: p.to_array(),
                 uv,
-                layer: overlay | oit,
+                layer: overlay | oit | u32::from(self.tier) << 16,
                 color,
                 light,
                 glint_uv,
