@@ -895,7 +895,7 @@ impl Game<'_> {
                 .emissive
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            emissive.overlay(texture).and_then(|e| uv_of(e))
+            emissive.overlay(texture).and_then(&uv_of)
         };
         let Some(wood) = uv_of("entity/armorstand/armorstand") else {
             return;
