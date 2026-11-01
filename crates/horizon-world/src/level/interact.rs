@@ -20,6 +20,14 @@ impl InteractionResult {
     pub fn consumes_action(self) -> bool {
         !matches!(self, Self::Pass)
     }
+
+    /// Whether the interaction swings the player's arm.
+    ///
+    /// In vanilla, InteractionResult.SUCCESS swings (swing source CLIENT),
+    /// while CONSUME consumes the action without swinging (swing source SERVER).
+    pub fn should_swing(self) -> bool {
+        matches!(self, Self::Success)
+    }
 }
 /// Which part of `BlockState` answered a use on a block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

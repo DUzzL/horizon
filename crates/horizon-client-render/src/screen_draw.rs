@@ -827,6 +827,14 @@ impl TextField {
                 );
             }
         }
+        if self.focused {
+            // `TextInputManager.setTextInputArea`, in GUI pixels: the caret
+            // the input method's composition and its candidate window go to.
+            // The chat and in-bed chat boxes and the pack screen's search are
+            // `TextField`s; the other fields are an `EditBox` or a multiline
+            // box, which report their own.
+            crate::preedit::report_caret(cursor_x as f32, ty as f32, 10.0);
+        }
     }
 }
 

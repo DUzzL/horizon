@@ -138,4 +138,5 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `mcp` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
 | `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
 | `stats [reset]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again |
+| `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
 | `fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]` | CLI only | Fly the camera along a line, then reply with the frame summary | none |
