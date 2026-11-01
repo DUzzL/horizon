@@ -18797,10 +18797,12 @@ fn load_core(
                     assets.reload(root)
                 }
                 .map_err(|e| e.to_string())?;
-                let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
-                    root,
-                    render.model_library.clone(),
-                )
+                let library = render.model_library.clone();
+                let item_renderer = if headless {
+                    horizon_client::item_render::ItemRenderer::load_for_server(root, library)
+                } else {
+                    horizon_client::item_render::ItemRenderer::load_with_library(root, library)
+                }
                 .map_err(|e| e.to_string());
                 Ok((render, item_renderer))
             });
