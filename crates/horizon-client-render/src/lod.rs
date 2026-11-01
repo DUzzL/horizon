@@ -2511,9 +2511,6 @@ impl Drop for Lod {
         }
     }
 }
-/// Fine retiring stand-ins need actual column detail before `Plan::replaces`
-/// can release their normal meshes. The caller keeps the usual detail-request
-/// budget and waits for the replacement mesh before changing cutout.
 /// The columns of a tile's `detail_masks` entry that have their detail.
 fn detail_count(mask: &[u64; 4]) -> usize {
     mask.iter().map(|bits| bits.count_ones() as usize).sum()
@@ -2536,6 +2533,9 @@ fn drop_queued_samples(
     });
     dropped
 }
+/// Fine retiring stand-ins need actual column detail before `Plan::replaces`
+/// can release their normal meshes. The caller keeps the usual detail-request
+/// budget and waits for the replacement mesh before changing cutout.
 fn retiring_detail<'a>(
     plan: &'a Plan,
     retiring: &'a FxHashSet<(i32, i32)>,
@@ -3724,14 +3724,20 @@ mod tests {
         );
 
         // New chunks load nearby: the queue gives way at once, not after it
-        // drained, and the dropped tiles come back once they are in.
+        // drained, and the dropped tiles come back, best first, once they are in.
         lod.set_near_loading(true);
         assert!(queued(&lod).is_empty());
         assert!(lod.pending.is_empty());
         assert!(observing(&lod));
         lod.set_near_loading(false);
         lod.update([100_000., 64., 100_000.], 2, 64, none());
-        assert_eq!(queued(&lod).len(), 16);
+        assert_eq!(queued(&lod), after);
+
+        // Larger machines keep the first `SAMPLE_JOBS` of the queue.
+        lod.small = false;
+        lod.set_near_loading(true);
+        assert_eq!(queued(&lod), after[..SAMPLE_JOBS]);
+        assert_eq!(pending(&lod), sorted(after[..SAMPLE_JOBS].to_vec()));
     }
 
     #[test]
