@@ -1761,12 +1761,14 @@ impl Lod {
         // neighbours. Coarser tiles do not read visited columns (stride > 16),
         // so re-meshing every tile touching the chunk was pure waste.
     }
-    /// Whether the near terrain is still loading: on small machines far
-    /// terrain then holds back (`HELD_SAMPLE_STEP`).
+    /// Whether the near terrain is still loading: far terrain then queues
+    /// `SAMPLE_JOBS` at most, and on small machines holds back
+    /// (`HELD_SAMPLE_STEP`).
     pub fn set_near_loading(&mut self, loading: bool) {
         if loading && !self.near_loading {
             // The queue filled while nothing loaded nearby; the near chunks
-            // must not wait behind it. The first tiles stay queued, best first.
+            // must not wait behind it. Larger machines keep its first
+            // `SAMPLE_JOBS`, small ones none.
             let mut keep = if self.small { 0 } else { SAMPLE_JOBS };
             let dropped = drop_queued_samples(&self.shared, &mut self.pending, |_| {
                 let kept = keep > 0;
