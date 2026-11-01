@@ -1323,6 +1323,21 @@ impl Game<'_> {
     pub(super) fn native_key(&mut self, key: &str, pressed: bool) {
         let _ = (key, pressed);
     }
+    /// Raw mouse button input on any screen, before dispatch; cancel skips dispatch and Post.
+    /// Button/modifiers use the same GLFW encoding as screen hooks. Synthetic clicks skip it.
+    pub(super) fn native_mouse_button_pre(
+        &mut self,
+        button: i32,
+        pressed: bool,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (button, pressed, modifiers, canceled);
+    }
+    /// An accepted raw button event finished dispatch, including a screen handler's early return.
+    pub(super) fn native_mouse_button_post(&mut self, button: i32, pressed: bool, modifiers: u32) {
+        let _ = (button, pressed, modifiers);
+    }
     /// Wheel steps while playing: set `claimed` to keep them from the hotbar.
     pub(super) fn native_wheel(&mut self, steps: f32, claimed: &mut bool) {
         let _ = (steps, claimed);
@@ -1350,6 +1365,17 @@ impl Game<'_> {
     /// own view wins): set `zoom` when it is none yet.
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
         let _ = zoom;
+    }
+    /// Computed world fog RGB, after ordinary effects and before upload. Title panoramas skip it.
+    /// Only finite RGB components in 0..=1 are accepted; alpha and distances stay unchanged.
+    pub(super) fn native_compute_fog_color(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        fog_type: horizon_client::fog::FogType,
+        rgb: &mut [f32; 3],
+    ) {
+        let _ = (partial, camera, fog_type, rgb);
     }
     /// The camera shake native mods ask for in this frame, `partial` ticks
     /// past the last tick (0 to 1): add your pitch, yaw and roll in degrees
@@ -2350,6 +2376,14 @@ impl Game<'_> {
     /// before it saves, with them still listed and able to get a last message.
     /// Server-side. API 57.
     pub(super) fn native_player_logged_out(&mut self, player: u128, name: &str) {
+        let _ = (player, name);
+    }
+    /// `player` (`name`) respawned (NeoForge's `PlayerRespawnEvent`): at the
+    /// end of `PlayerList.respawn`, once they are placed and their health,
+    /// food and experience reset, with their state swapped in. Once for each
+    /// death that ends in a respawn, on a server; not for the End-exit one.
+    /// @API:native_player_respawned@.
+    pub(super) fn native_player_respawned(&mut self, player: u128, name: &str) {
         let _ = (player, name);
     }
     /// `player` died: where `ServerPlayer.die` starts, with the death
@@ -3589,7 +3623,7 @@ impl Game<'_> {
     /// where the WebAssembly mod of the same id kept its storage, so a
     /// player's settings carry over. Not created here.
     pub(super) fn native_data_dir(&self, mod_id: &str) -> PathBuf {
-        let mods = Self::options_path().with_file_name(mod_list::DIR);
+        let mods = Self::game_dir().join(mod_list::DIR);
         mods.join(".horizon-mod-data").join(mod_id)
     }
     /// The folder mod `mod_id`'s post-build step wrote into when the launcher built the game
@@ -3616,7 +3650,7 @@ impl Game<'_> {
     /// `self`, so it works from any hook (`Game::native_config_dir()`), the
     /// level's too. API 26.
     pub(super) fn native_config_dir() -> Result<PathBuf, String> {
-        config_dir(&Self::options_path())
+        config_dir(&Self::game_dir())
     }
     /// Shows the panel beside container screens with these items (at most
     /// 8192), as the game's own slots in pages, with a search box; the
@@ -4610,8 +4644,9 @@ fn property_change(
 }
 
 /// `config/` beside `options`, made when missing.
-fn config_dir(options: &Path) -> Result<PathBuf, String> {
-    let dir = options.with_file_name("config");
+/// `config/` in the game folder, shared by its players.
+fn config_dir(game_dir: &Path) -> Result<PathBuf, String> {
+    let dir = game_dir.join("config");
     fs::create_dir_all(&dir).map_err(|e| dir.display().to_string() + ": " + &e.to_string())?;
     Ok(dir)
 }
@@ -5151,18 +5186,17 @@ mod tests {
     /// The config folder is `config/` beside `options.txt`, made when
     /// missing.
     #[test]
-    fn config_dir_is_config_beside_options() {
+    fn config_dir_is_config_in_the_game_folder() {
         // Callable without a game, from any hook.
         let _: fn() -> Result<std::path::PathBuf, String> = super::Game::native_config_dir;
         use super::config_dir;
         let root = std::env::temp_dir().join(format!("horizon-config-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let options = root.join("options.txt");
         assert!(!root.join("config").exists());
-        let dir = config_dir(&options).unwrap();
+        let dir = config_dir(&root).unwrap();
         assert_eq!(dir, root.join("config"));
         assert!(dir.is_dir());
-        assert_eq!(config_dir(&options).unwrap(), dir);
+        assert_eq!(config_dir(&root).unwrap(), dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -954,6 +954,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
   helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
   registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+- **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
+  `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
+  (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
+  `native_player`, `native_give_items` and the other helpers reach them. A respawn at an anchor in another dimension, or
+  at the world spawn's free column, may still move them on a later tick, once that level has loaded round them; the
+  End-exit respawn (after the credits) does not fire it.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
