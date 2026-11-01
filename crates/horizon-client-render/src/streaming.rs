@@ -1297,7 +1297,7 @@ impl Streaming {
     /// Remeshing sections already drawn (block, light and fluid updates) is
     /// not loading: it kept small machines' far terrain held back
     /// (`Lod::set_near_loading`) for as long as anything nearby changed.
-    pub fn loading(&self) -> bool {
+    pub fn terrain_loading(&self) -> bool {
         self.chunks_in_flight()
             || self
                 .meshing
