@@ -106,8 +106,11 @@ impl Stage<'_> {
         let mut calls: Vec<(&str, &str, usize)> = Vec::new();
         // Sampler parameters of the function being written: name → type.
         let mut params: HashMap<String, String> = HashMap::new();
-        // Names of samplers a local variable or parameter of the function hides.
-        let mut hidden: Vec<(&str, usize)> = Vec::new();
+        // Names of samplers and bool uniforms a local variable or parameter of the function hides.
+        // Each with where its scope starts and the block depth it ends with.
+        let mut hidden: Vec<(&str, usize, i32)> = Vec::new();
+        // Depths of the `for` loops whose body is a single statement, ending at its `;`.
+        let mut unbraced_for: Vec<i32> = Vec::new();
         let mut depth = 0;
         let mut skip_until = 0;
         // The `;` that closes a statement we rewrite, and what is written in its place.
@@ -129,6 +132,13 @@ impl Stage<'_> {
             {
                 out.push_str(close);
                 statement_close = None;
+                // This `;` may end the single-statement body of a `for`.
+                if calls.is_empty() && unbraced_for.last() == Some(&depth) {
+                    while unbraced_for.last() == Some(&depth) {
+                        unbraced_for.pop();
+                    }
+                    hidden.retain(|&(_, _, d)| d <= depth);
+                }
                 continue;
             }
             if let Some(text) = self.replaced.get(&i) {
@@ -225,11 +235,23 @@ impl Stage<'_> {
                 }
                 "}" => {
                     depth -= 1;
+                    hidden.retain(|&(_, _, d)| d <= depth);
                     if depth == 0 {
                         params.clear();
                         hidden.clear();
                         returns = None;
                     }
+                }
+                ";" if calls.is_empty() && unbraced_for.last() == Some(&depth) => {
+                    while unbraced_for.last() == Some(&depth) {
+                        unbraced_for.pop();
+                    }
+                    hidden.retain(|&(_, _, d)| d <= depth);
+                }
+                // A prototype (`float h(bool x);`) ends its parameters' scope.
+                ";" if depth == 0 && calls.is_empty() => {
+                    hidden.clear();
+                    params.clear();
                 }
                 "(" => {
                     let callee = prev(i).map_or("", |j| self.tokens[j]);
@@ -241,8 +263,11 @@ impl Stage<'_> {
                     calls.push((callee, close, 0));
                 }
                 ")" => {
-                    if let Some((_, close, _)) = calls.pop() {
+                    if let Some((callee, close, _)) = calls.pop() {
                         out.push_str(close);
+                        if callee == "for" && next(i).is_some_and(|j| self.tokens[j] != "{") {
+                            unbraced_for.push(depth);
+                        }
                     }
                 }
                 "," => {
@@ -288,19 +313,33 @@ impl Stage<'_> {
             }
             // `float specular`: a variable of the same name as a sampler or a sampler parameter,
             // from the end of its initializer to the function's end; `.specular` a member.
-            if sampler_ty.contains_key(t) || params.contains_key(t) {
+            if sampler_ty.contains_key(t)
+                || params.contains_key(t)
+                || uniforms.get(t).is_some_and(|ty| ty == "bool")
+            {
                 let before = prev(i).map(|j| self.tokens[j]);
                 if before == Some(".") {
                     out.push_str(t);
                     continue;
                 }
-                if before.is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else")) {
-                    hidden.push((t, self.scope_start(i)));
+                let declares = before
+                    .is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else"))
+                    || (before == Some(",")
+                        && (calls.is_empty() || calls.last().is_some_and(|c| c.0 == "for"))
+                        && self.is_next_declarator(i));
+                if declares {
+                    // A `for` header's variable ends with the loop's block.
+                    let ends = if calls.last().is_some_and(|c| c.0 == "for") {
+                        depth + 1
+                    } else {
+                        depth.max(1)
+                    };
+                    hidden.push((t, self.scope_start(i), ends));
                     out.push_str(t);
                     continue;
                 }
             }
-            if hidden.iter().any(|&(h, from)| h == t && i >= from) {
+            if hidden.iter().any(|&(h, from, _)| h == t && i >= from) {
                 out.push_str(t);
                 continue;
             }
@@ -520,6 +559,39 @@ impl Stage<'_> {
             }
         }
         (groups.len() > 1).then_some(groups)
+    }
+
+    /// Whether the name at `i`, after a `,`, is another declarator of the statement's type
+    /// (`bool a = 1, x = 0;`): the statement starts with a type and a name.
+    fn is_next_declarator(&self, i: usize) -> bool {
+        let follows = (i + 1..self.tokens.len())
+            .find(|&j| significant(self.tokens[j]))
+            .map(|j| self.tokens[j]);
+        if !matches!(follows, Some("=" | "," | ";" | "[")) {
+            return false;
+        }
+        let mut level = 0i32;
+        let mut start = i;
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            let t = self.tokens[j];
+            if !significant(t) {
+                continue;
+            }
+            match t {
+                ")" | "]" => level += 1,
+                "(" | "[" if level > 0 => level -= 1,
+                "(" | "[" | "{" | "}" | ";" if level == 0 => break,
+                _ => {}
+            }
+            start = j;
+        }
+        is_ident(self.tokens[start])
+            && !matches!(self.tokens[start], "return" | "case" | "else" | "do")
+            && (start + 1..i)
+                .find(|&j| significant(self.tokens[j]))
+                .is_some_and(|j| is_ident(self.tokens[j]))
     }
 
     /// Where the scope of the name declared at token `i` begins: after its initializer (GLSL 4.60
