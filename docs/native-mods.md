@@ -28,7 +28,8 @@ the commit of the installed version the build starts from.
 
 A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`, with a few
 free functions in other crates: [render hook points](#render-hook-points), [items' default
-components](#items-default-components), `horizon_world::loot::native_loot_table_load`; empty functions the game
+components](#items-default-components), `horizon_world::loot::native_loot_table_load`, [menu slot
+rules](#menu-slot-rules); empty functions the game
 calls at fixed places, plus helpers, kept stable across releases) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
@@ -367,6 +368,37 @@ and the content mods that are on. `neoforge:true`, `not`, `and` and `or` combine
 does not know leaves the file out, so a future shape fails closed. Tags, loot tables and advancements
 do not answer the gate yet.
 
+### Recipe filters
+
+A content mod or a data pack can remove recipes, or swap one of their inputs or outputs, without knowing
+their ids: a file `data/<ns>/recipe_filter/<name>.json` holds `{"filters": [...]}`. Each filter has match
+keys, all of which must hold (a filter with none matches every recipe), and exactly one action:
+
+| Key | Meaning |
+|---|---|
+| `id` | the recipe id; `*` matches any run of characters (`minecraft:*_planks`) |
+| `type` | the recipe's `type`, with the same `*` (`mymod:*`) |
+| `input` | an item id or `#tag` among the recipe's inputs |
+| `output` | an item id among its outputs (anything under `result`, `results`, `output` or `outputs`) |
+| `remove` | `true`: the recipe is not loaded |
+| `replace_input` | `{"from": ..., "to": ...}`: every input that is `from` becomes `to` |
+| `replace_output` | the same, for the outputs |
+
+```json
+{"filters": [
+  {"id": "minecraft:*_planks", "remove": true},
+  {"type": "mymod:*", "replace_input": {"from": "minecraft:iron_ingot", "to": "#c:ingots/iron"}}
+]}
+```
+
+Filters run on each recipe after the packs are merged and its load conditions held, so they see the final
+set and reach every recipe type, mods' own included: they work on the recipe's JSON, every string outside
+`type`, `group`, `category` and the conditions (a `{"tag": ...}` object's tag reads as `#tag`). Every recipe
+loader applies them: crafting, the stations, brewing, the recipe book and what players are sent. Files apply
+in id order and each file's filters in order; a pack's file replaces a file of the same id, as any data file
+does. A filter with an unknown key or not exactly one action is skipped with a warning, so a typo never
+matches every recipe.
+
 ### A mod's own enchantment effect kinds
 
 A `minecraft:post_attack` entry with `enchanted` attacker and `affected` victim whose `effect.type` is in a
@@ -382,6 +414,21 @@ A consumable's `on_consume_effects` entry of a type in a namespace of its own �
 dropped it silently — reaches `native_consume_effect(kind, data)` when the item is consumed, on the server
 thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
 sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
+
+### A mod's own loot functions and conditions
+
+A loot table's function or condition that names a `type` in a namespace outside `minecraft:` — where the
+loot roll used to silently skip it — reaches `native_loot_function(kind, data, ctx, stack)` or
+`native_loot_condition(kind, data, ctx, holds)` when the table rolls. The function changes the stack; the
+condition says whether it holds. The context brings the entity, the damage, the player who killed it, the
+tool, the block, the luck, the biome and a seed from the roll's random. An unclaimed function leaves the
+stack, an unclaimed condition fails, as unknown kinds do; a bare type name is minecraft's own.
+
+The tables the items engine rolls (block drops, entity drops, `loot_table`, `interact_loot` and the
+built-in tables) answer the condition hook, with the tool and the block in the context; the function hook
+there follows when the stack types converge. In the items engine's context the `entity`, `damage`, `player`
+and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
+fields are `None`.
 
 ### Data files
 
@@ -733,9 +780,11 @@ Every path the build's tools see — the toolchain, the Cargo home, `native/` an
 TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
 `backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
 refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
-MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
-folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
-a drive with an ASCII path resolves to that and needs neither.
+MinGW-w64's tools can't open — it is a real folder under `ProgramData` named for it (`horizon-launcher-<id>`),
+and only when that can't be created the data folder's short (8.3) name. A short name alone is not enough
+(#6009): rustc canonicalizes its own path to find its sysroot, which spells the long name again for the
+linker. A data folder that is itself a junction to a drive with an ASCII path resolves to that and needs
+neither.
 
 ## Install from GitHub
 
@@ -921,6 +970,22 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   (also riding, and leaving the End as its winner), `/execute in ... run tp` and any command teleporting into another
   level, and the death respawn. Not heard: a move within a level (`/tp`, an End gateway), a player who leaves before
   the move ends, a respawn in the dimension of the death, and anything outside a dedicated server.
+- **`native_player_command(player, name, command, canceled, replies)`**: any command a player typed (without the
+  slash), vanilla's too and commands the player may not run, heard before anything looks at it, and each line of a
+  quiet command batch. Set `canceled` and nothing runs; push lines to `replies` and the player gets them as system chat
+  (a quiet batch drops them). The player's state is not swapped in, and `native_tell` and the other helpers that take a
+  UUID reach nobody inside this hook: answer through `replies`. Commands may carry secrets (`/msg`, a login plugin's
+  password), so don't log them carelessly.
+- **`native_perform_console_command(command, ran)`**: a registered command typed on the dedicated server's console
+  (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
+  helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
+  registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+- **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
+  `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
+  (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
+  `native_player`, `native_give_items` and the other helpers reach them. A respawn at an anchor in another dimension, or
+  at the world spawn's free column, may still move them on a later tick, once that level has loaded round them; the
+  End-exit respawn (after the credits) does not fire it.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -937,6 +1002,18 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   the 36 inventory slots and the off hand, never the armour, and only at **plain** stacks: no damage and no
   component (name, enchantment...), so a shop never takes a worn or enchanted item for a new one. Each returns how
   many it counted, took or gave; the player's screen follows as for any change to their inventory.
+- `native_give_stack(uuid, stack)`, a whole stack (damage, name, enchantments... kept) to any player from any server
+  hook, as `Inventory.add` places it (onto equal stacks, then empty inventory slots); what did not fit comes back, all
+  of it for a player not here, dead, or swapped out by another player's hook. Nothing is dropped: an auto-pickup
+  leaves the rest on the ground, a machine keeps it.
+- Experience: `native_experience_orbs(dimension, min, max)`, the orbs in a box (id, position, `value`, and `count`
+  for merged orbs), read before a mod cancels an orb in `native_entity_join_level`; and `native_give_experience(uuid,
+  points)`, points given to any player as touching an orb gives them: Mending repairs their damaged items first, the
+  rest goes to their experience, with the level-up sound; and `native_give_levels(uuid, levels)`, levels added or,
+  negative, taken off (`Player.giveExperienceLevels`, as the anvil and the enchanting table charge; below 0 the level
+  and points are 0; no level-up sound). Both return false for a player not here, dead, or swapped out by another
+  player's hook, and where the server's player list is busy (some world ticks hold it): give first, and cancel the orb
+  only when the give returned true. A merged orb is worth `value` × `count`.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is
@@ -1000,7 +1077,13 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   it (a mob names one only while it remembers the player's hit, 100 ticks), the tool and an explosion's radius. It hears blocks
   that a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch losing its wall, a piston,
   `/setblock ... destroy`), nor a creative break or a tool that can't harvest the block. A block's stacks get its block entity's data (a
-  shulker box's items) after the hook, and a container's contents spill on their own, not through it.
+  shulker box's items) after the hook, and a container's contents spill on their own, not through it. A player's use drops
+  through it too, with `used` set and that player named: shears on a sheep, a mooshroom, a snow golem or a bogged (its shearing
+  table), a brush on an armadillo (`minecraft:brush/armadillo`) or a suspicious block (its item, no table), shears carving a
+  pumpkin, picking sweet berries or cave vines (their harvest table), and a player's hit taking an item frame or its item (the
+  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told. Leads: untying one or cutting it with
+  shears is a use (the leashed mob, no table), and a mob a player killed while leashed drops its lead on its next tick as a call
+  of its own, naming the killer (`used` false, no table). A lead that snaps or loses its holder names no player and isn't told.
 
 ### A block's items
 
@@ -1032,6 +1115,24 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
 A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
 client, so a call a tick looks smooth.
+
+### Mobs drawn by a mod
+
+`crates/horizon-client/src/game/native_mob_draw.rs`: `native_mob_submit(mob, draw, drawn)` (client) is asked once a frame for
+every mob in view but players (vanilla's `EntityRenderer.submit`). Set `drawn` and the mob's vanilla model, armour and held
+items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag, shadow, flames and glowing outline still draw.
+
+- `mob` (`NativeMobRender`) is the frame's `LivingEntityRenderState`: the id, kind, custom name and `baby`, the partial tick,
+  `age` (ticks lived plus the partial tick), `body_yaw`, `head_yaw` (from the body) and `pitch` in degrees, the walk cycle
+  (`walk_position`, `walk_speed`: a vanilla quadruped's legs swing `cos(walk_position * 0.6662) * 1.4 * walk_speed` radians), `hurt_time`,
+  `death_time` and `on_ground`.
+- `draw` is a block entity's frame (`native_block_entity_submit`): draw with `native_draw_cube`, `native_draw_quad`,
+  `native_draw_block` and `native_draw_item` under its pose stack, which starts at the mob's feet turned with its body: +z
+  is the way it faces, +x its left, +y up, in blocks. Turn a head or swing a leg with `rotate_about` and a pivot. It holds
+  the mob's light.
+- A mod's own creature is an ordinary mob (`native_spawn_mob`, API 37) drawn this way: a quiet villager, an allay or a bat
+  gives it movement, sounds and saving, and the mod gives it a model and animations of its own. Tell yours apart by the
+  ids the server half sends with mod messages (API 40), or by its custom name.
 
 ### Advancement triggers
 
@@ -1087,6 +1188,47 @@ that to 0% sees no shake), bounds it to 10 degrees and half a block on each axis
 after the hurt tilt and view bobbing. A mod keeps its own shake's time and decay, from `partial` and its tick hooks;
 it moves only what the player sees, not where they are or aim.
 
+### A player's motion
+
+`crates/horizon-client/src/game/native_motion.rs`: a push on a client, a flying speed on a server.
+
+- `native_push_player([x, y, z])` (client) adds a push to the player's own velocity, in blocks a tick, as an
+  explosion's knockback does: the player's own game moves them. The server didn't send it, so on a LAN or dedicated
+  server the anticheat's movement check sees a move it can't explain (logged only unless the server sets it to send
+  players back); for a push the server should stand behind, have the server send it. Each component is
+  cut to 4 either way; an upward push lifts the player off the ground. A spectator, no player, or a value that isn't
+  a number is left alone. A server mod that wants a client pushed sends its client half a message (API 40).
+- `native_set_flying_speed(player, speed)` (server) sets `player`'s creative flying speed: vanilla's is 0.05, `None`
+  puts it back, and it is cut to 0 to 50 (1000 times vanilla's). The player's client is told at once, a respawn and
+  a game mode change keep it, and it is saved with the player as vanilla's `abilities.flySpeed` is. Past about 0.45
+  (sprinting) a player flies more than 10 blocks a tick: anyone but the single-player owner then meets the server's
+  moved-too-quickly check, which can send them back, as vanilla's does. It answers false for a player not on this server,
+  on a client, and inside a player's hook (call it from a tick hook).
+
+### A client mod's view and items
+
+`crates/horizon-client/src/game/native_claimed_items.rs`: helpers for client mods, for the player's own view and hands.
+
+- `native_view_hit()` gives the first block along the view within 1024 blocks and how far it is, and
+  `native_raycast(distance)` the same within `distance` (cut to 0 to 1024). Past the loaded chunks the ray goes on over
+  the distant terrain, a block at a time, and meets its ground: a target far off can be aimed at before its chunks
+  load. `NativeHit` holds the block, where the ray met it and the block's id. Both answer `None` with no player, or
+  with nothing in reach.
+- `native_claim_items(mod_id, ids)` claims up to 64 item ids (`minecraft:stick`, a content mod's own item) for mod
+  `mod_id`; a later call replaces the list, an empty one gives them up. Two mods claiming one id: the first in id
+  order has it. A right-click with a claimed item in the main hand is the mod's alone: the server never hears of it,
+  and the block or entity under the crosshair isn't used. A claimed item in the off hand does nothing on a
+  right-click. The use slows the player as an item in use does, which the server doesn't know of: on a LAN or
+  dedicated server the anticheat's movement check may log it. A claim wins over `native_use_duration` for the same
+  item.
+- `native_poll(mod_id)` gives the mod's events since its last poll, oldest first, at most 256: `UseStart(item, 0)`
+  when the right-click begins the use, and `UseStop(item, ticks)` when it ends, with the ticks it was held. It ends
+  when the button comes up, when the hand's item changes or leaves the claim, when the player respawns, and
+  when the game joins a server, so every `UseStart` has its `UseStop`. `NativeHeldItem` holds the stack's id, count,
+  slot, and its `minecraft:custom_name` and `minecraft:custom_data` as SNBT: items told apart by custom data (a
+  stick named "Designator") are told apart here. Poll from a client tick hook.
+- The stack in the main hand at any time is `native_held()` (API 9), on a client the player's own.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
@@ -1095,6 +1237,22 @@ they mean is the mod's own: a mod that bundles its pack as `native-<mod id>` wri
 explosion's centre (camera-relative, from `frame.camera_position`) and its age in seconds, for a cloud or a shock wave
 ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
 them. The mod's server half can send what happened to each client half with mod messages (API 40).
+
+### Biome colours
+
+`crates/horizon-client/src/game/native_biome_colors.rs`: the grass, leaf and water colours a client mod changes while the
+game runs, for seasons (a golden autumn, a pale winter) or a world that greens as it heals.
+
+- `native_biome_colors(biome, colors)` (client) changes a biome's `BiomeColors`: `grass`, `foliage` (leaves, vines),
+  `dry_foliage` (leaf litter) and `water`, 0xRRGGBB, starting from the biome file and the colormaps. The dark forest's
+  modifier still darkens the grass set here; the swamp's noise colours replace it.
+- It is asked for every biome when a mod calls `native_refresh_biome_colors()`. When the colours differ from those in use,
+  every loaded section and the far terrain are rebuilt with them, as changing Biome Blend does. Call it when your colours
+  change and once when the player joins, not every tick: a rebuild takes the workers a few seconds. A slow fade is a
+  call a day, not a frame.
+- Block-breaking and falling-leaf particles keep the biome's own colours for now.
+- A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
+  `native_shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
 
 ### Sounds a client mod plays
 
@@ -1105,6 +1263,23 @@ farther, as vanilla's attenuation does. A client half that hears from its server
 something happened can time the sound to the distance, such as a blast heard when its shock wave reaches the player:
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
+
+### Music
+
+The music a client mod chooses, for a soundtrack that follows the seasons or grows with the player's world.
+
+- `native_music(music, volume)` (client) is asked each client tick with what vanilla chose (`Minecraft.getSituationalMusic`
+  and `getMusicVolume`): the biome's track, the creative, underwater, boss or menu music, None for silence, and its volume.
+  Set `music` to a track of your own (`Music::new("mymod:music.spring", min_delay, max_delay, replace_current)`, the delays
+  in ticks between songs), None to stay quiet, or lower `volume` to fade what plays. The music manager plays it as it plays
+  vanilla's: the delays, the Music Frequency option and the Now Playing toast apply. A different track waits for the one
+  playing to end unless `replace_current` is set.
+- `native_music_layers(layers)` (client) is asked each client tick for tracks to loop over (or instead of) that music: push
+  a `MusicLayer { sound, volume }` for each. A layer eases to its volume by 0.025 a tick (two seconds from silent to full);
+  one left out fades out and stops, and starts from its beginning if asked for again. Layers that first appear in the same
+  tick start together: list every stem of a piece from the start, the quiet ones at 0, and raise them as the world fills
+  (a value such as a village's wellbeing, sent from the server half with mod messages). Layers play on the Music volume.
+- The sound events are a content mod's (`assets/<id>/sounds.json` with `"stream": true`, and its `.ogg` files).
 
 ### Falling blocks
 
@@ -1119,6 +1294,45 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
   explosion's debris or a collapsing tower would.
 - It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
   loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
+
+### Bulk block edits
+
+`crates/horizon-client/src/game/native_world_edit.rs`: a helper for server mods, for the level in place, on a server only.
+It names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_edit_blocks(dimension, edit)` makes many blocks at once: `NativeBlockEdit` holds a `palette` of block states and
+  a list of `filters` (block predicates, `#minecraft:logs`), both written as commands write them, and `runs`, each
+  `height` blocks up column (`x`, `z`) from `y`, set to palette entry `block`, only where filter `only` passes the block
+  there. With `surface` (`NativeHeightmap`: `WorldSurface`, `MotionBlocking`, `MotionBlockingNoLeaves` or `OceanFloor`),
+  `y` counts from that height of the column, read once a column before anything changes. Runs are made in order, each
+  seeing the changes of those before it.
+- The blocks go straight into the chunks, a section packed once however many of its blocks change, as `fill ... strict`
+  does: no neighbour is told, nothing drops, and no block updates or ticks; light is worked out again for the chunks
+  changed, and they go to the players whole. A block replaced by another loses its block entity, and a new block gets
+  the one `native_set_block` would give it (a mod block's own, API 15, included).
+- It answers the number of blocks changed. Runs in chunks that aren't loaded, and the parts of runs outside the level's
+  height, are left out. It answers `Err`, changing nothing, on a client, for another dimension, a palette entry or filter
+  that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
+  the end, or more than 65536 filters.
+
+### Column reads
+
+`crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
+only, that read many columns in one call. They name the level they mean by its `dimension` (`minecraft:overworld`), as
+`native_set_block` does, and answer `Err` with the reason, reading nothing, on a client, for another dimension or for
+a read too big, so a mod can tell "ask for less" from "wrong level". They run on the server tick: read a big area in
+pieces.
+
+- `native_surface_heights(dimension, columns, heightmap)` answers each column's height on `heightmap` (`NativeHeightmap`,
+  as `native_edit_blocks` reads it: one above the highest block that counts), `None` for a column whose chunk isn't
+  loaded; at most 65,536 columns a call.
+- `native_read_columns(dimension, columns, heightmap, (below, above))` reads, for each column, the blocks from `below`
+  under its height to `above` - 1 over it, bottom first: `NativeColumnBlocks` holds the heights (`bases`), the block
+  names seen (`palette`), the blocks as indexes into it, a column after another, and three biome tints a column (grass,
+  foliage and water, at the column's top). Blocks outside the level's height, and every block of a column not loaded,
+  read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
+  The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
+  near a biome border they can differ from what players see by a few blocks.
 
 ### Mod messages
 
@@ -1171,6 +1385,20 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+
+### Menu slot rules
+
+`crates/horizon-client/src/menu.rs`: `native_menu_slot_rules(menu, slot, stack, may_place, max_stack)`, a free function
+a bundle targets as `horizon_client::menu::native_menu_slot_rules`. A content mod menu type's container slot `slot`
+(from 0) is asked whether it takes `stack` (`Slot.mayPlace`) and how many it holds (`Slot.getMaxStackSize`), as a
+NeoForge mod's own `Slot` overrides them. `may_place` and `max_stack` come in with the type's own answer (false on one
+of its `results` ([mods.md](mods.md#menu-types)), true elsewhere, and 99): change them for your own menu types.
+`max_stack` is kept to 1 to 99, and the item's own stack size still caps it. It runs inside a click, a drag or a
+shift-click (several times for one), with no level or player at hand: answer from the stack, and fast. It is asked
+only for a server's players (single player's server thread, LAN guests, a dedicated server), never in-frame
+(`--in-frame`), and vanilla's menus never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
+shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
+slot from filling that way, lower `max_stack`.
 
 ### Items' default components
 
