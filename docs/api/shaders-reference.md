@@ -87,10 +87,14 @@ Resources (bind group 3):
 
 Helpers:
 
+- `fn block_texture(uv: vec2<f32>) -> vec4<f32>`: the surface's block texture at `uv`, anywhere on the sprite, without the tint.
+- `fn block_texture_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`: the same at mip level `lod`.
+- `fn block_texture_size() -> vec2<f32>`: its size in texels.
+- `fn block_texture_lod() -> f32`: the mip level `block_texture` reads at this point.
 - `fn block_pbr_maps() -> bool`: whether the resource packs ship LabPBR maps (`_n`, `_s`).
 - `fn block_normal_map(uv: vec2<f32>) -> vec4<f32>`: the surface's LabPBR normal map at `uv` (rg the normal along `input.tangent` and down the texture, b ambient occlusion, a height); (0.5, 0.5, 1, 1) without one.
 - `fn block_specular_map(uv: vec2<f32>) -> vec4<f32>`: its LabPBR specular map (r smoothness, g F0 or a metal, b porosity or subsurface, a emission, 1 none); (0, 0, 0, 0) without one.
-- `fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`, `fn block_specular_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`: the same at mip level `lod`.
+- `fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`, `fn block_specular_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`: the same at the block texture's mip level `lod`.
 - `fn block_pbr_size() -> vec2<f32>`: the LabPBR maps' size in texels.
 - `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
   stored in the shadow map, for `textureSampleCompareLevel`.

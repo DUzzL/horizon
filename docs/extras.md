@@ -1,6 +1,6 @@
 # Horizon extras
 
-Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, auto-reconnect,
+Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
 Mouse Tweaks-style inventory controls and inventory sorting. **Every one is off by default**: a fresh
 install looks and behaves exactly like vanilla 26.3, and turning an extra off
 again restores vanilla's behaviour completely.
@@ -87,6 +87,13 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
 - Hidden in first person, while sleeping, in spectator mode, while invisible, and
   whenever the team's name tag visibility would hide it, exactly as the other
   players' tags (`game/names.rs`, `own_name_tag`). Client-only: nothing is sent.
+
+### Hide block-break particles (`hideBlockParticles`, default off)
+- Hides the debris particles that burst from a block when it breaks
+  (`ClientLevel.addDestroyBlockEffect`) and the crumbs off the face you mine
+  (`addBreakingParticles`). Other particles (critical hits, smoke, rain...) are
+  unchanged, and the block still breaks and drops as usual. Client-only:
+  nothing is sent (`game.rs`, `destroy_particles` and `crack_particle`).
 
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a

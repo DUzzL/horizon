@@ -367,6 +367,37 @@ and the content mods that are on. `neoforge:true`, `not`, `and` and `or` combine
 does not know leaves the file out, so a future shape fails closed. Tags, loot tables and advancements
 do not answer the gate yet.
 
+### Recipe filters
+
+A content mod or a data pack can remove recipes, or swap one of their inputs or outputs, without knowing
+their ids: a file `data/<ns>/recipe_filter/<name>.json` holds `{"filters": [...]}`. Each filter has match
+keys, all of which must hold (a filter with none matches every recipe), and exactly one action:
+
+| Key | Meaning |
+|---|---|
+| `id` | the recipe id; `*` matches any run of characters (`minecraft:*_planks`) |
+| `type` | the recipe's `type`, with the same `*` (`mymod:*`) |
+| `input` | an item id or `#tag` among the recipe's inputs |
+| `output` | an item id among its outputs (anything under `result`, `results`, `output` or `outputs`) |
+| `remove` | `true`: the recipe is not loaded |
+| `replace_input` | `{"from": ..., "to": ...}`: every input that is `from` becomes `to` |
+| `replace_output` | the same, for the outputs |
+
+```json
+{"filters": [
+  {"id": "minecraft:*_planks", "remove": true},
+  {"type": "mymod:*", "replace_input": {"from": "minecraft:iron_ingot", "to": "#c:ingots/iron"}}
+]}
+```
+
+Filters run on each recipe after the packs are merged and its load conditions held, so they see the final
+set and reach every recipe type, mods' own included: they work on the recipe's JSON, every string outside
+`type`, `group`, `category` and the conditions (a `{"tag": ...}` object's tag reads as `#tag`). Every recipe
+loader applies them: crafting, the stations, brewing, the recipe book and what players are sent. Files apply
+in id order and each file's filters in order; a pack's file replaces a file of the same id, as any data file
+does. A filter with an unknown key or not exactly one action is skipped with a warning, so a typo never
+matches every recipe.
+
 ### A mod's own enchantment effect kinds
 
 A `minecraft:post_attack` entry with `enchanted` attacker and `affected` victim whose `effect.type` is in a
@@ -923,6 +954,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
   helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
   registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+- **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
+  `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
+  (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
+  `native_player`, `native_give_items` and the other helpers reach them. A respawn at an anchor in another dimension, or
+  at the world spawn's free column, may still move them on a later tick, once that level has loaded round them; the
+  End-exit respawn (after the credits) does not fire it.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a

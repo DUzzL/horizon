@@ -101,6 +101,8 @@ pub struct Extras {
     pub ui_sound_reserve: bool,
     /// The player's own name tag over its model in third person.
     pub own_name_tag: bool,
+    /// No particles from breaking or mining a block (other particles stay).
+    pub hide_block_particles: bool,
     /// Mouse Tweaks-style drags in the inventory and storage containers.
     pub mouse_tweaks: bool,
     /// With them, the wheel over a slot moves its items one at a time.
@@ -145,6 +147,7 @@ impl Default for Extras {
             auto_reconnect: false,
             ui_sound_reserve: false,
             own_name_tag: false,
+            hide_block_particles: false,
             mouse_tweaks: false,
             mouse_tweaks_wheel: true,
             sort: false,
@@ -222,6 +225,7 @@ impl Extras {
                 "autoReconnect" => e.auto_reconnect = flag(e.auto_reconnect),
                 "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
+                "hideBlockParticles" => e.hide_block_particles = flag(e.hide_block_particles),
                 "mouseTweaks" => e.mouse_tweaks = flag(e.mouse_tweaks),
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
@@ -237,7 +241,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -265,6 +269,7 @@ impl Extras {
             bool_text(self.auto_reconnect),
             bool_text(self.ui_sound_reserve),
             bool_text(self.own_name_tag),
+            bool_text(self.hide_block_particles),
             bool_text(self.mouse_tweaks),
             bool_text(self.mouse_tweaks_wheel),
             bool_text(self.sort),
@@ -394,6 +399,7 @@ pub enum Item {
     Fullbright,
     DynamicLights,
     OwnNameTag,
+    HideBlockParticles,
     AutoReconnect,
     UiSoundReserve,
     MouseTweaks,
@@ -417,6 +423,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(DynamicLights),
         Err("Third person"),
         Ok(OwnNameTag),
+        Err("Particles"),
+        Ok(HideBlockParticles),
         Err("Inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
@@ -434,6 +442,7 @@ impl Item {
             Item::Fullbright => "Fullbright",
             Item::DynamicLights => "Dynamic lights",
             Item::OwnNameTag => "Own name tag",
+            Item::HideBlockParticles => "Hide block-break particles",
             Item::AutoReconnect => "Auto-reconnect",
             Item::UiSoundReserve => "Keep channels for UI sounds",
             Item::MouseTweaks => "Mouse Tweaks controls",
@@ -453,8 +462,8 @@ impl Item {
             UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence | Splitscreen => {
+            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
+            | AutoReconnect | NoAi | AgentControl | DiscordPresence | Splitscreen => {
                 return None;
             }
         })
@@ -468,6 +477,9 @@ impl Item {
             }
             Item::OwnNameTag => {
                 "Shows your name above your head in third person, as other players see it. Hidden when the server hides your team's names or you're invisible."
+            }
+            Item::HideBlockParticles => {
+                "Hides the debris particles that burst from a broken block and crumble off the one you mine. Other particles stay."
             }
             Item::AutoReconnect => {
                 "Rejoins a server after a lost connection or a restart, never after a kick or ban."
@@ -509,6 +521,7 @@ impl Item {
             Item::UiSoundReserve => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
             Item::OwnNameTag
+            | Item::HideBlockParticles
             | Item::AutoReconnect
             | Item::MouseTweaks
             | Item::Sort
@@ -522,6 +535,7 @@ impl Item {
             Item::Fullbright => e.fullbright,
             Item::DynamicLights => e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag,
+            Item::HideBlockParticles => e.hide_block_particles,
             Item::AutoReconnect => e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve,
             Item::MouseTweaks => e.mouse_tweaks,
@@ -551,6 +565,7 @@ impl Item {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
+            Item::HideBlockParticles => e.hide_block_particles = !e.hide_block_particles,
             Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
             Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
@@ -582,6 +597,7 @@ mod tests {
         assert!(!d.fullbright && !d.dynamic_lights);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
+        assert!(!d.hide_block_particles);
         assert!(d.discord_presence);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
@@ -607,6 +623,12 @@ mod tests {
         e.auto_reconnect = true;
         Item::OwnNameTag.cycle(&mut e, false);
         assert_eq!(Item::OwnNameTag.switch(&e), Some(true));
+        assert_eq!(Item::HideBlockParticles.switch(&e), Some(false));
+        Item::HideBlockParticles.cycle(&mut e, false);
+        assert!(e.hide_block_particles);
+        assert_eq!(Item::HideBlockParticles.switch(&e), Some(true));
+        let only = Extras::parse("hideBlockParticles:true\n");
+        assert!(only.hide_block_particles && !only.own_name_tag);
         e.mouse_tweaks = true;
         e.mouse_tweaks_wheel = false;
         e.sort = true;

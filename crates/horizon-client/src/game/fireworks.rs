@@ -123,6 +123,18 @@ impl Rocket {
             )
         }
     }
+    /// `EntityType.FIREWORK_ROCKET`: 0.25 x 0.25.
+    pub(super) fn bounds(&self) -> Aabb {
+        let h = 0.125;
+        Aabb::new(
+            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
+            Vec3::new(
+                self.position.x + h,
+                self.position.y + 2.0 * h,
+                self.position.z + h,
+            ),
+        )
+    }
     /// `FireworkRocketEntity.tick` for a rocket attached to no entity: speed
     /// up (an angled one keeps its motion) and rise, then move.
     fn free_flight(&mut self, scene: &mut SceneCollisions) {

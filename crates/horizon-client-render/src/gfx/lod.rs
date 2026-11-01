@@ -1,4 +1,4 @@
-//! Far meshes share the terrain arena and passes, with their actual bounds
+//! Far meshes share the terrain arenas and passes, with their actual bounds
 //! rather than the 16³ boxes used by the near-section residency walk.
 use super::{Frustum, Renderer, SectionGpu};
 use crate::{

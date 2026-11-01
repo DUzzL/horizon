@@ -299,6 +299,8 @@ impl Game<'_> {
                     self.renderer.as_ref(),
                     Some(textures),
                     self.settings.horizon.api,
+                    self.settings.horizon.translucent_batching,
+                    super::shader_packs::picked_pack_draws_flat(&self.settings),
                 )
             })
             .transpose()

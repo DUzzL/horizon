@@ -1356,10 +1356,11 @@ impl Recipes {
                 None => sources.push((name, bytes)),
             }
         }
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
         for (name, bytes) in sources {
             // Vanilla's RecipeManager logs a file that does not parse and
             // goes on ("Couldn't parse data file").
-            let v: Value = match serde_json::from_slice(&bytes) {
+            let mut v: Value = match serde_json::from_slice(&bytes) {
                 Ok(v) => v,
                 Err(e) => {
                     log::warn!("Horizon: recipe {name} not loaded: {e}");
@@ -1371,6 +1372,14 @@ impl Recipes {
             if !horizon_world::conditions::conditions_hold(&v, &|id: &str| {
                 mods.iter().any(|m| m == id)
             }) {
+                continue;
+            }
+            // The data's recipe filters, over the final set.
+            let full_id = match name.contains(':') {
+                true => name.clone(),
+                false => format!("minecraft:{name}"),
+            };
+            if !filters.apply(&full_id, &mut v) {
                 continue;
             }
             if let Some(kind) = custom_type(&v) {
@@ -2161,6 +2170,44 @@ mod tests {
         let recipes = Recipes::load(&root, &items, &PackOverlay { files: &packs }).unwrap();
         let ids = &recipes.custom["mymod:crusher"];
         assert!(ids.iter().any(|r| r.id == "minecraft:pack_yes"));
+        let _ = fs::remove_dir_all(&root);
+    }
+    /// A pack's recipe filter removes a recipe and swaps a mod recipe's input
+    /// in the loaded tables, after the packs are merged.
+    #[test]
+    fn recipe_filters_remove_and_swap() {
+        let root = std::env::temp_dir().join(format!("horizon-filters-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        let crusher = |input: &str| {
+            format!(
+                r#"{{"type":"mymod:crusher","input":"{input}","result":{{"id":"mymod:dust"}}}}"#
+            )
+            .into_bytes()
+        };
+        fs::write(
+            root.join("data/minecraft/recipe/iron.json"),
+            crusher("minecraft:iron_ingot"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/minecraft/recipe/gold.json"),
+            crusher("minecraft:gold_ingot"),
+        )
+        .unwrap();
+        let filter = br##"{"filters":[
+            {"id":"minecraft:gold","remove":true},
+            {"type":"mymod:*","replace_input":{"from":"minecraft:iron_ingot","to":"#c:ingots/iron"}}
+        ]}"##;
+        let packs = [("recipe_filter/pack:f".to_owned(), vec![filter.to_vec()])];
+        let items = Items::for_tests(HashMap::new());
+        let recipes = Recipes::load(&root, &items, &PackOverlay { files: &packs }).unwrap();
+        let crushed = &recipes.custom["mymod:crusher"];
+        assert_eq!(
+            crushed.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["minecraft:iron"]
+        );
+        assert_eq!(crushed[0].json["input"], "#c:ingots/iron");
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
