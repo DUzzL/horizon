@@ -1347,7 +1347,7 @@ pub fn render_with(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32, u32)],
+    extra: &[(&Part, [f32; 4], u32, u32, bool)],
     out: &mut Vec<Vertex>,
 ) {
     // The invisibility effect hides the model (a drinking wandering trader);
@@ -1628,7 +1628,7 @@ pub fn render_layers(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32, u32)],
+    extra: &[(&Part, [f32; 4], u32, u32, bool)],
     out: &mut Vec<Vertex>,
 ) {
     let base = base_transform(m, alpha, camera);
@@ -1686,7 +1686,7 @@ fn render_visible(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32, u32)],
+    extra: &[(&Part, [f32; 4], u32, u32, bool)],
     body_visible: bool,
     out: &mut Vec<Vertex>,
 ) {
@@ -1794,7 +1794,9 @@ fn render_visible(
     if !shell_last {
         draw_body(out);
     }
-    for (part, uv, color, layer_overlay) in extra {
+    // The worn armour's layers (and their emissive overlays, full bright).
+    for (part, uv, color, layer_overlay, glows) in extra {
+        let light = if *glows { FULL_BRIGHT } else { light };
         draw(part, base, &poses, *uv, *color, light, *layer_overlay, out);
     }
     let mut all_layers = layers(m, s.age);
