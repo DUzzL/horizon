@@ -272,10 +272,12 @@
 //! that would break such a bundle is not made.
 //! Bodies have no `cfg` and no macros: horizon-mixins refuses a target with
 //! either (`tests::hook_points_stay_hookable`).
+use super::native_data_maps::NativeDataMapType;
 use super::native_lifecycle::{NativeLifecycleContext, ServerTickPhase, WorldPhase};
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
+    maps::{NativeMapDecoration, NativeMapInfo},
     native_block_entity_draw::BlockEntityDraw,
     native_mob_draw::NativeMobRender,
     native_panel_recipes::RecipePage,
@@ -286,7 +288,9 @@ use horizon_client::{
     biome::BiomeColors,
     block_entities::Pos,
     chat::ChatSource,
-    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
+    containers::{
+        BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModEnergyBuffer, ModFluidTanks,
+    },
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
     extras_hud::Corners,
@@ -1146,6 +1150,24 @@ impl Game<'_> {
     /// Atlas, models, renderer and client caches already refer to the new resources.
     /// Selection/F3+T and server-pack reloads share this point; initial startup does not.
     pub(super) fn native_client_resources_reloaded(&mut self) {}
+    /// The client made a new level for `dimension` (NeoForge's
+    /// `LevelEvent.Load` from the `ClientLevel` constructor): on joining a
+    /// server, single player's own included, and on changing dimension.
+    /// Its chunks come after. When the dimension changes, the old level's
+    /// `native_client_level_unload` follows this, as `Minecraft.setLevel`
+    /// tells it after the new level is made. Client-side, on the window; the
+    /// server's levels have `native_level_load`. API @API:client_level_events@.
+    pub(super) fn native_client_level_load(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
+    /// The client dropped its level for `dimension` (`LevelEvent.Unload`
+    /// from `Minecraft.setLevel` and `disconnect`): replaced by another
+    /// dimension's, or on leaving the server. Once for each
+    /// `native_client_level_load`. Not told when the game itself quits.
+    /// Client-side. API @API:client_level_events@.
+    pub(super) fn native_client_level_unload(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
     /// Once a tick, in every `Game`: the window's (in single player, on LAN
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
@@ -1246,6 +1268,22 @@ impl Game<'_> {
     pub(super) fn native_data_pack_files(&self, files: &mut Vec<(String, Vec<u8>)>) {
         let _ = files;
     }
+    /// The server is assembling its data tables, as for
+    /// `native_data_pack_files` (a world's first open and every `/reload`):
+    /// push the data map types your mod registers (NeoForge's
+    /// `RegisterDataMapTypesEvent`). A type is an `id` (`mod_id:name`, not in
+    /// `minecraft`) for a `registry`, `minecraft:item` or `minecraft:block`
+    /// so far. Its values come from the world's data packs'
+    /// `data/<mod_id>/data_maps/<registry path>/<name>.json`, and from files
+    /// you push through `native_data_pack_files` under the key
+    /// `data_maps/<mod_id>:<registry path>/<name>`: `replace`, `values`
+    /// (entry ids and `#tags` to JSON values) and `remove`, a newer value
+    /// overriding an older. Read them with `native_data_map` and
+    /// `native_data_map_entries`, in `native_data_maps.rs`. Server-side, not
+    /// synced to clients. API @API:data_map_types@.
+    pub(super) fn native_data_map_types(&self, types: &mut Vec<NativeDataMapType>) {
+        let _ = types;
+    }
     /// The server is about to open its worlds: nothing of the world is
     /// loaded yet (NeoForge's `ServerAboutToStartEvent`, "called before the
     /// server begins loading anything"). Vanilla's `MinecraftServer.loadLevel`
@@ -1293,6 +1331,37 @@ impl Game<'_> {
     /// says is taken.
     pub(super) fn native_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let _ = (batch, corners);
+    }
+    /// Before one of vanilla's HUD layers is drawn (`RenderGuiLayerEvent.Pre`):
+    /// draw here to put something below the layer, or set `canceled` to hide
+    /// it. `layer` is the layer's id, in the order Horizon draws them:
+    /// `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`,
+    /// `vehicle_health` (only riding a mount), `contextual_info_bar` (the
+    /// mount's jump bar, the locator bar or the experience bar, with the level
+    /// number), `player_health` (the health, armor, food and air rows, drawn in
+    /// one pass), `selected_item_name`, `sleep_overlay`, `overlay_message`
+    /// (the action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`,
+    /// `chat` and `tab_list`. A layer F1 hides fires nothing, and the chat
+    /// screen draws the focused chat itself, so `chat` is only the unfocused
+    /// lines. The camera overlays and the debug screen are not layers here:
+    /// they are not drawn in this pass. Draw with `native_fill`, `native_text`
+    /// and the sprite helpers; `batch.width` and `batch.height` are the GUI
+    /// size. Together with `native_gui_layer_post` this is NeoForge's
+    /// `RegisterGuiLayersEvent`: a mod keeps its own list of what it draws
+    /// above or below which layer. API @API:gui_layers@.
+    pub(super) fn native_gui_layer_pre(
+        &mut self,
+        layer: &str,
+        batch: &mut HudBatch,
+        canceled: &mut bool,
+    ) {
+        let _ = (layer, batch, canceled);
+    }
+    /// After one of vanilla's HUD layers (or after the layer a mod hid), with
+    /// the ids of `native_gui_layer_pre`: draw here to put something above
+    /// the layer (`RenderGuiLayerEvent.Post`). API @API:gui_layers@.
+    pub(super) fn native_gui_layer_post(&mut self, layer: &str, batch: &mut HudBatch) {
+        let _ = (layer, batch);
     }
     /// A player right-clicks the entity `entity` (`Entity.getId`) of type
     /// `kind` (`minecraft:cow`) with `self.hand`, holding `stack` (none in an
@@ -1393,6 +1462,27 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (scroll, accumulated, buttons, cursor, modifiers, canceled);
+    }
+    /// An interaction key acts on what the crosshair points at
+    /// (`InputEvent.InteractionKeyMappingTriggered`), while playing: `button` 0 is
+    /// the attack key (`key_mapping` `key.attack`), 1 the use key (`key.use`, once
+    /// for each hand it tries, the main hand first), 2 pick block (`key.pickItem`,
+    /// only with something aimed at). The attack fires when an attack is allowed
+    /// and again each tick a held attack key keeps digging a block. Set `canceled`
+    /// to skip the action: a cancelled use also skips the other hand. A cancelled
+    /// attack or use still swings `hand` unless the mod clears `swing_hand` (it
+    /// starts true). A server's player and a single player's window only; a mod
+    /// that claims an item's use (`mod_use_start`) sees the event first. API
+    /// @API:interaction_key@.
+    pub(super) fn native_interaction_key(
+        &mut self,
+        button: i32,
+        key_mapping: &str,
+        hand: horizon_client::first_person::Hand,
+        swing_hand: &mut bool,
+        canceled: &mut bool,
+    ) {
+        let _ = (button, key_mapping, hand, swing_hand, canceled);
     }
     /// A command typed or clicked in chat, without its slash, before the
     /// server and Horizon's commands see it: set `ran` when the mod ran it.
@@ -1620,6 +1710,22 @@ impl Game<'_> {
     ) {
         let _ = (block, fluids);
     }
+    /// Block `block`'s block entity has an energy buffer
+    /// (`Capabilities.Energy.BLOCK`): set `energy` when the block is yours,
+    /// as `SimpleEnergyHandler` is built: its capacity, the most one insert
+    /// and one extract moves, and the faces a fill may come through and a
+    /// drain may leave by. Asked once for each mod block when the ticking
+    /// table is built; a capacity under 1 leaves the buffer out, and the
+    /// limits are clamped to 0..=capacity. The amount is kept in the entity's
+    /// saved compound, as the int `energy`, and the energy helpers below read
+    /// and write it. API @API:block_entity_energy@.
+    pub(super) fn native_block_entity_energy(
+        &self,
+        block: &str,
+        energy: &mut Option<ModEnergyBuffer>,
+    ) {
+        let _ = (block, energy);
+    }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
     /// and change its saved compound `nbt`, its item slots `items` (keep
@@ -1717,6 +1823,26 @@ impl Game<'_> {
         drawn: &mut bool,
     ) {
         let _ = (mob, draw, drawn);
+    }
+    /// Icons a mod puts on map `map` each time it is drawn: held, in an
+    /// item frame or on the cartography table's screen (a map's pixels are
+    /// its own; nothing is saved in the map). Push `NativeMapDecoration`s
+    /// (an atlas sprite, a position in half map pixels, a rotation, and
+    /// whether it shows in a frame and on the screen like vanilla's markers
+    /// do); they are drawn after the vanilla ones with the same pose, and a
+    /// sprite the atlas lacks is left out. `map.center`, `map.scale` and
+    /// `map.dimension` say which blocks the map shows, and
+    /// `NativeMapDecoration::x` has the formula. Vanilla's decorations are
+    /// not passed in. Asked every frame a map is drawn, so keep it cheap.
+    /// The client half of `MapDecorationType` and `addDecoration`: a type
+    /// registered on the server and saved in the map's data is not here.
+    /// API @API:map_decorations@.
+    pub(super) fn native_map_decorations(
+        &self,
+        map: &NativeMapInfo<'_>,
+        decorations: &mut Vec<NativeMapDecoration>,
+    ) {
+        let _ = (map, decorations);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`
@@ -2173,7 +2299,9 @@ impl Game<'_> {
     /// without its slash, for a command a mod registered and the player's
     /// level allows: set `ran` when it is yours. The player's state is
     /// swapped in for the call, so `native_player` and the other helpers
-    /// read that player; `native_feedback` answers them. API 8.
+    /// read that player; `native_feedback` answers them. A single player's
+    /// owner console (`horizon-ctl command`) reaches it too, as the owner at
+    /// level 4. API 8.
     pub(super) fn native_perform_command(
         &mut self,
         player: &NativeServerPlayer,
@@ -2583,6 +2711,28 @@ impl Game<'_> {
     pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
         let _ = (channel, data);
     }
+    /// `dimension`'s level opened on the server (NeoForge's `LevelEvent.Load`,
+    /// posted in `MinecraftServer.createLevels`): before any of its chunks
+    /// (`native_chunk_load`), so a mod sets up what it keeps for the level
+    /// here. The level the world opens in comes before `WorldOpenReady`; the
+    /// others open when someone first goes there (a player, a portal, an
+    /// `execute in` command), with the level in place. Once for each open:
+    /// `native_level_unload` follows. Server-side. API @API:level_events@.
+    pub(super) fn native_level_load(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
+    /// `dimension`'s level closed (NeoForge's `LevelEvent.Unload`, posted after
+    /// `level.close()` in `MinecraftServer.stopServer`), after its last save:
+    /// drop what the mod kept for it. A level other than the Overworld closes
+    /// once nobody has been in it for 300 ticks, after its chunks' unloads;
+    /// every level still open closes when the server stops, before
+    /// `WorldCloseFinal`, and when its open or its loop fails, before
+    /// `WorldOpenFailed` or `WorldCloseFailed`. Once for each
+    /// `native_level_load`. Don't read its blocks. Server-side. API
+    /// @API:level_events@.
+    pub(super) fn native_level_unload(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
     /// Chunk `chunk` (`[x, z]`, in chunks) of `dimension` came into the world
     /// (NeoForge's `ChunkEvent.Load`): `new` when it was just generated, false
     /// when read from the save. A flat world's chunk that leaves before it's
@@ -2648,6 +2798,46 @@ impl Game<'_> {
         previous: u32,
     ) {
         let _ = (dimension, pos, viewers, previous);
+    }
+    /// A client started tracking an entity (NeoForge's
+    /// `PlayerEvent.StartTracking`, posted at the end of
+    /// `ServerEntity.addPairing`): `player` (`name`) is now sent `entity`
+    /// (its ID, `uuid` its UUID, `kind` its type, `minecraft:zombie`) and its
+    /// changes. It comes into range, its client's chunks reach it, or it is
+    /// put in the level; another player is an entity too, and a player never
+    /// tracks their own. A mod sends the player what they need to show it
+    /// (`native_net_send_to_player`). The entity is as it was last tick: it
+    /// may be gone by now. Heard after the tick's players and entities have
+    /// moved, in order, with no player's state swapped in. Server-side.
+    /// API @API:player_tracking@.
+    pub(super) fn native_player_start_tracking(
+        &mut self,
+        player: u128,
+        name: &str,
+        entity: u32,
+        uuid: u128,
+        kind: &str,
+    ) {
+        let _ = (player, name, entity, uuid, kind);
+    }
+    /// A client stopped tracking an entity (NeoForge's
+    /// `PlayerEvent.StopTracking`, posted at the end of
+    /// `ServerEntity.removePairing`): it went out of range, left the level or
+    /// died, or `player` (`name`) left, changed level or respawned, which
+    /// stops everything they tracked. `entity`, `uuid` and `kind` are as
+    /// `native_player_start_tracking` told. Once for each start, a leaving
+    /// player's after `native_player_logged_out`. The entity is not
+    /// necessarily still there, and a player who left is gone: no player's
+    /// state is swapped in. Server-side. API @API:player_tracking@.
+    pub(super) fn native_player_stop_tracking(
+        &mut self,
+        player: u128,
+        name: &str,
+        entity: u32,
+        uuid: u128,
+        kind: &str,
+    ) {
+        let _ = (player, name, entity, uuid, kind);
     }
     /// Whether a mod listens to the mobs' `native_living_equipment_change`: a
     /// mod that hooks it hooks this one too and sets `listened` (HEAD,
@@ -2735,6 +2925,40 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (dimension, entity, kind, pos, loaded_from_disk, canceled);
+    }
+    /// An entity mounts or dismounts a vehicle (NeoForge's `EntityMountEvent`, posted from
+    /// `Entity.startRiding` and `removeVehicle`): `entity` of type `kind` (`minecraft:player`,
+    /// `minecraft:zombie`) in the server level `dimension`, getting on (`mounting`) or off the
+    /// `vehicle` of type `vehicle_kind` (`minecraft:oak_boat`, `minecraft:minecart`,
+    /// `minecraft:horse`, `minecraft:cushion`). Set `canceled` and it does not: a player stays
+    /// where they were, a mob does not board, a `/ride` fails, and a rider whose dismount is
+    /// canceled keeps riding. Told for a player boarding a boat, minecart, cushion or a mount (pig,
+    /// strider, horse and its kin, llama, nautilus, happy ghast) and getting off one by their
+    /// own input, `/ride`, a stab, a buck, a teleport or spectator mode; and for the mobs
+    /// Horizon seats on a vehicle (jockeys, raiders on a ravager, `/ride`) and lets off one
+    /// (`/ride`, a stab). It is not told for a rider whose vehicle was removed from the
+    /// level (a boat or minecart destroyed, a broken cushion), nor for riders loaded with a
+    /// save. The acting player is the one whose action runs, a guest on a server. Server-side.
+    /// API @API:entity_mount@.
+    pub(super) fn native_entity_mount(
+        &mut self,
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        vehicle: u32,
+        vehicle_kind: &str,
+        mounting: bool,
+        canceled: &mut bool,
+    ) {
+        let _ = (
+            dimension,
+            entity,
+            kind,
+            vehicle,
+            vehicle_kind,
+            mounting,
+            canceled,
+        );
     }
     /// Whether the experience orb `into` takes the orb `from` in (vanilla's
     /// `ExperienceOrb.canMerge`): the same value, and ids a multiple of 40 apart. Asked
@@ -2972,6 +3196,61 @@ impl Game<'_> {
             strength,
             x,
             z,
+            canceled,
+        );
+    }
+    /// Whether a mod hears projectiles' impacts (`native_projectile_impact`):
+    /// set `hears`. Asked once a server tick before the projectiles fly; only
+    /// then does the tick keep the copy of each flying projectile that a
+    /// canceled impact flies on from, so a game without such a mod pays
+    /// nothing. Server-side. API @API:projectile_impact@.
+    pub(super) fn native_hears_projectile_impacts(&self, hears: &mut bool) {
+        let _ = hears;
+    }
+    /// A projectile hit something (NeoForge's `ProjectileImpactEvent`, posted
+    /// where vanilla's projectile has found what it meets, before the hit
+    /// acts): `projectile` (its entity id) of type `kind` (`minecraft:arrow`),
+    /// shot by `owner` (a mob's or a player's entity id, 0 for none) in the level
+    /// `dimension`. It hit the entity `entity` of type `entity_kind` (a player is
+    /// `minecraft:player`; a dragon's part is `minecraft:ender_dragon`), or, with
+    /// `entity` None, the block at `block` on its `face` (the face's normal,
+    /// `[0, 1, 0]` for the top), at the point `at`. Set `canceled` and the impact
+    /// does not happen: no damage, no knockback, no sound, no block reaction, the
+    /// arrow does not stick, a pearl does not teleport, a potion or a fireball
+    /// does not burst. The projectile flies on and is not discarded, so a mod
+    /// that cancels also decides what becomes of it: it hits again the next tick
+    /// unless the mod moves, turns or removes it. An arrow stays where it would
+    /// have hit, and the other projectiles go on through the whole of their
+    /// motion. Covers what `tick_projectiles` flies: arrows, tridents, snowballs,
+    /// eggs, pearls, potions, fireballs, wither skulls, wind charges, llama spit and
+    /// shulker bullets, from players, mobs and dispensers. It does not fire for
+    /// a breeze's deflection, for a hit on a wind charge, for fireworks or for
+    /// fishing bobbers. A dragon part or End crystal is told by the id of the
+    /// dragon or crystal. Heard only when a mod also sets
+    /// `native_hears_projectile_impacts`. Server-side. API @API:projectile_impact@.
+    pub(super) fn native_projectile_impact(
+        &mut self,
+        dimension: &str,
+        projectile: u32,
+        kind: &str,
+        owner: u32,
+        entity: Option<u32>,
+        entity_kind: &str,
+        block: [i32; 3],
+        face: [i32; 3],
+        at: [f64; 3],
+        canceled: &mut bool,
+    ) {
+        let _ = (
+            dimension,
+            projectile,
+            kind,
+            owner,
+            entity,
+            entity_kind,
+            block,
+            face,
+            at,
             canceled,
         );
     }
@@ -3769,6 +4048,21 @@ impl Game<'_> {
         self.audio.play_after(sound, at, volume, pitch, delay);
         true
     }
+    /// Draws one vanilla HUD layer between the mods' hooks: `native_gui_layer_pre`
+    /// (which may hide it), the layer, then `native_gui_layer_post`. `None` when
+    /// a mod hid the layer.
+    pub(super) fn gui_layer<R>(
+        &mut self,
+        layer: &str,
+        batch: &mut HudBatch,
+        draw: impl FnOnce(&mut Self, &mut HudBatch) -> R,
+    ) -> Option<R> {
+        let mut canceled = false;
+        self.native_gui_layer_pre(layer, batch, &mut canceled);
+        let drawn = (!canceled).then(|| draw(self, batch));
+        self.native_gui_layer_post(layer, batch);
+        drawn
+    }
     /// Whether a box in `corner` shows: F3's debug screen takes both top
     /// corners (its left and right columns), and a bottom corner while one
     /// of its charts is drawn there.
@@ -4534,6 +4828,34 @@ impl Game<'_> {
         }
         out
     }
+    /// The energy buffers of the mod blocks' block entities, by block state
+    /// (`native_block_entity_energy`), checked as the containers are.
+    pub(super) fn native_energy_tables(&self) -> FxHashMap<u32, Arc<ModEnergyBuffer>> {
+        let registry = self.pack.assets.registry;
+        let mut by_block: FxHashMap<String, Option<Arc<ModEnergyBuffer>>> = FxHashMap::default();
+        let mut out = FxHashMap::default();
+        for i in 0..registry.len() as u32 {
+            let Some(state) = registry.state(horizon_world::registry::BlockStateId(i)) else {
+                continue;
+            };
+            if state.name.starts_with("minecraft:") {
+                continue;
+            }
+            let buffer = by_block.entry(state.name.clone()).or_insert_with(|| {
+                let mut energy = None;
+                self.native_block_entity_energy(&state.name, &mut energy);
+                energy.filter(|e| e.capacity >= 1).map(|mut e| {
+                    e.max_insert = e.max_insert.clamp(0, e.capacity);
+                    e.max_extract = e.max_extract.clamp(0, e.capacity);
+                    Arc::new(e)
+                })
+            });
+            if let Some(b) = buffer {
+                out.insert(i, Arc::clone(b));
+            }
+        }
+        out
+    }
     /// Whether a native mod's block `name` has a ticking block entity.
     pub(super) fn native_ticks(&self, name: &str) -> bool {
         let mut ticks = false;
@@ -4980,6 +5302,23 @@ impl Game<'_> {
             }
             self.native_key(name, pressed);
         }
+    }
+    /// `ClientHooks.onClickInput`: tells `native_interaction_key` that `button`
+    /// (0 attack, 1 use, 2 pick) is about to act with `hand`. `None` when the
+    /// action goes on; when a mod cancelled it, `Some` of whether the hand swings.
+    pub(super) fn native_interaction(
+        &mut self,
+        button: i32,
+        hand: horizon_client::first_person::Hand,
+    ) -> Option<bool> {
+        let key_mapping = match button {
+            0 => "key.attack",
+            1 => "key.use",
+            _ => "key.pickItem",
+        };
+        let (mut swing_hand, mut canceled) = (true, false);
+        self.native_interaction_key(button, key_mapping, hand, &mut swing_hand, &mut canceled);
+        canceled.then_some(swing_hand)
     }
     /// A mouse button while playing, for `native_key`.
     pub(super) fn native_mouse_event(&mut self, button: MouseButton, pressed: bool) {
@@ -5482,7 +5821,7 @@ mod tests {
 
     #[test]
     fn loot_table_load_stays_hookable() {
-        let source = include_str!("../../../horizon-world/src/loot.rs");
+        let source = include_str!("../../../horizon-world/src/loot.rs").replace("\r\n", "\n");
         // From its doc comment's last line, so an attribute above it counts.
         let hook = source.find("pub fn native_loot_table_load(").unwrap();
         let start = source[..hook].rfind("///").unwrap();

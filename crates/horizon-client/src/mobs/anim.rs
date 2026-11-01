@@ -186,6 +186,10 @@ pub struct State {
     pub baby: bool,
     pub partial: f32,
 }
+/// `WalkAnimationState.position(partial)`: babies' legs move 3 times as far.
+pub fn walk_position(m: &Mob, alpha: f32) -> f32 {
+    (m.limb_position - m.limb_speed * (1.0 - alpha)) * if m.is_baby() { 3.0 } else { 1.0 }
+}
 pub fn state(m: &Mob, alpha: f32) -> State {
     let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
     let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
@@ -198,8 +202,7 @@ pub fn state(m: &Mob, alpha: f32) -> State {
     let walking = m.alive() && !m.extra.passenger;
     State {
         pos: if walking {
-            // WalkAnimationState.position(partial): babies' legs move 3 times as far.
-            (m.limb_position - m.limb_speed * (1.0 - alpha)) * if m.is_baby() { 3.0 } else { 1.0 }
+            walk_position(m, alpha)
         } else {
             0.0
         },
@@ -1236,6 +1239,19 @@ mod flight_pose_tests {
         let mut dry = make();
         humanoid(&mut dry, &state, &Hum::new(ArmPose::Empty, ArmPose::Empty));
         assert_eq!(dry.get("head")[3], 30.0f32.to_radians());
+    }
+
+    #[test]
+    fn walk_position_triples_for_babies() {
+        // WalkAnimationState.position(partial) = (position - speed * (1 - partial)) * scale.
+        let mut m = player();
+        m.limb_position = 2.0;
+        m.limb_speed = 0.5;
+        assert!(!m.is_baby());
+        assert_eq!(walk_position(&m, 0.5), 1.75);
+        m.extra.age = -100;
+        assert!(m.is_baby());
+        assert_eq!(walk_position(&m, 0.5), 5.25);
     }
 
     /// A player: a humanoid model with a shield in its main hand.

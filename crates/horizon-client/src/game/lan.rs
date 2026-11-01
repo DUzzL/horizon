@@ -2291,6 +2291,15 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
+        host.hub.collect_tracking();
+        if !host.hub.native_tracking.is_empty() {
+            self.lan = Some(host);
+            self.run_native_tracking();
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the tracking events");
+        }
         if !paused {
             self.tick_guests(&mut host);
         }
