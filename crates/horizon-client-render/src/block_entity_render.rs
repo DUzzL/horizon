@@ -120,7 +120,12 @@ pub struct Paint {
     pub tint: u32,
     pub light: u32,
     pub lights: (Vec3, Vec3),
+    /// The texture's OptiFine emissive overlay (`_e`): drawn again over it at full
+    /// brightness, with the same shading.
+    pub glow: Option<Rect>,
 }
+/// Full sky and block light, in [`vertex_light`]'s form.
+const FULL_BRIGHT: u32 = 240 | (240 << 8);
 /// `ModelPart.render`: translate by pose/16, rotate ZYX, scale; children inherit.
 /// `adjust` may change a part's pose by name (`setupAnim`); `skip` hides parts.
 pub fn draw_part(
@@ -142,6 +147,7 @@ pub fn draw_part(
         tint,
         light,
         lights,
+        glow,
     } = paint;
     for poly in &part.polygons {
         let pos = poly.map(|v| m.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0));
@@ -155,17 +161,19 @@ pub fn draw_part(
             normal
         };
         let color = pack_color(tint, 255, diffuse(normal, lights));
-        for (v, position) in poly.iter().zip(pos) {
-            out.push(Vertex {
-                normal: [0; 4],
-                pos: position.to_array(),
-                uv: [r.u0 + (r.u1 - r.u0) * v[3], r.v0 + (r.v1 - r.v0) * v[4]],
-                layer: 0,
-                color,
-                light,
+        for (r, light) in std::iter::once((r, light)).chain(glow.map(|g| (g, FULL_BRIGHT))) {
+            for (v, position) in poly.iter().zip(pos) {
+                out.push(Vertex {
+                    normal: [0; 4],
+                    pos: position.to_array(),
+                    uv: [r.u0 + (r.u1 - r.u0) * v[3], r.v0 + (r.v1 - r.v0) * v[4]],
+                    layer: 0,
+                    color,
+                    light,
 
-                glint_uv: [0.0, 0.0],
-            });
+                    glint_uv: [0.0, 0.0],
+                });
+            }
         }
     }
     for (child_name, child) in &part.children {
@@ -771,6 +779,8 @@ pub struct Scene<'a> {
     pub max_y: i32,
     pub world: &'a World,
     pub sprites: &'a HashMap<String, Rect>,
+    /// The packs' OptiFine emissive overlays of the sprites.
+    pub emissive: &'a horizon_optifine::emissive::Emissive,
     pub nether: bool,
     /// Chest lid openness (`ChestLidController.getOpenNess`) at a position.
     pub lid: &'a dyn Fn([i32; 3]) -> f32,
@@ -939,6 +949,7 @@ impl BlockEntityRenderer {
                                 tint: 0xFFFFFF,
                                 light: 0,
                                 lights: diffuse_lights(nether),
+                                glow: None,
                             },
                             &mut vertices,
                         );
@@ -1279,6 +1290,9 @@ impl BlockEntityRenderer {
                 tint,
                 light: vertex_light(packed),
                 lights,
+                glow: (!crumbling)
+                    .then(|| scene.emissive.overlay(name).and_then(sprite))
+                    .flatten(),
             })
         };
         let none = |_: &str, _: &mut [f32; 9]| {};
@@ -1374,15 +1388,19 @@ impl BlockEntityRenderer {
                         let vertices = &self.closed_chests[usize::from(scene.nether)]
                             [*part as usize][*y_rot as usize / 90];
                         let origin = base.w_axis.truncate();
-                        out.extend(vertices.iter().map(|v| Vertex {
-                            pos: (Vec3::from_array(v.pos) + origin).to_array(),
-                            uv: [
-                                paint.sprite.u0 + (paint.sprite.u1 - paint.sprite.u0) * v.uv[0],
-                                paint.sprite.v0 + (paint.sprite.v1 - paint.sprite.v0) * v.uv[1],
-                            ],
-                            light: paint.light,
-                            ..*v
-                        }));
+                        let passes = std::iter::once((paint.sprite, paint.light))
+                            .chain(paint.glow.map(|g| (g, FULL_BRIGHT)));
+                        for (r, light) in passes {
+                            out.extend(vertices.iter().map(|v| Vertex {
+                                pos: (Vec3::from_array(v.pos) + origin).to_array(),
+                                uv: [
+                                    r.u0 + (r.u1 - r.u0) * v.uv[0],
+                                    r.v0 + (r.v1 - r.v0) * v.uv[1],
+                                ],
+                                light,
+                                ..*v
+                            }));
+                        }
                     }
                     return;
                 }
@@ -2106,6 +2124,7 @@ mod tests {
             max_y: 320,
             world: &world,
             sprites: &base_sprites,
+            emissive: &Default::default(),
             nether: false,
             lid: &|_| 0.0,
             sign: &|_| None,
@@ -2305,12 +2324,62 @@ mod tests {
                 tint: 0xFFFFFF,
                 light: 0,
                 lights: diffuse_lights(false),
+                glow: None,
             },
             &mut out,
         );
         assert_eq!(out.len(), 4);
         assert_eq!(out[1].pos, [2.0, 0.0, 0.0]);
         assert_eq!(out[2].uv, [0.5, 0.5]);
+    }
+
+    /// An OptiFine emissive overlay draws each polygon again with its own sprite at full
+    /// brightness, shaded alike.
+    #[test]
+    fn a_glow_draws_the_part_again_at_full_brightness() {
+        let part = ModelPart {
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![[
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [16.0, 0.0, 0.0, 1.0, 0.0],
+                [16.0, 0.0, 16.0, 1.0, 1.0],
+                [0.0, 0.0, 16.0, 0.0, 1.0],
+            ]],
+            children: vec![],
+        };
+        let rect = |u0, v0| Rect {
+            u0,
+            v0,
+            u1: u0 + 0.5,
+            v1: v0 + 0.5,
+            w: 1,
+            h: 1,
+        };
+        let mut out = Vec::new();
+        let light = vertex_light(0x52);
+        draw_part(
+            &part,
+            "root",
+            Mat4::IDENTITY,
+            &|_, _| {},
+            Paint {
+                sprite: rect(0.0, 0.0),
+                tint: 0xFFFFFF,
+                light,
+                lights: diffuse_lights(false),
+                glow: Some(rect(0.5, 0.5)),
+            },
+            &mut out,
+        );
+        assert_eq!(out.len(), 8);
+        let (base, glow) = out.split_at(4);
+        assert!(base.iter().all(|v| v.light == light));
+        assert!(glow.iter().all(|v| v.light == 240 | (240 << 8)));
+        assert_eq!(glow[2].uv, [1.0, 1.0]);
+        assert_eq!(base[2].uv, [0.5, 0.5]);
+        for (b, g) in base.iter().zip(glow) {
+            assert_eq!((b.pos, b.color), (g.pos, g.color));
+        }
     }
 
     /// TextFeatureRenderer.renderText: an outlined call's text is drawn over
@@ -2341,6 +2410,7 @@ mod tests {
             max_y: 320,
             world: &world,
             sprites: &sprites,
+            emissive: &Default::default(),
             nether: false,
             lid: &|_| 0.0,
             sign: &|_| None,
@@ -2445,6 +2515,7 @@ mod tests {
             max_y: 320,
             world: &world,
             sprites: &sprites,
+            emissive: &Default::default(),
             nether: false,
             lid: &|_| 0.0,
             sign: &first_sign,
@@ -2553,6 +2624,7 @@ mod tests {
             max_y: 320,
             world: &world,
             sprites: &sprites,
+            emissive: &Default::default(),
             nether: false,
             lid: &|_| 0.0,
             sign: &|_| None,
