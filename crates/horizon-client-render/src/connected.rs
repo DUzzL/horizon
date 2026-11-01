@@ -79,7 +79,14 @@ struct StateInfo {
     axis: Option<Axis>,
     /// `half=upper`: `linked` random tiles follow the lower half.
     upper: bool,
+    /// A pane's arms (`north`, `east`, `south`, `west` true), as bits of [`ARMS`].
+    arms: u8,
+    /// Rules name the state or one of its sides' sprites ([`ConnectedTextures::stacked_pane_hides`]).
+    has_rules: bool,
 }
+
+/// A pane's arm properties, in [`StateInfo::arms`]' bit order.
+const ARMS: [&str; 4] = ["north", "east", "south", "west"];
 
 #[derive(Default)]
 pub struct ConnectedTextures {
@@ -196,6 +203,23 @@ impl ConnectedTextures {
                 })
                 .collect();
         }
+        // Panes whose sprites tile rules name (`matchTiles=glass`) are connected too, by a rule
+        // that can draw on them: here, one naming no block (a rule naming the pane is in its
+        // own list already).
+        for id in (0..out.states.len()).filter(|_| !out.by_layer.is_empty()) {
+            let pane = registry
+                .state(BlockStateId(id as u32))
+                .is_some_and(|s| s.name.ends_with("glass_pane"));
+            if pane && !out.states[id].has_rules {
+                out.states[id].has_rules = Face::ALL.into_iter().any(|f| {
+                    face_layer(BlockStateId(id as u32), f).is_some_and(|l| {
+                        out.list(&out.by_layer, l as usize)
+                            .iter()
+                            .any(|&i| out.rules[usize::from(i)].rule.match_blocks.is_empty())
+                    })
+                });
+            }
+        }
         out
     }
 
@@ -299,6 +323,13 @@ impl ConnectedTextures {
                     _ => None,
                 },
                 upper: prop("half") == Some("upper"),
+                arms: ARMS
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, arm)| prop(arm) == Some("true"))
+                    .fold(0, |bits, (i, _)| bits | 1 << i),
+                // Set below, with the state's rule list.
+                has_rules: false,
             });
             list.clear();
             if let Some(candidates) = by_block.get(name) {
@@ -308,6 +339,7 @@ impl ConnectedTextures {
                         .filter(|&&i| out.rules[usize::from(i)].rule.matches_block(name, prop)),
                 );
             }
+            out.states.last_mut().expect("pushed above").has_rules = !list.is_empty();
             let range = push_list(&mut out.lists, &list);
             out.by_state.push(range);
         }
@@ -316,6 +348,35 @@ impl ConnectedTextures {
 
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
+    }
+
+    /// Whether a pane's top or bottom strip, centred at `centre` (block-local x, z), is hidden by
+    /// the pane `other` stacked on it (Continuity's "Glass Pane Culling Fix"): only for a pane
+    /// with connected-texture rules, under or over the same block, where `other` has the same
+    /// part (the post, or the arm toward the strip).
+    pub fn stacked_pane_hides(&self, state: u32, other: u32, [x, z]: [f32; 2]) -> bool {
+        let (Some(own), Some(theirs)) = (
+            self.states.get(state as usize),
+            self.states.get(other as usize),
+        ) else {
+            return false;
+        };
+        if own.block != theirs.block || !own.has_rules {
+            return false;
+        }
+        let (dx, dz) = (x - 0.5, z - 0.5);
+        // The post is 2 pixels wide; an arm runs from it to the block's edge.
+        if dx.abs() <= 1.0 / 16.0 && dz.abs() <= 1.0 / 16.0 {
+            return true;
+        }
+        let arm = if dz.abs() > dx.abs() {
+            if dz < 0.0 { 0 } else { 2 }
+        } else if dx > 0.0 {
+            1
+        } else {
+            3
+        };
+        theirs.arms & 1 << arm != 0
     }
 
     fn list(&self, ranges: &[(u32, u32)], i: usize) -> &[u16] {
@@ -976,6 +1037,51 @@ mod tests {
         // draws nothing; c draws; the face keeps its own sprite.
         let (layers, pick) = overlays_in(&ctm, 1, Face::North, &[([-1, 0, 0], 1)]);
         assert_eq!((layers, pick), (vec![1001, 3000], Pick::Keep));
+    }
+
+    #[test]
+    fn stacked_panes_hide_the_strips_they_share() {
+        let props = |pairs: &[(&str, &str)]| -> BlockProperties {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        // 0 a pane with north and east arms, 1 the same pane with only a north arm, 2 another
+        // pane block, 3 a pane no rule names.
+        let states = [
+            (
+                "minecraft:glass_pane",
+                props(&[("north", "true"), ("east", "true")]),
+            ),
+            ("minecraft:glass_pane", props(&[("north", "true")])),
+            (
+                "minecraft:white_stained_glass_pane",
+                props(&[("north", "true")]),
+            ),
+            ("minecraft:iron_bars", props(&[("north", "true")])),
+        ];
+        let ctm = ConnectedTextures::build(
+            rules(&[(
+                "pane.properties",
+                "matchBlocks=glass_pane white_stained_glass_pane\nmethod=ctm\ntiles=0-46",
+            )]),
+            states.iter().map(|(n, p)| Some((*n, p))),
+            |_| None,
+        );
+        let (post, north, east) = ([0.5, 0.5], [0.5, 0.2], [0.8, 0.5]);
+        assert!(ctm.stacked_pane_hides(0, 1, post));
+        assert!(ctm.stacked_pane_hides(0, 1, north));
+        // The pane above has no east arm: the strip shows; one with it hides it.
+        assert!(!ctm.stacked_pane_hides(0, 1, east));
+        assert!(ctm.stacked_pane_hides(1, 0, east));
+        let (south, west) = ([0.5, 0.8], [0.2, 0.5]);
+        assert!(!ctm.stacked_pane_hides(1, 0, south));
+        assert!(!ctm.stacked_pane_hides(1, 0, west));
+        assert!(ctm.stacked_pane_hides(1, 0, north));
+        // Another block, or a pane without rules, hides nothing.
+        assert!(!ctm.stacked_pane_hides(1, 2, post));
+        assert!(!ctm.stacked_pane_hides(3, 3, post));
     }
 
     #[test]
