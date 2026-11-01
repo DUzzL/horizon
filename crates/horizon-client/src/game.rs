@@ -1679,7 +1679,8 @@ impl LevelAccess for GameLevel<'_> {
 /// FallingBlockEntity carrying a block state.
 #[derive(Clone, Debug)]
 struct FallingBlock {
-    /// The entity id a server tracks it by (0 until it is tracked).
+    /// Its entity id: from the entity counter on the server, the server's on
+    /// a client.
     id: u32,
     state: BlockStateId,
     /// `DATA_START_POS`: spawn position used to select weighted block models.
@@ -4871,8 +4872,9 @@ impl Game<'_> {
                         f64::from(pos.y),
                         f64::from(pos.z) + 0.5,
                     );
+                    self.next_entity += 1;
                     self.falling.push(FallingBlock {
-                        id: 0,
+                        id: self.next_entity,
                         state,
                         start_pos: pos,
                         position: p,
@@ -7769,9 +7771,16 @@ impl Game<'_> {
             // macOS warps by re-associating the mouse with the pointer,
             // which undoes a Locked grab and leaves the pointer free: warp
             // first there. Wayland moves a pointer only while it is locked,
-            // so everywhere else warp after grabbing.
+            // so everywhere else warp after grabbing (Windows does both).
             #[cfg(target_os = "macos")]
             warp(window);
+            // Windows clips a Locked pointer to a 1x1 rectangle where it is, and `SetCursorPos`
+            // stays inside that clip: warp first, or the pointer stays frozen wherever it was
+            // (over another window, on another monitor) instead of the window's centre (#6076).
+            #[cfg(windows)]
+            if self.focused {
+                warp(window);
+            }
             self.captured = window
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
@@ -11199,7 +11208,7 @@ impl Game<'_> {
         if landed {
             if knockback > 0.0 {
                 let (xd, zd) = self.extra_knockback_direction();
-                self.mobs[index].knockback(f64::from(knockback), xd, zd, &source);
+                self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
@@ -13198,18 +13207,24 @@ impl Game<'_> {
             });
         }
         self.orbs = orbs;
-        for o in taken {
-            self.add_pickup(pickups::Taken::Orb(Box::new(o)), pickups::Collector::Player);
-        }
         if gained > 0 {
             gained = self.mending(gained);
         }
-        if gained > 0 {
-            let at = self.eye_position();
+        for o in taken {
+            // ClientPacketListener.handleTakeItemEntity: every orb taken sounds
+            // at the orb, whether mending took its points or not.
             let pitch =
                 (self.world.random.next_float() - self.world.random.next_float()) * 0.35 + 0.9;
-            self.audio
-                .play("minecraft:entity.experience_orb.pickup", at, 0.1, pitch);
+            let at = [o.position.x, o.position.y, o.position.z];
+            self.audio.play(
+                "minecraft:entity.experience_orb.pickup",
+                Some(at),
+                0.1,
+                pitch,
+            );
+            self.add_pickup(pickups::Taken::Orb(Box::new(o)), pickups::Collector::Player);
+        }
+        if gained > 0 {
             self.give_orb_points(gained);
         }
     }
@@ -15611,6 +15626,16 @@ impl Game<'_> {
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
             },
+            // `checkHotbarKeyPressed`: the keys the controls bind to the off
+            // hand and the hotbar slots, so a rebound key swaps instead of
+            // reaching the screen. The list below keeps Q and the defaults.
+            _ if (self.screen == Screen::Inventory
+                || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
+                && self
+                    .settings
+                    .keys
+                    .container_hotbar_key(key)
+                    .is_some_and(|key| self.inventory_hotkey(key)) => {}
             KeyCode::Digit1
             | KeyCode::Digit2
             | KeyCode::Digit3

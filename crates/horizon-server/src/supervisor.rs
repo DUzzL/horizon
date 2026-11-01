@@ -120,6 +120,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
         );
     }
     crate::rcon::start(shared.clone())?;
+    crate::query::start(shared.clone())?;
     match config.panel.address() {
         Ok(Some(address)) => match crate::panel::start(shared.clone(), address) {
             Ok(()) => note(

@@ -80,6 +80,9 @@ pub(super) struct Parked {
     lan_block_events: Vec<([i32; 3], i32, i32, u32)>,
     lan_entity_events: Vec<(i32, i8, [f64; 3])>,
     lan_critical_hits: Vec<(Option<u32>, i32, bool)>,
+    /// The hub's tracked entities of this level (`LanHost::states`), as its last tick described
+    /// them: what its players' moves are checked against before this tick describes them again.
+    lan_states: horizon_client::lan::entity::States,
     /// Only the per-level parts of these are used (`swap_level`).
     anims: BlockEntityAnims,
     raiding: Raiding,
@@ -213,6 +216,7 @@ impl Game<'_> {
             lan_block_events: Vec::new(),
             lan_entity_events: Vec::new(),
             lan_critical_hits: Vec::new(),
+            lan_states: Default::default(),
             anims: Default::default(),
             raiding: Default::default(),
             sculk: Default::default(),
@@ -291,7 +295,11 @@ impl Game<'_> {
     /// The level that was in place is kept with the others; the shared
     /// clock and weather go with the swap. `host` is the hub when the caller
     /// holds it (`self.lan` is taken during the network tick).
-    pub(super) fn enter_level(&mut self, host: Option<&mut LanHost>, target: Dim) -> Result<()> {
+    pub(super) fn enter_level(
+        &mut self,
+        mut host: Option<&mut LanHost>,
+        target: Dim,
+    ) -> Result<()> {
         // The in-frame game keeps its one level (`enter_dimension`).
         if self.options.execution_role.is_client() {
             return Ok(());
@@ -310,6 +318,16 @@ impl Game<'_> {
             // The sculk tables' watched blocks are built once per game.
             p.world.watched = std::mem::take(&mut self.world.watched);
             self.swap_level(&mut p);
+            // The tracked entities go with their level: a level's moves, read before its tick
+            // describes its entities again, would otherwise meet the last level's (the anticheat
+            // missed the boat under a player while anyone was in another dimension).
+            let states = match host.as_deref_mut() {
+                Some(h) => Some(&mut h.states),
+                None => self.lan.as_mut().map(|h| &mut h.states),
+            };
+            if let Some(states) = states {
+                std::mem::swap(states, &mut p.lan_states);
+            }
             p.idle = 0;
             let left = std::mem::replace(&mut self.dim, target);
             self.levels.parked.insert(left, p);
