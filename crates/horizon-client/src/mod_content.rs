@@ -40,7 +40,20 @@ pub struct ContentMod {
 pub fn drop_dangling_remainders(mods: &mut Vec<ContentMod>) -> Vec<String> {
     let mut dropped = Vec::new();
     mods.retain(|m| {
-        let ids: BTreeSet<&str> = m.content.items.iter().map(|i| i.id.as_str()).collect();
+        // The mod's items and its blocks that have an item (`Content::read`'s own rule).
+        let ids: BTreeSet<&str> = m
+            .content
+            .items
+            .iter()
+            .map(|i| i.id.as_str())
+            .chain(
+                m.content
+                    .blocks
+                    .iter()
+                    .filter(|b| b.item)
+                    .map(|b| b.id.as_str()),
+            )
+            .collect();
         let dangling = m.content.items.iter().find(|i| {
             i.crafting_remainder
                 .as_deref()

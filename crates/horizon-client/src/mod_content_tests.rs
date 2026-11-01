@@ -3559,7 +3559,15 @@ fn a_file_item_whose_remainder_was_refused_takes_only_its_mod_out() {
             content,
         }
     };
+    let mut jar = make("jar", vec![item("jar:tool", Some("jar:jar"))]);
+    jar.content.blocks.push(horizon_mods::content::Block {
+        id: "jar:jar".into(),
+        template: "minecraft:glass".into(),
+        item: true,
+        ..Default::default()
+    });
     let mut mods = vec![
+        jar,
         make(
             "good",
             vec![
@@ -3577,5 +3585,6 @@ fn a_file_item_whose_remainder_was_refused_takes_only_its_mod_out() {
     assert_eq!(dropped.len(), 1, "{dropped:?}");
     assert!(dropped[0].contains("bad"), "{dropped:?}");
     let left: Vec<&str> = mods.iter().map(|m| m.id.as_str()).collect();
-    assert_eq!(left, ["good", "vanilla"]);
+    // A remainder that is the mod's own block item is kept too (`jar`).
+    assert_eq!(left, ["jar", "good", "vanilla"]);
 }
