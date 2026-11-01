@@ -33,7 +33,7 @@ TheEndGatewayBlockEntity.getChunk	port	crates/horizon-client/src/game/end.rs::Ga
 TheEndGatewayBlockEntity.findValidSpawnInChunk	inline	crates/horizon-client/src/game/end.rs::Game::resolve_gateway	end stone with two open blocks above it, closest to the origin
 TheEndGatewayBlockEntity.getParticleAmount	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::gateway_faces	the count is the number of gateway faces that render; render_tick passes its length to animate_tick, which draws one particle per face
 TrialSpawnerBlockEntity.createDefaultSpawner	port	crates/horizon-client-render/src/chunk/block_entity.rs::TrialSpawner::default	default cooldown 36000 and range 14; the no-creative player filter is in TrialSpawner::detect
-TrialSpawnerBlockEntity.setEntityId	missing		player: a spawn egg used on a trial spawner does not change the mob it spawns; only spawners take eggs (use_spawn_egg_on_spawner)
+TrialSpawnerBlockEntity.setEntityId	inline	crates/horizon-client/src/game/spawner.rs::Game::use_spawn_egg_on_spawner	
 TrialSpawnerBlockEntity.setEntityData	inline	crates/horizon-client/src/game/spawner.rs::Game::use_spawn_egg_on_spawner	the egg's data goes through `override_entity_data` on the spawner it is used on
 TrialSpawnerBlockEntity.getState	port	crates/horizon-client/src/game/trial_spawner.rs::Game::trial_spawner_block	reads the state and ominous properties of the block
 TrialSpawnerBlockEntity.setState	port	crates/horizon-client/src/game/trial_spawner.rs::Game::set_trial_spawner_state	writes the state property and the ominous flag together

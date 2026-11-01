@@ -195,7 +195,7 @@ impl Game<'_> {
         }
         Ok(registry.resolve(&BlockState {
             name: name.to_owned(),
-            properties,
+            properties: properties.into(),
         })?)
     }
 

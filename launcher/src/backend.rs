@@ -2266,10 +2266,14 @@ pub fn resolve_version(requested: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "No version is installed yet.".into())
 }
 
-/// Removes an installed version and moves the selection to the newest one left if needed.
+/// Removes an installed version, unless a program runs from it, and moves the selection to the
+/// newest one left if needed.
 pub fn remove_version(tag: &str) -> Result<(), String> {
     if !installed().iter().any(|t| t == tag) {
         return Err(format!("{tag} is not installed."));
+    }
+    if in_use(tag) {
+        return Err(format!("{tag} is running. Quit it first."));
     }
     remove(tag)?;
     let mut settings = Settings::load();

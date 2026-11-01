@@ -324,7 +324,7 @@ impl Book {
                 Recipe::Special(special) => {
                     for shown in special.book_displays() {
                         entries.push(Entry {
-                            id: format!("minecraft:{name}"),
+                            id: crate::crafting::recipe_id(name),
                             display_id: -1,
                             category: crafting_category(&category),
                             group: group(&grp),
@@ -338,7 +338,7 @@ impl Book {
                 }
             };
             entries.push(Entry {
-                id: format!("minecraft:{name}"),
+                id: crate::crafting::recipe_id(name),
                 display_id: -1,
                 category: crafting_category(&category),
                 group: group(&grp),
@@ -359,7 +359,7 @@ impl Book {
                 _ => continue,
             };
             entries.push(Entry {
-                id: format!("minecraft:{}", c.id),
+                id: crate::crafting::recipe_id(&c.id),
                 display_id: -1,
                 category,
                 group: group(&c.group),
@@ -736,8 +736,9 @@ impl RecipeIndex {
                 Err(e) => log::warn!("Horizon: pack recipe {id} not shown in the book: {e}"),
             }
         }
-        for (id, v) in sources {
-            if conditions_hold(&v) {
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        for (id, mut v) in sources {
+            if conditions_hold(&v) && filters.apply(&id, &mut v) {
                 insert(id, &v);
             }
         }

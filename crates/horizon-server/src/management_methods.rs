@@ -41,6 +41,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
                     .ok_or_else(|| invalid_params("Not a string"))?,
             ),
         ),
+        "serversettings/difficulty" => game.difficulty(client, None),
+        "serversettings/difficulty/set" => game.difficulty(
+            client,
+            Some(
+                argument
+                    .as_str()
+                    .ok_or_else(|| invalid_params("Not a string"))?,
+            ),
+        ),
         "allowlist" => Ok(lists.allowlist()),
         "bans" => Ok(lists.bans()),
         "ip_bans" => Ok(lists.ip_bans()),
@@ -280,10 +289,43 @@ impl Game<'_> {
             request["value"] = json!(value);
         }
         let reply = self.ask(&format!("management {client} {request}"))?;
-        match reply["error"].as_str() {
-            Some(error) => Err((INTERNAL_ERROR, Some(error.to_owned()))),
-            None => Ok(reply["value"].clone()),
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
         }
+        // server.toml's `motd` writes server.properties' at each start: keep the new one there too.
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "server",
+                "motd",
+                toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
+    /// `MinecraftServerSettingsServiceImpl.getDifficulty` and `setDifficulty`.
+    fn difficulty(&self, client: u32, value: Option<&str>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/difficulty" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/difficulty/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "world",
+                "difficulty",
+                toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
     }
 
     fn running(&self) -> bool {

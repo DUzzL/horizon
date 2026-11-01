@@ -105,6 +105,7 @@ impl Game<'_> {
             stuck: Vec3::ZERO,
             damage,
             saved: None,
+            portal: Default::default(),
         });
         true
     }

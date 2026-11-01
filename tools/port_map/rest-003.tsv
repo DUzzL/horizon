@@ -15,7 +15,7 @@ ShotCrossbowTrigger.TriggerInstance.shotCrossbow	skip:data		criterion factory
 ShotCrossbowTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_item	fired from crossbow.rs with the shot item
 SlideDownBlockTrigger.TriggerInstance.slidesDownBlock	skip:data		criterion factory
 SlideDownBlockTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_honey_slide	block and state match
-SpearMobsTrigger.TriggerInstance.matches	missing		player: the spear_many_mobs advancement is never granted; spear hits do not count the mobs they hit (spear.rs fires no trigger)
+SpearMobsTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_spear_mobs	the criterion fires from there; its test is the closure given to `trigger`
 SummonedEntityTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	summoned_entity fired from wither.rs
 SummonedEntityTrigger.TriggerInstance.matches	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	entity predicate
 TameAnimalTrigger.trigger	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_entity	tame_animal fired from creatures.rs, nautili.rs and mounts.rs

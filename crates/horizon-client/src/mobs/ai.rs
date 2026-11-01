@@ -765,6 +765,20 @@ fn effects_from_blocks(
                                 m.damage(1.0, Damage::of(DamageKind::SweetBerryBush));
                             }
                         }
+                        // PowderSnowBlock.entityInside: a living entity is stuck
+                        // (and forgets its fall) only while the block at its
+                        // own feet is powder snow.
+                        "minecraft:powder_snow"
+                            if w.block_name(
+                                m.position.x.floor() as i32,
+                                m.position.y.floor() as i32,
+                                m.position.z.floor() as i32,
+                            ) == "minecraft:powder_snow" =>
+                        {
+                            m.fall_distance = 0.0;
+                            m.stuck_multiplier =
+                                Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+                        }
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
                     }
@@ -870,6 +884,30 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
         }
     }
 }
+/// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
+/// a box of `width * 0.8` (a float product) by 1e-6 high, centred on the eye,
+/// touches a suffocating block. `BlockPos.betweenClosed(AABB)` visits every
+/// cell from `floor(min)` to `floor(max)`; `joinIsNotEmpty` then needs a
+/// volume overlap beyond `Shapes.EPSILON` (1e-7). `suffocating` is the cell's
+/// `isSuffocating` with a full-cube collision shape. Wide mobs (hoglins) cover
+/// several columns; there is no width guard in vanilla.
+fn in_wall(width: f32, eye: [f64; 3], suffocating: impl Fn(i32, i32, i32) -> bool) -> bool {
+    const EPS: f64 = 1.0e-7;
+    let side = f64::from(width * 0.8_f32);
+    let half = [side / 2.0, 1.0e-6 / 2.0, side / 2.0];
+    let lo = [0, 1, 2].map(|i| eye[i] - half[i]);
+    let hi = [0, 1, 2].map(|i| eye[i] + half[i]);
+    let c0 = lo.map(|v| v.floor() as i32);
+    let c1 = hi.map(|v| v.floor() as i32);
+    // Overlap of the box with the unit cell `c` on axis `i`.
+    let overlaps = |i: usize, c: i32| hi[i].min(f64::from(c) + 1.0) - lo[i].max(f64::from(c)) > EPS;
+    (c0[0]..=c1[0]).any(|x| {
+        (c0[1]..=c1[1]).any(|y| {
+            (c0[2]..=c1[2])
+                .any(|z| overlaps(0, x) && overlaps(1, y) && overlaps(2, z) && suffocating(x, y, z))
+        })
+    })
+}
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
 fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // Entity.canSpawnSprintParticle / spawnSprintParticle (a dashing cat or
@@ -941,16 +979,15 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.alive() {
         // LivingEntity.baseTick: suffocation inside full blocks. Entity.isInWall
         // is false under noPhysics, which Vex.tick holds while it ticks.
-        let (ex, ey, ez) = (
-            m.position.x.floor() as i32,
-            m.eye_y().floor() as i32,
-            m.position.z.floor() as i32,
-        );
-        let at_eye = w.facts.get(w.world.block(ex, ey, ez));
-        if at_eye.full_collision
-            && at_eye.solid_render
-            && m.width() < 1.0
-            && m.species() != Species::Vex
+        if m.species() != Species::Vex
+            && in_wall(
+                m.width(),
+                [m.position.x, m.eye_y(), m.position.z],
+                |x, y, z| {
+                    let f = w.facts.get(w.world.block(x, y, z));
+                    f.full_collision && f.solid_render
+                },
+            )
         {
             m.damage(1.0, Damage::of(DamageKind::InWall));
         }
@@ -989,6 +1026,9 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     tick_effects(m, w.mod_effects);
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
+    }
+    if matches!(m.species(), Species::Evoker | Species::Illusioner) {
+        super::illager::cast_particles(m, events);
     }
     if m.hurt_time > 0 {
         m.hurt_time -= 1;
@@ -3139,5 +3179,32 @@ mod age_up_tests {
         };
         assert!(!baby, "the tick that reaches 0 grows it up");
         assert_eq!(damage, 2.0);
+    }
+}
+
+#[cfg(test)]
+mod in_wall_tests {
+    use super::in_wall;
+
+    /// `Entity.isInWall` has no width guard (#5872): a hoglin (1.3965 wide)
+    /// whose eye is in a solid block, or whose 1.117-wide eye box reaches a
+    /// neighbouring wall column, takes in-wall damage like a narrow mob.
+    #[test]
+    fn wide_mobs_suffocate_by_the_eye_box() {
+        let wall = |x: i32, _y: i32, _z: i32| x >= 0;
+        // Eye inside the wall: hoglin and zombie (0.6) alike.
+        assert!(in_wall(1.3965, [0.5, 64.5, 0.5], wall));
+        assert!(in_wall(0.6, [0.5, 64.5, 0.5], wall));
+        // Eye in air at x=-0.2: the zombie's 0.48 box (-0.44..0.04) clips
+        // x=0, and the hoglin's wider box does too.
+        assert!(in_wall(0.6, [-0.2, 64.5, 0.5], wall));
+        // At x=-0.3 the zombie's box (-0.54..-0.06) clears the wall; the
+        // hoglin's half-width 0.5586 (-0.8586..0.2586) does not.
+        assert!(!in_wall(0.6, [-0.3, 64.5, 0.5], wall));
+        assert!(in_wall(1.3965, [-0.3, 64.5, 0.5], wall));
+        // Open air.
+        assert!(!in_wall(1.3965, [-3.0, 64.5, 0.5], wall));
+        // A box edge exactly on the wall face only touches it.
+        assert!(!in_wall(1.0, [-0.4, 64.5, 0.5], wall));
     }
 }
