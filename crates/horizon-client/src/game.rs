@@ -15618,6 +15618,16 @@ impl Game<'_> {
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
             },
+            // `checkHotbarKeyPressed`: the keys the controls bind to the off
+            // hand and the hotbar slots, so a rebound key swaps instead of
+            // reaching the screen. The list below keeps Q and the defaults.
+            _ if (self.screen == Screen::Inventory
+                || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
+                && self
+                    .settings
+                    .keys
+                    .container_hotbar_key(key)
+                    .is_some_and(|key| self.inventory_hotkey(key)) => {}
             KeyCode::Digit1
             | KeyCode::Digit2
             | KeyCode::Digit3
