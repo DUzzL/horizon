@@ -8,6 +8,45 @@
 use super::{Game, commands::Target};
 use horizon_core::geometry::Vec3;
 
+/// The `EquipmentSlot` names of `Mob::equipment_stacks`, in its order.
+const MOB_SLOTS: [&str; 8] = [
+    "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
+];
+
+impl Game<'_> {
+    /// `LivingEntity.collectEquipmentChanges` for the mobs that tick: each
+    /// slot that holds another stack than the mods last heard is told
+    /// (`native_living_equipment_change`). A mob new to the level counts from
+    /// empty, as vanilla's `lastEquipmentItems` does.
+    pub(super) fn native_mobs_equipment(&mut self) {
+        if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        let ticking = self.entity_ticking_area();
+        let mut changes = Vec::new();
+        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+            if !ticking(m.position.x.floor() as i32, m.position.z.floor() as i32) {
+                continue;
+            }
+            let now = m.equipment_stacks();
+            let heard = m.extra.equipment_heard.get_or_insert_with(Default::default);
+            if **heard == now {
+                continue;
+            }
+            for (slot, name) in MOB_SLOTS.into_iter().enumerate() {
+                if now[slot] != heard[slot] {
+                    let from = heard[slot].take();
+                    changes.push((m.id, m.kind.id.clone(), name, from, now[slot].clone()));
+                }
+            }
+            **heard = now;
+        }
+        for (id, kind, slot, from, to) in changes {
+            self.native_living_equipment_change(id, &kind, slot, from.as_ref(), to.as_ref());
+        }
+    }
+}
+
 /// A mob as a native mod reads it.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]

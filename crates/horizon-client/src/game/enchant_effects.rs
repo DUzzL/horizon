@@ -812,7 +812,30 @@ impl Game<'_> {
         if !moved && !landed && !changed.iter().any(|c| *c) {
             return;
         }
+        let id = stand.id;
+        let told: Vec<_> = (0..6)
+            .filter(|&i| changed[i])
+            .map(|i| {
+                let slot = horizon_client::entities::ArmorStand::SLOTS[i];
+                (
+                    slot,
+                    stand.enchantment_equipment[i].clone(),
+                    stand.equipment[i].clone(),
+                )
+            })
+            .collect();
         stand.enchantment_equipment.clone_from(&stand.equipment);
+        if self.remote.is_none() && !self.options.execution_role.is_client() {
+            for (slot, from, to) in told {
+                self.native_living_equipment_change(
+                    id,
+                    "minecraft:armor_stand",
+                    slot,
+                    from.as_ref(),
+                    to.as_ref(),
+                );
+            }
+        }
         let stand = &self.armor_stands[index];
         let at = [stand.position.x, stand.position.y, stand.position.z];
         let who = Who::Mob(stand.id);

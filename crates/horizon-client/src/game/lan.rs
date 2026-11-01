@@ -1113,53 +1113,10 @@ fn mob_equipment(
     hub: &mut Hub,
     out: &mut Vec<(u8, Option<horizon_protocol::item::Stack>)>,
 ) {
-    let e = &m.extra;
-    // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
-    // slot's item (6) in `head`.
-    let body = horizon_client::mobs::drops::head_is_body(m.species());
-    let slots = [
-        (0u8, &e.main_hand, e.main_hand_stack()),
-        (1, &e.off_hand, None),
-        (2, &e.feet, e.armor[3].as_ref()),
-        (3, &e.legs, e.armor[2].as_ref()),
-        (4, &e.chest, e.armor[1].as_ref()),
-        // The body slot's item is no worn armour.
-        (
-            if body { 6 } else { 5 },
-            &e.head,
-            e.armor[0].as_ref().filter(|_| !body),
-        ),
-    ];
-    for (slot, item, worn) in slots {
-        if let Some(item) = item {
-            // The worn armour keeps its stack: a dyed leather piece keeps
-            // its colour.
-            let stack = worn.cloned().unwrap_or_else(|| ItemStack {
-                item: item.clone(),
-                count: 1,
-                // A wolf's armor shows its cracks.
-                damage: if slot == 6 && m.species() == horizon_client::mobs::Species::Wolf {
-                    e.body_damage.max(0) as u32
-                } else {
-                    0
-                },
-                extra: if slot == 6 && m.species() == horizon_client::mobs::Species::Wolf {
-                    e.body_extra.clone()
-                } else {
-                    None
-                },
-            });
-            out.push((slot, hub.stack(&Some(stack))));
+    for (slot, stack) in m.equipment_stacks().into_iter().enumerate() {
+        if stack.is_some() {
+            out.push((slot as u8, hub.stack(&stack)));
         }
-    }
-    if e.saddled {
-        let stack = e.saddle_stack.clone().unwrap_or(ItemStack {
-            item: Arc::from("minecraft:saddle"),
-            count: 1,
-            damage: 0,
-            extra: None,
-        });
-        out.push((7, hub.stack(&Some(stack))));
     }
 }
 

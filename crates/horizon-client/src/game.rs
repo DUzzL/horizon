@@ -11350,6 +11350,7 @@ impl Game<'_> {
     }
     fn tick_mobs(&mut self) -> Result<()> {
         self.tick_creatures()?;
+        self.native_mobs_equipment();
         self.position_rider();
         self.tick_stats();
         self.tick_scoreboard();
