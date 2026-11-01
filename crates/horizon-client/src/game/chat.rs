@@ -1187,6 +1187,7 @@ impl Game<'_> {
                 h,
                 true,
                 horizon_client::screen_draw::inside(mouse, x, y, w, h),
+                horizon_client::hud_overlays::now_ms(),
             );
             horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }

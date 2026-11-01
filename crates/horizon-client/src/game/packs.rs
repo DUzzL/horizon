@@ -372,7 +372,8 @@ impl Game<'_> {
             .cem
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = cem;
-        // The random entity textures the new atlas packs. A new scan is a new generation:
+        // The random entity textures and emissive overlays the new atlas packs. A new scan is
+        // a new generation:
         // every mob (every splitscreen player's too) chooses again on its next tick.
         *self
             .res
@@ -381,6 +382,19 @@ impl Game<'_> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             std::mem::take(&mut self.gui.atlas.random_textures);
+        *self
+            .res
+            .mob_data()
+            .emissive
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.gui.atlas.emissive.clone();
+        *self
+            .res
+            .mob_data()
+            .blinks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::mem::take(&mut self.gui.atlas.blinks);
         horizon_client::ui::load_metadata(&root);
         lang::set(lang::Language::load(&[&root], &lang::code()));
         self.refresh_remote_language();

@@ -1543,6 +1543,32 @@ impl Game<'_> {
         );
     }
 
+    /// A guest's client started or stopped flying (the hub applied it): the
+    /// mods hear it with the guest's state swapped in, and when one cancels,
+    /// the guest keeps what they had and is sent their abilities again, as
+    /// vanilla answers what it refuses.
+    pub(super) fn lan_flight_toggled(&mut self, host: &mut LanHost, conn: u32, flying: bool) {
+        let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone())) else {
+            return;
+        };
+        let mut cancel = false;
+        // With the guest's state swapped in, so that the helpers reach them.
+        self.as_guest(host, conn, |g| {
+            g.native_player_toggle_flight(uuid, &name, flying, &mut cancel);
+        });
+        if !cancel {
+            return;
+        }
+        if let Some(g) = host.hub.guest_mut(conn) {
+            g.flying = !flying;
+            g.send(&C::PlayerAbilities(play::PlayerAbilities {
+                flags: g.ability_flags(),
+                flying_speed: 0.05,
+                walking_speed: 0.1,
+            }));
+        }
+    }
+
     /// A packet from a guest that the hub does not handle itself.
     pub(super) fn lan_guest_packet(&mut self, host: &mut LanHost, conn: u32, packet: S) {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {

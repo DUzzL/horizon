@@ -22,7 +22,7 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
-    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_lights: array<vec4<f32>, 32>,
     colored_count: vec4<u32>,
     emissive_layers: array<vec4<u32>, 32>,
     emissive_count: vec4<u32>,
@@ -101,8 +101,8 @@ fn dynamic_block_light(pos: vec3<f32>) -> f32 {
 fn native_colored_light(pos: vec3<f32>) -> vec3<f32> {
     var rgb = vec3(0.0);
     for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
-        let at = globals.colored_lights[i][0];
-        let color = globals.colored_lights[i][1];
+        let at = globals.colored_lights[i * 2u];
+        let color = globals.colored_lights[i * 2u + 1u];
         rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
     }
     return min(rgb, vec3(1.0));
