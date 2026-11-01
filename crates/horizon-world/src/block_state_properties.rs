@@ -158,7 +158,7 @@ impl BlockProperties {
     }
     /// Shared names and values, collected as a `BTreeMap` collects them.
     pub fn from_shared(mut pairs: Vec<(&'static String, &'static String)>) -> Self {
-        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
         let mut kept: Vec<(Text, Text)> = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
             match kept.last_mut() {
