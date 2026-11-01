@@ -23,6 +23,8 @@ pub struct CemModels {
 /// A model layer as a `.jem` reshapes it.
 pub struct CemLayer {
     pub model: Arc<Part>,
+    /// The `.jem`'s animations, run after the vanilla animation.
+    pub animation: Option<super::cem_anim::Animation>,
     /// The atlas name of the `.jem`'s texture (`entity/zombie/zombie_green`), drawn instead of
     /// the layer's vanilla texture.
     pub texture: Option<String>,
@@ -318,6 +320,9 @@ impl CemLayer {
         let model = name.replace("_baby", "");
         let mut out = vanilla.clone();
         let mut count = 0;
+        let mut ids = HashMap::new();
+        // Each entry's `this` and `part`, and its animations.
+        let mut entries = Vec::new();
         for p in &jem.parts {
             let target = vanilla_part(&model, &p.part);
             let target = if find(&out, &target) {
@@ -325,7 +330,7 @@ impl CemLayer {
             } else {
                 p.part.clone()
             };
-            let mut bone = part(&p.bone, &mut count);
+            let mut bone = part(&p.bone, &mut count, &mut ids);
             bone.pose[6..9].fill(p.scale);
             let Some(node) = find_mut(&mut out, &target) else {
                 log::warn!("Horizon: custom entity model {name}: no part {}", p.part);
@@ -334,10 +339,24 @@ impl CemLayer {
             if !p.attach {
                 node.polygons.clear();
             }
+            // A replacing entry stands in for the vanilla part; an attached one is its own.
+            let this = if p.attach {
+                bone.name.clone()
+            } else {
+                target.clone()
+            };
+            entries.push((this, target, p.animations.as_slice()));
             node.children.push(bone);
         }
+        let names = super::cem_anim::Names {
+            model: &out,
+            vanilla: &|p| vanilla_part(&model, p),
+            ids: &ids,
+        };
+        let animation = super::cem_anim::compile_animation(name, &names, &entries);
         Self {
             model: Arc::new(out),
+            animation,
             texture: jem.texture.as_deref().and_then(atlas_name),
         }
     }
@@ -364,9 +383,13 @@ fn find_mut<'a>(part: &'a mut Part, name: &str) -> Option<&'a mut Part> {
 
 /// A baked bone as a model part. Its name, `cem#<n>`, is unique in the model, so its pose is
 /// its own whatever the files call their ids.
-fn part(bone: &Bone, count: &mut usize) -> Part {
+/// `ids` gets the bone's id, if it has one, under that name.
+fn part(bone: &Bone, count: &mut usize, ids: &mut HashMap<String, String>) -> Part {
     let name = format!("cem#{count}");
     *count += 1;
+    if let Some(id) = &bone.id {
+        ids.insert(name.clone(), id.clone());
+    }
     let [x, y, z] = bone.pivot;
     let [rx, ry, rz] = bone.rotation;
     Part {
@@ -380,7 +403,7 @@ fn part(bone: &Bone, count: &mut usize) -> Part {
                 vertices: q.vertices,
             })
             .collect(),
-        children: bone.children.iter().map(|c| part(c, count)).collect(),
+        children: bone.children.iter().map(|c| part(c, count, ids)).collect(),
     }
 }
 

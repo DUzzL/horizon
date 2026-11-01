@@ -1140,6 +1140,15 @@ impl Game<'_> {
         });
         self.potions.thrown = thrown;
         for (stack, at, mob, block, age, owner) in landed {
+            // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
+            // is heard at its centre, an entity at the hit.
+            let heard = if mob.is_some() {
+                [at.x, at.y, at.z]
+            } else {
+                [at.x.floor() + 0.5, at.y.floor() + 0.5, at.z.floor() + 0.5]
+            };
+            let thrower = owner.is_some().then_some(Who::Player);
+            self.projectile_event("minecraft:projectile_land", thrower, heard);
             self.splash(&stack, at, mob, block, age, owner);
         }
     }

@@ -309,7 +309,15 @@ To chat on such servers the game (`auth.rs`, `game/remote_chat.rs`, `horizon_pro
 `tools/secure_chat_client_e2e.py` checks it against vanilla 26.3's server with a mock of the services
 that issues certificates: online mode with `enforce-secure-profile=true` (signed chat logged as secure,
 a `/msg` whisper delivered, a message flushed from Chat Delay still counted as seen, nothing refused) and
-offline mode (unsigned chat, as before). Other players' signatures are not verified yet.
+offline mode (unsigned chat, as before).
+
+Chat from other players is checked as vanilla's client does (`ClientPacketListener.handlePlayerChat`,
+`game/remote.rs`, `secure_chat::MessageValidator`): a wrong global chat index disconnects, and a sender
+with no list entry or a message its validator refuses shows the red, italic `chat.validation_error`. A
+chat session the services' profile-key keys vouch for makes a keyed validator (the key not past its
+expiry plus 8 hours, the signature, the chain); anything else makes the fallback, which accepts unsigned
+messages, or none where the server enforces secure chat. The unit tests in `secure_chat.rs` cover the
+validators; the script above doesn't send another player's chat.
 
 ## Harnesses
 

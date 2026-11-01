@@ -50,6 +50,8 @@ pub struct MobData {
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
     /// The packs' custom entity models (OptiFine CEM); replaced when the resource packs change.
     pub cem: std::sync::RwLock<std::sync::Arc<super::cem::CemModels>>,
+    /// The packs' random entity textures, replaced with them too.
+    pub random_textures: std::sync::RwLock<horizon_optifine::random_textures::RandomTextures>,
     /// Biome tags (spawns_warm_variant_farm_animals, is_ocean...) by tag id.
     pub biome_tags: HashMap<String, std::collections::HashSet<String>>,
     /// Entity type tags (`data/*/tags/entity_type`).
@@ -86,6 +88,9 @@ impl MobData {
             crate::items::load_tags(root, "entity_type", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default();
         data.villager_hats = std::sync::RwLock::new(super::villager_hats::VillagerHats::load(root));
+        data.random_textures = std::sync::RwLock::new(
+            horizon_optifine::random_textures::RandomTextures::scan(root),
+        );
         data
     }
     /// Only the keyframe animation definitions of `mob-data.json`.
@@ -148,6 +153,7 @@ impl MobData {
             animations,
             villager_hats: Default::default(),
             cem: Default::default(),
+            random_textures: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),
@@ -206,6 +212,7 @@ impl MobData {
             animations: HashMap::new(),
             villager_hats: Default::default(),
             cem: Default::default(),
+            random_textures: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),

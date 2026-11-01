@@ -629,6 +629,12 @@ impl Game<'_> {
                         };
                         self.thrower_hit(t.guest, &victim, direct, damage);
                     }
+                    // Projectile.onHit: the landing is heard, at the hit.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(Who::Player),
+                        [t.position.x, t.position.y, t.position.z],
+                    );
                     self.audio.play(
                         "minecraft:item.trident.hit",
                         Some([t.position.x, t.position.y, t.position.z]),
@@ -647,9 +653,20 @@ impl Game<'_> {
                     // `AbstractArrow.onHitBlock` on a hit.
                     let from = t.position;
                     let flight = t.velocity;
-                    if let Some((stop, _)) =
+                    if let Some((stop, block)) =
                         clip_block_stop(&self.world, self.res.facts(), self.collision, from, flight)
                     {
+                        // Projectile.onHit on a block: PROJECTILE_LAND at the
+                        // block's centre.
+                        self.projectile_event(
+                            "minecraft:projectile_land",
+                            Some(Who::Player),
+                            [
+                                f64::from(block.x) + 0.5,
+                                f64::from(block.y) + 0.5,
+                                f64::from(block.z) + 0.5,
+                            ],
+                        );
                         if t.stack.enchantment_level("minecraft:channeling") > 0 {
                             self.channel_rod_hit(from, flight, t.guest);
                         }

@@ -143,6 +143,10 @@ public final class LocatorBarClient {
                     case "still" -> players.get(w[1]).still();
                     case "respawn" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
                         net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
+                    case "use-on" -> {
+                        String[] a = w[2].split(" ");
+                        players.get(w[1]).useOn(new net.minecraft.core.BlockPos(Integer.parseInt(a[0]), Integer.parseInt(a[1]), Integer.parseInt(a[2])));
+                    }
                     case "use" -> players.get(w[1]).use(Float.parseFloat(w[2]));
                     case "stab" -> players.get(w[1]).stab();
                     case "arc" -> players.get(w[1]).arc(Integer.parseInt(w[2]));
@@ -231,6 +235,7 @@ public final class LocatorBarClient {
         private boolean loaded;
         /** This player's own entity id (ClientboundLoginPacket). */
         private volatile int id = -1;
+        private int vehicle = -1;
         /** The other players this one was sent, by entity id. */
         private final java.util.Set<Integer> boatIds = new java.util.HashSet<>();
         private final Map<Integer, String> seen = new java.util.HashMap<>();
@@ -310,6 +315,14 @@ public final class LocatorBarClient {
         void use(float pitch) throws Exception {
             send(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(
                 net.minecraft.world.InteractionHand.MAIN_HAND, ++sequence, position.yRot(), pitch));
+        }
+
+        /** Use the named block's top face independently of the player's last look direction. */
+        void useOn(net.minecraft.core.BlockPos pos) throws Exception {
+            send(new net.minecraft.network.protocol.game.ServerboundUseItemOnPacket(
+                net.minecraft.world.InteractionHand.MAIN_HAND,
+                new net.minecraft.world.phys.BlockHitResult(Vec3.atBottomCenterOf(pos).add(0, 1, 0),
+                    net.minecraft.core.Direction.UP, pos, false), ++sequence));
         }
 
         void stab() throws Exception {
@@ -523,6 +536,12 @@ public final class LocatorBarClient {
             if (p instanceof net.minecraft.network.protocol.game.ClientboundGameEventPacket g
                 && g.getEvent() == net.minecraft.network.protocol.game.ClientboundGameEventPacket.CHANGE_GAME_MODE) {
                 record("gamemode " + (int) g.getParam());
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundSetPassengersPacket passengers) {
+                boolean aboard = java.util.Arrays.stream(passengers.getPassengers()).anyMatch(passenger -> passenger == id);
+                if (aboard || passengers.getVehicle() == vehicle) {
+                    vehicle = aboard ? passengers.getVehicle() : -1;
+                    record("passenger " + aboard);
+                }
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket c) {
                 record("slot " + c.getContainerId() + " " + c.getSlot() + " " + item(c.getItem()));
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket i) {

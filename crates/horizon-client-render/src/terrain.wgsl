@@ -591,6 +591,11 @@ fn sky_along_ray(d: vec3<f32>) -> vec3<f32> {
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     return vec4(sky_along_ray(view_ray(in.ndc)), 1.0);
 }
+// The first-person hand's depth clear inside the world pass: `vs_sky`'s triangle lies at the
+// far plane, written over the whole depth target with no colour.
+@fragment fn fs_depth_reset(in: SkyOut) -> @location(0) vec4<f32> {
+    return vec4(0.0);
+}
 @fragment fn fs_dark_disc(in: SkyOut) -> @location(0) vec4<f32> {
     let d = view_ray(in.ndc);
     let dist = disc_distance(d, -4.0);

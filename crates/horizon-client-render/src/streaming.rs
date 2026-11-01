@@ -6,6 +6,7 @@ use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::section_mask::SectionMask;
 use crate::{
     chunk::Chunk,
+    graphics::LeafCullingMode,
     light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
@@ -204,6 +205,7 @@ struct MeshSettings {
     blend_radius: i32,
     smooth_lighting: bool,
     cutout_leaves: bool,
+    leaf_culling: LeafCullingMode,
 }
 enum Job {
     Generate(i32, i32),
@@ -438,6 +440,8 @@ pub struct Streaming {
     /// The `ao` and `cutoutLeaves` options.
     pub smooth_lighting: bool,
     pub cutout_leaves: bool,
+    /// What the mesher does with leaf faces inside a canopy (`LeafCullingMode`).
+    pub leaf_culling: LeafCullingMode,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
     light_tables: Arc<LightTables>,
     /// Applied edits by sequence, replayed onto light jobs snapshotted before them.
@@ -772,6 +776,7 @@ impl Streaming {
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
+                                        leaf_culling: settings.leaf_culling,
                                         assets: &context.assets,
                                         render: &context.render,
                                         tables: &context.tables,
@@ -853,6 +858,7 @@ impl Streaming {
             biome_blend: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            leaf_culling: LeafCullingMode::Off,
             light_tables,
             light_log: Vec::new(),
             light_edit_sequence: 0,
@@ -1712,6 +1718,7 @@ impl Streaming {
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
+                            leaf_culling: self.leaf_culling,
                         },
                     ),
                 );

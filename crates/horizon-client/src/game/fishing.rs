@@ -580,6 +580,12 @@ impl Game<'_> {
                             .map(|i| i.id)
                     });
                 if let Some(id) = hit {
+                    // Projectile.onHit on an entity: PROJECTILE_LAND.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(horizon_client::mobs::Who::Player),
+                        [h.position.x, h.position.y, h.position.z],
+                    );
                     h.state = State::Hooked(id);
                     h.velocity = Vec3::ZERO;
                     self.hook = Some(h);
@@ -605,6 +611,12 @@ impl Game<'_> {
                     shape.clip(h.position, to, p)
                 });
                 if let Some(hit) = hit.ok().flatten() {
+                    // Projectile.onHit on a block: PROJECTILE_LAND.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(horizon_client::mobs::Who::Player),
+                        [hit.location.x, hit.location.y, hit.location.z],
+                    );
                     h.velocity = rebound(h.velocity, hit.location, h.position);
                 }
             }

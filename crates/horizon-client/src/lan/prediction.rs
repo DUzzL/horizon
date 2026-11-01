@@ -196,6 +196,10 @@ pub struct Replay {
     /// Ticks the client's jump delay is unknown: under an excuse the replay may have jumped where the
     /// client couldn't (on a block it hadn't received), or the other way round.
     jump_unsure: u8,
+    /// The last tick played: whether the client said it sprinted, and whether its keys pushed it
+    /// forward (for [`Replay::sprints`]).
+    claimed: bool,
+    forward: bool,
     /// Ticks in a row within the tolerance, at most [`STEADY`].
     steady: u8,
     /// The velocity the client's last tick left it with, less the replay's.
@@ -230,6 +234,8 @@ impl Replay {
             used: server.item_use_speed,
             use_window: 0,
             jump_unsure: 0,
+            claimed: false,
+            forward: false,
             steady: STEADY,
             missed: Vec3::ZERO,
             meeting: None,
@@ -419,12 +425,24 @@ impl Replay {
             }
             // ClientPacketListener.handleSetEntityData: the flag alone. A sprint the tick goes on
             // with is then started again (`MotionWorld::replayed_tick`), its modifier with it, as
-            // LocalPlayer.aiStep does when the sprint key is held.
+            // LocalPlayer.aiStep does when the sprint key is held ([`Replay::sprints`]).
             Change::Sprinting(sprinting) => body.sprinting = sprinting,
             Change::Effects => body.status = server.status.clone(),
             // `sync` takes them every tick.
             Change::Abilities => {}
         }
+    }
+
+    /// Whether the client sprints in `tick`: as it said (ServerboundPlayerCommandPacket), but for a
+    /// sprint the server stopped (its flag, [`Change::Sprinting`]) that the client says goes on. That
+    /// client never said STOP: its LocalPlayer.aiStep started the sprint again, which takes the sprint
+    /// key held, or forward pressed again (a double tap). Without either it would have stopped and
+    /// said so: one that sprints on is played walking, until it holds the key or says STOP.
+    fn sprints(&mut self, tick: &ClientTick, keys: Keys) -> bool {
+        let restarted = tick.sprinting && self.claimed && !self.body.sprinting;
+        self.claimed = tick.sprinting;
+        let forward = std::mem::replace(&mut self.forward, keys.direction()[1] > 1.0e-5);
+        tick.sprinting && (!restarted || keys.sprint || !forward)
     }
 
     /// Plays `tick` again. `server` is the server's copy of the player, for what the server decides
@@ -458,6 +476,7 @@ impl Replay {
             || self.use_window > 0 && server.item_use_speed.is_none() && used.is_some();
         let said = tick.position.map(|p| Vec3::new(p[0], p[1], p[2]));
         let keys = keys(tick.input);
+        let sprinting = self.sprints(tick, keys);
         let last = self.said;
         let offset = |body: &PlayerMotion| match said {
             Some(p) => body.position.distance(p),
@@ -475,7 +494,7 @@ impl Replay {
         };
         let (offset, candidate) = if ![1, 2, 4, 8].into_iter().any(unknown) {
             // Nothing to try (most ticks): the body itself plays the tick.
-            run(&mut self.body, keys, tick.sprinting).ok()?;
+            run(&mut self.body, keys, sprinting).ok()?;
             (offset(&self.body), 0)
         } else {
             let mut best: Option<(f64, u8, Box<PlayerMotion>)> = None;
@@ -495,7 +514,7 @@ impl Replay {
                 if let Some(met) = meeting.filter(|_| candidate & 8 != 0) {
                     body.velocity = body.velocity.add_vector(met);
                 }
-                if run(&mut body, keys, tick.sprinting).is_err() {
+                if run(&mut body, keys, sprinting).is_err() {
                     continue;
                 }
                 let off = offset(&body);
@@ -704,6 +723,9 @@ mod tests {
         /// sprint `.1`: the shared flags with that sprinting bit, and the movement speed with the
         /// sprint modifier or without ([`Change::Sprinting`], [`Change::Attributes`]).
         server_sprint: Vec<(usize, bool)>,
+        /// The client ignores the sprinting flag and movement speed the server sends (a cheat that
+        /// keeps its sprint through a hit).
+        keep_sprint: bool,
         /// The first ticks the client is on its loading screen: it ends them without moving or
         /// sending a move.
         frozen: usize,
@@ -724,6 +746,7 @@ mod tests {
                 blocks: Vec::new(),
                 attributes: None,
                 server_sprint: Vec::new(),
+                keep_sprint: false,
                 frozen: 0,
                 item_use: None,
             }
@@ -832,8 +855,10 @@ mod tests {
                         sprint: Some(sprint),
                     },
                 );
-                client.sprinting = sprint;
-                client.set_sprint_modifier(sprint).unwrap();
+                if !run.keep_sprint {
+                    client.sprinting = sprint;
+                    client.set_sprint_modifier(sprint).unwrap();
+                }
             }
             record.pong(tick, tick);
             let before = client.position;
@@ -1271,6 +1296,98 @@ mod tests {
             .collect();
         assert_eq!(counted.first(), Some(&23), "{counted:?}");
         assert!(counted.len() >= 10, "{} of 18: {counted:?}", counted.len());
+    }
+
+    /// A sprint the server stopped after a hit (Player.causeExtraKnockback), which the client's own
+    /// attack on a mob doesn't: the server's flag and movement speed reach the client on tick 14.
+    /// Forward is held throughout, the sprint key for the first 10 ticks, and for the rest if `key`.
+    /// The client's own commands say what it does: with the key it starts the sprint again in its
+    /// next aiStep and says nothing (the live server's `ground, keys forward sprint` flags, where
+    /// the record took the server's player and played the rest of the sprint as a walk); without it
+    /// it stops and says STOP. `water`: the same swimming across a pool, toward its surface.
+    fn sprint_hit(key: bool, water: bool) -> Run {
+        let sprint = if key { 64 } else { 0 };
+        let mut script = vec![(1 | 64, 0.0); 10];
+        script.extend(vec![(1 | sprint, 0.0); 40]);
+        let mut blocks = Vec::new();
+        if water {
+            for x in 14..=26 {
+                for y in 5..=7 {
+                    for z in 14..=40 {
+                        blocks.push(([x, y, z], "minecraft:water"));
+                    }
+                }
+            }
+        }
+        Run {
+            script,
+            pitch: if water { -8.0 } else { 0.0 },
+            blocks,
+            server_sprint: vec![(14, false)],
+            ..Run::walk()
+        }
+    }
+
+    #[test]
+    fn a_sprint_the_server_stopped_after_a_hit_is_the_clients() {
+        for (key, water) in [(true, false), (false, false), (true, true), (false, true)] {
+            let Some(steps) = steps_in(sprint_hit(key, water), |_, _, honest| honest, None) else {
+                return;
+            };
+            for (i, s) in steps.iter().enumerate() {
+                assert!(
+                    s.played.offset <= EXACT && s.over == Over::default(),
+                    "key {key}, water {water}, tick {i}: {:?}",
+                    s.played
+                );
+            }
+            // The client sprints on after the hit only with the key.
+            let last = steps.last().unwrap().played.state;
+            assert_eq!(
+                last & Played::SPRINTING != 0,
+                key,
+                "water {water}: {last:b}"
+            );
+        }
+    }
+
+    /// A client that sprints on through the server's stop without the sprint key, which vanilla's
+    /// starts again only with it, is played walking from the tick the stop reaches it; one that
+    /// holds the key and moves a twentieth of a block a tick too far counts from there too.
+    #[test]
+    fn a_sprint_kept_without_the_key_or_sped_up_after_a_hit_counts() {
+        for water in [false, true] {
+            let kept = Run {
+                keep_sprint: true,
+                ..sprint_hit(false, water)
+            };
+            let fast = |i: usize, _, honest: Vec3| {
+                honest.add_vector(Vec3::new(0.0, 0.0, if i >= 14 { 0.05 } else { 0.0 }))
+            };
+            for (name, steps) in [
+                ("kept", steps_in(kept, |_, _, honest| honest, None)),
+                ("fast", steps_in(sprint_hit(true, water), fast, None)),
+            ] {
+                let Some(steps) = steps else {
+                    return;
+                };
+                let counted: Vec<usize> = steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.over.ticks > 0)
+                    .map(|(i, _)| i)
+                    .collect();
+                assert!(
+                    counted.first().is_some_and(|&i| (14..=16).contains(&i)),
+                    "{name}, water {water}: {counted:?}"
+                );
+                assert!(
+                    counted.len() >= 25,
+                    "{name}, water {water}: {} of 36: {counted:?}",
+                    counted.len()
+                );
+            }
+        }
     }
 
     /// An elytra: a jump while falling starts a glide, played again exactly.
