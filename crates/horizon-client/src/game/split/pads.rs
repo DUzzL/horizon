@@ -64,6 +64,19 @@ pub(super) fn claim<Id>(
 }
 
 impl Split<'_> {
+    /// Give P1 its normal controller reader again and discard pending joins and handoffs.
+    pub(super) fn stop_routing(&mut self) {
+        if self.host.pad.feed.take().is_some() {
+            self.host.pad.release_hardware();
+            self.host.split_hud = Default::default();
+            self.offers.clear();
+            self.fresh.clear();
+            self.lost.clear();
+            self.p1_pad = None;
+            self.pads = PadRouter::default();
+        }
+    }
+
     /// The pad's state for its player: nothing while the press that gave it is still held.
     fn pad_state(&mut self, pad: Option<PadId>) -> PadState {
         let Some(id) = pad else {
@@ -212,12 +225,17 @@ impl Split<'_> {
             return;
         };
         g.pad = None;
+        let Some(name) = g.name.clone() else {
+            // Still picking a profile: as if it pressed Cancel (`pick_profiles`).
+            g.game.screen = crate::game::Screen::Playing;
+            return;
+        };
         self.lost.push(Lost {
             seat: g.seat,
             id,
             uuid,
         });
-        g.game.split_hud.prompt = Some(lost_prompt(&g.name));
+        g.game.split_hud.prompt = Some(lost_prompt(&name));
     }
 
     /// Player in `seat` plays with controller `id` (back, or another): its question goes.

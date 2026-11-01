@@ -14,8 +14,8 @@ pub const WASM: &str = "mod.wasm";
 /// built for any 0.1.x SDK.
 pub const API: &str = "0.1";
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
-/// `assets/` and `data/` in the `.hmod`, with blocks, items and mob effects declared in
-/// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1.
+/// `assets/` and `data/` in the `.hmod`, with blocks, items, creative tabs, mob effects,
+/// entity types and menu types declared in `data/<id>/horizon/` (docs/mods.md). Code still links API 0.1.
 /// 0.3 is a server mod (experimental): the `horizon-server-mod` world.
 pub const APIS: [&str; 3] = [API, "0.2", SERVER_API];
 /// The line of server mods, experimental: `side = "server"`.

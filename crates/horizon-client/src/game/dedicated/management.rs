@@ -6,6 +6,7 @@
 use super::{ServerState, log};
 use crate::game::Game;
 use horizon_client::{
+    command::vanilla::DIFFICULTIES,
     server::{
         profiles,
         user_lists::{BanEntry, NameAndId, OpEntry, WhiteEntry},
@@ -48,6 +49,48 @@ impl Game<'_> {
         let entries = body["entries"].as_array().cloned().unwrap_or_default();
         let lists = state.lists.clone();
         match body["method"].as_str().unwrap_or_default() {
+            "serversettings/motd" => {
+                return json!({
+                    "value": self.lan.as_ref().map(|lan| lan.hub.lan.shared.motd()).unwrap_or_default()
+                });
+            }
+            "serversettings/motd/set" => {
+                let Some(value) = body["value"].as_str() else {
+                    return json!({ "error": "MOTD must be a string" });
+                };
+                if let Some(lan) = &self.lan {
+                    rpc(format!(
+                        "Update MOTD from '{}' to '{}'",
+                        lan.hub.lan.shared.motd(),
+                        value
+                    ));
+                    lan.hub.lan.shared.set_motd(value.to_owned());
+                }
+                // DedicatedServer.setMotd: server.properties keeps it too.
+                self.store_property("motd", value.to_owned());
+                return json!({ "value": value });
+            }
+            "serversettings/difficulty" => {
+                return json!({ "value": DIFFICULTIES[self.level.difficulty_id() as usize] });
+            }
+            "serversettings/difficulty/set" => {
+                let Some(value) = body["value"].as_str() else {
+                    return json!({ "error": "difficulty must be a string" });
+                };
+                let Some(index) = DIFFICULTIES.iter().position(|name| *name == value) else {
+                    return json!({ "error": format!("unknown difficulty {value:?}") });
+                };
+                rpc(format!(
+                    "Update difficulty from '{}' to '{}'",
+                    DIFFICULTIES[self.level.difficulty_id() as usize],
+                    value
+                ));
+                // DedicatedServer.setDifficulty stores the property and then forces the world
+                // difficulty, including hardcore's always-hard rule and the player broadcast.
+                self.store_property("difficulty", value.to_owned());
+                self.set_difficulty_forced(if self.level.hardcore { 3 } else { index as u8 });
+                return json!({ "value": DIFFICULTIES[self.level.difficulty_id() as usize] });
+            }
             "allowlist/add" => {
                 for user in entries.iter().filter_map(|e| self.management_user(e)) {
                     rpc(format!("Add player '{}' to allowlist", shown(&user)));

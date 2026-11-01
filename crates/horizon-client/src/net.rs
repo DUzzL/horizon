@@ -46,6 +46,8 @@ pub enum Event {
     QuietCommands,
     /// The server carries mod messages (`horizon_protocol::mod_net`).
     ModNet,
+    /// The server samples far terrain for this client (`lod_net`).
+    FarTerrain(crate::lod_net::Offer),
     /// Configuration finished: the play state begins with these registries.
     Joined {
         registries: Arc<Dynamic>,
@@ -108,6 +110,8 @@ pub struct Session {
     pub cookies: Cookies,
     /// HORIZON_NET_DEBUG=1 logs every packet sent from the game thread.
     debug: bool,
+    /// The far terrain requests waiting for the server (`lod_net`).
+    far: Arc<crate::lod_net::Inbox>,
 }
 impl Session {
     /// Start connecting in the background, as `auth`'s account when there is one.
@@ -201,6 +205,8 @@ impl Session {
         let (thread_writer, thread_counters, thread_cookies) =
             (writer.clone(), counters.clone(), cookies.clone());
         let thread_configuring = configuring.clone();
+        let far = Arc::new(crate::lod_net::Inbox::default());
+        let thread_far = far.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
@@ -217,10 +223,12 @@ impl Session {
                     &thread_configuring,
                     &thread_counters,
                     &thread_cookies,
+                    &thread_far,
                     transferred,
                     &resources,
                     lan,
                 );
+                thread_far.cancel();
                 let from_server = result.is_ok();
                 let why = result.unwrap_or_else(|e| e);
                 if let Some(w) = thread_writer.lock().unwrap().take() {
@@ -244,6 +252,7 @@ impl Session {
             counters,
             cookies,
             debug,
+            far,
         }
     }
     /// Everything received since the last poll.
@@ -276,6 +285,36 @@ impl Session {
         {
             w.shutdown();
         }
+    }
+    /// Far terrain the server samples, as it offered (`Event::FarTerrain`):
+    /// biomes named by this client's indices, block states below `states`.
+    pub fn far_terrain(
+        &self,
+        offer: crate::lod_net::Offer,
+        biomes: HashMap<String, u16>,
+        states: u32,
+    ) -> Arc<crate::lod_net::RemoteSource> {
+        crate::lod_net::RemoteSource::new(self.far.clone(), offer, biomes, states)
+    }
+    /// The far terrain requests its samplers queued go to the server, from
+    /// the game thread, among its other packets.
+    pub fn send_far_terrain(&self) {
+        for data in self.far.requests() {
+            self.send(play::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: crate::lod_net::CHANNEL.into(),
+                data,
+            }));
+        }
+    }
+    /// The far terrain made with [`Self::far_terrain`] ends: its samplers
+    /// stop waiting for the server.
+    pub fn cancel_far_terrain(&self) {
+        self.far.cancel();
+    }
+    /// The connection is configured again (a proxy's next server): requests
+    /// the old server held never come back, so their slots are freed.
+    pub fn reset_far_terrain(&self) {
+        self.far.reset();
     }
     /// ServerboundResourcePackPacket, in whichever phase the connection is.
     pub fn send_pack_status(&self, id: u128, action: i32) {
@@ -536,6 +575,7 @@ fn run(
     configuring: &AtomicBool,
     shared_counters: &Mutex<Option<Arc<Counters>>>,
     cookies: &Cookies,
+    far: &crate::lod_net::Inbox,
     transferred: bool,
     resources: &Path,
     lan: bool,
@@ -708,6 +748,7 @@ fn run(
         lang,
         send,
         cookies,
+        far,
         resources,
     )
 }
@@ -719,6 +760,7 @@ fn receive_play(
     lang: &Language,
     send: &Sender<Event>,
     cookies: &Cookies,
+    far: &crate::lod_net::Inbox,
     resources: &Path,
 ) -> Result<Reason, Reason> {
     loop {
@@ -796,6 +838,10 @@ fn receive_play(
             play::Clientbound::Disconnect(d) => return Ok(Reason::tag(&d.reason, lang)),
             play::Clientbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 receive_brand(&p, send);
+            }
+            // A far tile, straight to the sampler waiting for it.
+            play::Clientbound::CustomPayload(p) if p.channel == crate::lod_net::CHANNEL => {
+                far.deliver(p.data);
             }
             other => {
                 if send.send(Event::Packet(Box::new(other))).is_err() {
@@ -915,6 +961,10 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
         let _ = send.send(Event::QuietCommands);
     } else if payload.channel == horizon_protocol::mod_net::CHANNEL {
         let _ = send.send(Event::ModNet);
+    } else if payload.channel == crate::lod_net::CHANNEL
+        && let Some(offer) = crate::lod_net::Offer::decode(&payload.data)
+    {
+        let _ = send.send(Event::FarTerrain(offer));
     }
 }
 
@@ -1207,6 +1257,7 @@ mod tests {
                 &disconnect_language(),
                 &send,
                 &Cookies::default(),
+                &crate::lod_net::Inbox::default(),
                 Path::new("."),
             ));
         });
@@ -1326,6 +1377,7 @@ mod tests {
                 counters: Arc::new(Mutex::new(None)),
                 cookies: Cookies::default(),
                 debug: false,
+                far: Arc::default(),
             };
             let started = std::time::Instant::now();
             if explicit_disconnect {
@@ -1373,6 +1425,7 @@ mod tests {
                 &Language::new(),
                 &send,
                 &Cookies::default(),
+                &crate::lod_net::Inbox::default(),
                 Path::new("."),
             )
         });
@@ -1425,6 +1478,7 @@ mod tests {
             counters: Arc::new(Mutex::new(None)),
             cookies: Cookies::default(),
             debug: false,
+            far: Arc::default(),
         };
         let (thread_writer, thread_configuring) =
             (session.writer.clone(), session.configuring.clone());
@@ -1436,6 +1490,7 @@ mod tests {
                 &Language::new(),
                 &send,
                 &Cookies::default(),
+                &crate::lod_net::Inbox::default(),
                 Path::new("."),
             )
         });
@@ -1483,6 +1538,7 @@ mod tests {
                 &Language::new(),
                 &send,
                 &thread_cookies,
+                &crate::lod_net::Inbox::default(),
                 Path::new("."),
             )
         });

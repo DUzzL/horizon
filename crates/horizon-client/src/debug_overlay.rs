@@ -86,15 +86,17 @@ impl Displayer {
 /// Horizon's own lines: the shader pack's GPU time, then its costliest passes (`passes`: each
 /// pass's median milliseconds, in the order they run).
 pub fn shader_pass_lines(passes: &[(String, f32)]) -> Vec<String> {
+    labelled_pass_lines("Shader pack GPU", passes)
+}
+
+/// `label` and the passes' total, then the costliest passes by GPU time.
+pub fn labelled_pass_lines(label: &str, passes: &[(String, f32)]) -> Vec<String> {
     const SHOWN: usize = 8;
     if passes.is_empty() {
         return Vec::new();
     }
     let total: f32 = passes.iter().map(|p| p.1).sum();
-    let mut lines = vec![format!(
-        "Shader pack GPU: {total:.2} ms in {} passes",
-        passes.len()
-    )];
+    let mut lines = vec![format!("{label}: {total:.2} ms in {} passes", passes.len())];
     let mut costliest: Vec<&(String, f32)> = passes.iter().collect();
     costliest.sort_by(|a, b| b.1.total_cmp(&a.1));
     lines.extend(

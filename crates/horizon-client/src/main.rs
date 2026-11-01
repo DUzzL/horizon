@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 mod game;
 
-use horizon_client::{crash, logging};
+use horizon_client::{crash, logging, ram_limit};
 
 #[global_allocator]
 static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
@@ -35,13 +35,26 @@ fn main() {
             .unwrap_or_else(|| ".".into());
         (folder, "server", "Server thread")
     } else {
+        // --player-dir too (a game's, not a server's): a player of a shared game folder keeps
+        // its log and crash reports in its own; crash telemetry stays with the home's consent.
+        if let Some(dir) = game_args
+            .clone()
+            .skip_while(|a| *a != "--player-dir")
+            .nth(1)
+        {
+            logging::set_player_dir(std::path::absolute(dir).unwrap_or_else(|_| dir.into()));
+        }
         (logging::game_home(), "client", "Render thread")
     };
     if !help {
-        logging::init(&home, thread);
+        logging::init(
+            logging::player_dir_override().unwrap_or(home.as_path()),
+            thread,
+        );
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
+        ram_limit::start(&home, side);
     }
     raise_open_file_limit();
     if let Err(error) = game::run() {

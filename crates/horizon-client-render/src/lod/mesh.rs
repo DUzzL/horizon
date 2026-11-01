@@ -160,7 +160,14 @@ impl Mesher {
                 for slot in &mut faces {
                     let Some(face) = matching.next() else { break };
                     *slot = Some(Style {
-                        layer: face.layer as u16 | if leaves { OPAQUE_LAYER } else { 0 },
+                        // As the mesher marks them: opaque leaves and faces over opaque
+                        // texels skip the cutout and draw in the opaque pass.
+                        layer: face.layer as u16
+                            | if leaves || face.opaque {
+                                OPAQUE_LAYER
+                            } else {
+                                0
+                            },
                         tint: if face.quad.tint_index >= 0 {
                             tint
                         } else {

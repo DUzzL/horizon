@@ -9,6 +9,7 @@ use super::{Game, lan::LanHost, lan_mobs::guest_bounds, mace::Spared, ray_box};
 
 use horizon_client::{
     Result,
+    health::HurtSource,
     mobs::Who,
     projectiles::{Hit, Projectile, ProjectileKind},
     text::Text,
@@ -68,6 +69,15 @@ pub(super) struct Strike {
     /// message's `.item` form.
     item: Option<horizon_client::text::Text>,
 }
+
+/// A player's blow on another player as the native hooks name it: the hit's
+/// own push and its damage name no attacker yet, so the extra and the sweep's
+/// pushes don't either.
+const PVP_SOURCE: HurtSource<'static> = HurtSource {
+    damage_type: "minecraft:player_attack",
+    causing: 0,
+    direct: 0,
+};
 
 /// A sweep attack's reach to the other players (`Player.doSweepAttack`),
 /// worked out as the attacker.
@@ -297,7 +307,7 @@ impl Game<'_> {
         result.unwrap_or(Ok(()))
     }
 
-    fn player_attacker(&self, host: &LanHost, conn: Option<u32>) -> Option<(u32, Text)> {
+    pub(super) fn player_attacker(&self, host: &LanHost, conn: Option<u32>) -> Option<(u32, Text)> {
         match conn {
             Some(conn) => {
                 let g = host.hub.guest(conn)?;
@@ -355,7 +365,7 @@ impl Game<'_> {
             g.combat.player_attacker = None;
             let (strength, xd, zd) = s.knockback;
             if hurt && strength > 0.0 {
-                g.knock_back_player(f64::from(strength), xd, zd);
+                g.knock_back_player(f64::from(strength), xd, zd, PVP_SOURCE);
             }
             // The victim's thorns, dealt to the attacker below.
             let thorns = if hurt { g.thorns_damage() } else { Vec::new() };
@@ -552,7 +562,7 @@ impl Game<'_> {
                 g.note_named_attacker("minecraft:player_attack", *id, name.clone());
             }
             if g.mob_hits_player(sweep.damage, sweep.from, "minecraft:player_attack") {
-                g.knock_back_player(0.4, xd, zd);
+                g.knock_back_player(0.4, xd, zd, PVP_SOURCE);
             }
         };
         for (victim, id, team) in victims {

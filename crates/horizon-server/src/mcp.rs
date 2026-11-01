@@ -10,7 +10,19 @@ use std::{
     path::Path,
 };
 
-const PROTOCOL: &str = "2025-06-18";
+/// Revisions this server implements. Older ones are not claimed: only the revision actually
+/// implemented is advertised (no JSON-RPC batches, no other capability than `tools`).
+const SUPPORTED: &[&str] = &["2025-06-18"];
+
+/// MCP lifecycle: answer with the client's version if supported, otherwise one we support.
+fn negotiate_version(params: &Value) -> &'static str {
+    let wanted = params.get("protocolVersion").and_then(Value::as_str);
+    SUPPORTED
+        .iter()
+        .copied()
+        .find(|v| Some(*v) == wanted)
+        .unwrap_or(SUPPORTED[0])
+}
 
 /// One tool: its name, what it does, its arguments (name, JSON type, what it is, required), and whether it
 /// destroys or sends someone away.
@@ -388,7 +400,7 @@ fn call(dir: &Path, name: &str, args: &Value) -> (Value, bool) {
 fn handle(dir: &Path, method: &str, params: &Value) -> Result<Value, (i64, String)> {
     match method {
         "initialize" => Ok(json!({
-            "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL),
+            "protocolVersion": negotiate_version(params),
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "horizon-server", "version": crate::VERSION },
             "instructions": "Run and moderate a Horizon (Minecraft Java Edition 26.3) server. Start with status and players. Moderation tools (kick, ban, pardon, ban_ip, op, whitelist...) run vanilla's console commands and answer `changed` and the console's lines; events and logs read what happened since a number they return. Destructive tools that can't be undone need confirm: true.",
@@ -447,7 +459,17 @@ pub fn serve(dir: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    #[test]
+    fn version_negotiation() {
+        let v = |p: Value| negotiate_version(&p);
+        assert_eq!(v(json!({ "protocolVersion": "2025-06-18" })), "2025-06-18");
+        assert_eq!(v(json!({ "protocolVersion": "2026-07-28" })), "2025-06-18");
+        assert_eq!(v(json!({ "protocolVersion": "1999-01-01" })), "2025-06-18");
+        assert_eq!(v(json!({ "protocolVersion": 7 })), "2025-06-18");
+        assert_eq!(v(json!({})), "2025-06-18");
+    }
 
     #[test]
     fn every_tool_has_a_schema_and_a_call() {
@@ -504,10 +526,10 @@ mod tests {
         let init = handle(
             &dir,
             "initialize",
-            &json!({ "protocolVersion": "2025-03-26" }),
+            &json!({ "protocolVersion": "2025-06-18" }),
         )
         .unwrap();
-        assert_eq!(init["protocolVersion"], "2025-03-26");
+        assert_eq!(init["protocolVersion"], "2025-06-18");
         assert!(
             handle(&dir, "tools/list", &json!({})).unwrap()["tools"]
                 .as_array()

@@ -530,7 +530,9 @@ impl StationRecipes {
                 None => sources.push((id.to_owned(), v)),
             }
         }
-        sources.retain(|(_, v)| conditions_hold(v));
+        // The data's recipe filters, over the final set.
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        sources.retain_mut(|(id, v)| conditions_hold(v) && filters.apply(id, v));
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
         for (id, v) in sources {

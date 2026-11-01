@@ -14,6 +14,11 @@ pub struct NativePack {
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
     pub post: Option<NativePost>,
+    /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
+    pub vanilla_clouds: bool,
+    pub vanilla_sun: bool,
+    pub vanilla_stars: bool,
+    pub weather: Option<wgpu::RenderPipeline>,
     /// The draw of the shadow map the stages read, if the pack asks for one.
     pub shadow: Option<NativeShadow>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
@@ -27,20 +32,33 @@ impl NativePack {
     /// refused.
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         terrain: &TerrainShape<'_>,
         report: Report,
         constants: &[(String, f64)],
+        lights: super::block_light::LightTable,
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
+        let textures = super::native_post::pack_textures(device, queue, &report);
         let settings = report
             .shadow
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
-        let mut frame = NativeFrame::new(device, settings.as_ref());
+        let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights, terrain.pbr);
         let shadow = report
             .shadow
             .as_ref()
-            .map(|_| NativeShadow::new(device, terrain, &frame))
+            .map(|s| {
+                let vertex = report.stages.iter().find(|s| s.kind == StageKind::Vertex);
+                NativeShadow::new(
+                    device,
+                    terrain,
+                    &frame,
+                    &s.solid_materials,
+                    vertex,
+                    constants,
+                )
+            })
             .transpose()?;
         // The mirror is drawn for a material that reads it, while `[reflection] option` is on.
         let option = report.reflection.as_ref().and_then(|r| r.option.as_ref());
@@ -55,6 +73,35 @@ impl NativePack {
                     .find(|(k, _)| k == id)
                     .is_none_or(|(_, v)| *v != 0.0)
             });
+        let fog = report.material_fog;
+        let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
+            report.sky.as_ref().and_then(key).unwrap_or(true)
+        };
+        let vanilla_clouds = keeps(|s| s.clouds);
+        let vanilla_sun = keeps(|s| s.sun);
+        let vanilla_stars = keeps(|s| s.stars);
+        let weather = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Weather)
+            .map(|stage| {
+                super::weather::native_pipeline(
+                    device,
+                    format,
+                    terrain.weather_groups[0],
+                    terrain.weather_groups[1],
+                    &frame,
+                    stage,
+                    constants,
+                )
+            })
+            .transpose()?;
+        let weather_label = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Weather)
+            .map(|s| s.label.clone());
+        let has_vertex = report.stages.iter().any(|s| s.kind == StageKind::Vertex);
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
@@ -67,10 +114,12 @@ impl NativePack {
         let material = others
             .iter()
             .find(|s| s.kind == StageKind::Material)
-            .map(|stage| NativeMaterial::new(device, terrain, &frame, stage, constants))
+            .map(|stage| {
+                NativeMaterial::new(device, terrain, &frame, stage, constants, fog, has_vertex)
+            })
             .transpose()?;
         let post = (!post.is_empty())
-            .then(|| NativePost::new(device, post, constants, format, &frame))
+            .then(|| NativePost::new(device, post, &report.manifest, constants, format, &frame))
             .transpose()?;
         let mut labels: Vec<String> = sky.iter().map(|s| s.label.clone()).collect();
         labels.extend(
@@ -79,6 +128,7 @@ impl NativePack {
                 .filter(|s| material.is_some() && s.kind == StageKind::Material)
                 .map(|s| s.label.clone()),
         );
+        labels.extend(weather_label);
         if let Some(post) = &post {
             labels.extend(post.labels().into_iter().map(str::to_owned));
         }
@@ -87,6 +137,10 @@ impl NativePack {
             sky,
             material,
             post,
+            vanilla_clouds,
+            vanilla_sun,
+            vanilla_stars,
+            weather,
             shadow,
             timing: None,
         };
@@ -95,6 +149,9 @@ impl NativePack {
 
     /// Whether the pack draws anything the game runs today.
     pub fn draws(&self) -> bool {
-        self.sky.is_some() || self.material.is_some() || self.post.is_some()
+        self.sky.is_some()
+            || self.material.is_some()
+            || self.weather.is_some()
+            || self.post.is_some()
     }
 }

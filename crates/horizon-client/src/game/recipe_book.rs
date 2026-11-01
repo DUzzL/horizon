@@ -369,6 +369,11 @@ impl Game<'_> {
             self.recipe_ui.client.displays(),
         )
     }
+    /// The book's model is made again from `Game::recipes` when next needed:
+    /// the server's recipes arrived, or a new session began.
+    pub(super) fn forget_book(&mut self) {
+        self.recipe_ui.book = None;
+    }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
             let mut book = Book::build(self.recipes(), self.items());

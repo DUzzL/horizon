@@ -37,7 +37,7 @@ Zoglin.updateActivity	missing		player: a zoglin that starts a fight does not pla
 Zoglin.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::ai_step	gap: minor: the brain tick is not run; the zoglin goal set runs in the general AI loop
 Zoglin.setBaby	port	crates/horizon-client/src/mobs/finalize.rs::set_baby	Zoglin arm: non-ageable baby age and 0.5 attack damage
 Zoglin.handleEntityEvent	port	crates/horizon-client/src/mobs/piglin.rs::client_event	event 4 starts the headbutt; the attack sound comes from hoglin_hurt_target
-Zoglin.getAmbientSound	missing		player: a zoglin with a target grunts its ambient sound, not the angry one (zoglin.angry)
+Zoglin.getAmbientSound	port	crates/horizon-client/src/mobs/ai.rs::play_ambient	
 Breeze.createAttributes	skip:data		attribute defaults come from the data tables (mobs.rs attr lookup)
 Breeze.makeBrain	port	crates/horizon-client/src/mobs/monster_brain.rs::init	breezes get the fight default activity
 Breeze.onSyncedDataUpdated	port	crates/horizon-client/src/mobs/breeze.rs::ai_step	client pose change restarts the matching animation
@@ -71,7 +71,7 @@ Creaking.creakingDeathEffects	port	crates/horizon-client/src/mobs/creaking_heart
 Creaking.canUsePortal	missing		minor: a heart-bound creaking can still go through a portal; game/nether_portal.rs mob_can_use_portal has no heart check
 Creaking.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	home_pos is read back as the transient home
 Creaking.checkEyeBlink	inline	crates/horizon-client/src/mobs/creaking.rs::animate	eye flicker timing on the dying creaking
-Creaking.knockback	missing		player: a creaking that a player looks at still gets shoved by hits; vanilla ignores knockback while it cannot move (Mob::knockback has no check)
+Creaking.knockback	port	crates/horizon-client/src/mobs.rs::Mob::knockback	
 Creaking.CreakingPathNavigation.createPathFinder	missing		minor: no home-distance node evaluator; paths do not block nodes more than 32 blocks from the heart
 Creaking.HomeNodeEvaluator.getPathType	missing		minor: nodes more than 32 blocks from home are not marked blocked
 CreakingAi.initCoreActivity	port	crates/horizon-client/src/mobs/monster_brain.rs::creaking_packages	core swim, look-at-target and move sink
@@ -134,7 +134,7 @@ Hoglin.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game:
 HoglinAi.initCoreActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	gap: minor: look-at-target and move-to-target sinks are not separate; the goal set stands in for them
 HoglinAi.initIdleActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	gap: player: hoglins do not walk away from adult piglins within 8 blocks; the rest of the idle is there
 HoglinAi.initFightActivity	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	MeleeAttack.create(40) for adults and create(15) for babies (`MeleeAttack::intervals(40, 15)`); the brain's own order has no tick parity here (the probe has no hoglin brain)
-HoglinAi.initRetreatActivity	missing		player: hoglins never run from piglins; the retreat activity (avoid target, 1.3 speed) does not exist here
+HoglinAi.initRetreatActivity	port	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	
 HoglinAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_hoglin	gap: minor: no look-target walk or do-nothing pauses; a plain stroll only
 HoglinAi.updateActivity	missing		player: no grunt when a hoglin switches activity (angry or retreat); only the ambient roll plays
 HoglinAi.onHitTarget	inline	crates/horizon-client/src/mobs/piglin.rs::hoglin_hurt_target	gap: player: no retreat when piglins outnumber hoglins; the hit only attacks
