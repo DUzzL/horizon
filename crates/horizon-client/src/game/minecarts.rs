@@ -1200,7 +1200,7 @@ impl Game<'_> {
             || self.ridden_by_guest(id)
             || self.mobs.iter().any(|m| m.extra.mount == Some(id));
         let teams = self.mob_teams();
-        let candidates: Vec<usize> = (0..self.mobs.len())
+        let candidates: Vec<u32> = (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
                 if m.removed || !m.pushable() || m.extra.mount == Some(id) {
@@ -1211,23 +1211,24 @@ impl Game<'_> {
                 }
                 pushable_by(None, teams.of(Who::Mob(m.id)), true)
             })
+            .map(|j| self.mobs[j].id)
             .collect();
         drop(teams);
-        for j in candidates {
-            // A mod's mount hook may have removed mobs since the list was made.
-            if j >= self.mobs.len() {
-                break;
-            }
+        for mob in candidates {
+            // By id: a mod's mount hook may have removed mobs since the list
+            // was made, which moves the others' indices.
+            let Some(j) = self.mobs.iter().position(|m| m.id == mob) else {
+                continue;
+            };
             let species = self.mobs[j].species();
             let player = &*self.mobs[j].kind.id == "minecraft:player";
             let cooldown = self.mobs[j].extra.boarding_cooldown;
             let passenger = self.mobs[j].extra.mount.is_some();
             if pickup_instead_of_push(species, passenger, occupied) && !player {
-                let mob = self.mobs[j].id;
                 // Entity.startRiding: a mod may cancel it (EntityMountEvent).
                 if can_ride_cart(species, cooldown)
                     && self.native_mob_may_ride(mob, id, true)
-                    && let Some(m) = self.mobs.get_mut(j).filter(|m| m.id == mob)
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
                 {
                     m.extra.mount = Some(id);
                     m.extra.passenger = true;
