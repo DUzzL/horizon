@@ -1997,7 +1997,9 @@ impl Game<'_> {
             dimension.has_skylight,
         )
         .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
-        let same = r.dimension.name == dimension.name && keep_world;
+        // handleRespawn keeps the ClientLevel only for the same level key:
+        // two levels sharing a dimension type are still two levels.
+        let same = keep_world && r.heard_level.as_deref() == Some(spawn.dimension.as_str());
         r.chunk_format = Arc::new(
             r.chunk_format
                 .with_dimension(&dimension)
