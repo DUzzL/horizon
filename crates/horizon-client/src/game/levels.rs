@@ -118,6 +118,9 @@ impl Default for Pass {
 #[derive(Default)]
 pub(super) struct Levels {
     parked: HashMap<Dim, Parked>,
+    /// The levels whose open the mods heard (`native_level_load`), each to
+    /// be told closed once.
+    heard_open: Vec<Dim>,
 }
 
 impl Levels {
@@ -316,6 +319,7 @@ impl Game<'_> {
             if opened {
                 // The new streaming's radius and meshing options.
                 self.apply_settings();
+                self.native_level_opened(target);
             }
         }
         let host = match host {
@@ -617,8 +621,40 @@ impl Game<'_> {
             self.save_level(true)?;
             self.enter_level(None, back)?;
             self.levels.parked.remove(&dim);
+            self.native_level_closed(dim);
         }
         Ok(())
+    }
+
+    /// The mods hear `dim`'s level open (`LevelEvent.Load`), on a server.
+    pub(super) fn native_level_opened(&mut self, dim: Dim) {
+        if self.remote.is_some()
+            || self.options.execution_role.is_client()
+            || self.levels.heard_open.contains(&dim)
+        {
+            return;
+        }
+        self.levels.heard_open.push(dim);
+        self.native_level_load(dim.id());
+    }
+
+    /// The mods hear `dim`'s level close (`LevelEvent.Unload`), once for
+    /// each open they heard.
+    fn native_level_closed(&mut self, dim: Dim) {
+        let Some(i) = self.levels.heard_open.iter().position(|d| *d == dim) else {
+            return;
+        };
+        self.levels.heard_open.remove(i);
+        self.native_level_unload(dim.id());
+    }
+
+    /// Every level still open closes with the server, however it ends
+    /// (`MinecraftServer.stopServer`'s `level.close()` loop), in vanilla's
+    /// order of its levels: the Overworld, the Nether, the End.
+    pub(super) fn native_levels_closing(&mut self) {
+        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+            self.native_level_closed(dim);
+        }
     }
 
     /// Save every parked level (`MinecraftServer.saveAllChunks`); the level
