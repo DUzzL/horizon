@@ -3224,6 +3224,9 @@ impl Game<'_> {
         let owner = owner.filter(|_| projectile);
         let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
+        // The hit's own push, held back until after the shield's (`hurtServer`
+        // runs `applyItemBlocking` before `dealDefaultKnockback`).
+        let mut default_push: Option<([f64; 2], HurtSource<'_>)> = None;
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
             && let Ok(o) = player.hurt_caused_by(
@@ -3256,12 +3259,7 @@ impl Game<'_> {
                     causing,
                     direct: 0,
                 };
-                self.knock_back_player(f64::from(0.4_f32), xd, zd, source);
-                if let Some(p) = self.player.as_mut()
-                    && let Some(r) = p.hurt_log.last_mut()
-                {
-                    r.knockback = Some([p.velocity.x, p.velocity.y, p.velocity.z]);
-                }
+                default_push = Some(([xd, zd], source));
             }
             // The thorns hurt the entity that caused the hit, if there is one.
             let killed = self.player.as_ref().is_some_and(|p| {
@@ -3309,6 +3307,16 @@ impl Game<'_> {
                 direct: 0,
             };
             self.after_block(outcome, (attacker, projectile), source);
+        }
+        // `LivingEntity.dealDefaultKnockback`: after the item's block push, so
+        // a half-blocked hit pushes the defender back the way vanilla does.
+        if let Some(([xd, zd], source)) = default_push {
+            self.knock_back_player(f64::from(0.4_f32), xd, zd, source);
+            if let Some(p) = self.player.as_mut()
+                && let Some(r) = p.hurt_log.last_mut()
+            {
+                r.knockback = Some([p.velocity.x, p.velocity.y, p.velocity.z]);
+            }
         }
         outcome.hurt
     }
