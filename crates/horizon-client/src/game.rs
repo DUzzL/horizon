@@ -7413,6 +7413,9 @@ impl Game<'_> {
             });
             let before = self.dropped_ids();
             horizon_client::spans::time("tick_items", || self.tick_items());
+            if self.remote.is_none() {
+                self.hoppers_catch_items();
+            }
             // Merged, burnt, despawned or picked up.
             self.native_items_left_since(&before);
             horizon_client::spans::time("touch_arrows", || self.touch_arrows());
