@@ -1646,6 +1646,36 @@ pub fn render_posed(
     let base = base_transform_at(m, alpha, origin);
     render_visible(m, alpha, base, atlas, light, data, &[], true, out);
 }
+/// Every texture [`render_visible`] may look up for `m` now: the body's and each layer's, a
+/// custom model's own texture in their place, and the warden's glowing layers (whether they
+/// glow this frame or not). Random textures choose a variant for each.
+pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
+    let cem = data
+        .cem
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let custom = |key: &str, texture: String| {
+        cem.layer(key)
+            .and_then(|c| c.texture.clone())
+            .unwrap_or(texture)
+    };
+    let (model_key, texture) = body(m);
+    let body_key = if model_key == "main" {
+        "player#main"
+    } else {
+        model_key.as_str()
+    };
+    let mut names = vec![custom(body_key, texture)];
+    for layer in layers(m, m.age as f32) {
+        names.push(custom(&layer.model, layer.texture));
+    }
+    if m.species() == Species::Warden {
+        for (model, texture, _) in super::warden::emissive_layers(m, 0.0) {
+            names.push(custom(model, texture.to_owned()));
+        }
+    }
+    names
+}
 #[allow(clippy::too_many_arguments)]
 fn render_visible(
     m: &Mob,
@@ -2948,5 +2978,101 @@ mod scroll_tests {
                 layer("sheep#wool", "entity/sheep/sheep_wool")
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod random_texture_tests {
+    use super::*;
+    use crate::mobs::{Polygon, Species};
+    use horizon_optifine::random_textures::RandomTextures;
+    use std::sync::{Arc, RwLock};
+
+    /// A silverfish (drawn with its type's texture) whose model is one quad.
+    fn silverfish() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.species = Species::Silverfish;
+        k.texture = "entity/silverfish".into();
+        k.model = Arc::new(Part {
+            name: "root".into(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![Polygon {
+                normal: [0.0, 0.0, -1.0],
+                vertices: [
+                    [0.0, 0.0, 0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0, 1.0, 0.0],
+                    [1.0, 1.0, 0.0, 1.0, 1.0],
+                    [0.0, 1.0, 0.0, 0.0, 1.0],
+                ],
+            }],
+            children: Vec::new(),
+        });
+        Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
+    }
+
+    /// A pack whose silverfish has a second variant, every silverfish wearing it.
+    fn data() -> MobData {
+        let root =
+            std::env::temp_dir().join(format!("horizon-render-random-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("assets/minecraft/optifine/random/entity");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("silverfish.properties"), "textures.1=2").unwrap();
+        std::fs::write(dir.join("silverfish2.png"), "").unwrap();
+        let random = RandomTextures::scan(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        MobData {
+            states: Vec::new(),
+            placements: Default::default(),
+            heightmaps: Default::default(),
+            animations: Default::default(),
+            villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: RwLock::new(random),
+            biome_tags: Default::default(),
+            entity_tags: Default::default(),
+            pois: Default::default(),
+            species_placements: Default::default(),
+        }
+    }
+
+    fn uvs(m: &Mob, data: &MobData, atlas: Atlas) -> Vec<[f32; 2]> {
+        let mut out = Vec::new();
+        render_with(m, 0.0, glam::DVec3::ZERO, atlas, 0, data, &[], &mut out);
+        out.iter().map(|v| v.uv).collect()
+    }
+
+    #[test]
+    fn a_mob_draws_its_variant_and_the_texture_when_the_atlas_lacks_it() {
+        let data = data();
+        let mut m = silverfish();
+        {
+            let textures = data.random_textures.read().unwrap();
+            let seen = crate::mobs::random_textures::Seen {
+                biome: None,
+                y: 64,
+                blocks: Vec::new(),
+                moon_phase: 0,
+                day_time: 0,
+                weather: horizon_optifine::random::Weather::Clear,
+            };
+            crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen), 0);
+        }
+        let both = |name: &str| match name {
+            "entity/silverfish" => Some([0.0, 0.0, 0.5, 0.5]),
+            "minecraft:optifine/random/entity/silverfish2" => Some([0.5, 0.5, 1.0, 1.0]),
+            _ => None,
+        };
+        assert!(
+            uvs(&m, &data, &both)
+                .iter()
+                .all(|uv| uv[0] >= 0.5 && uv[1] >= 0.5)
+        );
+        let vanilla_only =
+            |name: &str| (name == "entity/silverfish").then_some([0.0, 0.0, 0.5, 0.5]);
+        let drawn = uvs(&m, &data, &vanilla_only);
+        assert_eq!(drawn.len(), 4, "still drawn");
+        assert!(drawn.iter().all(|uv| uv[0] <= 0.5 && uv[1] <= 0.5));
     }
 }
