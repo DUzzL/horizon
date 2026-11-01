@@ -1022,19 +1022,28 @@ impl<'a> Tints<'a> {
     /// The biome of block `(x, y, z)` (section-local x/z, y in 0..16), as `BiomeManager.getBiome`
     /// picks it.
     fn biome(&self, x: i32, y: i32, z: i32) -> &'a str {
-        let [cx, cz, base_y] = self.origin;
-        let q = self
-            .zoom
-            .quart_at_block(BlockPos::new(cx * 16 + x, base_y + y, cz * 16 + z));
+        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, [x, y, z]);
+        &self.biomes.get(id).name
+    }
+    /// `BiomeManager.getBiome` over the loaded chunks (plains where there is none), for block
+    /// `(x, y, z)` of the section at `origin`. Takes the fields it reads, so `get` can call it
+    /// while it holds a layer.
+    fn biome_id(
+        zoom: &BiomeZoom,
+        region: &[[Option<&Chunk>; 3]; 3],
+        plains: u16,
+        [cx, cz, base_y]: [i32; 3],
+        [x, y, z]: [i32; 3],
+    ) -> u16 {
+        let q = zoom.quart_at_block(BlockPos::new(cx * 16 + x, base_y + y, cz * 16 + z));
         let (rx, rz) = ((q[0] >> 2) - cx + 1, (q[2] >> 2) - cz + 1);
-        let id = if (0..3).contains(&rx) && (0..3).contains(&rz) {
-            self.region[rz as usize][rx as usize].map_or(self.plains, |c| {
+        if (0..3).contains(&rx) && (0..3).contains(&rz) {
+            region[rz as usize][rx as usize].map_or(plains, |c| {
                 c.biome((q[0] & 3) * 4, q[1] * 4, (q[2] & 3) * 4)
             })
         } else {
-            self.plains
-        };
-        &self.biomes.get(id).name
+            plains
+        }
     }
     /// The blended tint of block `(x, y, z)` (section-local x/z, y in 0..16).
     fn get(&mut self, resolver: Resolver, x: i32, y: i32, z: i32) -> u32 {
@@ -1051,27 +1060,21 @@ impl<'a> Tints<'a> {
         if cached != UNSET {
             return cached;
         }
-        let [cx, cz, base_y] = self.origin;
-        let (bx, by, bz) = (cx * 16, base_y + y, cz * 16);
+        let [cx, cz, _] = self.origin;
+        let (bx, bz) = (cx * 16, cz * 16);
         let (mut red, mut green, mut blue) = (0, 0, 0);
         for dz in -r..=r {
             for dx in -r..=r {
                 let cell = ((z + dz + r) as usize) * dim + (x + dx + r) as usize;
                 let mut biome = layer.zoomed[cell];
                 if biome == NO_BIOME {
-                    // BiomeManager.getBiome over the loaded chunks (plains
-                    // where there is none).
-                    let q = self
-                        .zoom
-                        .quart_at_block(BlockPos::new(bx + x + dx, by, bz + z + dz));
-                    let (rx, rz) = ((q[0] >> 2) - cx + 1, (q[2] >> 2) - cz + 1);
-                    biome = if (0..3).contains(&rx) && (0..3).contains(&rz) {
-                        self.region[rz as usize][rx as usize].map_or(self.plains, |c| {
-                            c.biome((q[0] & 3) * 4, q[1] * 4, (q[2] & 3) * 4)
-                        })
-                    } else {
-                        self.plains
-                    };
+                    biome = Self::biome_id(
+                        &self.zoom,
+                        self.region,
+                        self.plains,
+                        self.origin,
+                        [x + dx, y, z + dz],
+                    );
                     layer.zoomed[cell] = biome;
                 }
                 let c = match resolver {
@@ -1389,9 +1392,9 @@ impl Mesher<'_> {
             Pick::Keep => self.quad(out, solid_leaves, own, corners.map(|c| c.0)),
             Pick::Tile(t) => self.quad(out, solid_leaves, tile(t), corners.map(|c| c.0)),
             Pick::Quarters(tiles) => {
-                let (ss, ts) = (split(&corners, 1), split(&corners, 3));
-                for s in ss.windows(2) {
-                    for t in ts.windows(2) {
+                let cuts = cuts(&corners);
+                for s in cuts.windows(2) {
+                    for t in cuts.windows(2) {
                         let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
                             .map(|(s, t)| bilinear(&corners, s, t));
                         let quarter = quarter_of(&piece);
@@ -1445,8 +1448,9 @@ impl Mesher<'_> {
         target.extend(v);
     }
 }
-/// [`split`]'s cuts, without allocating: the first `.1` of `.0`.
-struct Cuts([f32; 3], usize);
+/// The cuts of a `ctm_compact` face, in quad parameters, without allocating: the first `.1`
+/// of `.0`.
+struct Cuts([f32; 4], usize);
 impl std::ops::Deref for Cuts {
     type Target = [f32];
     fn deref(&self) -> &[f32] {
@@ -1454,18 +1458,31 @@ impl std::ops::Deref for Cuts {
     }
 }
 /// Where a quad's edge from corner 0 to corner `to` (1 for `s`, 3 for `t`) crosses the sprite's
-/// middle line: the cuts of a `ctm_compact` face, whose quarters meet at UV 0.5. An edge that
-/// stays on one side (a slab's side) is not cut.
-fn split(c: &[(TerrainVertex, [f32; 2]); 4], to: usize) -> Cuts {
+/// middle line, the line its quarters meet on; `None` for an edge that stays on one side (a
+/// slab's side).
+fn crossing(c: &[(TerrainVertex, [f32; 2]); 4], to: usize) -> Option<f32> {
     let (a, b) = (c[0].1, c[to].1);
     // The UV the edge runs along.
     let k = usize::from((b[1] - a[1]).abs() > (b[0] - a[0]).abs());
     let at = (0.5 - a[k]) / (b[k] - a[k]);
-    if at > 0.0 && at < 1.0 {
-        Cuts([0.0, at, 1.0], 3)
-    } else {
-        Cuts([0.0, 1.0, 1.0], 2)
+    (at > 0.0 && at < 1.0).then_some(at)
+}
+/// The cuts of a `ctm_compact` face, the same along `s` and `t`: both edges' crossings. Pieces
+/// on the quad's 0-2 diagonal are then square, so their own triangles lie on the quad's and a
+/// split face shades exactly like the whole one; the others lie on one side of it.
+fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
+    let mut out = Cuts([0.0; 4], 1);
+    let (mut s, mut t) = (crossing(c, 1), crossing(c, 3));
+    if s > t {
+        std::mem::swap(&mut s, &mut t);
     }
+    for at in [s, t].into_iter().flatten().chain([1.0]) {
+        if out.0[out.1 - 1] < at {
+            out.0[out.1] = at;
+            out.1 += 1;
+        }
+    }
+    out
 }
 /// The quarter of the sprite (top-left, top-right, bottom-left, bottom-right) a piece of a
 /// quad lies in, by its UV centre (v grows downward).
@@ -1540,21 +1557,22 @@ mod quarter_tests {
             corner([1.0, 0.0, 0.0], [1.0, 1.0], 0, 0),
             corner([0.0, 0.0, 0.0], [0.0, 1.0], 0, 0),
         ];
-        assert_eq!(*split(&full, 1), [0.0, 0.5, 1.0]);
-        assert_eq!(*split(&full, 3), [0.0, 0.5, 1.0]);
-        // A dirt path's side, v from 1/16: the sprite's middle is 8/15 of the way down.
+        assert_eq!(*cuts(&full), [0.0, 0.5, 1.0]);
+        // A dirt path's side, v from 1/16: the sprite's middle is 7/15 of the way down; both
+        // directions are cut there and at the middle of u.
         let mut path = full;
         path[0].1 = [0.0, 1.0 / 16.0];
         path[1].1 = [1.0, 1.0 / 16.0];
         assert_eq!(
-            *split(&path, 3),
-            [0.0, (0.5 - 1.0 / 16.0) / (15.0 / 16.0), 1.0]
+            *cuts(&path),
+            [0.0, (0.5 - 1.0 / 16.0) / (15.0 / 16.0), 0.5, 1.0]
         );
-        // A slab's lower side (v 0.5..1) is not cut across.
+        // A slab's lower side (v 0.5..1) crosses the middle only along u.
         let mut slab = full;
         slab[0].1 = [0.0, 0.5];
         slab[1].1 = [1.0, 0.5];
-        assert_eq!(*split(&slab, 3), [0.0, 1.0]);
+        assert_eq!(crossing(&slab, 3), None);
+        assert_eq!(*cuts(&slab), [0.0, 0.5, 1.0]);
         // Quarters by UV centre: top-left, top-right, bottom-left, bottom-right.
         let piece = |s0: f32, t0: f32| {
             [
