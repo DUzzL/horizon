@@ -27,7 +27,17 @@ struct Res;
 impl Res { fn facts(&self) -> &Self { self } fn get(&self, s: BlockStateId) -> Facts { Facts { block_entity: s.0 == 1 } } }
 struct Blocks { templated: Vec<BlockStateId> }
 impl Blocks { fn has_flag(&self, s: BlockStateId, _f: u32) -> bool { self.templated.contains(&s) } }
-struct World { block_entities: std::collections::HashMap<(i32, i32, i32), BlockEntity> }
+#[derive(Default)] struct Entities(std::collections::HashMap<(i32, i32, i32), BlockEntity>);
+impl std::ops::Deref for Entities { type Target = std::collections::HashMap<(i32, i32, i32), BlockEntity>; fn deref(&self) -> &Self::Target { &self.0 } }
+// BlockEntities::mods_near has its own test in horizon-client-render; here every mod entity is near.
+impl Entities {
+    fn mods_near(&self, _x: f64, _z: f64, _r: f64) -> impl Iterator<Item = &(i32, i32, i32)> {
+        self.0.iter().filter(|(_, e)| matches!(e, BlockEntity::Mod(_))).map(|(p, _)| p)
+    }
+}
+struct DVec3 { x: f64, z: f64 }
+const VIEW_DISTANCE: f64 = 64.0;
+struct World { block_entities: Entities }
 impl World { fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { BlockStateId((x != 0) as u32) } }
 struct GameLevel { world: World }
 impl GameLevel {
@@ -51,9 +61,9 @@ impl Sim {
 }
 fn at(x: i32) -> BlockPos { BlockPos { x, y: 64, z: 0 } }
 fn level(entities: &[(i32, BlockEntity)]) -> GameLevel {
-    GameLevel { world: World { block_entities: entities.iter()
+    GameLevel { world: World { block_entities: Entities(entities.iter()
         .map(|(x, e)| ((*x, 64, 0), match e { BlockEntity::Mod(_) => BlockEntity::Mod(0), BlockEntity::Chest(_) => BlockEntity::Chest(0) }))
-        .collect() } }
+        .collect()) } }
 }
 #[test]
 fn a_mod_block_entity_on_a_template_without_one_is_removed_and_not_pushed() {
@@ -77,12 +87,12 @@ fn a_mod_block_entity_on_a_template_without_one_is_removed_and_not_pushed() {
 #[test]
 fn the_render_list_holds_mod_entities_of_templates_without_one() {
     let game = Game {
-        world: World { block_entities: [((0, 64, 0), BlockEntity::Mod(0)), ((1, 64, 0), BlockEntity::Mod(0)),
-                                        ((2, 64, 0), BlockEntity::Chest(0))].into_iter().collect() },
+        world: World { block_entities: Entities([((0, 64, 0), BlockEntity::Mod(0)), ((1, 64, 0), BlockEntity::Mod(0)),
+                                        ((2, 64, 0), BlockEntity::Chest(0))].into_iter().collect()) },
         res: Res,
     };
     // x == 0 gives state 0 (template without an entity); x != 0 state 1 (has one: the mesher lists it)
-    let mut listed = game.untemplated_mod_block_entities();
+    let mut listed = game.untemplated_mod_block_entities(DVec3 { x: 0.0, z: 0.0 });
     listed.sort();
     assert_eq!(listed, vec![([0, 64, 0], 0)]);
 }

@@ -280,15 +280,16 @@ impl KeptGeometry {
 }
 
 impl Game<'_> {
-    /// The mod block entities whose block's template has none, which the
-    /// mesher's block entity lists (made from the template) leave out: where
-    /// they are and their block's state, for `mod_block_entity_geometry`.
-    pub(super) fn untemplated_mod_block_entities(&self) -> Vec<([i32; 3], u32)> {
+    /// The mod block entities within view distance of `camera` whose block's
+    /// template has none, which the mesher's block entity lists (made from
+    /// the template) leave out: where they are and their block's state, for
+    /// `mod_block_entity_geometry`. From the per-chunk list of
+    /// `BlockEntities::mods_near`, not a scan of every block entity.
+    pub(super) fn untemplated_mod_block_entities(&self, camera: DVec3) -> Vec<([i32; 3], u32)> {
         self.world
             .block_entities
-            .iter()
-            .filter(|(_, e)| matches!(e, BlockEntity::Mod(_)))
-            .map(|(p, _)| ([p.0, p.1, p.2], self.world.block(p.0, p.1, p.2).0))
+            .mods_near(camera.x, camera.z, VIEW_DISTANCE)
+            .map(|p| ([p.0, p.1, p.2], self.world.block(p.0, p.1, p.2).0))
             .filter(|&(_, state)| !self.res.facts().get(BlockStateId(state)).block_entity)
             .collect()
     }

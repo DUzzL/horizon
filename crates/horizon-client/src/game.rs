@@ -10572,7 +10572,7 @@ impl Game<'_> {
             let mods = r
                 .visible_block_entities(self.settings.chunk_fade)
                 .filter(|(_, state)| !self.res.block_entity_render().renders(*state));
-            let untemplated = self.untemplated_mod_block_entities();
+            let untemplated = self.untemplated_mod_block_entities(camera);
             self.mod_block_entity_geometry(
                 mods.chain(untemplated.iter()),
                 camera,
