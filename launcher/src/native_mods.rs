@@ -27,6 +27,8 @@ use std::process::{Command, Stdio};
 
 mod api;
 mod crates;
+mod inject;
+mod inject_cache;
 
 const PREFIX: &str = "native-";
 /// horizon-mixins, for bundles that don't name the revision they were tested with.
@@ -846,9 +848,8 @@ pub fn version_for(
         hash.update(part.as_bytes());
         hash.update([0]);
     }
-    let mut sorted: Vec<&Bundle> = bundles.iter().collect();
-    sorted.sort_by(|a, b| a.id.cmp(&b.id));
-    for b in sorted {
+    // bundles() reads folders in path order; that is also trait dispatch order.
+    for b in bundles {
         hash.update(b.id.as_bytes());
         hash.update([0]);
         for (name, path) in bundle_files(b)? {
@@ -911,6 +912,8 @@ pub enum Step {
     Tool,
     Source(String),
     Mixins,
+    /// A previously patched source snapshot was reused.
+    CachedMixins,
     /// Which case the build is, before anything runs.
     Plan(Plan, Profile),
     /// Crates done, the total once cargo says it, and the one just started.
@@ -951,6 +954,7 @@ impl Step {
                 &[("revision", &revision[..7])],
             ),
             Self::Mixins => tr("Applying the mixins").into(),
+            Self::CachedMixins => tr("Reusing patched game source").into(),
             Self::Crates => tr("Checking the mods' crates against Horizon's Cargo.lock").into(),
             Self::Plan(plan, profile) => format!("{} ({})", plan.label(), profile.name()),
             Self::Compile {
@@ -1293,6 +1297,18 @@ fn copy_bundle(bundle: &Bundle, to: &Path) -> Result<(), String> {
     backend::copy_dir_except(&root, to, skip.as_deref()).map_err(|e| e.to_string())
 }
 
+/// Stage only manifests horizon-mixins can apply, after trait injections are prepared.
+fn stage_mixins(mods: &[Bundle], to: &Path) -> Result<(), String> {
+    if to.exists() {
+        fs::remove_dir_all(to).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    for bundle in mods.iter().filter(|b| b.mixins_content) {
+        copy_bundle(bundle, &to.join(&bundle.id))?;
+    }
+    Ok(())
+}
+
 /// Builds `folder`'s mods on the Horizon revision they pin (else `base`'s, the installed version
 /// whose game files the build reuses: a native build's own revision when it is one, [`base_for`])
 /// and points `instance` at the build, the default one included. Returns the build's version; a
@@ -1405,17 +1421,33 @@ pub fn build(
         let fresh = real.join("stage.new");
         let _ = fs::remove_dir_all(&fresh);
         if needs_mixins {
-            for bundle in &mods {
-                api::strip(bundle)?;
+            let key = inject_cache::key(&revision, &mixins, profile, &mods)?;
+            let snapshot = inject_cache::snapshot(&real, &key);
+            if snapshot.is_dir() {
+                progress(Step::CachedMixins);
+                sync(&snapshot, &fresh)?;
+            } else {
+                let injections = inject::prepare(&mods, &source)?;
+                let tool = tool(&rust, &mixins, &progress)?;
+                let mixin_input = real.join("mixins.incoming");
+                stage_mixins(&mods, &mixin_input)?;
+                progress(Step::Mixins);
+                let result = run(
+                    apply(&rust, &tool, &source, &mixin_input, &fresh),
+                    "horizon-mixins",
+                    |_| {},
+                );
+                let _ = fs::remove_dir_all(&mixin_input);
+                result.map_err(blame)?;
+                inject::stage(&fresh, &injections)?;
+                let parent = snapshot.parent().ok_or("invalid cache path")?;
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                let partial = parent.join(format!(".{key}.partial"));
+                let _ = fs::remove_dir_all(&partial);
+                sync(&fresh, &partial)?;
+                fs::rename(&partial, &snapshot).map_err(|e| e.to_string())?;
             }
-            let tool = tool(&rust, &mixins, &progress)?;
-            progress(Step::Mixins);
-            run(
-                apply(&rust, &tool, &source, &incoming, &fresh),
-                "horizon-mixins",
-                |_| {},
-            )
-            .map_err(blame)?;
+            inject_cache::touch_and_prune(&real, &key)?;
         } else {
             sync(&source, &fresh)?;
         }
@@ -1728,6 +1760,46 @@ mod tests {
         let ids: Vec<String> = bundles(&many).unwrap().into_iter().map(|b| b.id).collect();
         assert_eq!(ids, ["alpha", "beta"]);
         assert!(bundles(&many.join("notes")).is_err());
+    }
+
+    #[test]
+    fn mixin_input_excludes_trait_only_bundles_but_keeps_trait_injections() {
+        let root = dir("mixed-mixin-input");
+        let incoming = root.join("incoming");
+        for (id, injection) in [
+            ("plain", ""),
+            ("ordinary", "[[injection]]\nid = 'ordinary'\n"),
+            ("trait_injection", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\ntrait_method = 'tick'\n"),
+        ] {
+            let bundle = incoming.join(id);
+            fs::create_dir_all(bundle.join("engine")).unwrap();
+            fs::write(bundle.join("engine/Cargo.toml"), "[package]\nname = 'example'\nversion = '1.0.0'\n").unwrap();
+            fs::write(bundle.join(MANIFEST), format!("[mod]\nid = '{id}'\nversion = '1'\n[api]\npath = 'engine'\n{injection}")).unwrap();
+        }
+        let mods = bundles(&incoming).unwrap();
+        assert!(!mods[1].mixins_content);
+        assert!(mods[0].mixins_content && mods[2].mixins_content);
+        let key = inject_cache::key("rev", "mixins", Profile::Fast, &mods).unwrap();
+        let without_plain: Vec<_> = mods.iter().filter(|b| b.id != "plain").cloned().collect();
+        assert_ne!(
+            key,
+            inject_cache::key("rev", "mixins", Profile::Fast, &without_plain).unwrap()
+        );
+
+        let injections = inject::prepare(&mods, &root).unwrap();
+        assert_eq!(injections.len(), 1);
+        let input = root.join("mixins");
+        stage_mixins(&mods, &input).unwrap();
+        assert!(!input.join("plain").exists());
+        assert!(input.join("ordinary").join(MANIFEST).is_file());
+        assert!(input
+            .join("trait_injection")
+            .join("horizon-trait-injection-0.rs")
+            .is_file());
+        let manifest = fs::read_to_string(input.join("trait_injection").join(MANIFEST)).unwrap();
+        assert!(manifest.contains("horizon-trait-injection-0.rs"));
+        assert!(!manifest.contains("trait_method"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

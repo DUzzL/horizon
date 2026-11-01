@@ -100,9 +100,14 @@ fn main() {{
     )
 }
 
+/// API objects in the same order as the generated executable's mod list.
+pub(super) fn with_api(mods: &[Bundle]) -> impl Iterator<Item = &Bundle> {
+    mods.iter().filter(|m| m.api.is_some())
+}
+
 /// Add API packages and the generated executable to the fresh staged workspace.
 pub(super) fn stage(stage: &Path, mods: &[Bundle]) -> Result<bool, String> {
-    let mods: Vec<_> = mods.iter().filter(|m| m.api.is_some()).collect();
+    let mods: Vec<_> = with_api(mods).collect();
     if mods.is_empty() {
         return Ok(false);
     }

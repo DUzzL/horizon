@@ -818,7 +818,9 @@ every bundle. The same set on the same commit is never built twice. A change giv
 `native/target/` stays, so a rebuild compiles only `horizon-client` and what the mods touched.
 
 **Incremental rebuilds.** With `fast`, Cargo recompiles only the changed parts of `horizon-client`, not the whole
-crate with LTO. This holds because the stage (`native/stage/`) is one folder for every build and the launcher writes
+crate with LTO. Patched source is cached separately by its mixin inputs and pins (the three most
+recent snapshots are kept), so editing only a trait crate skips the mixins pass. This holds because
+the stage (`native/stage/`) is one folder for every build and the launcher writes
 only the files whose content changed (Cargo goes by file times), switching mods on the same commit reuses the same
 `native/target/`, and the launcher removes `CARGO_INCREMENTAL` and `CARGO_BUILD_INCREMENTAL` from the build's
 environment. `release` has no incremental compilation (the release profile's own).
@@ -1325,6 +1327,28 @@ The folder contains a Rust package with a `horizon-client` dependency. Its libra
 into a generated game executable and calls `hooks()` in bundle order. The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+A bundle with an `[api]` package may declare its own HEAD injection in the trait:
+
+```toml
+[[injection]]
+id = "before-tick"
+target = "horizon_client::game::example"
+kind = "HEAD"
+trait_method = "before_tick"
+bindings = [{ name = "amount", ty = "&mut i32", value = "&mut *amount" }]
+```
+
+The generated trait method is `inject_<mod_id>_<trait_method>` (hyphens in the mod id become
+underscores), with the binding names and types as its parameters. Implement it on the object
+returned by that bundle's `hooks()`; it is called only for that bundle's object. Types must be
+public and available from both the target and `horizon_client::mod_api`. Only HEAD listen is
+supported, or HEAD with `cancellable = true` for a unit-returning target: that method returns
+`Flow`, and `Flow::Cancel` returns early from the target. Do not specify `helper` on these entries.
+Other injection kinds are rejected. Trait injections can target only functions in `horizon-client`;
+ordinary mixin helpers in other crates continue to work as before. The generated helper has the same priority and ordering as an
+ordinary helper of that mod: priority descending, mod id then injection id. It is not automatically
+ordered after other mixins. Catalog hooks retain the mixin-before-trait order below.
 
 A linked trait mod implements `horizon_client::mod_api::Hooks`. Mixin injections run first.
 An injection that returns early skips trait mods. A claimed cancellation also skips trait mods.
