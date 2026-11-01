@@ -139,6 +139,7 @@ fn main() -> Result<(), Error> {
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: &[],
             assets: &context.assets,
             render: &context.render,
             tables: &context.tables,

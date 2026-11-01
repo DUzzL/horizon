@@ -137,6 +137,7 @@ fn scene(
         blend_radius,
         smooth_lighting,
         cutout_leaves,
+        translucent_layers: &[],
     };
     let section_y = int(&row["section_y"])?;
     let started = Instant::now();

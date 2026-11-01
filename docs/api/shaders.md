@@ -86,6 +86,8 @@ step = 0.05
 [[materials]]              # 1024 at most: MaterialInput.material, the first entry that matches
 id = 10                    # 1 to 65535; 0 is a sprite no entry names
 sprites = ["block/*_leaves"]   # sprite names, any number of * each
+blocks = ["oak_log", "grass_block:snowy=true"]   # optional: the sprites these blocks' models draw with, where no entry's sprites name them
+translucent = false        # optional: this id's sprites draw in the translucent pass, clear texels and all
 
 [[pages]]                  # optional: the options page's layout, the first the one it opens on
 id = "main"
@@ -196,3 +198,4 @@ stages.
 - 2026-11-01: API 0.1 (additions): `[material] fog`.
 - 2026-11-01: API 0.1 (additions): the material stage reads the resource packs' LabPBR maps (`_n`, `_s`): `block_pbr_maps`, `block_normal_map`, `block_specular_map`, their `_level` forms and `block_pbr_size`. The maps load only while a native pack is picked: without one they cost nothing, and the first pick reloads the resources once.
 - 2026-11-01: API 0.1 (additions): `[[post]] output` and `scale`, targets of a pack's own at the world's size, half or a quarter of it.
+- 2026-11-01: API 0.1 (additions): `[[materials]] blocks`, ids by block, and `translucent`, moving an id's sprites into the translucent pass. `sprites` may be left out when `blocks` is there.

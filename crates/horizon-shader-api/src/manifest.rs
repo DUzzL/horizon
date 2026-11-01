@@ -161,7 +161,16 @@ pub struct Material {
     pub id: u32,
     /// Sprite names such as `minecraft:block/oak_leaves` (the namespace defaults to
     /// `minecraft`), each with any number of `*` matching any run of characters.
+    #[serde(default)]
     pub sprites: Vec<String>,
+    /// Blocks (`oak_log`, `minecraft:stone`, `grass_block:snowy=true`): the sprites their models
+    /// draw with take the id where no entry's `sprites` names them.
+    #[serde(default)]
+    pub blocks: Vec<String>,
+    /// This id's sprites draw in the translucent pass (sorted, blended, `input.translucent`),
+    /// clear texels and all, rather than cut out with the solid terrain.
+    #[serde(default)]
+    pub translucent: bool,
 }
 
 impl Material {
@@ -563,8 +572,15 @@ impl Manifest {
             if !(1..=65535).contains(&m.id) {
                 return Err(err(format!("material id {} is not in 1..=65535", m.id)));
             }
-            if m.sprites.is_empty() || m.sprites.iter().any(String::is_empty) {
-                return Err(err(format!("material {}: needs sprites", m.id)));
+            let listed = m.sprites.iter().chain(&m.blocks);
+            if m.sprites.is_empty() && m.blocks.is_empty() || listed.clone().any(String::is_empty) {
+                return Err(err(format!("material {}: needs sprites or blocks", m.id)));
+            }
+            if let Some(block) = m.blocks.iter().find(|b| b.contains(char::is_whitespace)) {
+                return Err(err(format!(
+                    "material {}: the block {block:?} has a space in it",
+                    m.id
+                )));
             }
         }
         for id in raw.shadow.iter().flat_map(|s| &s.solid_materials) {
@@ -742,6 +758,30 @@ impl Manifest {
             .into_iter()
             .map(|(layer, entry)| (layer, self.materials[entry].id))
             .collect()
+    }
+
+    /// The `blocks` lists in `block.properties`' form, for matching them against block states.
+    /// Empty without any.
+    pub fn material_blocks(&self) -> String {
+        self.materials
+            .iter()
+            .filter(|m| !m.blocks.is_empty())
+            .map(|m| format!("block.{}={}\n", m.id, m.blocks.join(" ")))
+            .collect()
+    }
+
+    /// Which of `layers` sprite layers draw in the translucent pass, by `materials` as
+    /// `sprite_materials` gives them: empty when none does.
+    pub fn translucent_layers(&self, materials: &[(u32, u32)], layers: usize) -> Vec<bool> {
+        let mut out = vec![false; layers];
+        for (layer, id) in materials {
+            if self.materials.iter().any(|m| m.translucent && m.id == *id)
+                && let Some(l) = out.get_mut(*layer as usize)
+            {
+                *l = true;
+            }
+        }
+        if out.contains(&true) { out } else { Vec::new() }
     }
 
     /// The `[[lights]]` colour of the block `name` (`namespace:path`): the first entry with a
