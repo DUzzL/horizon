@@ -233,6 +233,32 @@ fn cit_sprites(
             !have.contains(name) && !name.starts_with("horizon/")
         })
         .collect();
+    // No more than the atlas could ever hold, by their headers, so a pack naming thousands of
+    // big textures is cut short before they are decoded, not after.
+    let atlas = u64::from(MAX_ATLAS_SIZE).pow(2);
+    let used: u64 = packed.iter().map(|i| u64::from(i.1) * u64::from(i.2)).sum();
+    let mut left = atlas.saturating_sub(used);
+    let before = ids.len();
+    let ids: Vec<String> = ids
+        .into_iter()
+        .take_while(|id| {
+            let path = crate::atlas_sources::texture_path(root, id, "textures");
+            let (w, h) = png_size(&path).unwrap_or((0, 0));
+            match left.checked_sub(u64::from(w) * u64::from(h)) {
+                Some(rest) => {
+                    left = rest;
+                    true
+                }
+                None => false,
+            }
+        })
+        .collect();
+    if ids.len() < before {
+        log::warn!(
+            "left out {} custom item textures: more than the atlas holds",
+            before - ids.len()
+        );
+    }
     // Decoded on the threads `pack` decodes the rest on: a big pack names thousands.
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let chunk = ids.len().div_ceil(threads).max(1);
@@ -559,12 +585,6 @@ impl HudAtlas {
             random_textures: Default::default(),
         }
     }
-    /// Shelf placements of `images` (tallest first) in the narrowest atlas
-    /// width from 4096 up that keeps the atlas, glyph rows included, within
-    /// `max` texels a side; and the first row free for glyphs. High-resolution
-    /// packs fill a 4096-wide atlas past what GPUs allow (Faithful 64x needs
-    /// 32768 rows); vanilla's stitcher fails the reload when its atlases don't
-    /// fit, and the packs are then turned off (`Minecraft.clearResourcePacksOnError`).
     /// `layout`, but when `extras` (Custom Item Textures) make the images more than `max`
     /// holds, without them: they are left out, not the packs.
     fn layout_leaving_out(
@@ -575,14 +595,21 @@ impl HudAtlas {
     ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         match Self::layout(images, max) {
             Err(e) if !extras.is_empty() => {
-                log::warn!("left out the custom item textures: {e}");
                 images.retain(|i| !extras.contains(&i.0));
                 animated.retain(|n| !extras.contains(n));
-                Self::layout(images, max)
+                let layout = Self::layout(images, max)?;
+                log::warn!("left out the custom item textures: {e}");
+                Ok(layout)
             }
             layout => layout,
         }
     }
+    /// Shelf placements of `images` (tallest first) in the narrowest atlas
+    /// width from 4096 up that keeps the atlas, glyph rows included, within
+    /// `max` texels a side; and the first row free for glyphs. High-resolution
+    /// packs fill a 4096-wide atlas past what GPUs allow (Faithful 64x needs
+    /// 32768 rows); vanilla's stitcher fails the reload when its atlases don't
+    /// fit, and the packs are then turned off (`Minecraft.clearResourcePacksOnError`).
     fn layout(images: &[PackedImage], max: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         let mut width = 4096.min(max);
         loop {
