@@ -737,16 +737,19 @@ impl Game<'_> {
         } else {
             horizon_client::mobs::render::render_layers
         };
-        render(
-            &m,
-            1.0,
-            camera,
-            &lookup,
-            240 | 240 << 8,
-            self.res.mob_data(),
-            &self.player_armor_layers(),
-            &mut verts,
-        );
+        // A screen preview: custom entity model animations see is_in_gui = 1.
+        horizon_client::mobs::cem_anim::in_gui(|| {
+            render(
+                &m,
+                1.0,
+                camera,
+                &lookup,
+                240 | 240 << 8,
+                self.res.mob_data(),
+                &self.player_armor_layers(),
+                &mut verts,
+            );
+        });
         let chest = self.armor[1].as_ref().map(|s| &*s.item);
         if !self.own_invisible() {
             self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);

@@ -6115,6 +6115,10 @@ impl Game<'_> {
                 [p.position.x, p.position.y, p.position.z]
             }),
             player_rot: [self.pitch, self.yaw],
+            paused: self.pause,
+            first_person: self.camera_type.first_person(),
+            third_person_reversed: self.camera_type
+                == super::perspective::CameraType::ThirdPersonFront,
             ..Default::default()
         });
         for mob in &self.mobs {
