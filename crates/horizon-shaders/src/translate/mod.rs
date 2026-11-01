@@ -1953,4 +1953,80 @@ mod tests {
         );
         assert!(p.is_ok(), "{:?}", p.err());
     }
+
+    /// `const` parameters (`const in float x`, which naga's parser refuses) translate.
+    #[test]
+    fn const_parameters_translate() {
+        let fsh = "#version 120\nvarying vec2 texcoord;\n\
+                   float lift(const in float x) { return x * 2.0; }\n\
+                   vec2 both(const in vec2 a, const vec2 b, out float c) { c = a.x; return a + b; }\n\
+                   float twice(const in float x);\n\
+                   float twice(const in float x) { return lift(x); }\n\
+                   void main() { float c; vec2 v = both(texcoord, vec2(lift(0.5)), c); \
+                   gl_FragColor = vec4(v, twice(c), 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
+
+    /// Arrays of arrays nest as GL reads them in every spelling: naga's frontend reverses
+    /// `T x[A][B]`, `T[A][B]`, struct members and parameters, so `x[2][1]` of a `float[3][2]`
+    /// would index past the inner array.
+    #[test]
+    fn arrays_of_arrays_keep_their_order() {
+        let fsh = "#version 330\nout vec4 color;\nfloat m[3][2];\nfloat[2] n[3];\n\
+                   struct S { float a[4][2]; };\nfloat f(float x[3][2]) { return x[2][1]; }\n\
+                   void main() {\n    float k[3][2];\n    k[2][1] = 1.0;\n    m[2][1] = f(k);\n    \
+                   n[2][1] = float[3][2](float[2](1.0, 2.0), float[2](3.0, 4.0), float[2](5.0, 6.0))[2][1];\n    \
+                   S s;\n    s.a[3][1] = 2.0;\n    color = vec4(m[2][1], n[2][1], s.a[3][1], 1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap();
+        let outer = |name: &str| {
+            let (_, g) = (p.fragment.global_variables.iter())
+                .find(|(_, g)| g.name.as_deref() == Some(name))
+                .unwrap();
+            match p.fragment.types[g.ty].inner {
+                naga::TypeInner::Array { size, .. } => size,
+                ref t => panic!("{t:?}"),
+            }
+        };
+        let size = |n: u32| naga::ArraySize::Constant(std::num::NonZeroU32::new(n).unwrap());
+        assert_eq!(outer("m"), size(3));
+        assert_eq!(outer("n"), size(3));
+    }
+
+    /// A local named like the sampler parameter it reads in its own initializer (Potato's
+    /// depth-aware blur), and like a global sampler.
+    #[test]
+    fn locals_named_like_samplers_read_them_first() {
+        let fsh = "#version 330\nuniform sampler2D colortex1;\nuniform sampler2D depthtex0;\n\
+                   uniform sampler2D colortex2;\nin vec2 uv;\nout vec4 color;\n\
+                   vec3 blur(sampler2D tex, sampler2D depth, vec2 c) {\n    vec3 s = vec3(0.0);\n    \
+                   for (int i = 0; i < 2; i++) {\n        float depth = texture(depth, c).x;\n        \
+                   s += texture(tex, c).rgb * depth;\n    }\n    return s;\n}\n\
+                   void main() {\n    float colortex2 = texture(colortex2, uv).x;\n    \
+                   color = vec4(blur(colortex1, depthtex0, uv) * colortex2, 1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
+
+    /// A sampler named `texture`, called with the function of the same name (Bloop).
+    #[test]
+    fn samplers_named_like_functions_translate() {
+        let fsh = "#version 330\nuniform sampler2D texture;\nin vec2 uv;\nout vec4 color;\n\
+                   void main() {\n    color = texture(texture, uv) + texture(texture, uv, -1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
 }

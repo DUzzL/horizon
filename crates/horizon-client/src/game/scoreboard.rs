@@ -821,7 +821,7 @@ impl Game<'_> {
 }
 
 /// The host and guests that have entered the world, rebuilt from live state.
-fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlayer> {
+pub(super) fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlayer> {
     let mut players = vec![me];
     players.extend(guests.iter().filter(|g| g.placed).map(|g| {
         let mut player = TabPlayer::new(g.uuid, &g.name);

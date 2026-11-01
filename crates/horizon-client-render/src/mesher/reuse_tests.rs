@@ -81,6 +81,7 @@ fn a_shader_pack_lights_the_faces_itself() {
             blend_radius: 0,
             smooth_lighting: false,
             cutout_leaves: true,
+            leaf_culling: LeafCullingMode::Off,
         };
         let mut colours: Vec<u32> = mesher
             .mesh(&region, 0)
@@ -156,6 +157,7 @@ fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
             blend_radius: 2,
             smooth_lighting: reload == 0,
             cutout_leaves: reload == 0,
+            leaf_culling: LeafCullingMode::Off,
         };
         for (case, (center, east)) in [
             (&empty, None),
