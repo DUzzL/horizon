@@ -72,6 +72,19 @@ impl ResourceSource for Bundled {
             "assets/horizon/lang/tr_tr.json" => {
                 include_str!("../../horizon-client/assets/horizon/lang/tr_tr.json")
             }
+            "assets/horizon/lang/de_de.json" | "assets/horizon/lang/de_at.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/de_de.json")
+            }
+            // Swiss German writes "ss" for "ß", as vanilla's de_ch does.
+            "assets/horizon/lang/de_ch.json" => {
+                let de = include_str!("../../horizon-client/assets/horizon/lang/de_de.json");
+                return Some(de.replace('ß', "ss").into_bytes());
+            }
+            "assets/horizon/lang/fr_fr.json"
+            | "assets/horizon/lang/fr_ca.json"
+            | "assets/horizon/lang/fr_ch.json" => {
+                include_str!("../../horizon-client/assets/horizon/lang/fr_fr.json")
+            }
             "assets/horizon/lang/es_es.json"
             | "assets/horizon/lang/es_ar.json"
             | "assets/horizon/lang/es_cl.json"
@@ -316,6 +329,20 @@ mod tests {
         assert_eq!(tr.get("horizon.options.controller"), Some("Kontrolcü"));
         let es = Language::load(&[&empty], "es_es");
         assert_eq!(es.get("horizon.options.controller"), Some("Mando"));
+        // German and French, and their regional variants on the same file
+        // (Swiss German without "ß").
+        let de = Language::load(&[&empty], "de_de");
+        assert_eq!(de.get("horizon.osk.close"), Some("Schließen"));
+        let fr = Language::load(&[&empty], "fr_fr");
+        assert_eq!(fr.get("horizon.osk.close"), Some("Fermer"));
+        for (code, base) in [("de_at", &de), ("fr_ca", &fr), ("fr_ch", &fr)] {
+            let variant = Language::load(&[&empty], code);
+            assert_eq!(variant.map(), base.map(), "{code}");
+        }
+        let de_ch = Language::load(&[&empty], "de_ch");
+        assert_eq!(de_ch.get("horizon.osk.close"), Some("Schliessen"));
+        assert!(de_ch.map().values().all(|v| !v.contains('ß')));
+        assert_eq!(de_ch.len(), de.len());
         let es_ve = Language::load(&[&empty], "es_ve");
         assert_eq!(
             es_ve.get("horizon.options.on_screen_keyboard"),
