@@ -67,6 +67,13 @@ pub struct ConnectedTextures {
     face_layers: Vec<[u16; 6]>,
 }
 
+/// `list` appended to `lists`, as its range there.
+fn push_list(lists: &mut Vec<u16>, list: &[u16]) -> (u32, u32) {
+    let start = lists.len() as u32;
+    lists.extend_from_slice(list);
+    (start, list.len() as u32)
+}
+
 /// The sprite name of a texture resource path: `ns:path` under `textures/`, else the path
 /// itself (as [`Sprites::insert_file`] names a tile).
 fn sprite_name(resource: &str) -> String {
@@ -183,7 +190,7 @@ impl ConnectedTextures {
             }
         }
         for list in by_layer {
-            let range = out.push_list(&list);
+            let range = push_list(&mut out.lists, &list);
             out.by_layer.push(range);
         }
         let mut list = Vec::new();
@@ -214,16 +221,10 @@ impl ConnectedTextures {
                         .filter(|&&i| out.rules[usize::from(i)].rule.matches_block(name, prop)),
                 );
             }
-            let range = out.push_list(&list);
+            let range = push_list(&mut out.lists, &list);
             out.by_state.push(range);
         }
         out
-    }
-
-    fn push_list(&mut self, list: &[u16]) -> (u32, u32) {
-        let start = self.lists.len() as u32;
-        self.lists.extend_from_slice(list);
-        (start, list.len() as u32)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -525,7 +526,7 @@ mod tests {
             "glass.properties",
             "matchBlocks=glass\nmethod=ctm_compact\ntiles=0-5\nctm.1=5",
         )]);
-        let layer = |i| TileLayer::Layer {
+        let layer = |i: u16| TileLayer::Layer {
             layer: 1000 + i,
             translucent: false,
             opaque: false,

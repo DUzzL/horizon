@@ -247,7 +247,7 @@ impl RenderAssets {
                 registry,
                 &mut sprites,
                 |state, face| {
-                    let side = horizon_core::geometry::Direction::ALL[face as usize];
+                    let side = horizon_assets::model::Direction::ALL[face as usize];
                     catalog
                         .models_at(
                             state,
