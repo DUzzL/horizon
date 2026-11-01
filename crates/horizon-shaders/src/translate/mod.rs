@@ -2257,4 +2257,18 @@ mod tests {
         );
         assert!(p.is_ok(), "{:?}", p.err());
     }
+
+    /// A local in an inner block hides the uniform only to the block's end.
+    #[test]
+    fn bool_uniform_is_back_after_the_block_of_a_local() {
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   void main() {\n    c = vec4(0.0);\n    \
+                   if (gl_FragCoord.x > 0.5) { bool hideGUI = true; c.r = hideGUI ? 1.0 : 0.0; }\n    \
+                   c.a = hideGUI ? 1.0 : 0.0;\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
 }

@@ -107,7 +107,8 @@ impl Stage<'_> {
         // Sampler parameters of the function being written: name → type.
         let mut params: HashMap<String, String> = HashMap::new();
         // Names of samplers and bool uniforms a local variable or parameter of the function hides.
-        let mut hidden: Vec<(&str, usize)> = Vec::new();
+        // Each with where its scope starts and the block depth it ends with.
+        let mut hidden: Vec<(&str, usize, i32)> = Vec::new();
         let mut depth = 0;
         let mut skip_until = 0;
         // The `;` that closes a statement we rewrite, and what is written in its place.
@@ -225,6 +226,7 @@ impl Stage<'_> {
                 }
                 "}" => {
                     depth -= 1;
+                    hidden.retain(|&(_, _, d)| d <= depth);
                     if depth == 0 {
                         params.clear();
                         hidden.clear();
@@ -303,12 +305,12 @@ impl Stage<'_> {
                     continue;
                 }
                 if before.is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else")) {
-                    hidden.push((t, self.scope_start(i)));
+                    hidden.push((t, self.scope_start(i), depth.max(1)));
                     out.push_str(t);
                     continue;
                 }
             }
-            if hidden.iter().any(|&(h, from)| h == t && i >= from) {
+            if hidden.iter().any(|&(h, from, _)| h == t && i >= from) {
                 out.push_str(t);
                 continue;
             }
