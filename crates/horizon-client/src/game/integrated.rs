@@ -17,6 +17,7 @@ use super::{
     world_loading::{WorldLoader, WorldRequest},
 };
 use horizon_client::level_loading::{STATUS_RADIUS, Stage};
+use horizon_client::spans::startup;
 use horizon_client::{
     Result,
     audio::Audio,
@@ -685,9 +686,10 @@ impl Game<'_> {
         self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.
-        self.join_world_rest()?;
+        startup::time("server.wait_rest", || self.join_world_rest())?;
         self.perf.world_opening();
-        self.finish_open_world(opening.world?.finish()?)?;
+        let world = startup::time("server.world_prepare", || opening.world?.finish())?;
+        startup::time("server.finish_open_world", || self.finish_open_world(world))?;
         if let Some(sync) = opening.sync {
             sync.adopt(&self.pack_files());
         }
@@ -751,7 +753,9 @@ impl Game<'_> {
             guest_commands: false,
             force_game_mode: false,
         };
-        self.lan_host(settings, net, config, None)?;
+        startup::time("server.lan_host", || {
+            self.lan_host(settings, net, config, None)
+        })?;
         let commands = self.allow_commands();
         let pipe = {
             let host = self
@@ -781,7 +785,7 @@ impl Game<'_> {
         view.start(Stage::LoadInitialChunks, 0);
         view.finish(Stage::LoadInitialChunks);
         let _ = ready.send(Ok((pipe, self.level.name.clone())));
-        self.settle_spawn()
+        startup::time("server.settle_spawn", || self.settle_spawn())
     }
 
     /// `MinecraftServer.stopServer`: the players are saved and sent away,
@@ -1141,7 +1145,9 @@ fn serve(
         world,
         sync: preload_sync_data(&options.resources),
     };
-    let mut server = match server_game(res, pack, options, settings) {
+    let mut server = match startup::time("server.game_new", || {
+        server_game(res, pack, options, settings)
+    }) {
         Ok(server) => server,
         Err(e) => {
             // The world's session lock is let go before the failure is told.
