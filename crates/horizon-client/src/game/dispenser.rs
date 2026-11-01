@@ -1377,7 +1377,7 @@ impl Game<'_> {
             );
         } else if &*name == "minecraft:tnt" {
             if self.ui.rules.bool("tnt_explodes") {
-                self.spawn_primed_tnt(target_pos, false);
+                self.spawn_primed_tnt(target_pos, false, None, None);
                 self.with_level(|b, level, ticks| b.remove_block(level, ticks, target_pos, false));
                 self.process_level_events()?;
             } else {
@@ -1441,7 +1441,7 @@ impl Game<'_> {
         // new PrimedTnt(level, x + 0.5, y, z + 0.5, null), its sound and ENTITY_PLACE.
         let target = Self::pos_of(front);
         let rot = self.world.random.next_double() * f64::from(std::f32::consts::TAU);
-        self.add_primed_tnt(target, rot, 80);
+        self.add_primed_tnt(target, rot, 80, None, None);
         self.audio.play(
             "minecraft:entity.tnt.primed",
             Some([

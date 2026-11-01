@@ -5,7 +5,7 @@ use super::*;
 use crate::chunk::BlockState;
 use horizon_core::random::RandomSource;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -184,7 +184,7 @@ impl<'f> World<'f> {
             properties: props
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<BTreeMap<_, _>>(),
+                .collect(),
         };
         self.f
             .registry

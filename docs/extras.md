@@ -146,6 +146,20 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
+### Splitscreen (`splitscreen`, default off)
+
+**Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
+In P1's single-player world, another controller can press a button, then A to join. Each
+player picks an instance-local profile with its own options and saved progress. LB/RB on
+the profile page move the view between shared positions, a new window or another monitor.
+A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;
+Cancel keeps the current one. The switch is disabled while another player is joined; once
+P1 is alone, turning it off restores the normal controller reader. Leaving it on while
+alone keeps watching for joins without a compositor.
+
+`HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
+The Setup map and joining P1 on an external server are separate follow-ups.
+
 ## Shared rules
 
 - All extras are hidden with F1 and drawn in the HUD layer: under screens, over

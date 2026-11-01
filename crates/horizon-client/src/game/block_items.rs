@@ -152,6 +152,31 @@ impl Game<'_> {
         Some(stack)
     }
 
+    /// `ShulkerBoxBlock.playerWillDestroy`: a Creative player's filled box is
+    /// one item at the block center, with collectComponents and the default pickup delay.
+    /// This direct spawn intentionally does not use the block_drops gamerule.
+    pub(super) fn drop_creative_shulker(&mut self, pos: [i32; 3]) {
+        let key = (pos[0], pos[1], pos[2]);
+        let filled = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Chest(items))
+            if items.iter().flatten().any(|s| s.count > 0));
+        if !filled {
+            return;
+        }
+        let Some(saved) = self.saved_block_entity(key) else {
+            return;
+        };
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let mut stack = ItemStack::new(&self.res.facts().get(state).item, 1);
+        let patch = block_entity_item::collected_components(&saved);
+        (stack.damage, stack.extra) = item_data::decode_components(Some(&Tag::Compound(patch)));
+        self.spawn_item(
+            stack,
+            pos.map(|v| f64::from(v) + 0.5),
+            super::dispenser::new_item_motion(),
+            10,
+        );
+    }
+
     /// `BlockItem.updateBlockStateFromTag`: the properties of the item's
     /// `block_state` component (a hive's honey level, a statue's pose) set on
     /// the block just placed at `pos`. Returns the state it has now.
