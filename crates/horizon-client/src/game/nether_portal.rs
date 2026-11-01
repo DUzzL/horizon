@@ -108,6 +108,14 @@ fn rotate_y(v: Vec3, degrees: f32) -> Vec3 {
     );
     Vec3::new(v.x * cos + v.z * sin, v.y, v.z * cos - v.x * sin)
 }
+/// Whether a projectile is an arrow, which goes through a portal like the
+/// other entities.
+fn is_arrow(p: &horizon_client::projectiles::Projectile) -> bool {
+    matches!(
+        p.kind,
+        horizon_client::projectiles::ProjectileKind::Arrow { .. }
+    )
+}
 fn doubles(values: [f64; 3]) -> Tag {
     Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
 }
@@ -687,6 +695,11 @@ impl Game<'_> {
                     ids.push((id, self.vehicle_can_use_portal(id)));
                 }
             }
+            for p in &self.creatures.projectiles {
+                if tracked.contains_key(&p.id) && is_arrow(p) {
+                    ids.push((p.id, true));
+                }
+            }
         }
         let present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
         self.portals.entities.retain(|id, _| present.contains(id));
@@ -812,8 +825,8 @@ impl Game<'_> {
             || self.mobs.iter().any(|m| m.extra.mount == Some(id))
     }
     /// `NetherPortalBlock.entityInside` and `EndPortalBlock.entityInside`
-    /// for the items, mobs and empty boats and minecarts that moved this
-    /// tick: the portal blocks their box swept through (an End portal's
+    /// for the items, mobs, empty boats and minecarts, and arrows that moved
+    /// this tick: the portal blocks their box swept through (an End portal's
     /// transition time is 0 too).
     pub(super) fn find_entity_portals(&mut self) {
         if self.remote.is_some() {
@@ -858,6 +871,25 @@ impl Game<'_> {
             let from = self.portals.before.get(&id).copied().unwrap_or(to);
             if let Some(pos) = self.swept_portal(from, to, width, height, &mut portal_sections) {
                 inside.push((id, pos));
+            }
+        }
+        // The arrow's `previous` is where it stood at the start of its tick,
+        // which is also where an arrow shot this tick began. A stuck arrow
+        // that did not move this tick enters no block.
+        for p in self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| is_arrow(p) && (!p.stuck || p.previous != p.position))
+        {
+            let (width, height) = (
+                horizon_client::arrows::WIDTH,
+                horizon_client::arrows::HEIGHT,
+            );
+            if let Some(pos) =
+                self.swept_portal(p.previous, p.position, width, height, &mut portal_sections)
+            {
+                inside.push((p.id, pos));
             }
         }
         self.portals.sections = portal_sections;
@@ -1063,6 +1095,41 @@ impl Game<'_> {
             let uuid = self.uuid_for(id);
             let tag = self.carts[i].to_nbt(uuid, self.persist_raw(id));
             self.carts.remove(i);
+            self.forget_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self
+            .creatures
+            .projectiles
+            .iter()
+            .position(|p| p.id == id && is_arrow(p))
+        {
+            let p = &self.creatures.projectiles[i];
+            let (width, height) = (
+                horizon_client::arrows::WIDTH,
+                horizon_client::arrows::HEIGHT,
+            );
+            let plan = self.entity_plan(entry, p.position, width, height, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let p = &self.creatures.projectiles[i];
+            let in_block = p
+                .arrow
+                .as_ref()
+                .and_then(|a| a.last_state)
+                .map(|s| self.state_to_nbt(s));
+            let Some(tag) = horizon_client::entity_nbt::arrow_to_nbt(
+                p,
+                uuid,
+                p.owner_uuid,
+                in_block,
+                self.persist_raw(id),
+            ) else {
+                return;
+            };
+            self.creatures.projectiles.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
