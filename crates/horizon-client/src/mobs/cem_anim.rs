@@ -137,8 +137,10 @@ fn frame() -> Frame {
 thread_local!(static IN_GUI: Cell<bool> = const { Cell::new(false) });
 
 /// Runs `draw` as a screen's preview of an entity (the inventory's player, a mount's box):
-/// its animations see `is_in_gui = 1` and leave the entity's variables as the world's draw
-/// left them. `set_frame` must not be called inside it.
+/// its animations see `is_in_gui = 1` and store no variables, unless the world didn't draw
+/// the entity this frame or the last. Screens draw before the world in a frame, so a
+/// preview runs under the previous frame's counter and time. `set_frame` must not be
+/// called inside it.
 pub fn in_gui<R>(draw: impl FnOnce() -> R) -> R {
     /// Puts the previous value back, even if `draw` panics.
     struct Restore(bool);
@@ -197,7 +199,7 @@ struct Vars {
     /// illusioner's copies, a preview, the glowing pass) starts from them, not from the
     /// first draw's result.
     start: Box<[f32]>,
-    /// The variables the frame's first draw in the world left.
+    /// The variables the frame's storing draw left.
     now: Box<[f32]>,
     /// The shared variables (`global_var.*`) when that frame began for this entity, read by
     /// every run of the frame like `start`.
@@ -384,7 +386,8 @@ pub(super) fn compile_animation(
 
 thread_local!(static SLOTS: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) });
 
-/// Past this many entities, an animation forgets those it hasn't drawn for `STALE` frames.
+/// Past this many entities, an animation forgets those it hasn't drawn for `STALE` frames,
+/// and starts over at twice as many.
 const SAVED: usize = 4096;
 const STALE: u32 = 600;
 
@@ -425,7 +428,8 @@ impl Animation {
             let mut saved = lock(&self.saved);
             // Each run of a frame starts from the variables the frame began with; only the
             // first one in the world keeps its result, so that drawing again (or in a
-            // preview) changes nothing.
+            // preview) changes nothing. A preview of an entity the world no longer draws
+            // keeps its result too.
             let mut vars = None;
             if !self.vars.is_empty() || !self.globals.is_empty() {
                 if saved.entities.len() >= SAVED && !saved.entities.contains_key(&id) {
@@ -994,7 +998,7 @@ mod tests {
             &[
                 (
                     "global_var.cem_anim_test_redraw",
-                    "global_var.cem_anim_test_redraw + 1",
+                    "global_var.cem_anim_test_redraw + 1 + is_in_gui * 100",
                 ),
                 ("root.tx", "global_var.cem_anim_test_redraw"),
             ],
@@ -1004,10 +1008,11 @@ mod tests {
             animation.run_with(7, counter, |_| {}, &mut poses);
             poses.get("root")[0]
         };
-        // Two draws in the world and a preview in frame 1 all see 1; frame 2 counts on.
+        // Two draws in the world and a preview in frame 1 read the same start; only the first
+        // stores, so frame 2 counts on from 1, not from the preview's 101.
         assert_eq!(
             [tx(1), tx(1), in_gui(|| tx(1)), tx(2)],
-            [1.0, 1.0, 1.0, 2.0]
+            [1.0, 1.0, 101.0, 2.0]
         );
     }
 
