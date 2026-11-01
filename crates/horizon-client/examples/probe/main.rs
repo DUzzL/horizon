@@ -51,6 +51,7 @@ mod held_drop_fixture;
 mod held_item_stack_probe;
 mod hotbar_fixture;
 mod hud_fixture;
+mod inline_object_fixture;
 mod input_probe;
 mod interaction_input_fixture;
 mod lan_probe;
@@ -150,6 +151,7 @@ probes! {
     hotbar_fixture,
     hud_fixture,
     input_probe,
+    inline_object_fixture,
     interaction_input_fixture,
     lan_probe,
     light_parity,
