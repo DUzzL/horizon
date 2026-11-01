@@ -13357,6 +13357,8 @@ impl Game<'_> {
             None,
             None,
             self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            shader_packs::picked_pack_draws_flat(&self.settings),
         )?;
         renderer.screenshot = screenshot;
         renderer.screenshot_result = screenshot_result;
