@@ -370,9 +370,15 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     out.uv = uv;
     out.layer = layer;
     out.emissive_layer = 0xffffffffu;
+    // The pairs are sorted by base layer: stop at the first past this one.
+    let sprite_layer = layer & 0x7fffu;
     for (var i = 0u; i < min(globals.emissive_count.x, 128u); i++) {
-        if globals.emissive_layers[i].x == (layer & 0x7fffu) {
-            out.emissive_layer = globals.emissive_layers[i].y;
+        let pair = globals.emissive_layers[i];
+        if pair.x == sprite_layer {
+            out.emissive_layer = pair.y;
+            break;
+        }
+        if pair.x > sprite_layer {
             break;
         }
     }
@@ -462,7 +468,11 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
         }
     }
     if in.emissive_layer != 0xffffffffu {
-        let mask = sprite(in.uv, in.emissive_layer);
+        // The high bit: an OptiFine overlay, drawn cutout (opaque where alpha >= 0.1).
+        var mask = sprite(in.uv, in.emissive_layer & 0x7fffffffu);
+        if (in.emissive_layer & 0x80000000u) != 0u {
+            mask.a = select(0.0, 1.0, mask.a >= 0.1);
+        }
         return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, hdr_mark(3u, 1.0), mask.a)), in.spherical, in.cylindrical);
     }
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);

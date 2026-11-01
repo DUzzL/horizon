@@ -15108,13 +15108,10 @@ impl Game<'_> {
             let mut requests = Vec::new();
             self.native_emissive(&mut requests);
             // Native mods' overlays first, then the packs' OptiFine emissive blocks.
-            let optifine = self.pack.render.emissive.iter();
-            horizon_client::native_emissive::mappings(
+            horizon_client::native_emissive::table(
                 &self.pack.render.sprite_layers,
-                requests
-                    .into_iter()
-                    .chain(optifine.map(|(base, overlay)| (base.as_str(), overlay.as_str())))
-                    .take(horizon_client::native_emissive::MAX),
+                requests,
+                &self.pack.render.emissive,
             )
         } else {
             Vec::new()

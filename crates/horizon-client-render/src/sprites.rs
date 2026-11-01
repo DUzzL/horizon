@@ -305,6 +305,14 @@ impl Sprites {
     /// The layer of a texture, added on first use. A texture that is missing
     /// or does not load (a resource pack's filter or a broken file) becomes
     /// vanilla's missing texture, as in a stitched atlas.
+    /// [`Sprites::insert`] without the missing-texture fallback: a file that doesn't load is an
+    /// error, and nothing is added.
+    pub fn try_insert(&mut self, root: &Path, name: &str) -> Result<u32> {
+        match self.layers.get(name) {
+            Some(layer) => Ok(*layer),
+            None => self.load(root, name),
+        }
+    }
     pub fn insert(&mut self, root: &Path, name: &str) -> Result<u32> {
         if let Some(layer) = self.layers.get(name) {
             return Ok(*layer);
