@@ -198,9 +198,32 @@ pub enum HostEvent {
     },
 }
 
+/// What one player started and stopped tracking, in order, for the game to
+/// tell the mods.
+pub struct TrackingBatch {
+    pub player: u128,
+    pub name: String,
+    pub events: Vec<super::entity::TrackEvent>,
+}
+
+/// Moves a guest's tracking events into `out`, one batch.
+fn take_tracking(g: &mut Guest, out: &mut Vec<TrackingBatch>) {
+    let events = g.tracker.take_events();
+    if !events.is_empty() {
+        out.push(TrackingBatch {
+            player: g.uuid,
+            name: g.name.clone(),
+            events,
+        });
+    }
+}
+
 pub struct Hub {
     /// Clicks on and closings of native mods' menus, for the game.
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
+    /// The entities players started and stopped tracking, collected by
+    /// `collect_tracking`, for the game to tell the mods.
+    pub native_tracking: Vec<TrackingBatch>,
     pub lan: Lan,
     pub config: HubConfig,
     pub encoder: ChunkEncoder,
@@ -539,6 +562,7 @@ impl Hub {
             entity_gone: Vec::new(),
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
+            native_tracking: Vec::new(),
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
         }
@@ -1551,6 +1575,14 @@ impl Hub {
         }
     }
 
+    /// The starts and stops of tracking the guests had since the last call
+    /// are kept in `native_tracking`.
+    pub fn collect_tracking(&mut self) {
+        for g in &mut self.guests {
+            take_tracking(g, &mut self.native_tracking);
+        }
+    }
+
     fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
         if let Some(m) = g
@@ -1573,6 +1605,9 @@ impl Hub {
         if !g.placed {
             return g;
         }
+        // `PlayerList.remove`: the entities it tracked stop (`removePairing`).
+        g.tracker.clear();
+        take_tracking(&mut g, &mut self.native_tracking);
         self.broadcast(&C::PlayerInfoRemove(play::PlayerInfoRemove {
             uuids: vec![g.uuid],
         }));

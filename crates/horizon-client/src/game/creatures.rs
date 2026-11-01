@@ -2,7 +2,10 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, InteractTarget, dispenser, view_vector};
+use super::{
+    Dim, Game, InteractTarget, dispenser, native_mob_draw::NativePlayerRender,
+    native_projectiles::Impact, view_vector,
+};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -56,6 +59,9 @@ pub(super) struct NativeSound {
 #[derive(Default)]
 pub(super) struct Creatures {
     pub projectiles: Vec<Projectile>,
+    /// The entities a family tells the mods ticked, kept between ticks
+    /// (game/native_ticks.rs).
+    pub tick_buffer: Vec<(u32, super::native_ticks::TickKind)>,
     /// Wind bursts from a guest's turn, waiting for it to end (game/wind.rs).
     pub wind_bursts: Vec<super::wind::Burst>,
     /// The players a fishing hook can catch, taken as the hooks tick, and
@@ -147,7 +153,7 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
 const WIND_CHARGE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
 
 /// The index of the wind charge a `wind_charge_hitboxes` id stands for.
-fn wind_charge_hit(id: u32) -> Option<usize> {
+pub(super) fn wind_charge_hit(id: u32) -> Option<usize> {
     (WIND_CHARGE_IDS..super::dragon::SPECIAL)
         .contains(&id)
         .then(|| (id - WIND_CHARGE_IDS) as usize)
@@ -885,6 +891,20 @@ impl Game<'_> {
         // waiting any more.
         self.combat.charged_exploders.clear();
         self.combat.exploded.clear();
+        // EntityTickEvent.Pre for the mobs about to tick, before the loop holds them.
+        let mut round = self.native_tick_round();
+        if round.listening() {
+            let ticking = self.entity_ticking_area();
+            let mut i = 0;
+            while let Some(m) = self.mobs.get(i) {
+                let (x, z) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                if self.world.loaded(x, z) && ticking(x, z) {
+                    let (id, kind) = (m.id, super::native_ticks::TickKind::Mob(m.kind.clone()));
+                    self.native_tick_pre_batch(&mut round, id, kind);
+                }
+                i += 1;
+            }
+        }
         let uuid = self.level.player_uuid;
         let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
         let mut events = Vec::new();
@@ -997,6 +1017,11 @@ impl Game<'_> {
                     keep.push(kept);
                     continue;
                 }
+                // A mod canceled its tick: it stays as it is.
+                if round.canceled(m.id) {
+                    keep.push(true);
+                    continue;
+                }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
@@ -1077,6 +1102,7 @@ impl Game<'_> {
             self.mobs.append(&mut mobs);
         }
         self.died = died;
+        self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {
             let at = [at.x, at.y, at.z];
@@ -3411,24 +3437,12 @@ impl Game<'_> {
         let mut deflections: Vec<[f64; 3]> = Vec::new();
         let mut arrow_events = Vec::new();
         let mut trails = Vec::new();
+        let mut keep_flags = vec![true; projectiles.len()];
+        // The impacts the mods may cancel (`native_projectile_impact`), on a server.
+        let hear = self.native_hears_impacts();
+        let mut impacts: Vec<Impact> = Vec::new();
         {
-            let mut targets: Vec<(Who, Aabb)> = self
-                .mobs
-                .iter()
-                .filter(|m| m.alive())
-                .map(|m| (Who::Mob(m.id), m.bounds()))
-                .collect();
-            if let Some(p) = self.player_view()
-                && p.alive
-            {
-                targets.push((Who::Player, p.bounds));
-            }
-            // Dragon parts and end crystals under reserved ids (game/dragon.rs).
-            targets.extend(
-                self.special_targets()
-                    .into_iter()
-                    .map(|(id, b)| (Who::Mob(id), b)),
-            );
+            let targets = self.projectile_targets();
             let breezes: Vec<u32> = self
                 .mobs
                 .iter()
@@ -3472,7 +3486,6 @@ impl Game<'_> {
                     .map(|g| g.conn)
                     .collect()
             });
-            let mut keep_flags = vec![true; projectiles.len()];
             for i in 0..projectiles.len() {
                 // A wind charge is pickable, so a pearl, an arrow or a trident can
                 // strike it (`Projectile.isPickable`, `Projectile.onHit`).
@@ -3492,6 +3505,8 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
+                // The projectile as it was, to fly on if a mod cancels its impact.
+                let before = (hear && !p.stuck).then(|| p.clone());
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
                 // A player's arrows, snowballs and eggs meet every player; a
                 // guest's flies from that guest (Projectile.getOwner), not
@@ -3556,6 +3571,7 @@ impl Game<'_> {
                         &mut p.velocity,
                     );
                 }
+                let events_from = arrow_events.len();
                 if let Some(a) = p.arrow.as_mut() {
                     arrow_events.extend(a.events.drain(..).map(|e| (p.position, e)));
                 }
@@ -3594,6 +3610,15 @@ impl Game<'_> {
                     continue;
                 }
                 if hit != Hit::None {
+                    if let Some(before) = before {
+                        impacts.push(Impact {
+                            index: i,
+                            before,
+                            hit,
+                            hit_slot: hits.len(),
+                            events: events_from..arrow_events.len(),
+                        });
+                    }
                     hits.push((p.clone(), hit));
                 }
                 keep_flags[i] = keep;
@@ -3609,12 +3634,22 @@ impl Game<'_> {
                     super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                 }
             }
-            let mut idx = 0;
-            projectiles.retain(|_| {
-                let k = keep_flags[idx];
-                idx += 1;
-                k
-            });
+        }
+        let listed = keep_flags.clone();
+        let mut idx = 0;
+        projectiles.retain(|_| {
+            let k = keep_flags[idx];
+            idx += 1;
+            k
+        });
+        if !impacts.is_empty() {
+            self.native_settle_impacts(
+                &mut projectiles,
+                &listed,
+                impacts,
+                &mut hits,
+                &mut arrow_events,
+            );
         }
         self.smoke_trails(trails);
         for at in deflections {
@@ -3885,11 +3920,32 @@ impl Game<'_> {
         }
     }
     /// `Level.isRainingAt` for arrows.
-    fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
+    /// What a projectile can hit: the mobs, the player, the dragon's parts and
+    /// the End crystals (under reserved ids, game/dragon.rs).
+    pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
+        let mut targets: Vec<(Who, Aabb)> = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive())
+            .map(|m| (Who::Mob(m.id), m.bounds()))
+            .collect();
+        if let Some(p) = self.player_view()
+            && p.alive
+        {
+            targets.push((Who::Player, p.bounds));
+        }
+        targets.extend(
+            self.special_targets()
+                .into_iter()
+                .map(|(id, b)| (Who::Mob(id), b)),
+        );
+        targets
+    }
+    pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
         move |p: BlockPos| self.raining_at(p)
     }
     /// The level as arrows see it.
-    fn arrow_scene<'s>(
+    pub(super) fn arrow_scene<'s>(
         &'s self,
         rain: &'s dyn Fn(BlockPos) -> bool,
     ) -> horizon_client::arrows::ArrowScene<'s, 's> {
@@ -6062,6 +6118,10 @@ impl Game<'_> {
                 [p.position.x, p.position.y, p.position.z]
             }),
             player_rot: [self.pitch, self.yaw],
+            paused: self.pause,
+            first_person: self.camera_type.first_person(),
+            third_person_reversed: self.camera_type
+                == super::perspective::CameraType::ThirdPersonFront,
             ..Default::default()
         });
         for mob in &self.mobs {
@@ -6143,10 +6203,20 @@ impl Game<'_> {
             // A native mod's own model in place of the vanilla one
             // (`native_mob_submit`), before any of the vanilla model's parts
             // (a sulfur cube's swallowed block) are drawn.
-            if !is_player
-                && !layers_only
-                && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
-            {
+            // A player's own hook (`native_player_submit`) is asked for the
+            // other players in view.
+            let who = is_player
+                .then(|| self.remote_player_name(mob.id))
+                .flatten()
+                .map(|name| NativePlayerRender { name, local: false });
+            let modded = if layers_only {
+                false
+            } else if let Some(who) = who {
+                self.mod_player_geometry(mob, who, alpha as f32, camera, packed, out)
+            } else {
+                !is_player && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
+            };
+            if modded {
                 if let Some(rgb) = outline {
                     self.mark_outline(&out[entity_start..], rgb);
                     if mob.invisible {
@@ -6225,6 +6295,8 @@ impl Game<'_> {
             }
             // CustomHeadLayer (a pumpkin, skull or head item) included.
             self.mob_block_geometry(mob, camera, alpha, packed, out);
+            // `native_mob_layer`: a native mod's layer, over the vanilla ones.
+            self.mod_mob_layer_geometry(mob, who, alpha as f32, camera, packed, out);
             if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if mob.invisible {

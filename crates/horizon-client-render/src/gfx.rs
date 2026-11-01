@@ -127,6 +127,7 @@ mod occlusion;
 mod oit;
 mod oit_features;
 mod pack_atlas;
+mod pack_center_depth;
 pub mod pack_draw;
 mod pack_entities;
 mod pack_hand;
@@ -7793,6 +7794,9 @@ impl Renderer {
         }
         if let Some(timer) = &mut self.own_timing {
             timer.submitted(&self.queue);
+        }
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.submitted();
         }
         let failed = checks.and_then(GpuChecks::pop);
         if let Some((request, buffer)) = readback {
