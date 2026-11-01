@@ -864,7 +864,10 @@ impl Game<'_> {
             self.tick_village_siege();
         }
         self.tick_raids();
-        horizon_client::spans::time("tick_creature_entities", || self.tick_creature_entities())
+        let ticked =
+            horizon_client::spans::time("tick_creature_entities", || self.tick_creature_entities());
+        self.dismount_underwater_mob_riders();
+        ticked
     }
     /// `DistanceManager.inEntityTickingRange` in an entity-ticking chunk
     /// (block coordinates), from every player's tickets (`update_chunk_tickets`).
