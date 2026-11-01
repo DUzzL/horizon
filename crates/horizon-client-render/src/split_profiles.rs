@@ -139,7 +139,7 @@ impl SplitProfiles {
             return vec![
                 button(
                     120.0,
-                    tr("horizon.profiles.forget", "Forget"),
+                    tr("horizon.splitscreen.profiles.forget", "Forget"),
                     self.editable(name),
                     Target::Forget,
                 ),
@@ -159,7 +159,7 @@ impl SplitProfiles {
             return vec![
                 button(
                     top + 25.0,
-                    tr("horizon.profiles.create", "Create"),
+                    tr("horizon.splitscreen.profiles.create", "Create"),
                     ok,
                     Target::Create,
                 ),
@@ -181,7 +181,7 @@ impl SplitProfiles {
         {
             let mut label = name.clone();
             if self.current.as_ref() == Some(name) {
-                label.push_str(&tr("horizon.profiles.you", " - you"));
+                label.push_str(&tr("horizon.splitscreen.profiles.you", " - you"));
             }
             let y = 44.0 + (i % SHOWN) as f32 * 24.0;
             buttons.push((
@@ -192,7 +192,8 @@ impl SplitProfiles {
             ));
             buttons.push((
                 [x + 180.0, y, 20.0, 20.0],
-                tr("horizon.profiles.forget_named", "Forget %s").replacen("%s", name, 1),
+                tr("horizon.splitscreen.profiles.forget_named", "Forget %s")
+                    .replacen("%s", name, 1),
                 self.editable(name),
                 Target::Remove(i),
             ));
@@ -201,13 +202,13 @@ impl SplitProfiles {
         if self.names.len() > SHOWN {
             buttons.push((
                 [x, y, 98.0, 20.0],
-                tr("horizon.profiles.previous", "Previous"),
+                tr("horizon.splitscreen.profiles.previous", "Previous"),
                 self.page() > 0,
                 Target::Previous,
             ));
             buttons.push((
                 [x + 102.0, y, 98.0, 20.0],
-                tr("horizon.profiles.next", "Next"),
+                tr("horizon.splitscreen.profiles.next", "Next"),
                 (self.page() + 1) * SHOWN < self.names.len(),
                 Target::Next,
             ));
@@ -215,7 +216,7 @@ impl SplitProfiles {
         }
         buttons.push(button(
             y,
-            tr("horizon.profiles.new_button", "New Profile..."),
+            tr("horizon.splitscreen.profiles.new_button", "New Profile..."),
             true,
             Target::New,
         ));
@@ -243,13 +244,16 @@ impl SplitProfiles {
             STYLE.title(
                 batch,
                 atlas,
-                &Text::literal(tr("horizon.profiles.forget_title", "Forget profile?")),
+                &Text::literal(tr(
+                    "horizon.splitscreen.profiles.forget_title",
+                    "Forget profile?",
+                )),
             );
             line(batch, name, 52.0, u32::MAX);
             line(
                 batch,
                 &tr(
-                    "horizon.profiles.forget_leaves",
+                    "horizon.splitscreen.profiles.forget_leaves",
                     "It leaves this instance's list.",
                 ),
                 76.0,
@@ -258,7 +262,7 @@ impl SplitProfiles {
             line(
                 batch,
                 &tr(
-                    "horizon.profiles.forget_kept",
+                    "horizon.splitscreen.profiles.forget_kept",
                     "World progress and settings are kept.",
                 ),
                 90.0,
@@ -271,11 +275,11 @@ impl SplitProfiles {
             STYLE.title(
                 batch,
                 atlas,
-                &Text::literal(tr("horizon.profiles.new_title", "New Profile")),
+                &Text::literal(tr("horizon.splitscreen.profiles.new_title", "New Profile")),
             );
             let (x, top) = ((w / 2.0).floor() - 100.0, field_top(h));
             let label = tr(
-                "horizon.profiles.name_hint",
+                "horizon.splitscreen.profiles.name_hint",
                 "Name (3 to 16 letters, digits, _)",
             );
             batch.text(atlas, &label, x, top - 14.0, grey, true);
@@ -283,7 +287,10 @@ impl SplitProfiles {
             field.draw(batch, atlas, None);
         } else {
             let title = match self.current {
-                Some(_) => tr("horizon.profiles.switch_title", "Switch profile"),
+                Some(_) => tr(
+                    "horizon.splitscreen.profiles.switch_title",
+                    "Switch profile",
+                ),
                 None => tr("horizon.pages.split_profiles", "Who's playing?"),
             };
             STYLE.title(batch, atlas, &Text::literal(title));
@@ -293,7 +300,7 @@ impl SplitProfiles {
             line(
                 batch,
                 &tr(
-                    "horizon.profiles.offline_note",
+                    "horizon.splitscreen.profiles.offline_note",
                     "Offline profiles belong to this instance",
                 ),
                 y,
@@ -363,9 +370,12 @@ impl SplitProfiles {
     fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, style: GlyphStyle) {
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let words = match &self.place {
-            Some(place) => tr("horizon.profiles.move_place", "Move where you play: %s")
-                .replacen("%s", place, 1),
-            None => tr("horizon.profiles.move", "Move where you play"),
+            Some(place) => tr(
+                "horizon.splitscreen.profiles.move_place",
+                "Move where you play: %s",
+            )
+            .replacen("%s", place, 1),
+            None => tr("horizon.splitscreen.profiles.move", "Move where you play"),
         };
         let keys = [PadButton::LeftBumper, PadButton::RightBumper];
         let key_width = |b: PadButton| width(b.label(style)) + 4.0;
