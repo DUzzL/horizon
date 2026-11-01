@@ -40,7 +40,7 @@ mod entity_outline;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY,
+    DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY,
     TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
     TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, mark_oit,
 };
@@ -111,6 +111,7 @@ mod end_sky;
 mod flat;
 mod frame_gen;
 mod hdr;
+mod hdr_icc;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
@@ -126,6 +127,7 @@ mod occlusion;
 mod oit;
 mod oit_features;
 mod pack_atlas;
+mod pack_center_depth;
 pub mod pack_draw;
 mod pack_entities;
 mod pack_hand;
@@ -321,6 +323,9 @@ struct Globals {
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
     /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
     filtering: [f32; 4],
+    /// HDR output's tier windows, low to very bright: where the lift starts, where it is
+    /// full (`hdr::Hdr::windows`); zero without HDR.
+    hdr_windows: [[f32; 4]; 2],
 }
 pub type SectionKey = (i32, i32, i32);
 /// The water mirror's targets: the world as a camera mirrored about the water plane sees
@@ -4079,14 +4084,18 @@ impl Renderer {
                 .iter()
                 .take_while(|&&p| p == (page, index_page))
                 .count();
-            // Translucent draws, and only they, have sorted indices.
-            let vertices = match &self.translucent_arena {
-                Some(arena) if index_page.is_some() => arena.buffer(page),
-                _ => self.arena.buffer(page),
+            // Translucent draws, and only they, have sorted indices; split, their large
+            // pages are bound up to their last range in use (`Arena::binding`).
+            let (vertices, indices) = match (&self.translucent_arena, index_page) {
+                (Some(arena), Some(p)) => (arena.binding(page), self.sorted_indices.binding(p)),
+                (_, p) => (
+                    self.arena.buffer(page).slice(..),
+                    p.map_or(&self.indices, |p| self.sorted_indices.buffer(p))
+                        .slice(..),
+                ),
             };
-            pass.set_vertex_buffer(0, vertices.slice(..));
-            let indices = index_page.map_or(&self.indices, |p| self.sorted_indices.buffer(p));
-            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, vertices);
+            pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
             if self.multi_draw {
                 let offset = (i - base as usize) as u64 * 20;
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
@@ -5391,6 +5400,7 @@ impl Renderer {
                 0.0,
                 0.0,
             ],
+            hdr_windows: self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
@@ -7789,6 +7799,9 @@ impl Renderer {
         if let Some(timer) = &mut self.own_timing {
             timer.submitted(&self.queue);
         }
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.submitted();
+        }
         let failed = checks.and_then(GpuChecks::pop);
         if let Some((request, buffer)) = readback {
             // Out of memory on the way: the PNG would be black; taken again at half the size.
@@ -8246,19 +8259,19 @@ impl Renderer {
         Ok([width, height])
     }
     /// The HDR10 copy (`Hdr::capture`) as a 16-bit PNG tagged BT.2020 with PQ (cICP, PNG's
-    /// third edition), with the peak and paper white as its content light levels (cLLI).
+    /// third edition), with the peak and paper white as its content light levels (cLLI), and
+    /// an ICC profile for the programs that don't read cICP (`hdr_icc`).
     fn write_hdr_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<()> {
         let Some(hdr) = &self.hdr else {
             return Ok(());
         };
         let pixels = hdr10_to_rgb16(&self.read_frame(buffer)?);
-        let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(std::fs::File::create(path)?),
-            self.config.width,
-            self.config.height,
-        );
-        encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Sixteen);
+        let mut info = png::Info::with_size(self.config.width, self.config.height);
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Sixteen;
+        info.icc_profile = Some(hdr_icc::profile().into());
+        let encoder =
+            png::Encoder::with_info(std::io::BufWriter::new(std::fs::File::create(path)?), info)?;
         let mut writer = encoder.write_header()?;
         // BT.2020 primaries, PQ, RGB, full range.
         writer.write_chunk(png::chunk::cICP, &[9, 16, 0, 1])?;

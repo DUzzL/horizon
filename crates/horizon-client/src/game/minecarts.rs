@@ -1292,6 +1292,7 @@ impl Game<'_> {
         self.push_carts();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        let mut round = self.native_tick_round();
         // A server player's minecart moves with its rider (lan_vehicles.rs).
         let ridden = self.guest_vehicles();
         // By id: an exploding cart can destroy or prime others mid-loop.
@@ -1307,12 +1308,20 @@ impl Game<'_> {
             {
                 continue;
             }
+            let kind = self.carts[i].kind.id();
+            if !self.native_tick_pre_one(&mut round, id, kind) {
+                continue;
+            }
+            let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+                continue;
+            };
             let mut c = self.carts[i].clone();
             let alive = self.tick_cart(&mut c, [0.0; 2]);
             if c.kind == CartKind::Hopper && c.enabled {
                 self.hopper_cart_suck(&mut c);
             }
             let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+                self.native_tick_post_one(&round, id, kind);
                 continue;
             };
             if alive {
@@ -1327,9 +1336,14 @@ impl Game<'_> {
                 self.release_vehicle_container(id);
                 self.carts.remove(i);
             }
+            // After the ticked cart is stored: a mod reads and changes the cart as it is now.
+            self.native_tick_post_one(&round, id, kind);
         }
         // On the server for every cart, the ridden ones too.
         for id in ids {
+            if round.canceled(id) {
+                continue;
+            }
             if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                 let p = self.carts[i].position;
                 if ticking(p.x.floor() as i32, p.z.floor() as i32) {
@@ -1444,6 +1458,10 @@ impl Game<'_> {
     }
     /// `getDismountLocationForPassenger`: beside the cart (across its facing), else on top.
     pub(super) fn dismount_cart(&mut self, i: usize) {
+        let id = self.carts[i].id;
+        if self.riding == Some(id) && !self.native_may_leave(id) {
+            return;
+        }
         self.riding = None;
         let c = &self.carts[i];
         let (bx, by, bz) = (
@@ -1603,7 +1621,10 @@ impl Game<'_> {
                 if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
-                self.riding = Some(self.carts[i].id);
+                if !self.native_may_board(id) {
+                    return true;
+                }
+                self.riding = Some(id);
             }
             // AbstractMinecartContainer.interact: no sneak check.
             CartKind::Chest | CartKind::Hopper => self.open_cart_container(i),
@@ -1847,7 +1868,21 @@ impl Game<'_> {
         let Ok(models) = self.pack.render.model_catalog.collect_seeded(state, seed) else {
             return;
         };
-        for (_, model) in &models {
+        let models = models.into_iter().map(|(_, model)| model);
+        self.baked_model_vertices(models, m, light, diffuse, tint, out);
+    }
+    /// `tinted_block_model_vertices` for baked models given as they are (a
+    /// state's, or a standalone model).
+    pub(super) fn baked_model_vertices<'m>(
+        &self,
+        models: impl IntoIterator<Item = &'m horizon_client::models::catalog::BakedModel>,
+        m: glam::Mat4,
+        light: impl Fn(&horizon_assets::bake::ModelQuad) -> u32,
+        diffuse: bool,
+        tint: impl Fn(i32) -> Option<u32>,
+        out: &mut Vec<Vertex>,
+    ) {
+        for model in models {
             for face in &model.faces {
                 let Some(s) = self
                     .pack
@@ -2088,6 +2123,7 @@ impl Game<'_> {
             max_y: self.world.shape.max_y() - 1,
             world: &self.world,
             sprites: &self.gui.atlas.sprites,
+            emissive: &self.gui.atlas.emissive,
             nether: self.dim == super::Dim::Nether,
             lid: &lid,
             sign: &|_| None,

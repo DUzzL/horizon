@@ -4,6 +4,7 @@
 //!
 //! This file only lists the probes, so that adding one reruns no harness: tools/parity.py leaves it out of
 //! their dependencies. How a probe runs is in dispatch.rs.
+extern crate horizon_client_lib as horizon_client;
 #[macro_use]
 mod dispatch;
 
