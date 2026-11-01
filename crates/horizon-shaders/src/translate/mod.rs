@@ -781,12 +781,26 @@ fn constant(stage: &Stage, name: &str) -> Option<Vec<f64>> {
         return None;
     }
     let end = rest.iter().position(|&t| t == ";")?;
-    Some(
-        rest[..end]
+    let mut values: Vec<f64> = rest[..end]
+        .iter()
+        .filter_map(|t| t.trim_end_matches(['u', 'U', 'f', 'F']).parse().ok())
+        .collect();
+    if values.len() == 1 && values[0] >= 0.0 {
+        // A vector constructor with one scalar fills every component (GLSL 5.4.2).
+        // Only splat a literal; collecting a number out of an expression loses its operators.
+        let words: Vec<_> = rest[..end]
             .iter()
-            .filter_map(|t| t.trim_end_matches(['u', 'U', 'f', 'F']).parse().ok())
-            .collect(),
-    )
+            .copied()
+            .filter(|t| scan::significant(t))
+            .collect();
+        let count = match words.as_slice() {
+            ["=", "ivec2" | "uvec2" | "vec2", "(", _, ")"] => 2,
+            ["=", "ivec3" | "uvec3" | "vec3", "(", _, ")"] => 3,
+            _ => 1,
+        };
+        values.resize(count, values[0]);
+    }
+    Some(values)
 }
 
 /// A matrix or array varying (`flat mat3 @[2];`): wgpu's stage interfaces take only scalars
@@ -1168,6 +1182,73 @@ fn block_layout(module: &naga::Module) -> (u32, Vec<(String, u32)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compute_dispatch_splats_absolute_vector_constants() {
+        for (declaration, expected) in [
+            ("const ivec3 workGroups = ivec3(1);", [1, 1, 1]),
+            ("const ivec3 workGroups = ivec3(2);", [2, 2, 2]),
+            ("const ivec3 workGroups = ivec3(2, 3, 4);", [2, 3, 4]),
+        ] {
+            let source = format!(
+                "#version 430\nlayout(local_size_x=1) in;\n{declaration}\nvoid main(){{}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("dispatch.zip", zip(&[("shaders/composite.csh", &source)]))
+                    .unwrap();
+            let program =
+                translate_compute(&preprocess(&pack, "composite.csh", &Macros::standard()))
+                    .unwrap_or_else(|errors| panic!("{declaration}: {errors:?}"));
+            assert_eq!(program.work_groups, Some(expected), "{declaration}");
+            assert_eq!(program.work_groups_render, [1.0, 1.0]);
+        }
+    }
+
+    #[test]
+    fn compute_dispatch_splats_relative_vector_constants() {
+        for (declaration, expected) in [
+            ("const vec2 workGroupsRender = vec2(0.5);", [0.5, 0.5]),
+            ("const vec3 workGroupsRender = vec3(0.25);", [0.25, 0.25]),
+            (
+                "const vec2 workGroupsRender = vec2(0.25, 0.75);",
+                [0.25, 0.75],
+            ),
+            ("", [1.0, 1.0]),
+        ] {
+            let source = format!(
+                "#version 430\nlayout(local_size_x=1) in;\n{declaration}\nvoid main(){{}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("dispatch.zip", zip(&[("shaders/composite.csh", &source)]))
+                    .unwrap();
+            let program =
+                translate_compute(&preprocess(&pack, "composite.csh", &Macros::standard()))
+                    .unwrap_or_else(|errors| panic!("{declaration}: {errors:?}"));
+            assert_eq!(program.work_groups_render, expected, "{declaration}");
+            assert_eq!(program.work_groups, None);
+        }
+    }
+
+    #[test]
+    fn compute_dispatch_does_not_guess_unsupported_scalar_expressions() {
+        for declaration in [
+            "const ivec3 workGroups = ivec3(-1);",
+            "const vec2 workGroupsRender = vec2(-0.5);",
+            "const ivec3 workGroups = ivec3(int(1.0));",
+        ] {
+            let source = format!(
+                "#version 430\nlayout(local_size_x=1) in;\n{declaration}\nvoid main(){{}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("dispatch.zip", zip(&[("shaders/composite.csh", &source)]))
+                    .unwrap();
+            assert!(
+                translate_compute(&preprocess(&pack, "composite.csh", &Macros::standard()))
+                    .is_err(),
+                "{declaration}"
+            );
+        }
+    }
     use crate::pack::tests::zip;
     use crate::{Macros, Pack, preprocess};
 
@@ -1264,6 +1345,27 @@ mod tests {
                 .iter()
                 .any(|u| u.name == "projectionMatrix" && u.ty == "mat4")
         );
+    }
+
+    /// `gl_FogFragCoord` travels from the vertex stage to the fragment stage as a float (MakeUp,
+    /// E-LITE, VanillAA).
+    #[test]
+    fn fog_frag_coord_is_a_varying() {
+        let vsh = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    \
+                   texcoord = gl_MultiTexCoord0.xy;\n    gl_FogFragCoord = length((gl_ModelViewMatrix * gl_Vertex).xyz);\n}\n";
+        let fsh = "#version 120\nvarying vec2 texcoord;\n\
+                   void main() { gl_FragColor = vec4(vec3(texcoord, gl_FogFragCoord * 0.01), 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+        // Read by the fragment stage without the vertex stage writing it: still declared.
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
     }
 
     #[test]

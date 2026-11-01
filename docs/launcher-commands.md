@@ -155,7 +155,7 @@ MCP: none: the game's own session handoff.
 
 ## `horizon-launcher account sign-out`
 
-Sign out: the account's tokens leave the keychain.
+Sign out: the account's tokens leave the keychain (and the secrets file, where it kept them).
 
     horizon-launcher account sign-out <WHO>
 

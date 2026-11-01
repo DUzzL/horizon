@@ -2870,6 +2870,14 @@ impl Hub {
                         break;
                     }
                 }
+                // handleUseItem uses the player's position and known movement now:
+                // a later move must not overtake a throw before the game runs it.
+                S::UseItem(p) => {
+                    events.push(HostEvent::Packet(conn, Box::new(S::UseItem(p))));
+                    if self.move_queued(i) {
+                        break;
+                    }
+                }
                 // handleUseItemOn is the game's too, and BlockItem.canPlace checks
                 // the player's box where they clicked from (Level.isUnobstructed), as
                 // their client's prediction did. After the move behind it, a player
