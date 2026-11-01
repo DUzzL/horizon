@@ -544,6 +544,17 @@ impl HudAtlas {
             }
         }
         let assets = root.join("assets");
+        // A native mod's particle type names its textures `<ns>:particle/<path>`
+        // and needn't ship content, so every namespace's folder is packed.
+        if folders.contains(&"particle")
+            && let Ok(namespaces) = fs::read_dir(&assets)
+        {
+            for ns in namespaces.flatten() {
+                if ns.file_name() != "minecraft" {
+                    walk(&ns.path().join("textures/particle"), &mut files);
+                }
+            }
+        }
         // Content mods' GUI textures, for their screens: `<namespace>:gui/...`.
         if full && let Ok(namespaces) = fs::read_dir(&assets) {
             for ns in namespaces.flatten() {
@@ -567,6 +578,12 @@ impl HudAtlas {
                     format!("{namespace}:{rest}")
                 }
             };
+            // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
+            if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
+                && textures.join(format!("{base}.png")).is_file()
+            {
+                return None;
+            }
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
@@ -2000,9 +2017,11 @@ impl HudRenderer {
             batch,
             size,
             0..batch.vertices.len() as u32,
+            None,
         );
     }
     /// Draw part of the prepared batch, preserving its blend/depth runs.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_range(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2011,6 +2030,7 @@ impl HudRenderer {
         batch: &HudBatch,
         size: [u32; 2],
         vertices: std::ops::Range<u32>,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         if vertices.is_empty() || size.contains(&0) {
             return;
@@ -2041,6 +2061,7 @@ impl HudRenderer {
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD"),
+                timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("HUD")),
                 color_attachments: &attachments,
                 depth_stencil_attachment: clip.map(|_| wgpu::RenderPassDepthStencilAttachment {
                     view: depth,

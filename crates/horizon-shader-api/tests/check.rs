@@ -167,3 +167,46 @@ fn reads_follows_the_stage_function_through_its_calls() {
     assert!(mirror.reads("reflection_sampler"));
     assert!(!mirror.reads("opaque_color"));
 }
+
+/// A stage's `files` come before its own file, and no other stage sees them.
+#[test]
+fn a_stages_files_are_its_own() {
+    let mut pack = sample();
+    pack.files.insert(
+        "only_post.wgsl".into(),
+        b"fn only_post() -> f32 { return 1.0; }\n".to_vec(),
+    );
+    pack.manifest.post[0].files.push("only_post.wgsl".into());
+    let file = pack.manifest.post[0].file.clone();
+    let post = horizon_shader_api::compose(&pack, horizon_shader_api::StageKind::Post, &file);
+    let names: Vec<_> = post.parts.iter().map(|p| p.0.as_str()).collect();
+    let (extra, own) = (
+        names.iter().position(|n| *n == "only_post.wgsl").unwrap(),
+        names.iter().position(|n| *n == file).unwrap(),
+    );
+    assert!(extra < own, "{names:?}");
+    let material = pack.manifest.material.clone().unwrap().file;
+    let other =
+        horizon_shader_api::compose(&pack, horizon_shader_api::StageKind::Material, &material);
+    assert!(other.parts.iter().all(|p| p.0 != "only_post.wgsl"));
+    assert!(pack.manifest.files().contains(&"only_post.wgsl"));
+    check(&pack).unwrap();
+}
+
+#[test]
+fn a_material_reads_its_block_texture() {
+    let mut files = sample().files;
+    let pack = Pack::from_files(files.clone()).unwrap();
+    let file = pack.manifest.material.as_ref().unwrap().file.clone();
+    files.insert(
+        file,
+        b"override reflections: bool = true;
+fn material(input: MaterialInput) -> Surface {
+    let lod = block_texture_lod() + block_texture_size().x;
+    return Surface(block_texture(input.uv) + block_texture_level(input.uv, lod));
+}
+"
+        .to_vec(),
+    );
+    check(&Pack::from_files(files).unwrap()).unwrap();
+}

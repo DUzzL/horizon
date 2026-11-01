@@ -127,6 +127,12 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if water {
         p.velocity = p.velocity.scale(0.6);
     }
+    let (movement_x, movement_y, movement_z) = (p.velocity.x, p.velocity.y, p.velocity.z);
+    let sd = (movement_x * movement_x + movement_z * movement_z).sqrt();
+    let y_rot = horizon_core::geometry::trig::atan2_degrees(movement_x, movement_z);
+    let x_rot = horizon_core::geometry::trig::atan2_degrees(movement_y, sd);
+    p.pitch = horizon_client::arrows::lerp_rotation(p.pitch, x_rot);
+    p.yaw = horizon_client::arrows::lerp_rotation(p.yaw, y_rot);
     let to = p.position.add_vector(p.velocity);
     if let Some((at, _, _)) = w.clip(p.position, to) {
         p.position = at;
@@ -286,6 +292,8 @@ impl Game<'_> {
                 velocity,
                 fuse: 80,
                 on_ground: false,
+                owner: None,
+                guest: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
@@ -297,6 +305,7 @@ impl Game<'_> {
                 velocity,
                 age: 0,
                 no_gravity: false,
+                portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
                 stuck: Vec3::ZERO,

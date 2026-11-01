@@ -933,11 +933,7 @@ impl Hub {
             difficulty: ctx.difficulty,
             locked: ctx.difficulty_locked,
         }));
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         g.send(&C::SetHeldSlot(play::SetHeldSlot {
             slot: g.selected as i32,
         }));
@@ -2874,6 +2870,14 @@ impl Hub {
                         break;
                     }
                 }
+                // handleUseItem uses the player's position and known movement now:
+                // a later move must not overtake a throw before the game runs it.
+                S::UseItem(p) => {
+                    events.push(HostEvent::Packet(conn, Box::new(S::UseItem(p))));
+                    if self.move_queued(i) {
+                        break;
+                    }
+                }
                 // handleUseItemOn is the game's too, and BlockItem.canPlace checks
                 // the player's box where they clicked from (Level.isUnobstructed), as
                 // their client's prediction did. After the move behind it, a player
@@ -3264,11 +3268,7 @@ impl Hub {
             event: game_event::CHANGE_GAME_MODE,
             param: mode as f32,
         }));
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
             actions: 4,
             entries: vec![play::PlayerInfo {
@@ -3295,6 +3295,21 @@ impl Hub {
                 ..Default::default()
             }],
         }));
+    }
+
+    /// Set a guest's flying speed and tell it (`Abilities.setFlyingSpeed`, then
+    /// `onUpdateAbilities`). The abilities packets after carry it too, so a
+    /// respawn or a game mode change keeps it.
+    pub fn set_flying_speed(&mut self, conn: u32, speed: f32) {
+        let Some(g) = self.guest_mut(conn) else {
+            return;
+        };
+        g.flying_speed = speed;
+        // The server's copy of the body, which the movement replay reads.
+        if let Some(motion) = g.motion.as_mut() {
+            motion.flying_speed = speed;
+        }
+        g.send(&g.abilities());
     }
 
     /// The host's game mode changed (PlayerInfo UPDATE_GAME_MODE for everyone).
@@ -3394,11 +3409,7 @@ impl Hub {
         self.respawned(id);
         let g = &mut self.guests[i];
         // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         // The new player faces the level's respawn direction (snapTo).
         g.yaw = 0.0;
         g.pitch = 0.0;
@@ -3534,11 +3545,7 @@ impl Hub {
             self.resend_teleport(i, None);
         }
         let g = &mut self.guests[i];
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: 0.05,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         self.send_level_info(i, ctx, !portal);
         // PlayerList.sendAllPlayerInfo: the inventory and the held slot.
         self.send_inventory(i);

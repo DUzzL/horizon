@@ -154,6 +154,7 @@ mod lan_camera;
 mod lan_chat;
 mod lan_crafting;
 mod lan_entities;
+mod lan_far;
 mod lan_mobs;
 mod lan_mount_menu;
 mod lan_particles;
@@ -187,6 +188,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_biome_colors;
 mod native_block_entity_draw;
 mod native_components;
 mod native_criteria;
@@ -196,7 +198,9 @@ mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
+mod native_mob_draw;
 mod native_mobs;
+mod native_motion;
 mod native_net;
 mod native_panel;
 mod native_panel_recipes;
@@ -764,6 +768,9 @@ enum Screen {
     Win,
     /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
     DebugOptions,
+    /// A screen of a native mod's own (`native_mod_screen_open`): it draws and
+    /// takes its input through the screen hooks.
+    Mod,
 }
 impl Screen {
     /// The id native mods see for this screen (`NativeScreenView.id`, the
@@ -790,6 +797,7 @@ impl Screen {
             Screen::DialogWarning => "dialog_warning",
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
+            Screen::Mod => "mod",
         }
     }
 }
@@ -871,6 +879,13 @@ struct GameLevel<'w> {
     dropped: &'w [ItemEntity],
     orbs: &'w [ExperienceOrb],
     projectiles: &'w [horizon_client::projectiles::Projectile],
+    /// The tridents, firework rockets and fishing hooks here. None ignores
+    /// block triggers (`Entity.isIgnoringBlockTriggers`), so each counts on a
+    /// plate or tripwire (`getEntitiesOfClass`). The flag says whether it also
+    /// reaches `entityInside` through this list (`applyEffectsFromBlocks`):
+    /// not a rocket boosting a player or a hook on an entity, whose ticks
+    /// skip that step, nor a trident, which `tick_blocks` sweeps itself.
+    trigger_projectiles: Vec<(Aabb, bool)>,
     biomes: &'w Biomes,
     seed: i64,
     behaviours: &'w Behaviours,
@@ -1548,6 +1563,7 @@ impl LevelAccess for GameLevel<'_> {
         };
         let others = || {
             self.other_trigger_boxes()
+                .chain(self.trigger_projectiles.iter().map(|&(bounds, _)| bounds))
                 .filter(|b| area.intersects(*b))
                 .count()
         };
@@ -1648,6 +1664,8 @@ struct FallingBlock {
     age: i32,
     /// `Entity.isNoGravity`.
     no_gravity: bool,
+    /// `FallingBlockEntity.tick` handles portals after moving, before landing.
+    portal: horizon_client::nether_portal::PortalState,
     /// `FallingBlockEntity.dropItem`.
     drop_item: bool,
     /// `Entity.fallDistance` (powder snow holds a block that fell far at 0.9).
@@ -1738,8 +1756,8 @@ struct WorldRest {
 /// recipes, loot tables and tags from the world's pack stack, over the
 /// resource root's own. Worlds without packs use `Resources.rest` directly.
 struct WorldTables {
-    /// The pack files the tables were built from, for the advancement tree
-    /// reload and the loot data.
+    /// The pack files the tables were built from (a native mod's among
+    /// them), for the advancement tree reload and the loot data.
     files: Vec<(String, Vec<Vec<u8>>)>,
     items: Items,
     recipes: Recipes,
@@ -2216,6 +2234,8 @@ struct Game<'a> {
     /// Minecraft.pause: a single-player screen that pauses the game is open.
     pause: bool,
     debug: bool,
+    /// `horizon-ctl gpu-passes`: time Horizon's own passes on the GPU with F3 shut.
+    gpu_passes: bool,
     screen: Screen,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -2227,9 +2247,13 @@ struct Game<'a> {
     luminance: Option<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
+    /// The first-person player's model, which only a native pack's shadow pass draws.
+    shadow_only_vertices: std::cell::RefCell<Vec<Vertex>>,
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
     /// while `pack_ids` is set (game/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
+    /// Which entity this frame's entity vertices belong to (`Frame::entity_motion`).
+    entity_motion: std::cell::RefCell<Vec<(u32, u64)>>,
     /// The glowing entities' silhouettes this frame (game/glowing.rs).
     glowing_vertices: std::cell::RefCell<Vec<Vertex>>,
     /// The shader pack's entity and block entity ids, while one draws entities.
@@ -2336,6 +2360,10 @@ struct Game<'a> {
     /// Mobs a player hurt (`LivingEntity.lastHurtByPlayer`), with the guest
     /// it was by connection (None: the host).
     last_hurt_by_player: HashMap<u32, Option<u32>>,
+    /// Leashed mobs a player killed, with the killer's UUID: the lead drops
+    /// on the corpse's next tick (`Leashable.tickLeash`), for the mods. With
+    /// the corpse's dimension: each level's tick prunes only its own.
+    lead_killers: HashMap<u32, (u128, Dim)>,
     /// Animals a player fed into love (`Animal.loveCause`), with the guest it was by
     /// connection (None: the host). Breeding credits them, wherever they are.
     love_cause: HashMap<u32, Option<u32>>,
@@ -2614,6 +2642,8 @@ struct Game<'a> {
     native_lifecycle: native_lifecycle::NativeLifecycle,
     /// Native mods' messages waiting (`game/native_net.rs`).
     native_net: native_net::NativeNet,
+    /// The mod whose own screen is open (`Screen::Mod`).
+    native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
@@ -2806,6 +2836,8 @@ struct Game<'a> {
     border: horizon_client::worldborder::WorldBorder,
     /// `WorldBorderRenderer` and its render state.
     border_renderer: horizon_client::border_render::BorderRenderer,
+    /// The camera's 16-block section when the wall was last invalidated.
+    border_section: Option<[i32; 3]>,
     border_state: horizon_client::border_render::BorderRenderState,
     /// `Hud.tabList`: the player list's header, footer and heart states.
     tab_list: horizon_client::tab_list::TabList,
@@ -3428,6 +3460,9 @@ impl Game<'_> {
     }
     /// ClientLevel.addDestroyBlockEffect: a burst per outline box.
     fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
+        if self.settings.extras.hide_block_particles {
+            return;
+        }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
             return;
         };
@@ -3439,6 +3474,9 @@ impl Game<'_> {
     }
     /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
     fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
+        if self.settings.extras.hide_block_particles {
+            return;
+        }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
             return;
         };
@@ -3562,6 +3600,10 @@ impl Game<'_> {
         // Block.popResource: Mth.nextDouble offsets from the level random; the
         // motion is `new ItemEntity(..)`'s own, from the item's random.
         let p = spill::pop_position(&mut self.world.random, pos);
+        // Block.popResource draws its offsets before the private overload checks the gamerule.
+        if !self.ui.rules.bool("block_drops") {
+            return;
+        }
         let v = dispenser::new_item_motion();
         self.spawn_item(stack, p, v, 10);
     }
@@ -3889,6 +3931,18 @@ impl Game<'_> {
                     .map(|g| g.position)
             }))
             .collect();
+        let mut trigger_projectiles: Vec<(Aabb, bool)> = self
+            .tridents
+            .iter()
+            .map(|t| (horizon_client::arrows::arrow_bounds(t.position), false))
+            .chain(self.rockets.iter().map(|r| (r.bounds(), !r.attached)))
+            .chain(
+                self.hook
+                    .iter()
+                    .map(|h| (h.bounds(), h.applies_block_effects())),
+            )
+            .collect();
+        self.lan_hook_triggers(&mut trigger_projectiles);
         let blockers = Blockers {
             mobs: &self.mobs,
             armor_stands: &self.armor_stands,
@@ -3906,6 +3960,7 @@ impl Game<'_> {
             dropped: &self.dropped,
             orbs: &self.orbs,
             projectiles: &self.creatures.projectiles,
+            trigger_projectiles,
             world: &mut self.world,
             facts: self.res.facts(),
             collision: self.collision,
@@ -4277,7 +4332,16 @@ impl Game<'_> {
             }
             // The mobs and the other entities (items, orbs, projectiles...) too.
             let mut touched: Vec<BlockPos> = Vec::new();
-            for bounds in level.mob_trigger_boxes().chain(level.other_trigger_boxes()) {
+            let projectiles = level
+                .trigger_projectiles
+                .iter()
+                .filter(|(_, applies)| *applies)
+                .map(|&(bounds, _)| bounds);
+            for bounds in level
+                .mob_trigger_boxes()
+                .chain(level.other_trigger_boxes())
+                .chain(projectiles)
+            {
                 let (lo, hi) = (bounds.min_position(), bounds.max_position());
                 for x in (lo.x + 1e-7).floor() as i32..=(hi.x - 1e-7).floor() as i32 {
                     for y in (lo.y + 1e-7).floor() as i32..=(hi.y - 1e-7).floor() as i32 {
@@ -4719,6 +4783,7 @@ impl Game<'_> {
                         velocity: Vec3::ZERO,
                         age: 0,
                         no_gravity: false,
+                        portal: Default::default(),
                         drop_item: true,
                         fall_distance: 0.0,
                         stuck: Vec3::ZERO,
@@ -4758,7 +4823,7 @@ impl Game<'_> {
                     }
                     PlayerEffect::InteractLoot(_) => {}
                 },
-                LevelEvent::PrimeTnt { pos, rot } => self.add_primed_tnt(pos, rot, 80),
+                LevelEvent::PrimeTnt { pos, rot } => self.add_primed_tnt(pos, rot, 80, None, None),
                 LevelEvent::BlockEvent {
                     pos,
                     state,
@@ -5064,7 +5129,7 @@ impl Game<'_> {
         Ok(())
     }
     /// One `FallingBlockEntity.tick` move of `f`.
-    fn fall_step(&self, f: &mut FallingBlock, entity_drops: bool) -> Result<FallStep> {
+    fn fall_step(&mut self, f: &mut FallingBlock, entity_drops: bool) -> Result<FallStep> {
         f.previous = f.position;
         f.age = f.age.wrapping_add(1);
         if !f.no_gravity {
@@ -5110,30 +5175,11 @@ impl Game<'_> {
             f.position.z + movement.z,
         );
         let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
-        // FallingBlockEntity.tick: off the ground, it gives up after 600
-        // ticks (100 outside the world) and drops itself as an item.
-        let y = next.y.floor() as i32;
-        let outside = y <= self.world.bottom_y() || y >= self.world.top_y();
-        if !on_ground && (f.age > 100 && outside || f.age > 600) {
-            return Ok(if f.drop_item && entity_drops {
-                FallStep::Dropped(next)
-            } else {
-                FallStep::Gone
-            });
-        }
         if next.y < f.position.y {
             f.fall_distance += f.position.y - next.y;
         }
         let from = f.position;
         f.position = next;
-        if on_ground {
-            let pos = [
-                f.position.x.floor() as i32,
-                f.position.y.floor() as i32,
-                f.position.z.floor() as i32,
-            ];
-            return Ok(FallStep::Landed(pos));
-        }
         // Entity.move stops it on the axes it collided on.
         if movement.x != wanted.x {
             f.velocity.x = 0.0;
@@ -5143,6 +5189,10 @@ impl Game<'_> {
         }
         if movement.z != wanted.z {
             f.velocity.z = 0.0;
+        }
+        if on_ground {
+            self.falling_block_impact(f);
+            f.fall_distance = 0.0;
         }
         // applyEffectsFromBlocks: WebBlock.entityInside makes it stuck
         // (Entity.makeStuckInBlock), BubbleColumnBlock.entityInside lifts or
@@ -5175,12 +5225,44 @@ impl Game<'_> {
         if stuck {
             f.stuck = horizon_client::falling_block::web_multiplier();
         }
+        // FallingBlockEntity.tick handles its portal after the move's block
+        // effects, before placing/dropping on the floor under an End portal.
+        let teleported = self.falling_through_portal(f);
+        // FallingBlockEntity.forceTickAfterTeleportToDuplicate: crossing
+        // either way through the End deliberately keeps the source's final
+        // placement/drop branch, even though the source entity was removed.
+        if let Some(target) = teleported
+            && self.dim != Dim::End
+            && target != Dim::End
+        {
+            return Ok(FallStep::Gone);
+        }
+        let y = next.y.floor() as i32;
+        let outside = y <= self.world.bottom_y() || y >= self.world.top_y();
+        if !on_ground && (f.age > 100 && outside || f.age > 600) {
+            return Ok(if f.drop_item && entity_drops {
+                FallStep::Dropped(next)
+            } else {
+                FallStep::Gone
+            });
+        }
+        if on_ground {
+            return Ok(FallStep::Landed([
+                f.position.x.floor() as i32,
+                f.position.y.floor() as i32,
+                f.position.z.floor() as i32,
+            ]));
+        }
         f.velocity = Vec3::new(
             f.velocity.x * 0.98,
             f.velocity.y * 0.98,
             f.velocity.z * 0.98,
         );
-        Ok(FallStep::Falling)
+        Ok(if teleported.is_some() {
+            FallStep::Gone
+        } else {
+            FallStep::Falling
+        })
     }
     /// `Entity.spawnAtLocation`: an item entity where the block was.
     fn drop_falling_block(&mut self, state: BlockStateId, at: Vec3) {
@@ -5331,6 +5413,9 @@ impl Game<'_> {
             let at = BlockPos::new(pos[0], pos[1], pos[2]);
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, disarmed, 260));
             self.post_block_game_event("minecraft:shear", pos, self.sculk_actor(), None);
+        }
+        if creative && storage::is_shulker_box(&facts.name) {
+            self.drop_creative_shulker(pos);
         }
         // BeehiveBlock.playerWillDestroy: a creative break still drops the hive
         // with its bees and honey level.
@@ -7700,7 +7785,12 @@ impl Game<'_> {
         // GuiGraphicsExtractor.itemDecorations, laid out at the origin and
         // moved to (x, y): the damage bar, the cooldown shade and the count.
         let info = self.items().get(&stack.item);
-        let max_damage = info.map_or(0, |info| info.max_damage as i32);
+        // ItemStack.isBarVisible: isDamaged, which an unbreakable stack never is.
+        let max_damage = if horizon_client::stations::is_damageable(self.items(), stack) {
+            info.map_or(0, |info| info.max_damage as i32)
+        } else {
+            0
+        };
         let cooldown =
             horizon_client::cooldowns::group(stack, info.and_then(|i| i.use_cooldown.as_ref()));
         let partial = self.clock.fraction() as f32;
@@ -8079,6 +8169,7 @@ impl Game<'_> {
             Screen::Dead => self.draw_death_screen(&mut batch),
             Screen::Stats => self.draw_stats(&mut batch),
             Screen::Advancements => self.draw_advancements(&mut batch),
+            Screen::Mod => {}
             Screen::WorldOptions => self.draw_world_options(&mut batch),
             Screen::Friends => self.draw_friends_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
@@ -8118,11 +8209,12 @@ impl Game<'_> {
     /// `native_screen_render_post` (`ScreenEvent.Render.Post`) for the open
     /// screen, once a frame; the Win and Options screens call this on their
     /// own path. Reads `self.screen`, the one `hud_layers` drew. Not while
-    /// playing with no screen. Client only, read-only: what a mod draws is
-    /// its own.
+    /// playing with no screen, nor while the server pack prompt hides the
+    /// open screen (`hud_layers` draws `Playing` then). Client only,
+    /// read-only: what a mod draws is its own.
     fn fire_screen_render_post(&self, batch: &mut HudBatch) {
         let screen = self.screen;
-        if screen == Screen::Playing {
+        if screen == Screen::Playing || self.server_packs.prompt.is_some() {
             return;
         }
         // slot_count mirrors slots() without allocating; keep them in step.
@@ -10072,6 +10164,11 @@ impl Game<'_> {
     pub(super) fn camera_orientation(&self) -> glam::Quat {
         camera_rotation(self.camera_type, self.yaw, self.pitch)
     }
+    /// The entity whose geometry starts at vertex `start` (0: none), for frame
+    /// generation to follow its own motion. Each run lasts until the next mark.
+    pub(super) fn mark_motion(&self, start: usize, id: u64) {
+        self.entity_motion.borrow_mut().push((start as u32, id));
+    }
     /// ItemEntityRenderer: items bob and spin; blocks render as small cubes.
     fn entity_geometry(
         &mut self,
@@ -10080,6 +10177,7 @@ impl Game<'_> {
         mut out: Vec<Vertex>,
     ) -> Vec<Vertex> {
         self.entity_spans.borrow_mut().clear();
+        self.entity_motion.borrow_mut().clear();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
         self.drain_transient_block_queue();
         self.prepare_entity_culling(camera);
@@ -10184,6 +10282,7 @@ impl Game<'_> {
         // `ItemEntityRenderer`.
         self.mark_entity(out.len(), "minecraft:item");
         self.dropped_item_geometry(camera, alpha, &mut out);
+        self.mark_motion(out.len(), 0);
         // `VaultRenderer`.
         self.mark_entity(out.len(), "");
         self.vault_geometry(camera, alpha, &mut out);
@@ -10196,9 +10295,18 @@ impl Game<'_> {
         self.ominous_item_spawner_geometry(camera, alpha, &mut out);
         // Mobs and their projectiles (a span each).
         self.mob_geometry(camera, alpha, &mut out);
+        self.mark_motion(out.len(), 0);
         // In first person only a shader pack's shadow pass draws the player.
         self.mark_player(out.len(), !self.own_body_in_view());
+        let player_start = out.len();
         self.player_model_geometry(camera, self.clock.camera_fraction(), &mut out);
+        // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
+        // the first-person model.
+        if self.pack_ids.is_none() && !self.own_body_in_view() {
+            self.shadow_only_vertices
+                .borrow_mut()
+                .extend(out.drain(player_start..));
+        }
         self.mark_entity(out.len(), "minecraft:player");
         self.guest_model_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
@@ -10213,9 +10321,11 @@ impl Game<'_> {
         self.see_through_vertices = see_through;
         // Entity shadows (EntityRenderer.extractShadow).
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        let shadow_sprite = self
-            .settings
-            .entity_shadows
+        // A native shader pack's sun shadows already fall under the entities in the Overworld:
+        // the round blob would be a second one. The Nether and the End have no sun to cast them.
+        let pack_shadows =
+            self.dim == Dim::Overworld && self.renderer.as_ref().is_some_and(|r| r.native_shadow());
+        let shadow_sprite = (self.settings.entity_shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
             .flatten();
         if let Some(sprite) = shadow_sprite {
@@ -11345,6 +11455,9 @@ impl Game<'_> {
             &self.options.resources,
             &pack_files(&self.world_tables),
         );
+        // TagsUpdatedEvent (SERVER_DATA_LOAD): the world's data is in, before
+        // its chunks and players are.
+        self.native_server_data_loaded(false);
         self.bosses = Default::default();
         reset_world_progress(&mut self.adv, &mut self.stats);
         self.prefetch_advancement_tree();
@@ -13211,6 +13324,8 @@ impl Game<'_> {
             self.renderer.as_ref(),
             None,
             self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            shader_packs::picked_pack_draws_flat(&self.settings),
         )
     }
     fn apply_settings(&mut self) {
@@ -14292,6 +14407,8 @@ impl Game<'_> {
         });
     }
     fn render(&mut self) -> Result<bool> {
+        // Before any text of this frame: a full glyph region starts over.
+        self.gui.atlas.font.begin_frame();
         self.glint_frame = self.capture_glint_frame();
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
@@ -14673,6 +14790,7 @@ impl Game<'_> {
         entities.clear();
         self.see_through_vertices.clear();
         self.glowing_vertices.get_mut().clear();
+        self.shadow_only_vertices.get_mut().clear();
         if !title {
             entities = horizon_client::spans::time("entity_geometry", || {
                 self.entity_geometry(camera, alpha, entities)
@@ -14684,7 +14802,9 @@ impl Game<'_> {
             self.bolt_instances(camera)
         };
         let mut additive = Vec::new();
-        if !title && self.dim == Dim::End {
+        // The dragon is drawn in every dimension, as any entity: a dragon
+        // summoned outside the End (the server's AddEntity) is shown too.
+        if !title {
             let mut dragon = Vec::new();
             self.dragon_geometry(camera, alpha, &mut dragon, &mut additive);
             self.dragon_fireball_geometry(camera, alpha, &mut dragon);
@@ -14752,7 +14872,9 @@ impl Game<'_> {
         // map_patches any earlier leaves them a frame behind.
         hud.patches.append(&mut self.map_patches);
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
+        let entity_motion = std::mem::take(self.entity_motion.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
+        let shadow_only = std::mem::take(self.shadow_only_vertices.get_mut());
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
@@ -14834,6 +14956,7 @@ impl Game<'_> {
                 color: sky.cloud_color,
             }),
             entities: &entities,
+            entity_motion: &entity_motion,
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
@@ -14845,6 +14968,7 @@ impl Game<'_> {
             },
             additive: &additive,
             see_through: &see_through,
+            shadow_only: &shadow_only,
             celestial: if self.settings.horizon.sky || title {
                 &celestial
             } else {
@@ -14903,7 +15027,7 @@ impl Game<'_> {
         };
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
-                renderer.set_pass_timing(self.debug);
+                renderer.set_pass_timing(self.debug || self.gpu_passes);
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
             }
             None => Err("renderer".into()),
@@ -14911,7 +15035,9 @@ impl Game<'_> {
         // Restore storage even when rendering fails (for example, a lost surface).
         self.entity_vertices = entities;
         *self.entity_spans.get_mut() = entity_spans;
+        *self.entity_motion.get_mut() = entity_motion;
         *self.glowing_vertices.get_mut() = glowing;
+        *self.shadow_only_vertices.get_mut() = shadow_only;
         self.see_through_vertices = see_through;
         result
     }
@@ -15037,6 +15163,13 @@ impl Game<'_> {
             distance,
             &mut self.border_state,
         );
+        // `LevelRenderer.repositionCamera`: the wall is rebuilt when the camera
+        // enters another `SectionPos` (it only holds the stretch in range).
+        let section = camera.map(|c| (c.floor() as i32) >> 4);
+        if self.border_section != Some(section) {
+            self.border_renderer.invalidate();
+            self.border_section = Some(section);
+        }
         // Camera.depthFar, as the renderer's far plane.
         let depth_far =
             horizon_client::camera::depth_far(self.terrain_distance(), self.settings.cloud_range);
@@ -15116,6 +15249,7 @@ impl Game<'_> {
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
+                Screen::Mod => self.close_mod_screen(),
             },
             KeyCode::Digit1
             | KeyCode::Digit2
@@ -15398,6 +15532,16 @@ impl Game<'_> {
     fn update_world(&mut self) {
         if let Err(e) = self.poll_remote() {
             log::warn!("Horizon: {e}");
+        }
+        // The renderer laid translucent quads out again (a shader pack's flat terrain came
+        // or went) and dropped every section and far tile: meshed again, as for a new one.
+        if self
+            .renderer
+            .as_mut()
+            .is_some_and(Renderer::take_dropped_sections)
+        {
+            self.clear_lod();
+            self.all_sections_changed();
         }
         self.prepare_lod();
         if self.lod.is_some() {
@@ -15717,6 +15861,30 @@ impl Game<'_> {
                 self.physical_buttons.remove(button);
             }
         }
+        let mouse = if !self.pad_synthetic_input()
+            && let WindowEvent::MouseInput { state, button, .. } = &event
+        {
+            Some((
+                glfw_button(*button),
+                *state == ElementState::Pressed,
+                glfw_modifiers(self.modifiers),
+            ))
+        } else {
+            None
+        };
+        if let Some((button, pressed, modifiers)) = mouse {
+            let mut canceled = false;
+            self.native_mouse_button_pre(button, pressed, modifiers, &mut canceled);
+            if canceled {
+                return;
+            }
+        }
+        self.handle_window_event_inner(event_loop, event);
+        if let Some((button, pressed, modifiers)) = mouse {
+            self.native_mouse_button_post(button, pressed, modifiers);
+        }
+    }
+    fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
             self.physical_buttons.clear();
@@ -15914,6 +16082,63 @@ impl Game<'_> {
             }
             return;
         }
+        // ScreenEvent.KeyPressed.Pre: the open screen hears of the key before
+        // it acts on it, and a cancelled press goes no further — no focus
+        // move, no Escape-close, no inventory or hotbar key, no typing by the
+        // key itself, no `native_key`. It fires after the window's own
+        // shortcuts (fullscreen, screenshot, the debug keys, the narrator) so
+        // those keep working with a mod that cancels; the key's release still
+        // comes through.
+        //
+        // A key's characters are a separate callback of GLFW's, and it comes
+        // after the key callback (`KeyboardHandler.charTyped`): they are taken
+        // off the key here and dispatched once the screen has acted on it, on
+        // the screen that is open then (`ScreenEvent.CharacterTyped.Pre`).
+        // Options keeps its text on the key: its own key path routes a key's
+        // text between its boxes and its key-bind capture, and no key that
+        // carries text closes that screen or moves its focus.
+        let mut typed: Option<String> = None;
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &mut event
+            && key_event.state == ElementState::Pressed
+        {
+            if self.screen_hooks_open() && self.screen != Screen::Options {
+                typed = key_event.text.take().map(|text| text.to_string());
+            }
+            let canceled = match key_event.physical_key {
+                PhysicalKey::Code(key) => self.screen_key_pressed(key, key_event.repeat),
+                PhysicalKey::Unidentified(_) => false,
+            };
+            if self.screen == Screen::Options && self.screen_hooks_open() {
+                // The hook after the key's own, then the text the key path
+                // types in place (its own routing keeps it).
+                if let Some(text) = key_event.text.as_deref() {
+                    let left = self.screen_text_typed(text);
+                    if left.as_deref() != Some(text) {
+                        key_event.text = left.map(Into::into);
+                    }
+                }
+            }
+            if canceled {
+                // charTyped is a separate callback: the characters still
+                // reach the text box, without the key's own effects. Options'
+                // characters already passed the hook in place.
+                if let Some(text) = typed.as_deref() {
+                    self.screen_chars_typed(Some(text));
+                } else if self.screen == Screen::Options
+                    && let Some(text) = key_event.text.as_deref()
+                    && self.types_text()
+                {
+                    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                    if !text.is_empty() {
+                        // Err only says no box of the screen takes it.
+                        let _ = self.type_chars_into_screen(&text);
+                    }
+                }
+                return;
+            }
+        }
         // Screen.keyPressed: Tab, the arrows and Enter move and press the
         // menu's focus, unless the focused widget or the screen keeps them.
         if let WindowEvent::KeyboardInput {
@@ -15923,6 +16148,9 @@ impl Game<'_> {
             && let PhysicalKey::Code(key) = key_event.physical_key
             && self.key_focus_key(event_loop, key)
         {
+            // The keyboard's focus took the key; its characters are a separate
+            // callback and still come (`KeyboardHandler.charTyped`).
+            self.screen_chars_typed(typed.as_deref());
             return;
         }
         let result: Result<()> = (|| {
@@ -16488,7 +16716,9 @@ impl Game<'_> {
                     if let PhysicalKey::Code(key) = event.physical_key
                         && self.search_tab_hotbar_key(key)
                     {
-                        // The hovered slot took the key (`ignoreTextInput`).
+                        // The hovered slot took the key, and its characters
+                        // go nowhere (`ignoreTextInput`).
+                        typed = None;
                     } else if let Some(shortcut) = self.edit_shortcut(&event) {
                         self.creative_search_shortcut(shortcut);
                     } else if let PhysicalKey::Code(key) = event.physical_key {
@@ -16930,6 +17160,10 @@ impl Game<'_> {
 
             Ok(())
         })();
+        // ScreenEvent.CharacterTyped.Pre: GLFW's char callback comes after its
+        // key callback, so a key's characters reach the screen the key left
+        // open, after the key's own effects (`KeyboardHandler.charTyped`).
+        self.screen_chars_typed(typed.as_deref());
         if let Err(e) = result {
             self.error = Some(e);
             self.exit_on_error(event_loop);
@@ -17176,6 +17410,7 @@ impl<'a> Game<'a> {
             was_playing: false,
             pause: false,
             debug: false,
+            gpu_passes: false,
             screen: Screen::Playing,
             window: None,
             renderer: None,
@@ -17183,7 +17418,9 @@ impl<'a> Game<'a> {
             dynamic_lights: Vec::new(),
             luminance: None,
             see_through_vertices: Vec::new(),
+            shadow_only_vertices: Default::default(),
             entity_spans: Default::default(),
+            entity_motion: Default::default(),
             glowing_vertices: Default::default(),
             pack_ids: None,
             health_hud: hud_layout::HealthHud::default(),
@@ -17250,6 +17487,7 @@ impl<'a> Game<'a> {
             attack_ticks: 100,
             attack_item: None,
             last_hurt_by_player: HashMap::new(),
+            lead_killers: HashMap::new(),
             love_cause: HashMap::new(),
             died: Default::default(),
             be_anims: {
@@ -17427,6 +17665,7 @@ impl<'a> Game<'a> {
             native_shaders: Default::default(),
             native_lifecycle: Default::default(),
             native_net: Default::default(),
+            native_mod_screen: None,
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
@@ -17514,6 +17753,7 @@ impl<'a> Game<'a> {
             brushing: Default::default(),
             border: Default::default(),
             border_renderer: Default::default(),
+            border_section: None,
             border_state: Default::default(),
             tab_list: Default::default(),
             subtitles: Default::default(),
@@ -17836,11 +18076,16 @@ impl Game<'_> {
     /// packs, and `Resources.rest` stays in use). This re-reads the tables,
     /// so it runs once per world open and on `/reload`.
     fn build_world_tables(&self) -> Option<WorldTables> {
-        let files = functions::content_overlay(
+        // The ask of this load, both here and on `/reload`: a native mod
+        // recomputes the pack files it contributes every time.
+        let mut contributed = Vec::new();
+        self.native_data_pack_files(&mut contributed);
+        let files = functions::overlay_files(
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
+            contributed,
         );
         if files.is_empty() {
             return None;
@@ -17902,6 +18147,7 @@ impl Game<'_> {
             &overlay,
         ));
         self.adv.reset_tree();
+        self.native_server_data_loaded(true);
     }
 
     fn join_world_rest(&mut self) -> Result<()> {
@@ -18201,6 +18447,8 @@ fn load_resources(
     publish: &mut dyn FnMut(UiResources, &std::path::Path),
 ) -> Result<Loaded> {
     let threads = settings.horizon.worker_threads();
+    horizon_client::sprites::set_texture_budget(settings.horizon.texture_budget_mib);
+    horizon_client::sprites::set_labpbr_maps(shader_packs::picks_native_pack(settings));
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
@@ -18456,7 +18704,10 @@ fn load_world_rest(
             .into_iter()
             .map(|(k, v)| (k, Arc::new(v)))
             .collect();
-        let mob_data = horizon_client::mobs::MobData::load(root, facts);
+        let mut mob_data = horizon_client::mobs::MobData::load(root, facts);
+        mob_data.cem = std::sync::RwLock::new(Arc::new(
+            horizon_client::mobs::cem::CemModels::load(root, &mob_types),
+        ));
         horizon_client::mobs::trial_spawner::load_registry(root);
         Ok((mob_types, mob_data))
     };
@@ -18549,6 +18800,12 @@ fn prepare_renderer_textures(pack: &PackResources) -> horizon_client::gfx::Prepa
         &assets.sprite_mips,
         (&pack.forcefield.2, pack.forcefield.0),
     )
+    .with_pbr(
+        &assets.pbr_normals,
+        &assets.pbr_specular,
+        assets.pbr_size,
+        assets.texture_layers,
+    )
 }
 
 /// Upload pack textures and create the renderer on the window's device.
@@ -18560,6 +18817,8 @@ fn build_renderer(
     previous: Option<&Renderer>,
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
+    translucent_batching: bool,
+    shader_pack: bool,
 ) -> Result<Renderer> {
     let assets = &pack.render;
     let atlas = &gui.atlas;
@@ -18571,6 +18830,8 @@ fn build_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
+    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
+    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
@@ -18592,6 +18853,8 @@ fn build_renderer(
         prepared,
         previous,
         api,
+        translucent_batching,
+        shader_pack,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -18653,6 +18916,9 @@ fn loading_renderer(
         None,
         previous,
         api,
+        // It draws no terrain.
+        false,
+        false,
     ))?;
     if let Some(atlas) = atlas {
         renderer.hud.sprite_animations = atlas
@@ -18721,6 +18987,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         glint_ticks: 0.0,
         nether_lighting: false,
         entities: &[],
+        entity_motion: &[],
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],
@@ -18730,6 +18997,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        shadow_only: &[],
         celestial: &[],
         stars: None,
         hand: &[],
@@ -19193,6 +19461,8 @@ impl Loading {
             self.renderer.as_ref(),
             loaded.renderer_cpu,
             self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            shader_packs::picked_pack_draws_flat(&self.settings),
         )?;
         log::info!(
             "Horizon: world renderer ready after {} ms",
@@ -20008,6 +20278,7 @@ mod tests {
             velocity: Vec3::ZERO,
             age: 5,
             no_gravity: false,
+            portal: Default::default(),
             drop_item: true,
             fall_distance: 0.0,
             stuck: Vec3::ZERO,

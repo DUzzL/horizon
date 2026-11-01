@@ -297,7 +297,7 @@ impl Game<'_> {
         result.unwrap_or(Ok(()))
     }
 
-    fn player_attacker(&self, host: &LanHost, conn: Option<u32>) -> Option<(u32, Text)> {
+    pub(super) fn player_attacker(&self, host: &LanHost, conn: Option<u32>) -> Option<(u32, Text)> {
         match conn {
             Some(conn) => {
                 let g = host.hub.guest(conn)?;

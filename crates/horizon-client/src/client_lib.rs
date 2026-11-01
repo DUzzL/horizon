@@ -79,6 +79,7 @@ pub mod item_tooltip;
 pub mod lan;
 pub mod landing;
 pub mod locator_bar;
+pub mod lod_net;
 pub mod menu;
 pub mod merchant;
 pub mod mobs;
