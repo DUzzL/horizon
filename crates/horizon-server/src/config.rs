@@ -46,6 +46,7 @@ hardcore = false             # one life: a player who dies becomes a spectator
 path = ""                    # the game program; empty: the one installed beside horizon-server
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true      # start the game again when it crashes
+low_memory = false           # true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off
@@ -193,6 +194,8 @@ pub struct Engine {
     pub path: String,
     pub resources: String,
     pub restart_on_crash: bool,
+    /// The game without transparent huge pages (docs/hosting.md): less memory, slightly slower ticks.
+    pub low_memory: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -339,6 +342,7 @@ impl Default for Engine {
             path: String::new(),
             resources: String::new(),
             restart_on_crash: true,
+            low_memory: false,
         }
     }
 }
@@ -506,6 +510,7 @@ pub fn render(config: &Config) -> String {
         ("engine", "path"),
         ("engine", "resources"),
         ("engine", "restart_on_crash"),
+        ("engine", "low_memory"),
         ("backups", "every"),
         ("backups", "keep"),
         ("updates", "keep"),

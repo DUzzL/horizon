@@ -1,8 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "explosions for server mods (`native_explode`, in\n`native_explosions.rs`).",
-  "doc_summary": "[explosions](#explosions) for server mods: `native_explode(dimension, center, radius, fire, blast)` sets one off as\n`Level.explode` does, with `NativeBlast::Keep`, `Block` or `Tnt` for what it does to blocks. Bundles that use it need\n`\"hooks\": @API:native_explode@`.",
-  "comments": [
-    "crates/horizon-client/src/game/native_explosions.rs"
-  ]
-}

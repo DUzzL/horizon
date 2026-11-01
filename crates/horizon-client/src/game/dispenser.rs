@@ -516,7 +516,7 @@ impl Game<'_> {
     /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
     /// return this remainder in its answer with `CLICK`; the caller plays the
     /// answer's event and smoke once. A client, another dimension or an unloaded
-    /// chunk keeps the input stack unchanged. API @API:dispenser_behaviour@.
+    /// chunk keeps the input stack unchanged. API 67.
     #[allow(dead_code)]
     pub(super) fn native_dispense_default(
         &mut self,
@@ -1261,22 +1261,7 @@ impl Game<'_> {
                 BucketContent::Fluid(FluidKind::Water) | BucketContent::MobWater
             )
         {
-            // The water evaporates in a cloud of smoke.
-            let c = Self::center(target);
-            for _ in 0..8 {
-                let r = self.particles.random();
-                let p = [
-                    f64::from(target.0) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.1) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.2) + (r.next_double() * 2.0 - 1.0),
-                ];
-                let _ = c;
-                self.particles.add(
-                    &ParticleOptions::simple(ParticleType::LargeSmoke),
-                    p,
-                    [0.0; 3],
-                );
-            }
+            self.evaporation_smoke([target.0, target.1, target.2]);
         }
         if let Some(kind) = mob {
             // MobBucketItem.checkExtraContent: the mob (from the bucket, so

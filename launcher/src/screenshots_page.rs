@@ -313,7 +313,7 @@ impl Launcher {
                 .px(px(32.))
                 .py(px(24.))
                 .bg(t.page.opacity(0.96))
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .occlude()
                 .child(top)
                 .child(

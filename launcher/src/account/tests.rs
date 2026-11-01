@@ -899,6 +899,42 @@ fn credential_manager_error_8_says_the_store_is_full() {
 }
 
 #[test]
+fn macos_removed_executable_error_requests_a_restart_and_new_sign_in() {
+    let said = macos_keychain_says(100002).unwrap();
+    assert_eq!(said, MACOS_LAUNCHER_RESTART);
+    assert!(said.contains("Restart the launcher"));
+    assert!(said.contains("sign in with Microsoft again"));
+    for code in [0, 2, -25300, -25293, -25291, 100001, 100003] {
+        assert_eq!(macos_keychain_says(code), None, "OSStatus {code}");
+    }
+}
+
+/// Constructs native errors, without creating or reading any Keychain entry.
+#[cfg(target_os = "macos")]
+#[test]
+fn only_the_typed_macos_removed_executable_failure_gets_the_restart_message() {
+    let failure = |code| {
+        keyring::Error::PlatformFailure(Box::new(security_framework::base::Error::from_code(code)))
+    };
+    assert_eq!(write_error(failure(100002)), MACOS_LAUNCHER_RESTART);
+    for code in [-25300, -25293, -25291, 100003] {
+        let error = failure(code);
+        let original = error.to_string();
+        assert_ne!(original, MACOS_LAUNCHER_RESTART);
+        assert_eq!(write_error(error), original);
+    }
+    let unrelated = keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
+        "OSStatus 100002: unrelated provider",
+    )));
+    let original = unrelated.to_string();
+    assert_eq!(write_error(unrelated), original, "not a string match");
+    assert_eq!(
+        write_error(keyring::Error::NoEntry),
+        keyring::Error::NoEntry.to_string()
+    );
+}
+
+#[test]
 fn session_files_are_private_and_complete() {
     let dir = std::env::temp_dir().join(format!("horizon-launcher-session-{}", std::process::id()));
     let account = Account {

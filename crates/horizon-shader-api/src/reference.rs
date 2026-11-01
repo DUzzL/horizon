@@ -66,7 +66,15 @@ pub fn markdown() -> String {
             out += "Helpers:\n\n\
                     - `fn depth_at(uv: vec2<f32>) -> f32`: the world's depth at `uv`.\n\
                     - `fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32>`: the camera-relative position, in blocks, of\n  \
-                    the point at `uv` and `depth`.\n\n";
+                    the point at `uv` and `depth`.\n";
+        }
+        if kind == StageKind::Material {
+            out += "Helpers:\n\n";
+        }
+        if kind != StageKind::Sky {
+            out += "- `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is\n  \
+                    stored in the shadow map, for `textureSampleCompareLevel`.\n\
+                    - `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.\n\n";
         }
     }
     out += "## The frame\n\n";

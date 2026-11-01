@@ -60,7 +60,7 @@ pub enum ConsumeEffect {
     PlaySound(String),
     /// A mod's own kind, kept as the file wrote it (the loader used to drop
     /// it silently): the game hands it to `native_consume_effect`.
-    /// API @API:consume_effect@
+    /// API 74
     Native {
         kind: String,
         data: serde_json::Value,

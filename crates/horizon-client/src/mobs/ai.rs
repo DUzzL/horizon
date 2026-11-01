@@ -1901,6 +1901,7 @@ pub fn takes_food(m: &Mob) -> bool {
 pub fn feed_animal(
     m: &mut Mob,
     level: &mut impl RandomSource,
+    love_cause: Option<[i32; 4]>,
 ) -> Option<Option<(&'static str, f32, f32)>> {
     // Armadillo.mobInteract: a ball takes no food.
     if super::armadillo::scared(m) {
@@ -1912,6 +1913,8 @@ pub fn feed_animal(
     if m.extra.age == 0 {
         m.extra.in_love = 600;
         m.extra.love_player = true;
+        // Animal.setInLove: the player who fed it, for a fox baby to trust.
+        m.extra.love_cause = love_cause;
     } else {
         // AgeableMob.ageUp(getSpeedUpSecondsWhenFeeding(-age), true): a tenth.
         let secs = ((-m.extra.age / 20) as f32 * 0.1) as i32;
@@ -2909,7 +2912,7 @@ mod feed_tests {
             m.extra.tame = true;
             m.extra.age = -24000;
             assert!(takes_food(&m), "{id}: a tamed baby takes its food");
-            assert!(feed_animal(&mut m, &mut level).is_some(), "{id}");
+            assert!(feed_animal(&mut m, &mut level, None).is_some(), "{id}");
             // getSpeedUpSecondsWhenFeeding(24000): a tenth of 1200 seconds.
             assert_eq!(m.extra.age, -24000 + 120 * 20, "{id}: grew a tenth");
             assert_eq!(m.extra.in_love, 0, "{id}: a baby does not fall in love");

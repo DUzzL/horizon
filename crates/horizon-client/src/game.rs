@@ -191,6 +191,7 @@ mod native_components;
 mod native_criteria;
 mod native_entities;
 mod native_explosions;
+mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -898,6 +899,8 @@ struct GameLevel<'w> {
     client_side: bool,
     /// Only the integrated or dedicated server dispatches native observations.
     native_authoritative: bool,
+    /// `Level.isDebug`: `setBlock` changes nothing.
+    debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
 }
@@ -1413,6 +1416,10 @@ impl LevelAccess for GameLevel<'_> {
         self.world.block(pos.x, pos.y, pos.z)
     }
     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+        // `Level.setBlock`: a server level of the Debug preset never changes.
+        if self.debug && !self.client_side {
+            return None;
+        }
         if !self.world.loaded(pos.x, pos.z)
             || pos.y < self.world.bottom_y()
             || pos.y >= self.world.top_y()
@@ -2329,7 +2336,8 @@ struct Game<'a> {
     /// connection (None: the host). Breeding credits them, wherever they are.
     love_cause: HashMap<u32, Option<u32>>,
     /// Mobs whose death (`LivingEntity.die`) has been handled.
-    died: HashSet<u32>,
+    /// Looked up per mob each tick: a fast hasher (never iterated).
+    died: horizon_client::fast_hash::FxHashSet<u32>,
     /// Client-ticked block-entity animation state (`game/block_entity_anims.rs`).
     be_anims: horizon_client::block_entity_anim::BlockEntityAnims,
     /// Item being used (eaten): hotbar slot and ticks used.
@@ -2427,6 +2435,9 @@ struct Game<'a> {
     world_tables: Option<WorldTables>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
+    /// The world is the Debug preset (`Level.isDebug`, for every dimension): its blocks
+    /// cannot be changed and nothing ticks.
+    world_debug: bool,
     /// A player carried through a portal, re-placed once the destination loads.
     travelling: Option<(PlayerMotion, Vec3)>,
     /// A server's players on their way to another level, each waiting for
@@ -3915,6 +3926,7 @@ impl Game<'_> {
             lid_openers: &self.lid_openers,
             client_side: self.remote.is_some(),
             native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
+            debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
         };
@@ -4262,13 +4274,18 @@ impl Game<'_> {
             }
         });
         self.process_level_events()?;
-        self.tick_scheduled()?;
+        // ServerLevel.tick: a Debug world runs no scheduled block or fluid ticks, and
+        // ServerChunkCache.tickChunks no random ticks.
+        let debug = self.world_debug;
+        if !debug {
+            self.tick_scheduled()?;
+        }
         self.with_level(|b, level, ticks| {
             // Each chunk's ticking sections and their masks, read again only
             // after a block changed.
             let mut sections = Vec::new();
             horizon_client::spans::time("random_ticks", || {
-                for (x, z) in ticking {
+                for (x, z) in ticking.into_iter().filter(|_| !debug) {
                     let mut read = None;
                     let pos = horizon_core::position::ChunkPos::new(x, z);
                     b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
@@ -10681,6 +10698,7 @@ impl Game<'_> {
             spread,
             speed: 0.0,
             count: 0,
+            randomization: 0,
         });
     }
     /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
@@ -10907,6 +10925,7 @@ impl Game<'_> {
                     spread: [0.1, 0.0, 0.1],
                     speed: 0.2,
                     count: (actual * 0.5) as u32 as i32,
+                    randomization: 0,
                 });
             }
             self.last_hurt_by_player
@@ -11367,6 +11386,8 @@ impl Game<'_> {
         });
         self.world_flat = horizon_client::save::WorldGen::read(&save_root)
             .is_some_and(|w| w.preset == horizon_client::save::WorldPreset::Flat);
+        self.world_debug = horizon_client::save::WorldGen::read(&save_root)
+            .is_some_and(|w| w.preset == horizon_client::save::WorldPreset::Debug);
         self.block_ticks = Ticks::new(self.level.seed as i32);
         self.tick_chunks.clear();
         self.clear_entities();
@@ -12388,6 +12409,9 @@ impl Game<'_> {
             self.process_level_events()?;
             if !emptied {
                 return Ok(UseResult::Fail);
+            }
+            if self.dim == Dim::Nether && content.is_water() {
+                self.evaporation_smoke(target);
             }
             // `BucketItem.emptyContents` uses `playSound(player, …)`: the
             // actor's client already played the empty / evaporate sound from
@@ -17149,7 +17173,7 @@ impl<'a> Game<'a> {
             attack_item: None,
             last_hurt_by_player: HashMap::new(),
             love_cause: HashMap::new(),
-            died: HashSet::new(),
+            died: Default::default(),
             be_anims: {
                 let mut anims = horizon_client::block_entity_anim::BlockEntityAnims::default();
                 anims.classify(registry);
@@ -17206,6 +17230,7 @@ impl<'a> Game<'a> {
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
             world_flat: false,
+            world_debug: false,
             travelling: None,
             server_trips: Vec::new(),
             level_teleports: Vec::new(),
@@ -17263,11 +17288,15 @@ impl<'a> Game<'a> {
             remote_knots: Default::default(),
             knot_ids: Default::default(),
             text_display_vertices: 0,
-            skin_downloads: RefCell::new(horizon_client::skins::Downloader::new(
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join("assets/skins"),
-            )),
+            skin_downloads: RefCell::new({
+                let mut downloads = horizon_client::skins::Downloader::new(
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join("assets/skins"),
+                );
+                downloads.set_resource_root(root.clone());
+                downloads
+            }),
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             trim_slots: Vec::new(),

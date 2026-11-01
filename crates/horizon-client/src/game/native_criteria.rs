@@ -57,7 +57,7 @@ impl Game<'_> {
     /// when the player was reached, whether or not anything was granted;
     /// false off a server, when the player isn't on or can't be reached from
     /// here, and for a `minecraft:` trigger or a name without a namespace.
-    /// API @API:native_criteria@.
+    /// API 69.
     pub(super) fn native_trigger_criterion(
         &mut self,
         uuid: u128,

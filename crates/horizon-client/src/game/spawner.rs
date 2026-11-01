@@ -96,6 +96,16 @@ impl Game<'_> {
         });
     }
     fn server_tick_spawner(&mut self, key: Pos, spawner: &mut Spawner) -> Result<()> {
+        self.server_tick_spawner_of(key, spawner, None)
+    }
+    /// `BaseSpawner.serverTick` at `key`: a spawner block's, or the spawner minecart
+    /// `cart` is at (its `broadcastEvent` is an entity event on the cart).
+    pub(super) fn server_tick_spawner_of(
+        &mut self,
+        key: Pos,
+        spawner: &mut Spawner,
+        cart: Option<u32>,
+    ) -> Result<()> {
         // `BaseSpawner.serverTick` does nothing without an alive player in
         // range (`isNearPlayer`) or with the rule off: no level to build for it.
         let at = [key.0, key.1, key.2].map(|c| f64::from(c) + 0.5);
@@ -121,7 +131,7 @@ impl Game<'_> {
         }
         self.world.random = random;
         let ids = self.add_planned(planned);
-        self.apply_spawner_events(key, events, &ids)
+        self.apply_spawner_events(key, events, &ids, cart)
     }
     /// Creates the mobs a spawner tick planned; their provisional ids
     /// (counting down from u32::MAX) map to the mobs' ids.
@@ -237,11 +247,19 @@ impl Game<'_> {
         key: Pos,
         events: Vec<SpawnerEvent>,
         ids: &HashMap<u32, u32>,
+        cart: Option<u32>,
     ) -> Result<()> {
         let pos = [key.0, key.1, key.2];
         for event in events {
             match event {
+                // A cart has no block to update: `sendBlockUpdated` finds nothing to send.
+                SpawnerEvent::BlockUpdated if cart.is_some() => {}
                 SpawnerEvent::BlockUpdated => self.spawner_block_updated(key),
+                // `broadcastEvent`: `level.broadcastEntityEvent(cart, id)`.
+                SpawnerEvent::BlockEvent(id) if cart.is_some() => {
+                    let at = pos.map(|c| f64::from(c) + 0.5);
+                    self.lan_entity_event(cart.unwrap_or_default() as i32, id as i8, at);
+                }
                 SpawnerEvent::BlockEvent(id) => {
                     self.lan_block_event(pos, id, 0);
                     // The client copy's onEventTriggered.
@@ -431,7 +449,7 @@ impl Game<'_> {
                 }
             }
             self.world.random = random;
-            let _ = self.apply_spawner_events(key, events, &HashMap::new());
+            let _ = self.apply_spawner_events(key, events, &HashMap::new(), None);
         }
         // sendBlockUpdated(3) and the player's block_change game event.
         self.spawner_block_updated(key);

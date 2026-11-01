@@ -434,6 +434,7 @@ impl Game<'_> {
                 pushed = (!p.health.sync_velocity).then_some(push);
             }
         }
+        self.combat.forget_noted(outcome.canceled);
         if raised {
             self.after_block(outcome, None, false);
         }

@@ -24,6 +24,14 @@ pub struct NativePost {
     nearest: wgpu::Sampler,
     /// Two targets of the world's size, written in turn (none with a single pass).
     targets: Option<([u32; 2], [wgpu::TextureView; 2])>,
+    /// The frame's shadow map, its comparison sampler (bindings 6 and 7), the translucent map
+    /// and its colour (bindings 9 and 10).
+    shadow: (
+        wgpu::TextureView,
+        wgpu::Sampler,
+        wgpu::TextureView,
+        wgpu::TextureView,
+    ),
     /// Last frame's input to the last pass (`history`, binding 8), made with the targets,
     /// and a black 1×1 in its place before then.
     history: Option<wgpu::Texture>,
@@ -54,6 +62,9 @@ pub struct NativeFrame {
     reflection: wgpu::TextureView,
     blank: wgpu::TextureView,
     reflection_sampler: wgpu::Sampler,
+    /// The shadow map the stages read, and the camera that draws it when the pack asks for one.
+    pub shadow_map: super::native_shadow::ShadowMap,
+    shadow_camera: Option<horizon_shaders::Shadow>,
     /// Whether the pack's material reads `reflection` (`NativePack::new`): else no mirror
     /// is drawn and `has_reflection` stays 0.
     pub reflects: bool,
@@ -140,7 +151,11 @@ fn eased(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
 }
 
 impl NativeFrame {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// The frame of a pack with the `[shadow]` settings `shadow`, if any.
+    pub fn new(
+        device: &wgpu::Device,
+        shadow: Option<&horizon_shader_api::manifest::Shadow>,
+    ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Native shader pack frame"),
             size: size_of::<FrameInputs>() as u64,
@@ -153,7 +168,11 @@ impl NativeFrame {
                 frame_entry(wgpu::ShaderStages::VERTEX_FRAGMENT),
                 texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
                 sampler_entry(2),
+                texture_entry(3, wgpu::TextureSampleType::Depth),
+                comparison_entry(4),
                 texture_entry(6, wgpu::TextureSampleType::Depth),
+                texture_entry(7, wgpu::TextureSampleType::Depth),
+                texture_entry(8, wgpu::TextureSampleType::Float { filterable: true }),
                 texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         });
@@ -172,11 +191,13 @@ impl NativeFrame {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let shadow_map = super::native_shadow::ShadowMap::new(device, shadow);
         let group = Self::group(
             device,
             &layout,
             &buffer,
             (&blank, &reflection_sampler),
+            &shadow_map,
             &opaque_depth,
             &opaque_color,
         );
@@ -189,6 +210,8 @@ impl NativeFrame {
             reflection: blank.clone(),
             blank,
             reflection_sampler,
+            shadow_map,
+            shadow_camera: shadow.map(super::native_shadow::camera),
             reflects: false,
             last: None,
             eye: [f32::NAN; 4],
@@ -199,11 +222,25 @@ impl NativeFrame {
         }
     }
 
+    /// What the shadow camera sees this frame, for the renderer's shadow lists.
+    pub fn shadow_view(&self, frame: &Frame) -> Option<super::pack_post::ShadowView> {
+        let camera = self.shadow_camera.as_ref()?;
+        Some(super::pack_post::ShadowView {
+            cull: super::pack_uniforms::shadow_culling(frame, camera),
+            light: super::pack_uniforms::shadow_light(frame, camera),
+            // The light's box culls: on the ground it reaches further than `distance` along
+            // the sun's azimuth while the sun is low.
+            distance: None,
+            unculled: None,
+        })
+    }
+
     fn group(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         buffer: &wgpu::Buffer,
         (reflection, sampler): (&wgpu::TextureView, &wgpu::Sampler),
+        shadow: &super::native_shadow::ShadowMap,
         opaque_depth: &wgpu::Texture,
         opaque_color: &wgpu::Texture,
     ) -> wgpu::BindGroup {
@@ -222,6 +259,22 @@ impl NativeFrame {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&shadow.translucent_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&shadow.color_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
@@ -284,6 +337,7 @@ impl NativeFrame {
             &self.layout,
             &self.buffer,
             (&self.reflection, &self.reflection_sampler),
+            &self.shadow_map,
             &self.opaque_depth,
             &self.opaque_color,
         );
@@ -295,7 +349,13 @@ impl NativeFrame {
         let now = std::time::Instant::now();
         let since = self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32());
         self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
-        let mut inputs = frame_inputs(frame, size, seconds, self.frames);
+        let mut inputs = frame_inputs(
+            frame,
+            size,
+            seconds,
+            self.frames,
+            self.shadow_camera.as_ref(),
+        );
         inputs.wetness = self.wetness.0;
         if !self.reflects {
             inputs.has_reflection = 0;
@@ -377,6 +437,15 @@ fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::Bi
     }
 }
 
+fn comparison_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+        count: None,
+    }
+}
+
 fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -406,7 +475,11 @@ impl NativePost {
                 texture_entry(3, float),
                 sampler_entry(4),
                 sampler_entry(5),
+                texture_entry(6, wgpu::TextureSampleType::Depth),
+                comparison_entry(7),
                 texture_entry(8, float),
+                texture_entry(9, wgpu::TextureSampleType::Depth),
+                texture_entry(10, float),
             ],
         });
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
@@ -471,6 +544,12 @@ impl NativePost {
             passes,
             layout,
             frame: frame.buffer.clone(),
+            shadow: (
+                frame.shadow_map.view.clone(),
+                frame.shadow_map.sampler.clone(),
+                frame.shadow_map.translucent_view.clone(),
+                frame.shadow_map.color_view.clone(),
+            ),
             linear: sampler("Native shader pack linear", wgpu::FilterMode::Linear),
             nearest: sampler("Native shader pack nearest", wgpu::FilterMode::Nearest),
             targets: None,
@@ -581,8 +660,24 @@ impl NativePost {
                             resource: wgpu::BindingResource::Sampler(&self.nearest),
                         },
                         wgpu::BindGroupEntry {
+                            binding: 6,
+                            resource: wgpu::BindingResource::TextureView(&self.shadow.0),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 7,
+                            resource: wgpu::BindingResource::Sampler(&self.shadow.1),
+                        },
+                        wgpu::BindGroupEntry {
                             binding: 8,
                             resource: wgpu::BindingResource::TextureView(&history),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 9,
+                            resource: wgpu::BindingResource::TextureView(&self.shadow.2),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 10,
+                            resource: wgpu::BindingResource::TextureView(&self.shadow.3),
                         },
                     ],
                 })
@@ -676,7 +771,13 @@ fn wetness(wetness: f32, rain: f32, dt: f32) -> f32 {
 }
 
 /// The frame as packs read it (docs/api/shaders-reference.md), from the renderer's `Frame`.
-pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> FrameInputs {
+pub fn frame_inputs(
+    frame: &Frame,
+    size: [u32; 2],
+    seconds: f32,
+    index: u32,
+    shadow: Option<&horizon_shaders::Shadow>,
+) -> FrameInputs {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
     let view = crate::camera::view_matrix(frame.yaw, frame.pitch);
     let projection = super::world_projection(frame.fov_degrees, aspect, frame.depth_far)
@@ -748,6 +849,25 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         water_plane: frame.water_plane.unwrap_or(0.0),
         has_reflection: u32::from(frame.water_plane.is_some()),
         reflection_resolution: reflection_size(size).map(|s| s as f32),
+        mods: pack.mod_params,
+        light_direction: match shadow {
+            Some(s) => super::pack_uniforms::shadow_light(frame, s),
+            None => Vec3::Y,
+        }
+        .to_array(),
+        has_shadow: u32::from(shadow.is_some()),
+        shadow_view_proj: m(shadow.map_or(Mat4::IDENTITY, |s| {
+            super::pack_uniforms::shadow_culling(frame, s)
+        })),
+        shadow_distance: shadow.map_or(0.0, |s| s.distance),
+        shadow_distortion: shadow.map_or(0.0, |s| {
+            super::native_shadow::distortion(s.distance, s.resolution)
+        }),
+        shadow_resolution: shadow.map_or(0.0, |s| s.resolution as f32),
+        shadow_center_texel: shadow.map_or(0.0, |s| {
+            let k = super::native_shadow::distortion(s.distance, s.resolution);
+            2.0 * s.distance / s.resolution.max(1) as f32 * (1.0 - k)
+        }),
     }
 }
 
@@ -814,7 +934,7 @@ mod tests {
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device);
+        let frame = NativeFrame::new(&device, None);
         queue.write_buffer(
             &frame.buffer,
             0,
@@ -933,7 +1053,7 @@ file = \"b.wgsl\"
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device);
+        let frame = NativeFrame::new(&device, None);
         let mut post = NativePost::new(&device, report.stages, &[], format, &frame).unwrap();
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let color = texture(&device, format, usage).create_view(&Default::default());
