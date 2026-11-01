@@ -3474,7 +3474,11 @@ impl Game<'_> {
             });
             let mut keep_flags = vec![true; projectiles.len()];
             for i in 0..projectiles.len() {
-                let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl) {
+                // A wind charge is pickable, so a pearl, an arrow or a trident can
+                // strike it (`Projectile.isPickable`, `Projectile.onHit`).
+                let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl)
+                    || projectiles[i].arrow.is_some()
+                {
                     wind_charge_hitboxes(&projectiles, &keep_flags, i)
                 } else {
                     Vec::new()
@@ -3502,9 +3506,18 @@ impl Game<'_> {
                     p.owner = shooter;
                 }
                 let (keep, hit) = match (p.arrow.is_some(), mob_shot || pvp, winds.is_empty()) {
-                    (true, false, _) => horizon_client::arrows::tick(p, &scene, &arrow_targets),
-                    (true, true, _) => {
+                    (true, false, true) => horizon_client::arrows::tick(p, &scene, &arrow_targets),
+                    (true, true, true) => {
                         horizon_client::arrows::tick(p, &scene, &arrow_targets_guests)
+                    }
+                    (true, with_guests, false) => {
+                        let mut targets = if with_guests {
+                            arrow_targets_guests.clone()
+                        } else {
+                            arrow_targets.clone()
+                        };
+                        targets.extend(winds);
+                        horizon_client::arrows::tick(p, &scene, &targets)
                     }
                     (false, false, true) => p.tick(&pw),
                     (false, true, true) => p.tick(&pw_guests),
