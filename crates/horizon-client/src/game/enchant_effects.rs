@@ -175,6 +175,7 @@ impl Game<'_> {
         };
         let Some(m) = self.mobs.get(mob) else { return };
         let kind = m.kind.id.clone();
+        let victim = m.id;
         let ctx = EffectContext {
             this: Some(&kind),
             attacker: Some("minecraft:player"),
@@ -187,6 +188,7 @@ impl Game<'_> {
         // ignite (fire aspect) and apply_mob_effect (bane of arthropods).
         let mut ignite = 0.0f32;
         let mut mob_effects = Vec::new();
+        let mut hook_calls: Vec<(String, String, Value, u32)> = Vec::new();
         for (id, level) in held.enchantments() {
             let Some(def) = world_stations!(self).enchantments.get(id) else {
                 continue;
@@ -197,14 +199,17 @@ impl Game<'_> {
                 .flatten()
             {
                 let e = &effect["effect"];
-                let kind_of = e["type"].as_str();
-                if effect["enchanted"] != "attacker"
-                    || effect["affected"] != "victim"
-                    || !matches!(
-                        kind_of,
-                        Some("minecraft:ignite" | "minecraft:apply_mob_effect")
-                    )
-                {
+                if effect["enchanted"] != "attacker" || effect["affected"] != "victim" {
+                    continue;
+                }
+                // A bare type name is minecraft's own, as a bare item id is.
+                let kind_of = match e["type"].as_str() {
+                    Some(k) if k.contains(':') => k.to_owned(),
+                    Some(k) => format!("minecraft:{k}"),
+                    None => continue,
+                };
+                let own = !kind_of.starts_with("minecraft:");
+                if !own && !matches!(&*kind_of, "minecraft:ignite" | "minecraft:apply_mob_effect") {
                     continue;
                 }
                 let mut random = self.world.random.clone();
@@ -218,7 +223,11 @@ impl Game<'_> {
                 if !ok {
                     continue;
                 }
-                if kind_of == Some("minecraft:ignite") {
+                // A mod's own kind: its hook answers, after this loop (the
+                // stations borrow is held here).
+                if own {
+                    hook_calls.push((id.to_string(), kind_of, e.clone(), *level));
+                } else if kind_of == "minecraft:ignite" {
                     ignite =
                         ignite.max(horizon_client::enchant::level_value(&e["duration"], *level));
                 } else {
@@ -234,6 +243,9 @@ impl Game<'_> {
         }
         for (effect, level) in mob_effects {
             self.apply_mob_effect(mob, &effect, level);
+        }
+        for (id, kind_of, data, level) in hook_calls {
+            self.native_enchant_effect(&id, &kind_of, &data, level, victim);
         }
         self.post_attack_bursts(&held, &kind);
     }

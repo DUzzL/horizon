@@ -1315,7 +1315,7 @@ pub fn main() -> horizon_client::Result<()> {
                     continue;
                 }
                 if let Some(Some((name, volume, pitch))) =
-                    horizon_client::mobs::ai::feed_animal(&mut mobs[i], &mut level_random)
+                    horizon_client::mobs::ai::feed_animal(&mut mobs[i], &mut level_random, None)
                 {
                     events.push(MobEvent::Sound(name, [0.0; 3], volume, pitch));
                 }

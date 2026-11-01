@@ -126,6 +126,11 @@ Terrain carries its sprite, not its block, so a sprite drawn by several blocks g
 
 ## Options
 
+A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an
+option's next value, a right click the one before, shift-click its default, and Reset all of them; hovering one shows its
+`description`. Each change is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out) and
+the pack reloads with it within half a second.
+
 Each `[[options]]` entry is a WGSL `override` of the same name, set when the game builds the pipeline: no text
 substitution, no recompiling a different program per value.
 
@@ -158,4 +163,4 @@ without the pack.
 
 ## Next
 
-The overlay, lighting and shadow stages, and option values other than the defaults.
+The overlay and lighting stages, and option values other than the defaults.

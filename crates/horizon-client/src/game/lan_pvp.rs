@@ -16,12 +16,16 @@ use horizon_client::{
 use horizon_core::geometry::{Aabb, Vec3};
 
 /// The player projectiles that meet other players: arrows (their hurt), and
-/// snowballs and eggs, which break on them (`Player.hurtServer` takes no 0
-/// damage). Pearls, potions and wind charges fly past players as before.
+/// snowballs, eggs and mods' thrown types, which break on them
+/// (`Player.hurtServer` takes no 0 damage). Pearls, potions and wind charges
+/// fly past players as before.
 pub(super) fn meets_players(kind: &ProjectileKind) -> bool {
     matches!(
         kind,
-        ProjectileKind::Arrow { .. } | ProjectileKind::Snowball | ProjectileKind::Egg
+        ProjectileKind::Arrow { .. }
+            | ProjectileKind::Snowball
+            | ProjectileKind::Egg
+            | ProjectileKind::Thrown(_)
     )
 }
 
@@ -544,11 +548,10 @@ impl Game<'_> {
         let (xd, zd) = sweep.knockback;
         let attacker = self.player_attacker(host, sweep.attacker);
         let land = |g: &mut Self| {
-            let hurt = g.mob_hits_player(sweep.damage, sweep.from, "minecraft:player_attack");
-            if hurt {
-                if let Some((id, name)) = &attacker {
-                    g.note_named_attacker("minecraft:player_attack", *id, name.clone());
-                }
+            if let Some((id, name)) = &attacker {
+                g.note_named_attacker("minecraft:player_attack", *id, name.clone());
+            }
+            if g.mob_hits_player(sweep.damage, sweep.from, "minecraft:player_attack") {
                 g.knock_back_player(0.4, xd, zd);
             }
         };

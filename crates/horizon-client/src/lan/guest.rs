@@ -1025,6 +1025,16 @@ fn network_stack(
             horizon_protocol::item::Component::Ident(model),
         ));
     }
+    // Arbitrary NBT other mods and item models read back client-side
+    // (`item_model.rs`'s `custom_data_at`), as vanilla's DataComponentPatch does.
+    if let Some(tag @ horizon_world::nbt::Tag::Compound(_)) =
+        s.data().and_then(|d| d.other("minecraft:custom_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_DATA,
+            horizon_protocol::item::Component::Nbt(tag.clone()),
+        ));
+    }
     if let Some(t) = s
         .data()
         .and_then(|d| d.other("minecraft:custom_model_data"))

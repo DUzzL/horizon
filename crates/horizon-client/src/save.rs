@@ -3096,6 +3096,10 @@ pub enum WorldPreset {
     LargeBiomes,
     Amplified,
     SingleBiomeSurface,
+    /// `minecraft:debug_all_block_states`: a grid of every block state
+    /// (`DebugLevelSource`). The create screen does not offer it; a data
+    /// pack, `level-type` or a saved world names it.
+    Debug,
 }
 impl WorldPreset {
     /// The presets, in the order the world-type button cycles through them.
@@ -3114,11 +3118,15 @@ impl WorldPreset {
             Self::LargeBiomes => "minecraft:large_biomes",
             Self::Amplified => "minecraft:amplified",
             Self::SingleBiomeSurface => "minecraft:single_biome_surface",
+            Self::Debug => "minecraft:debug_all_block_states",
         }
     }
     /// The preset an id names, if it is one of them.
     pub fn of_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|preset| preset.id() == id)
+        Self::ALL
+            .into_iter()
+            .chain([Self::Debug])
+            .find(|preset| preset.id() == id)
     }
     /// The language key the world-type button shows
     /// (`Identifier.toLanguageKey("generator")`).
@@ -3129,6 +3137,7 @@ impl WorldPreset {
             Self::LargeBiomes => "generator.minecraft.large_biomes",
             Self::Amplified => "generator.minecraft.amplified",
             Self::SingleBiomeSurface => "generator.minecraft.single_biome_surface",
+            Self::Debug => "generator.minecraft.debug_all_block_states",
         }
     }
     /// The preset the world-type button cycles to next.
@@ -3153,6 +3162,9 @@ impl WorldPreset {
     pub fn of_generator(generator: &Tag) -> Self {
         if text(generator.get("type")).as_deref() == Some("minecraft:flat") {
             return Self::Flat;
+        }
+        if text(generator.get("type")).as_deref() == Some("minecraft:debug") {
+            return Self::Debug;
         }
         let source = generator.get("biome_source");
         let fixed = text(source.and_then(|s| s.get("type"))).as_deref() == Some("minecraft:fixed");
@@ -3320,6 +3332,14 @@ pub fn write_world_gen_settings_with(
             "minecraft:overworld",
             preset("minecraft:overworld"),
         ),
+        // worldgen/world_preset/debug_all_block_states.json's overworld.
+        WorldPreset::Debug => Tag::compound([
+            ("type", string("minecraft:overworld")),
+            (
+                "generator",
+                Tag::compound([("type", string("minecraft:debug"))]),
+            ),
+        ]),
     };
     write_saved_data(
         dir,
@@ -3442,6 +3462,10 @@ pub struct Level {
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
+    /// The player was read from the file level.dat names (`singleplayer_uuid`,
+    /// or its `.dat_old`): `PlayerList.loadPlayerData` gives the world's owner
+    /// that file, not their own.
+    pub singleplayer_file: bool,
 }
 impl Level {
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
@@ -3599,6 +3623,7 @@ impl Level {
             read_dat(&player_dir.join(format!("{name}.dat")))
                 .or_else(|| read_dat(&player_dir.join(format!("{name}.dat_old"))))
         });
+        level.singleplayer_file = owner.is_some();
         let player = owner
             .or_else(|| {
                 fs::read_dir(&player_dir)
@@ -3992,6 +4017,18 @@ impl Level {
         self.write_internal(dir, false)
     }
 
+    /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
+    /// (`PlayerDataStorage.save`): the one level.dat names.
+    pub fn write_player(&mut self, dir: &Path) -> Result<()> {
+        let uuid = self.ensure_player_uuid();
+        let player_file = dir
+            .join("players")
+            .join("data")
+            .join(format!("{}.dat", uuid_text(uuid)));
+        back_up_unreadable_player(&player_file);
+        write_dat(&player_file, self.player_tag())
+    }
+
     fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
@@ -4195,12 +4232,7 @@ impl Level {
             write_saved_data(dir, "game_rules", rules)?;
         }
         if write_player {
-            let player_file = dir
-                .join("players")
-                .join("data")
-                .join(format!("{}.dat", uuid_text(uuid)));
-            back_up_unreadable_player(&player_file);
-            write_dat(&player_file, self.player_tag())?;
+            self.write_player(dir)?;
         }
         write_dat(&dir.join("level.dat"), Tag::compound([("Data", data)]))?;
         Ok(())
@@ -6622,6 +6654,7 @@ mod tests {
             WorldPreset::LargeBiomes,
             WorldPreset::Amplified,
             WorldPreset::SingleBiomeSurface,
+            WorldPreset::Debug,
         ] {
             let dir = gen_world("stem-stable");
             write_world_gen_settings(
@@ -6856,6 +6889,41 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The Debug preset (`worldgen/world_preset/debug_all_block_states.json`): its id names it,
+    /// the saved overworld generator is `minecraft:debug` and reads back as it, and the create
+    /// screen's button never cycles to it.
+    #[test]
+    fn the_debug_preset_is_saved_and_read_back() {
+        assert_eq!(
+            WorldPreset::of_id("minecraft:debug_all_block_states"),
+            Some(WorldPreset::Debug)
+        );
+        assert!(!WorldPreset::ALL.contains(&WorldPreset::Debug));
+        let dir = gen_world("debug-preset");
+        write_world_gen_settings(
+            &dir,
+            7,
+            WorldGen {
+                preset: WorldPreset::Debug,
+                structures: true,
+                bonus_chest: false,
+            },
+        )
+        .unwrap();
+        let settings = world_gen_settings(&dir).unwrap();
+        let generator = settings
+            .get("dimensions")
+            .and_then(|d| d.get("minecraft:overworld"))
+            .and_then(|o| o.get("generator"))
+            .unwrap();
+        assert_eq!(
+            text(generator.get("type")).as_deref(),
+            Some("minecraft:debug")
+        );
+        assert_eq!(WorldGen::read(&dir).unwrap().preset, WorldPreset::Debug);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

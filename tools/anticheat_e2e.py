@@ -11,10 +11,10 @@ Checks:
 - timer: `[anticheat]` on, with the timer's thresholds once trusted (it logs only by default): a bot ticking 1.5 times as fast as vanilla's client is flagged, sent back,
          reported to the console and kicked; the legit bots (walking and exploring at 20 Hz) are never
          flagged.
-- ground: the default thresholds, survival (allow-flight on, so vanilla's floating kick stays out of it): a
-         bot walking 24 blocks up that claims the ground in every move (no-fall) and one walking on water
-         that does (jesus) are flagged, their claim dropped, and kicked, warned of the ban the next kick
-         brings; bots walking on the ground and standing still are never flagged.
+- ground: the default thresholds, survival, allow-flight off: a bot walking 24 blocks up that claims the
+         ground in every move (no-fall) and one walking on water that does (jesus) are flagged, their claim
+         dropped (never sent back), and kicked by the anticheat, warned of the ban the next kick brings, never
+         by vanilla's floating kick; bots walking on the ground and standing still are never flagged.
 - prediction: `[anticheat]` on, survival: a real Horizon client, through a relay that holds every packet
          20-120 ms, walks, sprint-jumps, strafes and sneaks, with effects given and cleared, over ice and
          soul sand, swims, walks into cows, has blocks changed around it, flies in creative, glides with an
@@ -164,7 +164,8 @@ def check_timer(bins, scratch, out, seconds):
 
 def check_ground(bins, scratch, out, seconds):
     folder = scratch / 'ground'
-    server, port = start(bins, folder, ON, out, 'ground', **{'gamemode': 'survival', 'allow-flight': 'true'})
+    # allow-flight off: a dropped claim must never feed vanilla's floating kick.
+    server, port = start(bins, folder, ON, out, 'ground', **{'gamemode': 'survival', 'allow-flight': 'false'})
     try:
         with ThreadPoolExecutor(4) as pool:
             runs = {
@@ -202,9 +203,17 @@ def check_ground(bins, scratch, out, seconds):
         # The defaults act: the first kick warns of the ban the second brings.
         if f'{cheater["name"]} failed ground' not in log or 'kicked (1 of 2 before a ban)' not in log:
             raise Failed(f'ground: {cheater["name"]}: no kick with its ban count in the log:\n{log}')
+    if 'sent back' in log:
+        raise Failed(f'ground: a player was sent back (ground only drops the claim):\n{log}')
+    if 'claim dropped' not in log:
+        raise Failed(f'ground: no claim dropped in the log:\n{log}')
+    console = (out / 'ground-server.log').read_text()
+    if 'floating too long' in console:
+        raise Failed('ground: vanilla\'s floating kick ended a dropped claim (only the anticheat kicks):\n'
+                     + '\n'.join(l for l in console.splitlines() if 'floating' in l))
     walkers = runs['Walk']['joined'] + runs['Stand']['joined']
-    print(f'ground: the no-fall and jesus bots are flagged and kicked (1 of 2 before a ban) at the default thresholds; '
-          f'{walkers} bots on the ground never flagged')
+    print(f'ground: the no-fall and jesus bots are flagged, their claims dropped (never sent back), and kicked by the '
+          f'anticheat (1 of 2 before a ban), never by the floating kick; {walkers} bots on the ground never flagged')
 
 
 class Jitter:

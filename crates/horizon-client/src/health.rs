@@ -386,6 +386,7 @@ impl PlayerMotion {
             status: self.status.clone(),
             blocking,
             blocked: 0.0,
+            fully_blocked: false,
             block_sound: false,
             knocked: false,
             totem: totem_ready,
@@ -403,6 +404,7 @@ impl PlayerMotion {
         let outcome = BlockOutcome {
             hurt,
             blocked: environment.blocked,
+            fully_blocked: environment.fully_blocked,
             sound: environment.block_sound,
             knockback: environment.knocked,
             canceled: environment.canceled,
@@ -480,6 +482,8 @@ pub(crate) struct Environment<'a> {
     /// The raised blocking item, if any, and what it blocked.
     pub(crate) blocking: Option<Blocking>,
     pub(crate) blocked: f32,
+    /// What it blocked covers the whole hit, as difficulty scaled it.
+    pub(crate) fully_blocked: bool,
     pub(crate) block_sound: bool,
     /// `dealDefaultKnockback` ran: a fresh hit, not fully blocked.
     pub(crate) knocked: bool,
@@ -545,6 +549,9 @@ pub struct AttackRecord {
 pub struct BlockOutcome {
     pub hurt: bool,
     pub blocked: f32,
+    /// `applyItemBlocking`'s `damageBlocked >= damage`, against the damage
+    /// `Player.hurtServer` scaled with the difficulty.
+    pub fully_blocked: bool,
     /// `BlocksAttacks.onBlocked` ran (the block sound plays).
     pub sound: bool,
     /// The hit knocks the player back (`dealDefaultKnockback`): not one in
@@ -763,6 +770,7 @@ impl HurtWorld for Environment<'_> {
             return Ok(0.0);
         }
         self.blocked = b.rules.resolve(&mut MatchedSets, damage, b.angle)?;
+        self.fully_blocked = self.blocked >= damage;
         Ok(self.blocked)
     }
     fn freeze_hurts_extra(&mut self, _: &mut State) -> io::Result<bool> {
@@ -934,6 +942,56 @@ mod tests {
         // A weaker one doesn't hurt at all.
         let third = hit(1.5);
         assert!(!third.hurt && !third.knockback);
+    }
+
+    /// #2800: on Easy a mob's 4 is scaled to 3 before `applyItemBlocking`,
+    /// so a shield that stops all 3 blocks fully (`damageBlocked >= damage`)
+    /// and `blockedByItem` must not pull the player toward the mob.
+    #[test]
+    fn a_shield_fully_blocks_a_hit_scaled_down_by_easy() {
+        use horizon_world::blocking_rules::{BlockingRules, DamageReduction, ItemDamageFunction};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        let health = &resources.health;
+        let rules = super::HealthRules {
+            difficulty: horizon_world::food::Difficulty::Easy,
+            ..Default::default()
+        };
+        let shield = super::Blocking {
+            rules: BlockingRules {
+                delay_seconds: 0.25,
+                disable_scale: 1.0,
+                reductions: vec![DamageReduction {
+                    horizontal_angle: 90.0,
+                    types: None,
+                    base: 0.0,
+                    factor: 1.0,
+                }],
+                item_damage: ItemDamageFunction {
+                    threshold: 3.0,
+                    base: 1.0,
+                    factor: 1.0,
+                },
+            },
+            bypassed: false,
+            pierce: false,
+            angle: 0.0,
+        };
+        let id = health.damage.id("minecraft:mob_attack").unwrap();
+        let o = player
+            .hurt_caused_by(health, rules, id, 4.0, Some(shield), true, 0)
+            .unwrap();
+        assert_eq!(o.blocked, 3.0, "Easy scales 4 to 3 before the shield");
+        assert!(o.fully_blocked && !o.knockback);
     }
 
     /// #2141: an arrow that takes the last of the player's health must kill

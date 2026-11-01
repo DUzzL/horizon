@@ -8,10 +8,10 @@ Fox.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize
 Fox.setTargetGoals	port	crates/horizon-client/src/mobs/fox.rs::register	red and snow target orders as goals gated on the variant read when the goal runs
 Fox.get	missing		minor: the fox/variant component is not reported (species_variant_component has no fox)
 Fox.applyImplicitComponent	missing		minor: a fox/variant component on a spawn egg or item is ignored
-Fox.getTrustedEntities	missing		player: foxes trust nobody, so a fox you bred still runs from you (the avoid-player goal has no trust test) and never defends you
-Fox.addTrustedEntity	missing		player: foxes bred or hatched by a player never trust them (breeding does not pass the breeder on)
-Fox.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	gap: player: only Type is read; Trusted, Sleeping, Sitting and Crouching are dropped, so a reload wakes a sleeping fox and forgets trust
-Fox.clearTrusted	missing		minor: trust is not modelled, so there is nothing to clear
+Fox.getTrustedEntities	port	crates/horizon-client/src/mobs/fox.rs::trusted_entities	the trusted list decides whom the avoid-player goal leaves alone (`Fox.trusts`); defending a trusted player (`DefendTrustedTargetGoal`) is still missing
+Fox.addTrustedEntity	port	crates/horizon-client/src/mobs/fox.rs::add_trusted_entity	the two DATA_TRUSTED_ID slots, first free then replacing the second; a baby fox made by using a fox spawn egg on a fox trusts that player (`Fox.onOffspringSpawnedFromEgg`)
+Fox.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Type, Trusted (clearTrusted then addTrustedEntity per UUID), Sleeping, Sitting and Crouching
+Fox.clearTrusted	port	crates/horizon-client/src/mobs/fox.rs::clear_trusted	both trusted slots emptied, before a load reads Trusted
 Fox.getFlag	port	crates/horizon-client/src/mobs/fox.rs::flag	flags byte in extra.ints[0]
 Fox.canHoldItem	missing		player: part of the missing item pickup (a fox never reaches the point of choosing what to hold)
 Fox.spitOutItem	missing		minor: the old item is never spat out with entity.fox.spit because pickup is missing

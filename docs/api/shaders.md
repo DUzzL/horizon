@@ -55,6 +55,10 @@ file = "sky.wgsl"
 [material]
 file = "material.wgsl"
 
+[shadow]                   # optional, needs [material] or [[post]]: a shadow map from the sun (the moon by night)
+resolution = 2048          # its side in texels, 256 to 8192
+distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
+
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
 name = "Colour grade"      # optional: the GPU time overlay's label
@@ -98,11 +102,20 @@ pack exist ([stability.md](stability.md)).
 
 ## Not there yet
 
-Option values other than the defaults (the three stages run, with hot reload), then the overlay, lighting and shadow
+Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
 stages.
 
 ## Changelog
 
+- 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
+  and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
+- 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each
+  frame (`native_shader_params` in docs/native-mods.md), all 0 when no mod sets them.
+- 2026-10-31: API 0.1 (additions): `[shadow]`: the engine draws the solid terrain the light sees
+  into a distorted depth map each frame, which the material and post stages read as `shadow_map`
+  with `shadow_sampler` and the prelude's `shadow_position`; the frame's `light_direction`,
+  `has_shadow`, `shadow_view_proj`, `shadow_distance`, `shadow_distortion`, `shadow_resolution`
+  and `shadow_center_texel`.
 - 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
   mirror only while that option is on, and the mirror's own eye in facing culling.
 - 2026-10-30: API 0.1 (additions): the material stage's `reflection` and

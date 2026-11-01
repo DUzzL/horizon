@@ -34,7 +34,64 @@ const FRAME: Resource = Resource {
     doc: "The frame (`Frame`).",
 };
 
-const POST_RESOURCES: [Resource; 7] = [
+/// The shadow map at `binding`.
+const fn shadow_map(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_map",
+        ty: "var shadow_map: texture_depth_2d",
+        doc: "This frame's shadow map: the depth of the solid terrain the light sees, 0 at the light, 1 away from it (and where nothing is), stored at `shadow_position`'s mapping. Valid while `frame.has_shadow` is 1 (the pack asks for it with `[shadow]`), else a 1×1 map that lights everything.",
+    }
+}
+
+/// The shadow map's comparison sampler at `binding`.
+const fn shadow_sampler(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_sampler",
+        ty: "var shadow_sampler: sampler_comparison",
+        doc: "Depth comparison, bilinear (2×2 percentage-closer filtering): `textureSampleCompareLevel(shadow_map, shadow_sampler, p.xy, p.z)` is 1 where the point is lit, 0 in shadow.",
+    }
+}
+
+/// The shadow map with translucent terrain at `binding`.
+const fn shadow_map_translucent(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_map_translucent",
+        ty: "var shadow_map_translucent: texture_depth_2d",
+        doc: "`shadow_map` with the translucent terrain (water, stained glass, ice) the light passes through drawn in too, read with `shadow_sampler` the same way: a point lit in `shadow_map` but not here lies under such a surface, which `shadow_color` gives the colour of.",
+    }
+}
+
+/// The colour of the translucent terrain in the shadow map at `binding`.
+const fn shadow_color(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_color",
+        ty: "var shadow_color: texture_2d<f32>",
+        doc: "The texture colour times the vertex colour (rgb: the tint, the face's directional shade and ambient occlusion) of the nearest translucent surface the light passes through at each texel of `shadow_map_translucent`, white where there is none; alpha is 1 on a fluid (water) and the texture's alpha, at most 0.99, on anything else. Read it with `textureLoad` at `shadow_position`'s xy times `textureDimensions(shadow_color)`.",
+    }
+}
+
+/// A function the material and post preludes give packs.
+pub const SHADOW_HELPERS: &str = "\
+// The shadow map's distortion toward its centre, of a point at shadow clip `xy`.
+fn shadow_distort(xy: vec2<f32>) -> vec2<f32> {
+    let k = frame.shadow_distortion;
+    return xy / (length(xy) * k + 1.0 - k);
+}
+// Where the camera-relative point `position` is stored in the shadow map: xy its 0..1 texture
+// coordinate (from the top left), z its depth from the light, for `textureSampleCompareLevel`.
+fn shadow_position(position: vec3<f32>) -> vec3<f32> {
+    let clip = frame.shadow_view_proj * vec4<f32>(position, 1.0);
+    let xy = shadow_distort(clip.xy);
+    // At most 1, the depth where nothing is: past the map's far end a point stays lit.
+    return vec3<f32>(xy.x * 0.5 + 0.5, 0.5 - xy.y * 0.5, min(clip.z, 1.0));
+}
+";
+
+const POST_RESOURCES: [Resource; 11] = [
     FRAME,
     Resource {
         binding: 1,
@@ -66,17 +123,21 @@ const POST_RESOURCES: [Resource; 7] = [
         ty: "var nearest_sampler: sampler",
         doc: "Nearest texel, clamped to the edges.",
     },
+    shadow_map(6),
+    shadow_sampler(7),
     Resource {
         binding: 8,
         name: "history",
         ty: "var history: texture_2d<f32>",
         doc: "Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame, after a gap of over half a second, and with a single pass.",
     },
+    shadow_map_translucent(9),
+    shadow_color(10),
 ];
 
 /// The material stage's resources: the frame, and the world as it was before translucent
 /// terrain drew (for water and glass to see what lies behind them).
-const MATERIAL_RESOURCES: [Resource; 5] = [
+const MATERIAL_RESOURCES: [Resource; 9] = [
     FRAME,
     Resource {
         binding: 1,
@@ -90,6 +151,10 @@ const MATERIAL_RESOURCES: [Resource; 5] = [
         ty: "var reflection_sampler: sampler",
         doc: "Bilinear filtering, clamped to the edges.",
     },
+    shadow_map(3),
+    shadow_sampler(4),
+    shadow_map_translucent(7),
+    shadow_color(8),
     Resource {
         binding: 6,
         name: "opaque_depth",
@@ -279,8 +344,14 @@ impl StageKind {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
         }
         match self {
-            StageKind::Post => out += POST_HELPERS,
-            StageKind::Material => out += MATERIAL_HELPERS,
+            StageKind::Post => {
+                out += POST_HELPERS;
+                out += SHADOW_HELPERS;
+            }
+            StageKind::Material => {
+                out += MATERIAL_HELPERS;
+                out += SHADOW_HELPERS;
+            }
             StageKind::Sky => {}
         }
         out

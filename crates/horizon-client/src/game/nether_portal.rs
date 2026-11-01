@@ -994,6 +994,7 @@ impl Game<'_> {
             if !self.may_enter(plan.dim) {
                 return;
             }
+            self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let b = &self.boats[i];
             let tag = horizon_client::entity_nbt::boat_to_nbt(
@@ -1019,6 +1020,7 @@ impl Game<'_> {
             if !self.may_enter(plan.dim) {
                 return;
             }
+            self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let tag = self.carts[i].to_nbt(uuid, self.persist_raw(id));
             self.carts.remove(i);

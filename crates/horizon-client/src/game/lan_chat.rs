@@ -186,9 +186,27 @@ impl Game<'_> {
             let targets: Vec<usize> = match (raw, &selector.player_name, selector.uuid) {
                 (Some("@s"), ..) => vec![i],
                 (Some("@a"), ..) => (0..guests.len()).filter(placed).collect(),
-                (_, Some(name), _) => (0..guests.len())
-                    .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
-                    .collect(),
+                (_, Some(name), _) => {
+                    let named: Vec<usize> = (0..guests.len())
+                        .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
+                        .collect();
+                    if named.is_empty() {
+                        // No player has that name: the one going by it as a nickname (`~` optional).
+                        let bare = |s: &str| s.strip_prefix('~').unwrap_or(s).to_ascii_lowercase();
+                        let wanted = bare(name);
+                        let nicknamed = |k: &usize| {
+                            host.hub
+                                .nicknames
+                                .get(&guests[*k].uuid)
+                                .is_some_and(|nick| bare(nick) == wanted)
+                        };
+                        (0..guests.len())
+                            .filter(|k| placed(k) && nicknamed(k))
+                            .collect()
+                    } else {
+                        named
+                    }
+                }
                 (_, None, Some(uuid)) => (0..guests.len())
                     .filter(|&k| placed(&k) && guests[k].uuid == uuid)
                     .collect(),

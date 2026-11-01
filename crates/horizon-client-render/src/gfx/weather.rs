@@ -53,13 +53,7 @@ impl Weather {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: Some(depth_stencil()),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
@@ -157,10 +151,32 @@ impl Weather {
     }
 }
 
+/// RenderPipelines.WEATHER: depth-tested, but no depth write, so the water
+/// and glass drawn behind the rain still show through it.
+fn depth_stencil() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+        stencil: Default::default(),
+        bias: Default::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::weather::{Parameters, Time};
     use wgpu::util::DeviceExt;
+
+    #[test]
+    fn weather_writes_no_depth() {
+        let depth = super::depth_stencil();
+        assert_eq!(depth.depth_write_enabled, Some(false));
+        assert_eq!(
+            depth.depth_compare,
+            Some(wgpu::CompareFunction::GreaterEqual)
+        );
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

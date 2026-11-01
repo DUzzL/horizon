@@ -105,7 +105,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
             seed: 0,
         },
         "minecraft:wither_skull" => ProjectileKind::WitherSkull { dangerous: false },
-        _ => return None,
+        _ => ProjectileKind::Thrown(horizon_client::projectiles::thrown_type(kind)?),
     })
 }
 

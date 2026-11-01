@@ -457,6 +457,8 @@ impl Game<'_> {
         EntityView {
             kind: "minecraft:player".into(),
             position: [p.position.x, p.position.y, p.position.z],
+            // Entity.isOnFire on a server: remainingFireTicks (players aren't fire immune).
+            on_fire: p.fire_ticks > 0,
             sneaking: p.pose == horizon_client::pose::Pose::Crouching,
             // Input.shift: the held key, as `BlockItem.place`'s sneaking reads it.
             input_sneak: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),

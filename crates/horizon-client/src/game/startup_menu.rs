@@ -552,6 +552,11 @@ impl Loading {
                         super::shader_packs::write_shader_options(&options);
                     }
                 }
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Game::shader_packs_dir());
+                    }
+                }
                 Event::OpenShaderPackFolder => {
                     let dir = Game::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);

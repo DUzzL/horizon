@@ -311,14 +311,13 @@ impl SyncData {
     }
 
     /// ClientboundRegistryDataPacket per registry. With `known_pack` the
-    /// client rebuilds the entries from its own data, so none is sent.
+    /// client rebuilds the entries from its own data, so none is sent, the
+    /// dialogs among them (`RegistrySynchronization.packRegistry`): only an
+    /// entry a world's pack added or replaced (`from_pack`) carries its data.
     /// The registries for a client, with the data of a dimension type the
     /// world's data packs changed (`levels`) even when it knows the vanilla
     /// pack.
     pub fn registry_packets(&self, known_pack: bool, levels: &LevelShapes) -> Vec<RegistryData> {
-        // The client reads a dialog's data from the packet: it does not
-        // rebuild the registry from its known pack.
-        let always_sent = |key: &str| key == "minecraft:dialog";
         self.registries
             .iter()
             .map(|(key, e)| RegistryData {
@@ -336,7 +335,7 @@ impl SyncData {
                             id: name.clone(),
                             data: match changed {
                                 Some(json) => Some(json_to_nbt(&json)),
-                                None if known_pack && !from_pack && !always_sent(key) => None,
+                                None if known_pack && !from_pack => None,
                                 None => Some(json_to_nbt(json)),
                             },
                         }
@@ -627,6 +626,30 @@ mod tests {
             [0, 2],
             "the pack's dialog, then the nested tag's"
         );
+    }
+
+    /// RegistrySynchronization.packRegistry: a client that knows the core
+    /// pack gets the vanilla dialogs without data; a pack's dialog has it.
+    #[test]
+    fn known_pack_dialogs_are_sent_without_data() {
+        let mut sync = SyncData::empty();
+        sync.registries.push((
+            "minecraft:dialog".to_owned(),
+            Entries {
+                names: vec!["minecraft:quick_actions".into(), "test:menu".into()],
+                json: vec![serde_json::json!({ "type": "minecraft:dialog_list" }); 2],
+                from_pack: vec![false, true],
+            },
+        ));
+        let data = |known_pack| -> Vec<bool> {
+            sync.registry_packets(known_pack, &LevelShapes::VANILLA)[0]
+                .entries
+                .iter()
+                .map(|e| e.data.is_some())
+                .collect()
+        };
+        assert_eq!(data(true), [false, true]);
+        assert_eq!(data(false), [true, true]);
     }
 
     #[test]

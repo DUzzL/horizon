@@ -93,6 +93,8 @@ pub struct Report {
     pub stages: Vec<CheckedStage>,
     /// The manifest's `[reflection]`.
     pub reflection: Option<crate::manifest::Reflection>,
+    /// The manifest's `[shadow]`.
+    pub shadow: Option<crate::manifest::Shadow>,
 }
 
 /// Checks every stage of `pack`, and that each option is an `override` of
@@ -140,6 +142,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
         Ok(Report {
             stages: checked,
             reflection: m.reflection.clone(),
+            shadow: m.shadow.clone(),
         })
     } else {
         Err(problems)

@@ -280,6 +280,8 @@ pub struct PlayerMotion {
     pub collision: CollisionFlags,
     pub history: MovementHistory,
     pub fall_distance: f64,
+    /// The block fallOn currently running, consumed by its damage call.
+    pub(crate) block_landing: Option<(BlockStateId, BlockPos, f64)>,
     pub stuck_multiplier: Vec3,
     /// `Entity.pistonDeltas` and `pistonDeltasGameTime`: how far a moving
     /// block has pushed this entity this tick (0.51 at most on any axis).
@@ -519,6 +521,7 @@ impl PlayerMotion {
             collision: CollisionFlags::default(),
             history: MovementHistory::default(),
             fall_distance: 0.0,
+            block_landing: None,
             stuck_multiplier: Vec3::ZERO,
             piston: Default::default(),
             yaw: 0.0,
@@ -1446,6 +1449,17 @@ impl MotionWorld<'_, '_, '_> {
         if self.player.ground.on_ground {
             let on = self.legacy_on_position()?;
             let under = self.assets.registry.state(self.block(on));
+            if let Some(block) = under {
+                crate::block_contact::emit(crate::block_contact::Event::StepOn(
+                    crate::block_contact::Contact {
+                        entity: self.player.entity_id,
+                        kind: "minecraft:player",
+                        block: &block.name,
+                        state: self.block(on),
+                        position: on,
+                    },
+                ));
+            }
             let magma = under.is_some_and(|s| s.name == "minecraft:magma_block");
             let slime = under.is_some_and(|s| s.name == "minecraft:slime_block");
             if magma && !self.player.shift_key_down {
@@ -1659,6 +1673,15 @@ impl MotionWorld<'_, '_, '_> {
                     }
             };
             if inside && visited.insert(p.pack()) {
+                crate::block_contact::emit(crate::block_contact::Event::Inside(
+                    crate::block_contact::Contact {
+                        entity: self.player.entity_id,
+                        kind: "minecraft:player",
+                        block: name,
+                        state,
+                        position: p,
+                    },
+                ));
                 // CactusBlock, CampfireBlock and the cauldrons' entityInside
                 // (`entity.hurt`, the fire and the fill level), and
                 // WitherRoseBlock's server-side effect.

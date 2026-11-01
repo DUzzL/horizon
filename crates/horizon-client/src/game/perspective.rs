@@ -568,7 +568,6 @@ impl Game<'_> {
     pub(super) fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
         (self.own_body_in_view() || self.pack_shadow_casters.1)
-            && !self.spectator()
             && self
                 .player
                 .as_ref()
@@ -616,7 +615,11 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
         let body = self.own_body_visible();
-        let render = if body {
+        // A spectator still draws its own model in third person: the poses'
+        // visibility (set by player_model_visibility) hides body parts, and
+        // translucent_body marks the body OIT for the ghostly look. Only first
+        // person and dead players skip it.
+        let render = if body || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
             horizon_client::mobs::render::render_layers
@@ -717,8 +720,9 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let mut verts = Vec::new();
-        // The same render state as in the world: an invisible body is not drawn.
-        let render = if self.own_body_visible() {
+        // A spectator preview still draws its own model: the poses'
+        // visibility hides body parts, leaving the head and its layers.
+        let render = if self.own_body_visible() || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
             horizon_client::mobs::render::render_layers
