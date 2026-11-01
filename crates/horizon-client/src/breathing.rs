@@ -27,7 +27,7 @@ pub struct Breath {
 /// maximum (300); without, it falls by `consume`, and at -20 it is set to 0
 /// and the entity takes 2 drowning damage. Negative amounts count as 0.
 /// Asked on servers for players and for mobs, except those with a
-/// `WaterAnimal`'s or an axolotl's own air logic. API @API:living_breathe@.
+/// `WaterAnimal`'s or an axolotl's own air logic. API 144.
 #[inline(never)]
 pub fn native_living_breathe(
     entity: u32,
