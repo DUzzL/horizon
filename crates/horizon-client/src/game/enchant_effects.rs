@@ -540,13 +540,17 @@ impl Game<'_> {
                 items: Some(world_items!(self)),
                 ..Default::default()
             };
-            let to_repair_xp = world_stations!(self).enchantments.modify_value(
+            let mut to_repair_xp = world_stations!(self).enchantments.modify_value(
                 Some(&stack),
                 "minecraft:repair_with_xp",
                 &ctx,
                 &mut self.world.random,
                 amount as f32,
             ) as u32;
+            if self.serving.is_some() || self.options.dedicated.is_some() {
+                let player = self.native_acting_id();
+                self.native_mending_repair(player, &stack, amount, &mut to_repair_xp);
+            }
             let repaired = to_repair_xp.min(stack.damage);
             if let Some(s) = self.mend_slot_mut(slot).as_mut() {
                 s.damage -= repaired;
@@ -554,7 +558,9 @@ impl Game<'_> {
             if repaired == 0 || to_repair_xp == 0 {
                 return 0;
             }
-            let remaining = amount.saturating_sub(repaired * amount / to_repair_xp);
+            let remaining = amount.saturating_sub(
+                (u64::from(repaired) * u64::from(amount) / u64::from(to_repair_xp)) as u32,
+            );
             if remaining == 0 {
                 return 0;
             }

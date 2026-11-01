@@ -885,6 +885,8 @@ API 152 adds a player opening and closing any menu on a server, on the single pl
 
 API 153 adds a player starting or stopping flight: `native_player_toggle_flight(player, name, flying, cancel)` is heard once for each change a player's client makes to its flying (vanilla honours it only for a player who may fly), on a server, with the player's state swapped in. A mod sets `cancel` to refuse it: the player keeps the state they had and the server sends their abilities back, so the client lands or flies again. Only what a client asks for is heard, not the flight a game-mode change starts or ends, and not a LAN host's own player. Bundles that use it need `"hooks": 153`.
 
+API 154 adds `native_experience_orb_pickup(player, dimension, orb, value, count, canceled)` runs before a server player takes an orb. Canceling leaves it and the pickup delay unchanged; otherwise value and count are written back, clamped to at least one, and one count is consumed. `native_mending_repair(player, stack, experience, repair)` sees the randomly selected damaged item and can change the proposed durability repair, which is capped at its damage. The repair amount also determines how much experience remains for further repairs. It runs for `native_give_experience` as well. Both hooks run on the integrated and dedicated server, including guests. Bundles need "hooks": 154.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page, into the instance picked on the left ("Installs into
