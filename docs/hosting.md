@@ -8,8 +8,9 @@ plan are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/d
 ## Before you start
 
 - **Online mode checks accounts** (release v2026.10.17.07 and newer). With `online_mode = true`, the
-  default, players who sign in with the official Minecraft launcher join with their own accounts, as on a
-  vanilla server.
+  default, every player joins with their own account, as on a vanilla server: vanilla players signed in with
+  the official Minecraft launcher, Horizon players with the Microsoft account they signed in with in Horizon's
+  launcher ([docs/microsoft-account.md](https://github.com/horizon-rust/horizon/blob/main/docs/microsoft-account.md)).
 - **Names you add are accounts** (release v2026.10.17.14 and newer). `init --player`, `horizon-server
   whitelist add` and `op`, and the console's `whitelist add`, `op` and `ban` look a name up the way vanilla
   does: players already seen (kept in `usercache.json`), then Mojang's profile service. In online mode a name
@@ -17,15 +18,13 @@ plan are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/d
   `horizon-server whitelist add` always writes the offline UUID, the one the player joins with, also while
   the server runs (it writes the entry and the game reloads the list): the console's own `whitelist add`
   takes the account's UUID when someone owns that name, as vanilla does, and that player is then refused.
-- **Horizon's own client can't sign in to a Microsoft account yet.** That needs an Azure app registration and
-  Mojang's approval, which the project doesn't have
-  ([docs/microsoft-account.md](https://github.com/horizon-rust/horizon/blob/main/docs/microsoft-account.md)).
-  Until then Horizon players can join offline servers only (`online_mode = false`). An offline server never
-  checks accounts: anyone who reaches it can join under any name. Keep it on your LAN or a tailnet
-  (Tailscale, ZeroTier), or share it only with friends you trust.
-- **Secure chat** works as on vanilla's server: in online mode, vanilla clients sign their chat, and with
-  `enforce-secure-profile=true` (the default) unsigned chat is refused. On an offline server, or for a player
-  without a chat session (Horizon's own client today), chat stays unsigned and shows as not secure.
+- **An offline server** (`online_mode = false`) never checks accounts: anyone who reaches it can join under
+  any name. Keep it on your LAN or a tailnet (Tailscale, ZeroTier), or share it only with friends you trust.
+  A Horizon player under an offline name can join only such a server.
+- **Secure chat** works as on vanilla's server: in online mode, vanilla clients and Horizon's (Nightly
+  2026-11-01 and newer) sign their chat, and with `enforce-secure-profile=true` (the default) unsigned chat is
+  refused. On an offline server, or for a player without a chat session, chat stays unsigned and shows as not
+  secure.
 - **Nether and End:** each player travels on their own through portals, and operators with `execute in
   <dimension> run tp`. The players in the level they leave stop seeing them, and the ones in the level they
   arrive in start to, as on vanilla (checked against vanilla with two players, by command and through an End
