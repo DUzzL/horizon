@@ -782,6 +782,8 @@ impl Damage {
 pub struct Attrs {
     pub speed: f64,
     pub attack_damage: f32,
+    /// `Attributes.ATTACK_KNOCKBACK`: what a melee hit adds to its push (half of it).
+    pub attack_knockback: f64,
     pub max_health: f32,
     pub follow_range: f64,
     pub knockback_resistance: f64,
@@ -2508,6 +2510,7 @@ impl Mob {
             attrs: Attrs {
                 speed: kind.speed,
                 attack_damage: kind.attack_damage,
+                attack_knockback: kind.attack_knockback,
                 max_health: kind.max_health,
                 follow_range: kind.follow_range,
                 knockback_resistance: kind.knockback_resistance,

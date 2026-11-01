@@ -32,6 +32,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
             Ok(json!(true))
         }
         "server/system_message" => game.system_message(argument),
+        "serversettings/motd" => game.motd(client, None),
+        "serversettings/motd/set" => game.motd(
+            client,
+            Some(
+                argument
+                    .as_str()
+                    .ok_or_else(|| invalid_params("Not a string"))?,
+            ),
+        ),
         "serversettings/difficulty" => game.difficulty(client, None),
         "serversettings/difficulty/set" => game.difficulty(
             client,
@@ -272,6 +281,30 @@ struct Game<'a> {
 }
 
 impl Game<'_> {
+    /// `MinecraftServerSettingsServiceImpl.getMotd` and `setMotd`: the live server-list message.
+    fn motd(&self, client: u32, value: Option<&str>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/motd" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/motd/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        // server.toml's `motd` writes server.properties' at each start: keep the new one there too.
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "server",
+                "motd",
+                toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
     /// `MinecraftServerSettingsServiceImpl.getDifficulty` and `setDifficulty`.
     fn difficulty(&self, client: u32, value: Option<&str>) -> Result<Value, Failure> {
         let mut request = json!({ "method": "serversettings/difficulty" });

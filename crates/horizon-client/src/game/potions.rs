@@ -613,19 +613,34 @@ impl Game<'_> {
         if &*stack.item != "minecraft:potion" && !ominous {
             return false;
         }
+        // the duration the use started with (32, as a mod's Start or Tick left it).
+        let duration = self.use_duration;
         let ticks = ticks + 1;
-        let remaining = 32u32.saturating_sub(ticks);
+        let remaining = duration.saturating_sub_unsigned(ticks).max(0);
         let eye = self.eye_position().unwrap_or_default();
         // Consumable.emitParticlesAndSounds: the drink sound every 4 ticks near the end.
-        if remaining <= 25 && remaining.is_multiple_of(4) {
+        if remaining <= 25 && remaining % 4 == 0 {
             let pitch = self.world.random.next_float() * 0.1 + 0.9;
             self.audio
                 .play("minecraft:entity.generic.drink", Some(eye), 0.5, pitch);
         }
-        if ticks < 32 {
+        // ItemStack.onUseTick: the item's own tick after the consumable's.
+        self.item_on_use_tick(stack, ticks - 1);
+        if i64::from(ticks) < i64::from(duration) {
             self.using = Some((slot, ticks));
             return true;
         }
+        self.finish_drinking(slot, stack);
+        true
+    }
+    /// `PotionItem.finishUsingItem` (and `OminousBottleItem`'s) of `stack` in
+    /// `slot`, the use complete: false for anything else.
+    pub(super) fn finish_drinking(&mut self, slot: usize, stack: &ItemStack) -> bool {
+        let ominous = &*stack.item == "minecraft:ominous_bottle";
+        if &*stack.item != "minecraft:potion" && !ominous {
+            return false;
+        }
+        let eye = self.eye_position().unwrap_or_default();
         self.using = None;
         self.send_use_item_complete();
         self.post_entity_event("minecraft:drink", horizon_client::mobs::Who::Player);

@@ -78,6 +78,10 @@ impl Wire {
     pub fn new(decoded: ItemStack, patch: Arc<[u8]>) -> Self {
         Self(Some(Arc::new((decoded, patch))))
     }
+    /// The server's patch, whether or not the stack changed since.
+    pub fn patch(&self) -> Option<&[u8]> {
+        self.0.as_deref().map(|(_, patch)| &**patch)
+    }
 }
 impl PartialEq for Wire {
     fn eq(&self, _: &Self) -> bool {
