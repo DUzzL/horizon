@@ -1092,9 +1092,12 @@ impl Game<'_> {
         if self.ui.hide_gui && !focused {
             return;
         }
-        self.ui
-            .chat
-            .draw(batch, &self.gui.atlas, self.ticks, focused);
+        self.ui.chat.smooth = self.settings.extras.chat_animation;
+        self.ui.chat.hide_indicator = !self.settings.extras.chat_indicator;
+        // The fractional tick makes the smooth chat extra's slide move every
+        // frame; vanilla's fade reads it too.
+        let now = self.ticks as f32 + self.clock.fraction() as f32;
+        self.ui.chat.draw(batch, &self.gui.atlas, now, focused);
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
     /// event has one, the entity type and the UUID.

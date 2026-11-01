@@ -298,6 +298,7 @@ use horizon_client::{
     keybinds,
     mobs::{Damage, Who},
     mod_list::{self, Installed, NativePage},
+    music::{Music, MusicLayer},
     particles::{ParticleOptions, ParticleType},
     text::Text,
 };
@@ -1377,6 +1378,18 @@ impl Game<'_> {
     ) {
         let _ = (partial, camera, fog_type, rgb);
     }
+    /// Final world fog, after the computed color hook, ordinary calculations and Horizon's fog
+    /// option, before upload. Title panoramas skip it. Invalid color or distance values retain the
+    /// original whole fog.
+    pub(super) fn native_render_fog(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        fog_type: horizon_client::fog::FogType,
+        fog: &mut horizon_client::fog::FogData,
+    ) {
+        let _ = (partial, camera, fog_type, fog);
+    }
     /// The camera shake native mods ask for in this frame, `partial` ticks
     /// past the last tick (0 to 1): add your pitch, yaw and roll in degrees
     /// and your offset in blocks, along the camera's right, up and back, to
@@ -1414,13 +1427,6 @@ impl Game<'_> {
     ) {
         let _ = (partial, mirrored, entity, distance);
     }
-    /// The values native mods hand their shader packs in this frame,
-    /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
-    /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
-    /// pack reads; a mod that bundles its pack as `native-<mod id>` is the
-    /// one that pack is for. Asked once a frame while a pack is on; a value
-    /// that isn't finite reads as 0 (`native_shader_params_now`). API
-    /// @API:native_shader_params@.
     /// Change the colours of `biome` (`minecraft:plains`) on this client: the
     /// grass, foliage (leaves, vines), dry foliage (leaf litter) and water
     /// tints, 0xRRGGBB, as its biome file and the colormaps set them. Asked
@@ -1432,6 +1438,36 @@ impl Game<'_> {
     pub(super) fn native_biome_colors(&self, biome: &str, colors: &mut BiomeColors) {
         let _ = (biome, colors);
     }
+    /// Choose this client's music, once a client tick: `music` and `volume`
+    /// hold what vanilla chose (`Minecraft.getSituationalMusic` and
+    /// `getMusicVolume`: the biome's track, the creative or underwater one, a
+    /// boss's, the menu's; None for silence). Set `music` to a track of your
+    /// own, a sound event of your content mod's `sounds.json` such as
+    /// `Music::new("mymod:music.spring", 1200, 6000, false)` (the delays in
+    /// ticks between songs, and whether it cuts off a different song playing),
+    /// None to keep vanilla's quiet, or change `volume` (0 to 1) to fade it. API
+    /// @API:music@.
+    pub(super) fn native_music(&self, music: &mut Option<Music>, volume: &mut f32) {
+        let _ = (music, volume);
+    }
+    /// The tracks to play over (or instead of) the music on this client,
+    /// asked once a client tick: push a `MusicLayer` (a sound event, looped,
+    /// and its volume, 0 to 1) for each. A layer eases to a new volume over up
+    /// to two seconds, and one left out fades out and stops; layers that
+    /// first appear in the same tick start together, so list every stem of a
+    /// piece from the start, the silent ones at volume 0, and raise them (a
+    /// fuller arrangement as a village grows). Their sound events should be
+    /// `stream: true` in `sounds.json`. API @API:music@.
+    pub(super) fn native_music_layers(&self, layers: &mut Vec<MusicLayer>) {
+        let _ = layers;
+    }
+    /// The values native mods hand their shader packs in this frame,
+    /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
+    /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
+    /// pack reads; a mod that bundles its pack as `native-<mod id>` is the
+    /// one that pack is for. Asked once a frame while a pack is on; a value
+    /// that isn't finite reads as 0 (`native_shader_params_now`). API
+    /// @API:native_shader_params@.
     pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
         let _ = (partial, params);
     }
@@ -1792,6 +1828,17 @@ impl Game<'_> {
     ) {
         let _ = (screen, key, repeat, modifiers, canceled);
     }
+    /// Before an open screen handles a named key's release (same screen gate as key presses).
+    /// Cancel bypasses screen handling; physical keys and mapped keyboard hold/toggle state release.
+    pub(super) fn native_screen_key_released_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        key: &str,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, key, modifiers, canceled);
+    }
     /// A character was typed at the open screen
     /// (`ScreenEvent.CharacterTyped.Pre`, vanilla's `Screen.charTyped`):
     /// `screen` is the screen it is, `c` the character, and `modifiers` GLFW's
@@ -1899,6 +1946,22 @@ impl Game<'_> {
             &screen,
             name,
             repeat,
+            super::glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
+    }
+    pub(super) fn screen_key_released(&self, key: KeyCode) -> bool {
+        let Some(name) = keybinds::key_name(key) else {
+            return false;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return false;
+        };
+        let mut canceled = false;
+        self.native_screen_key_released_pre(
+            &screen,
+            name,
             super::glfw_modifiers(self.modifiers),
             &mut canceled,
         );

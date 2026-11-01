@@ -6,6 +6,7 @@ use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::section_mask::SectionMask;
 use crate::{
     chunk::Chunk,
+    graphics::LeafCullingMode,
     light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
@@ -149,6 +150,8 @@ pub trait LodSampler: Send {
     fn reduced_column(&mut self, x: i32, z: i32, _width: i32) -> crate::lod::Column {
         self.column(x, z)
     }
+    /// `side` x `side` columns from (`x`, `z`), `stride` blocks apart; none
+    /// when sampling failed and should be tried again later.
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
         let mut columns = Vec::with_capacity(side * side);
         for dz in 0..side {
@@ -203,6 +206,7 @@ struct MeshSettings {
     smooth_lighting: bool,
     cutout_leaves: bool,
     translucent_layers: Arc<[bool]>,
+    leaf_culling: LeafCullingMode,
 }
 enum Job {
     Generate(i32, i32),
@@ -440,6 +444,8 @@ pub struct Streaming {
     /// Sprite layers a shader pack draws in the translucent pass (`[[materials]]
     /// translucent`), by layer; empty without one.
     pub translucent_layers: Arc<[bool]>,
+    /// What the mesher does with leaf faces inside a canopy (`LeafCullingMode`).
+    pub leaf_culling: LeafCullingMode,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
     light_tables: Arc<LightTables>,
     /// Applied edits by sequence, replayed onto light jobs snapshotted before them.
@@ -775,6 +781,7 @@ impl Streaming {
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
                                         translucent_layers: &settings.translucent_layers,
+                                        leaf_culling: settings.leaf_culling,
                                         assets: &context.assets,
                                         render: &context.render,
                                         tables: &context.tables,
@@ -857,6 +864,7 @@ impl Streaming {
             smooth_lighting: true,
             cutout_leaves: true,
             translucent_layers: Arc::from([]),
+            leaf_culling: LeafCullingMode::Off,
             light_tables,
             light_log: Vec::new(),
             light_edit_sequence: 0,
@@ -1717,6 +1725,7 @@ impl Streaming {
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
                             translucent_layers: self.translucent_layers.clone(),
+                            leaf_culling: self.leaf_culling,
                         },
                     ),
                 );

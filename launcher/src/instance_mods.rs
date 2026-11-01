@@ -65,6 +65,35 @@ pub(super) struct InstanceMods {
     fingerprint: String,
 }
 
+impl InstanceMods {
+    fn invalidate(&mut self) {
+        self.fresh = false;
+    }
+
+    /// Invalidates the cached list when the native-file fingerprint changes.
+    fn observe_fingerprint(&mut self, fingerprint: String) {
+        if self.fingerprint != fingerprint {
+            self.fingerprint = fingerprint;
+            self.invalidate();
+        }
+    }
+
+    /// Marks a read pending and returns the fingerprint its result must match.
+    fn begin_read(&mut self) -> String {
+        self.reading = true;
+        self.fingerprint.clone()
+    }
+
+    /// Delivers a read, marking it fresh only if its fingerprint is still current.
+    fn complete_read(&mut self, home: &Path, fingerprint: &str, list: Vec<ModRow>) {
+        self.reading = false;
+        if self.home.as_deref() == Some(home) {
+            self.list = list;
+            self.fresh = self.fingerprint == fingerprint;
+        }
+    }
+}
+
 /// The mods of the instance at `home`: a Java one's jars in `mods/` (on or off), a Horizon one's
 /// registry mods. Each jar names itself (`fabric.mod.json`, `quilt.mod.json`...), else its file.
 fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
@@ -149,7 +178,7 @@ fn switch_jar(home: &Path, file: &str, on: bool) -> Result<(), String> {
 
 impl Launcher {
     pub(super) fn instance_mods_changed(&mut self) {
-        self.instance_mods.fresh = false;
+        self.instance_mods.invalidate();
         self.instance_mods.cull.reset();
     }
 
@@ -174,7 +203,7 @@ impl Launcher {
         }
         let busy = self.mods.busy.is_some();
         if m.was_busy && !busy {
-            m.fresh = false;
+            m.invalidate();
         }
         m.was_busy = busy;
         let fingerprint = if java_instance {
@@ -182,14 +211,11 @@ impl Launcher {
         } else {
             native_status::fingerprint(&home, None)
         };
-        if m.fingerprint != fingerprint {
-            m.fingerprint = fingerprint;
-            m.fresh = false;
-        }
+        m.observe_fingerprint(fingerprint);
         if m.fresh || m.reading {
             return;
         }
-        m.reading = true;
+        let read_fingerprint = m.begin_read();
         let task = cx
             .background_executor()
             .spawn(async move { (home.clone(), read(&home, java_instance)) });
@@ -197,11 +223,7 @@ impl Launcher {
             let (home, list) = task.await;
             let _ = this.update(cx, |this, cx| {
                 let m = &mut this.instance_mods;
-                m.reading = false;
-                if m.home.as_ref() == Some(&home) {
-                    m.list = list;
-                    m.fresh = true;
-                }
+                m.complete_read(&home, &read_fingerprint, list);
                 let ids = this
                     .instance_mods
                     .list
@@ -306,7 +328,7 @@ impl Launcher {
                 self.mods.message = switch_jar(&home, &row.file, !row.on).err().map(Err);
             }
         }
-        self.instance_mods.fresh = false;
+        self.instance_mods.invalidate();
     }
 
     /// The Mods tab: its buttons (beside the tabs) and the list.
@@ -539,6 +561,79 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestHome(PathBuf);
+
+    impl TestHome {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is before Unix epoch")
+                .as_nanos();
+            loop {
+                let home = std::env::temp_dir().join(format!(
+                    "instance-mods-refresh-{}-{timestamp}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&home) {
+                    Ok(()) => return Self(home),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("create test home {}: {error}", home.display()),
+                }
+            }
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn native_mod_changes_during_read_trigger_a_fresh_read() {
+        let scratch = TestHome::new();
+        let home = &scratch.0;
+        let installed = home.join(native_mods::INSTALLED);
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("first.hnmod"), b"unreadable").unwrap();
+
+        let mut mods = InstanceMods {
+            home: Some(home.clone()),
+            ..InstanceMods::default()
+        };
+        mods.observe_fingerprint(native_status::fingerprint(home, None));
+        assert!(!mods.fresh);
+        let read_fingerprint = mods.begin_read();
+        let old_list = read(home, false);
+        assert_eq!(old_list.len(), 1);
+
+        std::fs::write(installed.join("second.hnmod"), b"unreadable").unwrap();
+        mods.observe_fingerprint(native_status::fingerprint(home, None));
+        assert!(!mods.fresh);
+        assert!(mods.reading, "the first read must still be pending");
+
+        mods.complete_read(home, &read_fingerprint, old_list);
+        let another_read_needed = !mods.fresh && !mods.reading;
+        if another_read_needed {
+            let read_fingerprint = mods.begin_read();
+            mods.complete_read(home, &read_fingerprint, read(home, false));
+        }
+        let final_files: Vec<_> = mods.list.iter().map(|row| row.file.as_str()).collect();
+        let final_listing_is_fresh = mods.fresh
+            && final_files.contains(&"horizon-native-mods/first.hnmod")
+            && final_files.contains(&"horizon-native-mods/second.hnmod");
+        assert!(
+            another_read_needed && final_listing_is_fresh,
+            "a native change during a read must leave another read needed and deliver both files; another_read_needed={another_read_needed}, fresh={}, files={final_files:?}",
+            mods.fresh
+        );
+    }
 
     #[test]
     fn horizon_mods_include_local_native_files_without_duplicating_registry_rows() {

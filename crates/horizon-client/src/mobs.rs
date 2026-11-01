@@ -21,6 +21,7 @@ pub mod breeze;
 pub mod camel;
 pub mod caravan;
 pub mod cem;
+pub mod cem_anim;
 pub mod combat;
 pub mod control;
 pub mod conversion;
@@ -65,6 +66,7 @@ pub mod piglin;
 pub mod polar_bear;
 pub mod rabbit;
 pub mod raider;
+pub mod random_textures;
 pub mod ravager;
 pub mod render;
 pub mod riders;
@@ -1188,6 +1190,8 @@ pub struct Mob {
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
+    /// The packs' random texture variants it wears (`random_textures::choose`).
+    pub random_textures: random_textures::Choice,
 }
 /// A mannequin's `description` and `hide_description` (`Mannequin.updateDescription`):
 /// the default `entity.minecraft.mannequin.label`, none at all, or a component.
@@ -2466,6 +2470,7 @@ impl Mob {
             slim: false,
             cape: None,
             profile: None,
+            random_textures: Default::default(),
             attrs: Attrs {
                 speed: kind.speed,
                 attack_damage: kind.attack_damage,
