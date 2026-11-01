@@ -11156,6 +11156,74 @@ CHECKS += ['attack_over_slab']
 CHECK_FNS['attack_over_slab'] = check_attack_over_slab
 
 
+def check_wind_bystanders(host, guest, out):
+    """A wind charge bursting on the floor pushes the other entities it reaches (ServerExplosion.hurtEntities
+    -> Entity.pushFromExplosion): an experience orb, a falling block, a boat and a minecart, but never a dropped
+    item (ItemEntity.ignoreExplosion unless the burst affects block-like entities, which a wind charge's never
+    does). The scene was run on the real 26.3 server (`tick freeze`, `tick step 3` after the burst): the orb
+    moved (+1.45, +0.19, 0), the falling block (-1.23, +0.82, 0), the boat (0, +0.30, +0.76), the minecart
+    (0, +0.14, -0.39), the item not at all."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    x, y, z = hx + 6, hy, hz
+    for g in (host, guest):
+        g('command', command='gamemode spectator')  # orbs home in on survival players
+    steps = [f'fill {x - 8} {y - 1} {z - 8} {x + 8} {y - 1} {z + 8} minecraft:bedrock',
+             f'fill {x - 8} {y} {z - 8} {x + 8} {y + 5} {z + 8} minecraft:air',
+             'kill @e[type=!player]', 'tick freeze',
+             f'summon minecraft:experience_orb {x + 1.4} {y} {z + 0.5} {{Value:1s}}',
+             f'summon minecraft:falling_block {x - 0.4} {y + 0.02} {z + 0.5} {{BlockState:{{Name:"minecraft:sand"}},Time:1,NoGravity:1b}}',
+             f'summon minecraft:oak_boat {x + 0.5} {y} {z + 1.5}',
+             f'summon minecraft:minecart {x + 0.5} {y} {z - 0.5}',
+             f'summon minecraft:item {x + 1.1} {y} {z - 0.1} {{Item:{{id:"minecraft:stone",count:1}}}}',
+             'tick step 20']
+
+    def scene():
+        near = lambda p: abs(p[0] - x) < 4 and abs(p[2] - z) < 4
+        found = {}
+        for e in host.raw('entities', 8, 'minecraft:experience_orb')['entities']:
+            found['orb'] = e['pos']
+            found['orb_velocity'] = e.get('velocity')
+        for e in host.raw('entities', 8, 'minecraft:item')['entities']:
+            if near(e['pos']):
+                found['item'] = e['pos']
+        for p in host.raw('simulation')['projectiles']:
+            kind = {'minecraft:falling_block': 'fall', 'minecraft:boat': 'boat', 'minecraft:minecart': 'cart'}.get(p['kind'])
+            if kind and near(p['position']):
+                found[kind] = p['position']
+        return found
+    try:
+        host('command', command='tick unfreeze')
+        for c in steps:
+            host('command', command=c)
+        host.wait(10)
+        before = scene()
+        host('command', command=f'summon minecraft:wind_charge {x + 0.5} {y + 0.6} {z + 0.5} {{Motion:[0.0,-1.0,0.0]}}')
+        ticks = []
+        for _ in range(4):
+            host('command', command='tick step 1')
+            host.wait(4)
+            ticks.append(scene())
+        after = ticks[2]
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=!player]')
+        for g in (host, guest):
+            g('command', command='gamemode creative')
+    moved = {k: [round(a - b, 3) for a, b in zip(after[k], before[k])] for k in ('orb', 'fall', 'boat', 'cart', 'item') if k in before and k in after}
+    assert set(moved) == {'orb', 'fall', 'boat', 'cart', 'item'}, f'missing entities: {before} {after}'
+    assert moved['item'] == [0, 0, 0], f'a dropped item was pushed: {moved}'
+    # An orb's position follows its tracker, which a frozen tick does not refresh: its velocity shows the push.
+    orb = after.get('orb_velocity') or [0, 0, 0]
+    assert orb[0] > 0.3 and orb[1] > 0.02, f'the orb was not pushed away: {orb}'
+    for kind, axis, sign in (('fall', 0, -1), ('boat', 2, 1), ('cart', 2, -1)):
+        assert moved[kind][axis] * sign > 0.2 and moved[kind][1] > 0.05, f'{kind} was not pushed away: {moved}'
+    return {'before': before, 'moved': moved, 'orb_velocity': orb, 'ticks': ticks}
+
+
+CHECKS += ['wind-bystanders']
+CHECK_FNS['wind-bystanders'] = check_wind_bystanders
+
+
 def check_lightning_box(host, guest, out):
     """A lightning bolt tests the box of every entity against its strike box (3 around, 9 above),
     not their feet, and destroys boats, minecarts and experience orbs (LightningBolt.tick ->
