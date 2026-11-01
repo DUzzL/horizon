@@ -460,14 +460,18 @@ pub fn serve(
     serve_connection(Connection::from_stream(stream).map_err(e)?, address, shared)
 }
 
+/// The address a memory connection logs in from: no network peer has port 0.
+pub const MEMORY_ADDRESS: std::net::SocketAddr = std::net::SocketAddr::V4(
+    std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0),
+);
+
 /// `ServerConnectionListener.startMemoryChannel`: an integrated server's
 /// own player, over one end of an in-memory pipe.
 pub fn serve_local(
     pipe: horizon_protocol::connection::Pipe,
     shared: Arc<Shared>,
 ) -> Result<(), String> {
-    let address = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-    serve_connection(Connection::local(pipe), address, shared)
+    serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared)
 }
 
 fn serve_connection(

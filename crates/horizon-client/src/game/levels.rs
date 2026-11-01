@@ -411,18 +411,23 @@ impl Game<'_> {
             }
             self.update_dedicated_streaming();
             self.update_world();
-            result = if paused {
-                self.tick_lan(true);
-                Ok(())
-            } else if k == 0 {
-                self.tick()
-            } else {
-                let running = running.unwrap_or_else(|| self.clock.world_runs());
-                if running {
-                    self.tick_weather_effects();
-                }
-                self.tick_world(running)
-            };
+            result = horizon_client::block_contact::in_level(
+                (self.serving.is_some() || self.options.dedicated.is_some()).then_some(dim.id()),
+                || {
+                    if paused {
+                        self.tick_lan(true);
+                        Ok(())
+                    } else if k == 0 {
+                        self.tick()
+                    } else {
+                        let running = running.unwrap_or_else(|| self.clock.world_runs());
+                        if running {
+                            self.tick_weather_effects();
+                        }
+                        self.tick_world(running)
+                    }
+                },
+            );
             if result.is_err() {
                 break;
             }

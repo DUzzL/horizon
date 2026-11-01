@@ -20,6 +20,8 @@ pub(super) struct QueuedParticle {
     pub spread: [f64; 3],
     pub speed: f64,
     pub count: i32,
+    /// The packet's `RandomizationType` (0 DEFAULT, 1 ALTERNATIVE).
+    pub randomization: i32,
 }
 
 fn send_native_nearby(
@@ -35,6 +37,31 @@ fn send_native_nearby(
         .filter(|g| g.placed && g.dimension == dimension && within_range(g.position))
     {
         guest.sender.send(packet.clone());
+    }
+}
+
+/// One of a packet's `count` particles (`handleParticleEvent`): its position
+/// and speed. DEFAULT (0) draws both from a Gaussian; ALTERNATIVE (1) and
+/// ALTERNATIVE_WITH_SPEED (2) spread over `[0, dist)`, the first keeping
+/// the speeds as they are, the second scaling each by `nextDouble`.
+fn spread(
+    r: &mut impl RandomSource,
+    randomization: i32,
+    pos: [f64; 3],
+    dist: [f64; 3],
+    speed: [f64; 3],
+) -> ([f64; 3], [f64; 3]) {
+    if matches!(randomization, 1 | 2) {
+        let at = [0, 1, 2].map(|k| pos[k] + r.next_double() * dist[k]);
+        let v = if randomization == 2 {
+            [0, 1, 2].map(|k| speed[k] * r.next_double())
+        } else {
+            speed
+        };
+        (at, v)
+    } else {
+        let at = [0, 1, 2].map(|k| pos[k] + r.next_gaussian() * dist[k]);
+        (at, [0, 1, 2].map(|k| r.next_gaussian() * speed[k]))
     }
 }
 
@@ -334,17 +361,7 @@ impl Game<'_> {
             return;
         }
         for _ in 0..p.count {
-            let r = self.particles.random();
-            let at = [
-                p.pos[0] + r.next_gaussian() * d[0],
-                p.pos[1] + r.next_gaussian() * d[1],
-                p.pos[2] + r.next_gaussian() * d[2],
-            ];
-            let v = [
-                r.next_gaussian() * s[0],
-                r.next_gaussian() * s[1],
-                r.next_gaussian() * s[2],
-            ];
+            let (at, v) = spread(self.particles.random(), p.randomization, p.pos, d, s);
             add(&mut self.particles, at, v);
         }
     }
@@ -409,6 +426,7 @@ impl Game<'_> {
             spread,
             speed,
             count,
+            randomization,
         } = request;
         let Some(particle) = self.network_particle(&options, state) else {
             return;
@@ -424,7 +442,7 @@ impl Game<'_> {
             dist: spread.map(|d| d as f32),
             max_speed: [speed as f32; 3],
             count,
-            randomization: 0,
+            randomization,
         })
         .encode();
         // BlockPos.closerToCenterThan(at, 32): from the centre of the
@@ -467,6 +485,33 @@ impl Game<'_> {
                 distance <= range * range
             });
         }
+    }
+
+    /// `BucketItem.emptyContents` where water evaporates: `sendParticles(
+    /// LARGE_SMOKE, x, y, z, 8, 1, 1, 1, 0, ALTERNATIVE)` from the block's
+    /// corner, so each puff lands inside the block. The window draws its own.
+    pub(super) fn evaporation_smoke(&mut self, pos: [i32; 3]) {
+        let options = ParticleOptions::simple(ParticleType::LargeSmoke);
+        let at = pos.map(f64::from);
+        for _ in 0..8 {
+            let r = self.particles.random();
+            let p = [
+                at[0] + r.next_double(),
+                at[1] + r.next_double(),
+                at[2] + r.next_double(),
+            ];
+            self.particles.add(&options, p, [0.0; 3]);
+        }
+        self.lan_send_particles(QueuedParticle {
+            dimension: self.dim.id(),
+            options,
+            state: None,
+            at,
+            spread: [1.0; 3],
+            speed: 0.0,
+            count: 8,
+            randomization: 1,
+        });
     }
 
     /// The particles guests' turns put off.
@@ -614,5 +659,32 @@ impl Game<'_> {
                 None => g.sender.send(plain.clone()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spread;
+    use horizon_core::random::LegacyRandom;
+
+    /// The Nether's evaporation smoke (ALTERNATIVE, dist 1, speed 0) lands
+    /// inside the block from its corner and stands still; DEFAULT spreads
+    /// both ways.
+    #[test]
+    fn alternative_particles_spread_from_the_corner_over_dist() {
+        let mut r = LegacyRandom::new(1);
+        let mut below = false;
+        for _ in 0..200 {
+            let (at, v) = spread(&mut r, 1, [3.0, 64.0, -7.0], [1.0; 3], [0.0; 3]);
+            assert!((3.0..4.0).contains(&at[0]), "{at:?}");
+            assert!((64.0..65.0).contains(&at[1]), "{at:?}");
+            assert!((-7.0..-6.0).contains(&at[2]), "{at:?}");
+            assert_eq!(v, [0.0; 3]);
+            let (_, v) = spread(&mut r, 2, [0.0; 3], [0.0; 3], [0.5, 0.0, 2.0]);
+            assert!((0.0..0.5).contains(&v[0]) && v[1] == 0.0 && (0.0..2.0).contains(&v[2]));
+            let (at, _) = spread(&mut r, 0, [0.0; 3], [1.0; 3], [0.0; 3]);
+            below |= at.iter().any(|&c| c < 0.0);
+        }
+        assert!(below, "DEFAULT is a Gaussian around the position");
     }
 }

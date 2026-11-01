@@ -512,6 +512,10 @@ pub fn body_color(m: &Mob, alpha: f32) -> u32 {
     match m.species() {
         Species::Wolf => super::tame::tint(m, alpha),
         Species::TropicalFish => abgr(DYE[m.extra.variant2 as usize & 15]),
+        // LivingEntityRenderer.submit: a spectator is invisible
+        // (Player.updateInvisibilityStatus) but not to another spectator or
+        // itself, so its body is forced translucent (654311423, alpha 38).
+        _ if avatar(m) && m.extra.spectator => 0x26FF_FFFF,
         _ => 0xFFFF_FFFF,
     }
 }

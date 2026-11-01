@@ -18,6 +18,28 @@ fn carried_block_matrix(base: glam::Mat4) -> glam::Mat4 {
         * glam::Mat4::from_rotation_y(90.0f32.to_radians())
 }
 
+/// Drops the quads of `out[first..]` whose face normal points away from the eye, which
+/// is the origin of camera-relative vertices. Each quad is four vertices carrying its
+/// face normal in `Vertex::normal`, as `block_model_vertices` writes for diffuse faces.
+fn cull_back_quads(out: &mut Vec<Vertex>, first: usize) {
+    let mut kept = first;
+    for quad in (first..out.len()).step_by(4) {
+        let vertices = &out[quad..quad + 4];
+        let n = vertices[0].normal;
+        let normal = glam::Vec3::new(f32::from(n[0]), f32::from(n[1]), f32::from(n[2]));
+        let centre = vertices.iter().fold(glam::Vec3::ZERO, |sum, v| {
+            sum + glam::Vec3::from_array(v.pos)
+        }) * 0.25;
+        // The eye is at the origin: the face is seen from its front when the eye is on the
+        // side its normal points to, that is when `normal . (eye - centre) > 0`.
+        if normal.dot(centre) < 0.0 {
+            out.copy_within(quad..quad + 4, kept);
+            kept += 4;
+        }
+    }
+    out.truncate(kept);
+}
+
 /// `CustomHeadLayer.translateToHead` and the banner's `head` display.
 fn banner_matrix(head: glam::Mat4) -> glam::Mat4 {
     head * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.25, 0.0))
@@ -224,7 +246,13 @@ impl Game<'_> {
             let base = render::base_transform(mob, alpha as f32, camera);
             let t = carried_block_matrix(base);
             // Preserve cross models (flowers, fungi) and state properties (facing).
+            let first = out.len();
             self.block_model_vertices(state, 42, t, light, true, out);
+            // The carried block uses the item cutout render type, which culls back faces
+            // (RenderPipelines.ITEM_CUTOUT). Without that, both coplanar sides of a cross
+            // model are drawn and flicker. CULL_BACK would drop them too, but it turns off
+            // the normal lighting this model needs.
+            cull_back_quads(out, first);
         }
     }
     /// `BlockDecorationLayer.submit`: the block item in a copper golem's

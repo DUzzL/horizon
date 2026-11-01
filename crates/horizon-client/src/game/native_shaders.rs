@@ -1,6 +1,7 @@
 //! Horizon's own shader packs in the game (docs/shaders.md): the pick in `shaderpacks/` (a
 //! folder with `horizon-shaders.toml`, or a `.hshader`; `game/shader_packs.rs`) runs once it
-//! passes `horizon_shader_api::check`. The pack is looked at twice a second: a saved file is checked and the pack rebuilt, and a
+//! passes `horizon_shader_api::check`. The pack is looked at twice a second: a saved file (or
+//! saved option values) is checked and the pack rebuilt, and a
 //! pack that fails is refused with its problems in the chat while the last good one keeps
 //! drawing.
 
@@ -57,12 +58,10 @@ impl Game<'_> {
         let result = Pack::read(path).map_err(|e| vec![e]).and_then(|pack| {
             let report = check(&pack)
                 .map_err(|p| p.iter().map(ToString::to_string).collect::<Vec<String>>())?;
-            let constants = pack
-                .manifest
-                .options
-                .iter()
-                .map(|o| (o.id.clone(), o.kind.default_constant()))
-                .collect();
+            // The player's values (the pack's Shader Options page), else the defaults.
+            let options = &pack.manifest.options;
+            let values = horizon_client::shader_pack_list::load_values(path, options);
+            let constants = options.iter().map(|o| o.id.clone()).zip(values).collect();
             let sprites = self.pack.render.sprite_layers.iter();
             let tags = pack
                 .manifest
@@ -97,7 +96,8 @@ impl Game<'_> {
     }
 }
 
-/// A hash of the pack's file names, sizes and modification times (`None` when unreadable).
+/// A hash of the names, sizes and modification times of the pack's files and of its saved
+/// option values (`None` when the pack is unreadable).
 fn fingerprint(path: &Path) -> Option<u64> {
     fn walk(path: &Path, hasher: &mut std::hash::DefaultHasher) -> Option<()> {
         let meta = std::fs::metadata(path).ok()?;
@@ -120,5 +120,8 @@ fn fingerprint(path: &Path) -> Option<u64> {
     }
     let mut hasher = std::hash::DefaultHasher::new();
     walk(path, &mut hasher)?;
+    // The player's option values, when there are any.
+    let values = horizon_client::shader_pack_list::values_path(path);
+    let _ = walk(&values, &mut hasher);
     Some(hasher.finish())
 }

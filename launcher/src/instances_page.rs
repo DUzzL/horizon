@@ -663,7 +663,7 @@ impl Launcher {
                 // A Java kind's list can make it taller than the window.
                 .overflow_y_scroll()
                 .bg(plate::alpha(n.page, 0.8))
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .occlude()
                 .child(card),
         )

@@ -24,7 +24,7 @@ Turtle.playStepSound	port	crates/horizon-client/src/mobs/ai.rs::step_sound	shamb
 Turtle.travelInWater	port	crates/horizon-client/src/mobs/turtle.rs::travel	ticked in #3512; `Turtle.travelInWater` is cited at crates/horizon-client/src/mobs/turtle.rs:152
 Turtle.TurtleLayEggGoal.isValidTarget	port	crates/horizon-client/src/mobs/turtle.rs::LayEgg::valid	air above and sand below
 Wolf.registerGoals	port	crates/horizon-client/src/mobs/tame.rs::register	
-Wolf.getSoundSet	missing		player: wolves always use the classic voice; the sound variant (big, puglin, sad, angry...) never changes what plays
+Wolf.getSoundSet	port	crates/horizon-client/src/mobs/finalize.rs::variant_sound	
 Wolf.createAttributes	skip:data		attribute values come from data tables
 Wolf.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	flags, variant and anger metadata sent to clients
 Wolf.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	CollarColor written

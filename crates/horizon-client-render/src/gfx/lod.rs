@@ -152,6 +152,10 @@ impl Tile {
             None => &mut self.mesh,
         }
     }
+    /// Both meshes it holds in the arena: its own and the stand-in, if any.
+    pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
+        std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
+    }
     pub fn visible(
         &self,
         key: TileKey,

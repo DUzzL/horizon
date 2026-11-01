@@ -186,10 +186,13 @@ impl Game<'_> {
                     _ => Some(None),
                 };
                 self.for_player(target, |g| {
+                    if g.spectator() {
+                        return false;
+                    }
                     if let Some(name) = named {
                         g.note_direct_entity(&ty, name);
                     }
-                    !g.spectator() && g.hurt_player_from(amount, from, &ty, attacker)
+                    g.hurt_player_from(amount, from, &ty, attacker)
                 })
                 .unwrap_or(false)
             }

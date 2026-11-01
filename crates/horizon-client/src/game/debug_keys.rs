@@ -954,6 +954,20 @@ impl Game<'_> {
             let p = c.position;
             g.entity_box(min, max, [p.x, p.y, p.z], 0.2125, false, (0.0, c.yaw));
         }
+        // Interaction: EntityDimensions.scalable(width, height), so its eyes
+        // are at 0.85 of the height. Its rotation is not kept here.
+        for i in self.interactions.values() {
+            let b = i.bounds();
+            let p = i.position;
+            g.entity_box(
+                [b.min(Axis::X), b.min(Axis::Y), b.min(Axis::Z)],
+                [b.max(Axis::X), b.max(Axis::Y), b.max(Axis::Z)],
+                [p.x, p.y, p.z],
+                i.height.max(0.0) * 0.85,
+                false,
+                (0.0, 0.0),
+            );
+        }
         for a in self.armor_stands.iter().filter(|a| !a.invisible) {
             // ArmorStand.getDimensions: a marker has none, a small one is
             // half scale with its eyes at 0.9875.
@@ -962,8 +976,13 @@ impl Game<'_> {
                 (_, true) => ((0.25, 0.9875), 0.9875),
                 _ => ((0.5, 1.975), 1.7775),
             };
-            let p = a.position;
-            g.hitbox([p.x, p.y, p.z], size, eye, true, (0.0, a.yaw));
+            g.hitbox(
+                at(a.previous, a.position),
+                size,
+                eye,
+                true,
+                (0.0, a.render_yaw(alpha)),
+            );
         }
         for b in &self.boats {
             let h = super::boats::HEIGHT as f32;
@@ -1023,9 +1042,12 @@ impl Game<'_> {
             use horizon_client::projectiles::ProjectileKind as K;
             let (size, eye) = match p.kind {
                 K::Arrow { .. } | K::Trident => (0.5, 0.13),
-                K::Snowball | K::Egg | K::EnderPearl | K::LlamaSpit | K::Potion { .. } => {
-                    (0.25, 0.2125)
-                }
+                K::Snowball
+                | K::Egg
+                | K::EnderPearl
+                | K::LlamaSpit
+                | K::Potion { .. }
+                | K::Thrown(_) => (0.25, 0.2125),
                 K::SmallFireball | K::ShulkerBullet { .. } | K::WitherSkull { .. } => {
                     (0.3125, 0.265_625)
                 }

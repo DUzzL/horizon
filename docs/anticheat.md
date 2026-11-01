@@ -66,7 +66,13 @@ Every flag goes to `log`, with the time, the player, the check, its level, what 
 [2026-10-30 17:29:55] Steve failed timer (VL 5.9): 301 ms ahead, sent back
 [2026-10-31 18:02:11] Alex failed combat (VL 20.0): attacked without swinging (1 more attacks than swings in a tick), kicked (1 of 2 before a ban)
 [2026-10-31 18:09:40] Alex failed combat (VL 20.0): attacked entities 41 and 57 in one tick, banned
+[2026-11-01 03:14:02] Steve failed prediction (VL 12.4): moved up to 0.173 blocks off what its keys allow (1 tick; off +0.000 +0.173 +0.000, moved 0.281, air sprinting)
 ```
+
+A `prediction` line ends with its worst tick as the replay played it: where the client said it went less
+where the replay ended (x, y, z), how far the client said it moved, and what the replayed body was doing
+(`ground` or `air`, then `water`, `gliding`, `sprinting`, `sneaking`, `swimming`, `flying`, `riding`), so a
+lag, a glide or a ladder can be told from a cheat before the check acts.
 
 ## Checks
 

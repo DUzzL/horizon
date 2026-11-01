@@ -182,47 +182,14 @@ impl ItemEntity {
     /// up) without a full collision cube, at `speed` (`nextFloat() * 0.2 +
     /// 0.1`).
     pub fn move_towards_closest_space(&mut self, world: &World, facts: &BlockFacts, speed: f32) {
-        let bounds = self.bounds();
-        let at = Vec3::new(
-            self.position.x,
-            (bounds.min_position().y + bounds.max_position().y) / 2.0,
-            self.position.z,
+        self.velocity = towards_closest_space(
+            self.position,
+            self.bounds(),
+            self.velocity,
+            world,
+            facts,
+            speed,
         );
-        let pos = [
-            at.x.floor() as i32,
-            at.y.floor() as i32,
-            at.z.floor() as i32,
-        ];
-        let delta = [
-            at.x - f64::from(pos[0]),
-            at.y - f64::from(pos[1]),
-            at.z - f64::from(pos[2]),
-        ];
-        // (axis, step): NORTH, SOUTH, WEST, EAST, UP.
-        let mut closest = (1, 1);
-        let mut nearest = f64::MAX;
-        for (axis, step) in [(2, -1), (2, 1), (0, -1), (0, 1), (1, 1)] {
-            let mut n = pos;
-            n[axis] += step;
-            if !facts.get(world.block(n[0], n[1], n[2])).full_collision {
-                let d = if step > 0 {
-                    1.0 - delta[axis]
-                } else {
-                    delta[axis]
-                };
-                if d < nearest {
-                    nearest = d;
-                    closest = (axis, step);
-                }
-            }
-        }
-        let push = f64::from(closest.1 as f32 * speed);
-        let v = self.velocity.scale(0.75);
-        self.velocity = match closest.0 {
-            0 => Vec3::new(push, v.y, v.z),
-            1 => Vec3::new(v.x, push, v.z),
-            _ => Vec3::new(v.x, v.y, push),
-        };
     }
     /// Returns false when the item should be removed. `no_physics`: the item
     /// moves through blocks this tick ([`ItemEntity::inside_block`]).
@@ -337,6 +304,37 @@ impl ItemEntity {
                 collision,
                 self.bounds(),
                 &mut self.velocity,
+            );
+        }
+        if !no_physics {
+            // Entity.applyEffectsFromBlocks: stepOn, then checkInsideBlocks.
+            if self.on_ground {
+                let p = BlockPos::containing(self.position.add_vector(Vec3::new(
+                    0.0,
+                    -f64::from(0.2_f32),
+                    0.0,
+                )));
+                let state = world.block(p.x, p.y, p.z);
+                crate::block_contact::emit(crate::block_contact::Event::StepOn(
+                    crate::block_contact::Contact {
+                        entity: self.id as i32,
+                        kind: "minecraft:item",
+                        block: &facts.get(state).name,
+                        state,
+                        position: p,
+                    },
+                ));
+            }
+            crate::block_contact::swept_inside(
+                self.id as i32,
+                "minecraft:item",
+                self.previous,
+                self.position,
+                self.bounds(),
+                |p| {
+                    let state = world.block(p.x, p.y, p.z);
+                    (state, &facts.get(state).name)
+                },
             );
         }
         if self.velocity.subtract(old_velocity).length_squared() > 0.01 {
@@ -638,6 +636,7 @@ impl ExperienceOrb {
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         player: Option<[f64; 3]>,
+        server: bool,
         next_float: &mut dyn FnMut() -> f32,
     ) -> bool {
         self.ticks += 1;
@@ -647,13 +646,22 @@ impl ExperienceOrb {
             self.position.y.floor() as i32,
             self.position.z.floor() as i32,
         );
+        let bounds = self.bounds();
+        let mut scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        // `boolean colliding = !level.noCollision(getBoundingBox())`: an orb
+        // inside blocks takes no gravity until it is pushed out below.
+        let colliding = !crate::collisions::no_collision_empty(&mut scene, bounds);
         if facts.get(block).fluid == Fluid::Water {
             self.velocity = Vec3::new(
                 self.velocity.x * 0.99,
                 (self.velocity.y + 5.0e-4).min(0.06),
                 self.velocity.z * 0.99,
             );
-        } else {
+        } else if !colliding {
             self.velocity.y -= 0.03;
         }
         if facts.get(block).fluid == Fluid::Lava {
@@ -681,12 +689,18 @@ impl ExperienceOrb {
                 );
             }
         }
-        let bounds = self.bounds();
-        let mut scene = SceneCollisions {
-            world,
-            binding: collision,
-            subject: None,
-        };
+        if player.is_none() && server && colliding {
+            // `followingPlayer == null && !level().isClientSide() && colliding`: an orb that would still
+            // be stuck at its next position gets
+            // `Entity.moveTowardsClosestSpace`, a nudge towards the nearest
+            // free side of its block.
+            if !crate::collisions::no_collision_empty(&mut scene, bounds.move_by(self.velocity)) {
+                let speed = next_float() * 0.2 + 0.1;
+                self.move_towards_closest_space(world, facts, speed);
+            }
+        }
+        // `double fallSpeed = getDeltaMovement().y`, taken after the stuck
+        // push and before the move.
         let wanted = self.velocity;
         let moved = scene
             .resolve(bounds, wanted, 0.0, self.on_ground)
@@ -697,25 +711,113 @@ impl ExperienceOrb {
             self.position.z + moved.z,
         );
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-        let mut friction = 0.98;
+        // Entity.move's restituteMovementAfterCollisions, an orb's bounciness
+        // 0: each collided axis's velocity is zeroed — x and z by Mth.equal's
+        // 1.0E-5, y exactly.
+        if (wanted.x - moved.x).abs() >= 1.0e-5 {
+            self.velocity.x = 0.0;
+        }
+        if (wanted.z - moved.z).abs() >= 1.0e-5 {
+            self.velocity.z = 0.0;
+        }
+        if moved.y != wanted.y {
+            self.velocity.y = 0.0;
+        }
+        // `float friction = getAirDrag()` (0.98F), the ground's block
+        // friction multiplied in as a float, widened once for the scale.
+        let mut friction = 0.98_f32;
         if self.on_ground {
             let below = world.block(
                 self.position.x.floor() as i32,
-                (self.position.y - 1.0).floor() as i32,
+                (self.position.y - 0.999_999).floor() as i32,
                 self.position.z.floor() as i32,
             );
-            friction = f64::from(facts.get(below).friction) * 0.98;
+            friction *= facts.get(below).friction;
         }
+        let friction = f64::from(friction);
+        // The drag scales every axis by the same friction, the ground's
+        // block friction included.
         self.velocity = Vec3::new(
             self.velocity.x * friction,
-            self.velocity.y * 0.98,
+            self.velocity.y * friction,
             self.velocity.z * friction,
         );
-        if self.on_ground {
-            self.velocity.y *= -0.9;
+        // `if (verticalCollisionBelow && fallSpeed < -getGravity())`: the
+        // landing bounce is 0.4 of the pre-move speed, not a fixed
+        // restitution.
+        if self.on_ground && wanted.y < -0.03 {
+            self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
         self.age < 6000
+    }
+    /// `Entity.moveTowardsClosestSpace` from the middle of the orb's box:
+    /// towards the nearest side of its block (north, south, west, east or
+    /// up) without a full collision cube, at `speed` (the orb's own
+    /// random, `nextFloat() * 0.2 + 0.1`).
+    fn move_towards_closest_space(&mut self, world: &World, facts: &BlockFacts, speed: f32) {
+        self.velocity = towards_closest_space(
+            self.position,
+            self.bounds(),
+            self.velocity,
+            world,
+            facts,
+            speed,
+        );
+    }
+}
+/// `Entity.moveTowardsClosestSpace` from the middle of an entity's box
+/// (`bounds`, its feet at `position`): the velocity pushed towards the
+/// nearest side of its block (north, south, west, east or up) without a full
+/// collision cube, at `speed` (`nextFloat() * 0.2 + 0.1`). Items and
+/// experience orbs share it.
+fn towards_closest_space(
+    position: Vec3,
+    bounds: Aabb,
+    velocity: Vec3,
+    world: &World,
+    facts: &BlockFacts,
+    speed: f32,
+) -> Vec3 {
+    let at = Vec3::new(
+        position.x,
+        (bounds.min_position().y + bounds.max_position().y) / 2.0,
+        position.z,
+    );
+    let pos = [
+        at.x.floor() as i32,
+        at.y.floor() as i32,
+        at.z.floor() as i32,
+    ];
+    let delta = [
+        at.x - f64::from(pos[0]),
+        at.y - f64::from(pos[1]),
+        at.z - f64::from(pos[2]),
+    ];
+    // (axis, step): NORTH, SOUTH, WEST, EAST, UP.
+    let mut closest = (1, 1);
+    let mut nearest = f64::MAX;
+    for (axis, step) in [(2, -1), (2, 1), (0, -1), (0, 1), (1, 1)] {
+        let mut n = pos;
+        n[axis] += step;
+        if !facts.get(world.block(n[0], n[1], n[2])).full_collision {
+            let d = if step > 0 {
+                1.0 - delta[axis]
+            } else {
+                delta[axis]
+            };
+            if d < nearest {
+                nearest = d;
+                closest = (axis, step);
+            }
+        }
+    }
+    let push = f64::from(closest.1 as f32 * speed);
+    let v = velocity.scale(0.75);
+    match closest.0 {
+        0 => Vec3::new(push, v.y, v.z),
+        1 => Vec3::new(v.x, push, v.z),
+        _ => Vec3::new(v.x, v.y, push),
     }
 }
 /// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:
@@ -947,9 +1049,15 @@ pub struct ArmorStand {
     pub health: f32,
     pub id: u32,
     pub position: Vec3,
+    /// `Entity.xo`, `yo`, `zo`: the position at the start of the tick, which
+    /// the renderer blends toward `position` by the partial tick.
+    pub previous: Vec3,
     pub velocity: Vec3,
     pub on_ground: bool,
+    /// `yRot`, which the body follows (`ArmorStand.tickHeadTurn`: `yBodyRot`).
     pub yaw: f32,
+    /// `yBodyRotO`: the body's yaw at the start of the tick.
+    pub previous_yaw: f32,
     /// mainhand, offhand, feet, legs, chest, head (EquipmentSlot order).
     pub equipment: [Option<crate::items::ItemStack>; 6],
     pub small: bool,
@@ -970,6 +1078,9 @@ pub struct ArmorStand {
     /// rides, which seats it every tick (`positionRider`), as NPC plugins hang
     /// a second name over a player's head.
     pub vehicle: Option<u32>,
+    /// `ArmorStand.disabledSlots`: bit `filterFlag` locks a slot, bit
+    /// `filterFlag + 8` takes from it and bit `filterFlag + 16` puts into it.
+    pub disabled_slots: i32,
 }
 impl ArmorStand {
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
@@ -985,15 +1096,50 @@ impl ArmorStand {
         [-1.0, 0.0, -1.0],
         [1.0, 0.0, 1.0],
     ];
+    /// Where the renderer draws the stand `alpha` of the way through the tick
+    /// (`EntityRenderer`'s `Mth.lerp(partialTick, xo, x)` and so on).
+    pub fn render_position(&self, alpha: f64) -> Vec3 {
+        self.previous.lerp(self.position, alpha)
+    }
+    /// The body's yaw `alpha` of the way through the tick
+    /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
+    /// yBodyRotO, yBodyRot)`).
+    pub fn render_yaw(&self, alpha: f32) -> f32 {
+        self.previous_yaw + alpha * crate::camera::wrap_degrees(self.yaw - self.previous_yaw)
+    }
+    /// A server's stand on its client, each tick:
+    /// `setOldPosAndRot` (`ClientLevel.tickNonPassenger`), then the step of
+    /// its `SteppedInterpolationHandler` (`step`: the position and yaw it is
+    /// put at, when one is due). The yaw
+    /// turns the short way and stays continuous, so a frame between ticks
+    /// never spins it.
+    pub fn interpolate(&mut self, step: Option<(Vec3, f32)>) {
+        self.previous = self.position;
+        self.previous_yaw = self.yaw;
+        if let Some((at, yaw)) = step {
+            self.position = at;
+            self.yaw += crate::camera::wrap_degrees(yaw - self.yaw);
+        }
+    }
+    /// Put there at once, with nothing to blend from
+    /// (`Entity.snapTo`).
+    pub fn snap(&mut self, at: Vec3, yaw: f32) {
+        self.position = at;
+        self.previous = at;
+        self.yaw = yaw;
+        self.previous_yaw = yaw;
+    }
     pub fn new(id: u32, position: Vec3, yaw: f32) -> Self {
         Self {
             fire_ticks: 0,
             health: 20.0,
             id,
             position,
+            previous: position,
             velocity: Vec3::ZERO,
             on_ground: true,
             yaw,
+            previous_yaw: yaw,
             equipment: Default::default(),
             small: false,
             show_arms: false,
@@ -1005,7 +1151,28 @@ impl ArmorStand {
             last_hit: i64::MIN / 2,
             pose: Self::DEFAULT_POSE,
             vehicle: None,
+            disabled_slots: 0,
         }
+    }
+    /// `EquipmentSlot.getFilterFlag` of an `equipment` index (main hand, off
+    /// hand, feet, legs, chest, head).
+    fn filter_flag(slot: usize) -> u32 {
+        [0, 5, 1, 2, 3, 4][slot]
+    }
+    /// `ArmorStand.isDisabled`: the slot is locked, or it is a hand and the
+    /// stand has no arms.
+    pub fn is_disabled(&self, slot: usize) -> bool {
+        self.disabled_slots & (1 << Self::filter_flag(slot)) != 0 || (slot < 2 && !self.show_arms)
+    }
+    /// The `swapItem` locks: taking from a filled slot or putting into an
+    /// empty one can each be disabled.
+    pub fn swap_locked(&self, slot: usize) -> bool {
+        let offset = if self.equipment[slot].is_some() {
+            8
+        } else {
+            16
+        };
+        self.disabled_slots & (1 << (Self::filter_flag(slot) + offset)) != 0
     }
     pub fn environment_tick(
         &mut self,
@@ -1293,6 +1460,53 @@ mod fire_environment_tests {
             assert!(stand.environment_tick(&world, &facts, assets.registry));
         }
         assert_eq!(stand.health, 20.0, "lava does not hurt armor stands");
+    }
+}
+#[cfg(test)]
+mod armor_stand_render_tests {
+    use super::*;
+
+    /// A falling stand is drawn between last tick's position and this one's,
+    /// so it slides down every frame instead of jumping once a tick (#4416).
+    #[test]
+    fn a_falling_stand_is_drawn_between_its_ticks() {
+        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 70.0, 0.5), 0.0);
+        // A new stand has no move behind it.
+        assert_eq!(stand.render_position(0.5), stand.position);
+        let fall = |s: &ArmorStand| Some((Vec3::new(0.5, s.position.y - 1.0, 0.5), 0.0));
+        stand.interpolate(fall(&stand));
+        assert_eq!(stand.render_position(0.0).y, 70.0);
+        assert_eq!(stand.render_position(0.25).y, 69.75);
+        assert_eq!(stand.render_position(1.0).y, 69.0);
+        stand.interpolate(fall(&stand));
+        assert_eq!(stand.render_position(0.5).y, 68.5);
+        // Landed: no step is due, so it stays put, and so does every frame.
+        stand.interpolate(None);
+        assert_eq!(stand.render_position(0.5).y, 68.0);
+    }
+
+    /// A turning stand's body turns between ticks too, the short way round.
+    #[test]
+    fn a_turning_stand_is_drawn_between_its_ticks() {
+        let mut stand = ArmorStand::new(1, Vec3::ZERO, 170.0);
+        assert_eq!(stand.render_yaw(0.5), 170.0);
+        // To -170 is 20 degrees on through 180, not 340 back through 0.
+        stand.interpolate(Some((Vec3::ZERO, -170.0)));
+        assert_eq!(stand.render_yaw(0.0), 170.0);
+        assert_eq!(stand.render_yaw(0.5), 180.0);
+        assert_eq!(stand.render_yaw(1.0), 190.0);
+        stand.interpolate(None);
+        assert_eq!(stand.render_yaw(0.5), 190.0);
+    }
+
+    /// A snap (a move too far to interpolate) leaves nothing to blend from.
+    #[test]
+    fn a_snapped_stand_is_drawn_where_it_landed() {
+        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 70.0, 0.5), 0.0);
+        stand.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 0.0)));
+        stand.snap(Vec3::new(200.5, 64.0, 0.5), 90.0);
+        assert_eq!(stand.render_position(0.5), Vec3::new(200.5, 64.0, 0.5));
+        assert_eq!(stand.render_yaw(0.5), 90.0);
     }
 }
 #[cfg(test)]

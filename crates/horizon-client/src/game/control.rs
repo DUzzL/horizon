@@ -644,6 +644,7 @@ impl Game<'_> {
                 renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
                     path: path.trim().into(),
                     size: None,
+                    scaled: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
@@ -893,6 +894,15 @@ impl Game<'_> {
                     horizon_client::mobs::DamageKind::PlayerAttack,
                     None,
                 );
+                ok()
+            }
+            // A splitscreen player leaves splitscreen; only P1's game ends the process.
+            "quit" if self.options.split_guest => {
+                if self.remote.is_some() {
+                    self.leave_server(None)?;
+                } else if let Some(title) = self.title.as_mut() {
+                    title.escape();
+                }
                 ok()
             }
             "quit" => {

@@ -417,6 +417,9 @@ pub struct Title {
     /// The backup `OptimizeConfirm` asked for starts the optimization when done (with the
     /// Erase Cached Data choice).
     optimize_after_backup: Option<bool>,
+    /// The backup `RecoverWorldDataScreen.attemptRestore` makes first; the restore runs when it
+    /// is done, whether the backup worked or not.
+    restore_after_backup: bool,
     /// The running `WorldUpgrader` of `Mode::Optimize`.
     optimize: Option<WorldUpgrader>,
     /// The Erase Cached Data box as last drawn: x, y, width, height.
@@ -689,6 +692,7 @@ impl Title {
             backup_shown: Cell::new(false),
             backup_then_open: None,
             optimize_after_backup: None,
+            restore_after_backup: false,
             optimize: None,
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
@@ -1081,7 +1085,11 @@ impl Title {
         if let Mode::Backup { world } = &self.mode {
             let world = world.clone();
             let folder = world.folder.clone();
-            if let Some(erase_cache) = self.optimize_after_backup.take() {
+            if std::mem::take(&mut self.restore_after_backup) {
+                // `makeBackupAndShowToast(..).thenAcceptAsync(..)` in attemptRestore: the restore
+                // runs, backup failed or not.
+                self.attempt_restore(world.clone());
+            } else if let Some(erase_cache) = self.optimize_after_backup.take() {
                 // `conditionallyMakeBackupAndShowToast(..).thenAcceptAsync(..)`: the toast shows
                 // and OptimizeWorldScreen opens, backup failed or not.
                 self.begin_optimize(world.clone(), erase_cache);
@@ -3426,8 +3434,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Recover { world, .. }, Some(90)) => {
+                // attemptRestore: the world is backed up first (`makeBackupAndShowToast`), and the
+                // restore runs once that is done.
                 let world = world.clone();
-                self.attempt_restore(world);
+                self.restore_after_backup = true;
+                self.start_backup(world);
                 Action::None
             }
             (Mode::Recovered { world, .. }, Some(92)) => {

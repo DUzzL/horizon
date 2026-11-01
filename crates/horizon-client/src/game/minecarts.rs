@@ -33,6 +33,9 @@ pub(super) enum CartKind {
     /// `MinecartCommandBlock`: its `BaseCommandBlock` is `Minecart::command`,
     /// run by a powered activator rail (`game/command_minecarts.rs`).
     CommandBlock,
+    /// `MinecartSpawner`: a `BaseSpawner` that ticks where the cart is
+    /// (`Minecart::spawner`). Only `/summon` makes one: there is no item.
+    Spawner,
 }
 impl CartKind {
     pub fn from_id(id: &str) -> Option<Self> {
@@ -43,6 +46,7 @@ impl CartKind {
             "furnace_minecart" => Self::Furnace,
             "tnt_minecart" => Self::Tnt,
             "command_block_minecart" => Self::CommandBlock,
+            "spawner_minecart" => Self::Spawner,
             _ => return None,
         })
     }
@@ -54,9 +58,18 @@ impl CartKind {
             Self::Furnace => "minecraft:furnace_minecart",
             Self::Tnt => "minecraft:tnt_minecart",
             Self::CommandBlock => "minecraft:command_block_minecart",
+            Self::Spawner => "minecraft:spawner_minecart",
         }
     }
-    fn slots(self) -> usize {
+    /// `AbstractMinecart.getDropItem` and `getPickResult`: the item a cart drops and
+    /// is picked as (a spawner minecart's is a plain minecart: there is no item of its own).
+    pub fn item(self) -> &'static str {
+        match self {
+            Self::Spawner => "minecraft:minecart",
+            kind => kind.id(),
+        }
+    }
+    pub(super) fn slots(self) -> usize {
         match self {
             Self::Chest => 27,
             Self::Hopper => 5,
@@ -70,7 +83,7 @@ impl CartKind {
     /// an empty cart.
     pub fn interact_passes(self, sneaking: bool, ridden: bool, game_master: bool) -> bool {
         match self {
-            Self::Tnt => true,
+            Self::Tnt | Self::Spawner => true,
             Self::CommandBlock => !game_master,
             Self::Rideable => sneaking || ridden,
             Self::Chest | Self::Hopper | Self::Furnace => false,
@@ -119,6 +132,9 @@ pub(super) struct Minecart {
     /// An activator rail asked for the command during this tick; it runs once
     /// the cart is back in the level (`command_minecarts.rs`).
     pub command_due: bool,
+    /// Spawner minecarts: the cart's `BaseSpawner` (`Delay`, `SpawnData`,
+    /// `SpawnPotentials` and the rest as a spawner block saves them).
+    pub spawner: Option<Box<horizon_client::mobs::spawner::Spawner>>,
     /// The synched `DATA_ID_COMMAND_NAME` and `DATA_ID_LAST_OUTPUT`, which
     /// follow the command block only at `onUpdated`.
     pub synced_command: String,
@@ -255,6 +271,8 @@ impl Minecart {
             tick_count: 0,
             last_activated: 0,
             command_due: false,
+            // A fresh `BaseSpawner`, as `MinecartSpawner`'s constructor makes.
+            spawner: (kind == CartKind::Spawner).then(Default::default),
             synced_command: String::new(),
             synced_output: String::new(),
         }
@@ -293,6 +311,7 @@ impl CartModels {
             CartKind::Furnace,
             CartKind::Tnt,
             CartKind::CommandBlock,
+            CartKind::Spawner,
         ];
         let models = kinds
             .into_iter()
@@ -906,6 +925,18 @@ impl Game<'_> {
                     }
                 }
             }
+            // MinecartSpawner.tick: `BaseSpawner.serverTick` at the cart's block.
+            CartKind::Spawner => {
+                if let Some(mut spawner) = c.spawner.take() {
+                    let key = (
+                        c.position.x.floor() as i32,
+                        c.position.y.floor() as i32,
+                        c.position.z.floor() as i32,
+                    );
+                    let _ = self.server_tick_spawner_of(key, &mut spawner, Some(c.id));
+                    c.spawner = Some(spawner);
+                }
+            }
             _ => {}
         }
         true
@@ -963,6 +994,7 @@ impl Game<'_> {
         if let Some(i) = self.carts.iter().position(|x| x.id == c.id) {
             self.eject_cart_mobs(i);
         }
+        self.release_vehicle_container(c.id);
         self.carts.retain(|x| x.id != c.id);
         // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
         let interaction = self.destroy_type("tnt_explosion_drop_decay");
@@ -1226,6 +1258,7 @@ impl Game<'_> {
                 }
             } else {
                 self.eject_cart_mobs(i);
+                self.release_vehicle_container(id);
                 self.carts.remove(i);
             }
         }
@@ -1331,6 +1364,7 @@ impl Game<'_> {
             self.push_from_cart(i);
         } else {
             self.eject_cart_mobs(i);
+            self.release_vehicle_container(c.id);
             self.carts.remove(i);
             self.riding = None;
         }
@@ -1453,6 +1487,22 @@ impl Game<'_> {
         }
         best
     }
+    /// The slots of the cart `id`, for a command: `getChestVehicleItem` and
+    /// `setChestVehicleItem` first unpack its loot table with no player, so
+    /// no `player_generates_container_loot` fires later. While its menu is
+    /// open the live slots are the placeholder copy (`open_cart_container`).
+    pub(super) fn cart_slots(&mut self, id: u32) -> Option<&mut Vec<Option<ItemStack>>> {
+        let c = self.carts.iter_mut().find(|c| c.id == id)?;
+        c.loot = None;
+        match self
+            .world
+            .block_entities
+            .get_mut(&(i32::MAX - 15, CART_KEY_Y, id as i32))
+        {
+            Some(BlockEntity::Chest(open)) => Some(open),
+            _ => Some(&mut c.items),
+        }
+    }
     /// `ContainerEntity.unpackChestVehicleLootTable` for a player who opens a
     /// chest minecart: a roll it still holds fires `player_generates_container_loot`
     /// for its table, and the cart keeps its items from then on.
@@ -1523,6 +1573,8 @@ impl Game<'_> {
             // client opens the editor, `open_cart_command_block`), anyone else
             // PASSes to the held item. SUCCESS swings on the client only.
             CartKind::CommandBlock => return self.can_use_game_master_blocks(),
+            // MinecartSpawner has no interact of its own (`Entity.interact` passes).
+            CartKind::Spawner => return false,
         }
         self.swing_arm();
         true
@@ -1560,6 +1612,19 @@ impl Game<'_> {
         }
         self.store_cart_items(key);
         self.world.block_entities.remove(&key);
+    }
+    /// A chest or hopper minecart or a chest boat is about to be removed
+    /// (`Containers.dropContents` / `AbstractChestBoat.remove`): what an open
+    /// menu edited goes back to the vehicle, so it is what drops or travels
+    /// with it, and the menu's stand-in leaves the level. A menu that is
+    /// still open over it then has nothing left to take.
+    pub(super) fn release_vehicle_container(&mut self, id: u32) {
+        let key = (i32::MAX - 15, CART_KEY_Y, id as i32);
+        self.store_cart_items(key);
+        self.world.block_entities.remove(&key);
+        if self.container == Some(key) {
+            self.container = None;
+        }
     }
     /// The menu of a chest or hopper minecart or a chest boat works on the
     /// vehicle's own items (`ContainerEntity`): the placeholder under `key`
@@ -1628,6 +1693,8 @@ impl Game<'_> {
         }
         if burning && self.carts[i].kind == CartKind::Tnt {
             self.eject_cart_mobs(i);
+            let id = self.carts[i].id;
+            self.release_vehicle_container(id);
             let c = self.carts.remove(i);
             self.explode_cart(&c, arrow_velocity.length_squared());
             return;
@@ -1653,6 +1720,10 @@ impl Game<'_> {
             if !tnt_prime {
                 self.eject_cart_mobs(i);
             }
+            let id = self.carts[i].id;
+            if !tnt_prime {
+                self.release_vehicle_container(id);
+            }
             let mut c = self.carts.remove(i);
             if c.kind == CartKind::Tnt && (fire || speed >= f64::from(0.01f32)) {
                 // MinecartTNT.destroy: prime instead of breaking.
@@ -1669,7 +1740,7 @@ impl Game<'_> {
                         self.spawn_item(s.clone(), at, [0.0, 0.1, 0.0], 10);
                     }
                     if !creative {
-                        self.spawn_item(ItemStack::new(c.kind.id(), 1), at, [0.0, 0.1, 0.0], 10);
+                        self.spawn_item(ItemStack::new(c.kind.item(), 1), at, [0.0, 0.1, 0.0], 10);
                     }
                 }
             }
@@ -1789,6 +1860,8 @@ impl Game<'_> {
             ),
             CartKind::Tnt => registry.default_state("minecraft:tnt"),
             CartKind::CommandBlock => registry.default_state("minecraft:command_block"),
+            // MinecartSpawner.getDefaultDisplayBlockState.
+            CartKind::Spawner => registry.default_state("minecraft:spawner"),
         }
     }
     /// `AbstractMinecartRenderer` (old render): on the rail between the
@@ -2011,6 +2084,16 @@ impl Minecart {
                         }
                     }
                 }
+                // BaseSpawner.save: the delays, ranges, SpawnData and SpawnPotentials.
+                CartKind::Spawner => {
+                    if let Some(spawner) = &self.spawner {
+                        for (key, value) in
+                            horizon_client::mobs::spawner::SpawnerExt::save(&**spawner)
+                        {
+                            put(key, value);
+                        }
+                    }
+                }
                 CartKind::Rideable => {}
             }
             // A loaded loot table goes back while the items are still its roll;
@@ -2055,6 +2138,12 @@ impl Minecart {
             c.synced_command.clone_from(&c.command.command);
             c.synced_output = c.command.last_output_string();
         }
+        // MinecartSpawner.readAdditionalSaveData: BaseSpawner.load.
+        if kind == CartKind::Spawner {
+            c.spawner = Some(Box::new(horizon_client::mobs::spawner::SpawnerExt::load(
+                tag,
+            )));
+        }
         Some(c)
     }
 }
@@ -2085,6 +2174,67 @@ mod tests {
         assert_eq!(display_offset(CartKind::Tnt), 6.0);
         assert_eq!(display_offset(CartKind::CommandBlock), 6.0);
         assert_eq!(display_offset(CartKind::Rideable), 6.0);
+    }
+
+    /// `MinecartSpawner`: its `BaseSpawner` is saved and loaded with the cart (the delay, the
+    /// ranges and the `SpawnData`), it drops and is picked as a plain minecart, and it shows a
+    /// spawner block.
+    #[test]
+    fn a_spawner_cart_keeps_its_spawner_and_drops_a_minecart() {
+        use horizon_world::nbt::Tag;
+        let saved = Tag::compound([
+            ("id", Tag::String("minecraft:spawner_minecart".into())),
+            (
+                "Pos",
+                Tag::List(
+                    [0.5f64, 40.5, 0.5]
+                        .map(|v| Tag::Double(v.to_bits()))
+                        .to_vec(),
+                ),
+            ),
+            ("Delay", Tag::Short(37)),
+            ("MaxSpawnDelay", Tag::Short(120)),
+            ("SpawnRange", Tag::Short(2)),
+            (
+                "SpawnData",
+                Tag::compound([(
+                    "entity",
+                    Tag::compound([("id", Tag::String("minecraft:zombie".into()))]),
+                )]),
+            ),
+        ]);
+        let mut cart = Minecart::from_nbt(&saved, 1, CartKind::Spawner).unwrap();
+        let spawner = cart.spawner.as_mut().expect("a spawner cart has a spawner");
+        assert_eq!(
+            (
+                spawner.spawn_delay,
+                spawner.max_spawn_delay,
+                spawner.spawn_range
+            ),
+            (37, 120, 2)
+        );
+        // No raw tag to copy from: what comes out is the cart's own save.
+        spawner.spawn_delay = 41;
+        let out = cart.to_nbt([0; 4], None);
+        assert_eq!(out.get("Delay"), Some(&Tag::Short(41)));
+        assert_eq!(out.get("MaxSpawnDelay"), Some(&Tag::Short(120)));
+        assert_eq!(
+            out.get("SpawnData")
+                .and_then(|d| d.get("entity"))
+                .and_then(|e| e.get("id")),
+            Some(&Tag::String("minecraft:zombie".into()))
+        );
+        assert_eq!(CartKind::Spawner.item(), "minecraft:minecart");
+        assert_eq!(
+            CartKind::from_id("minecraft:spawner_minecart"),
+            Some(CartKind::Spawner)
+        );
+        // A summoned one has a spawner of its own.
+        assert!(
+            Minecart::new(2, CartKind::Spawner, Vec3::ZERO)
+                .spawner
+                .is_some()
+        );
     }
 
     #[test]

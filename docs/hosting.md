@@ -174,6 +174,7 @@ hardcore = false
 path = ""                    # the game program; empty: the one beside horizon-server
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true
+low_memory = false           # true: less memory, slightly slower ticks (see below)
 
 [backups]
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
@@ -410,6 +411,33 @@ Where vanilla refuses to start without a keystore, Horizon makes one:
 Keep the protocol on `localhost` or your tailnet even so. `management-server-tls-enabled = false` turns TLS off.
 As in vanilla, a wrong secret or keystore stops the server from starting.
 
+### Tools that speak RCON
+
+Hosting panels, Discord bridges and scripts often run commands through RCON, vanilla's remote console, and Horizon's
+server serves it. It's off by default and needs a password; turn it on in `server.toml` (the dotted keys are
+quoted in TOML):
+
+```toml
+[properties]
+enable-rcon = true
+"rcon.port" = 25575
+"rcon.password" = "a long random string"
+```
+
+It listens on the address `[server] bind` names (`server-ip`; every address when it's empty), as vanilla's does.
+
+A client logs in with the password and each command runs as one typed in the server's console, with the same
+output (`horizon-server cmd` does the same from the shell). RCON isn't encrypted: the password and every command
+travel in clear text, and it gives full control of the server. Keep its port closed to the internet: a firewall, a
+tailnet or an SSH tunnel. As in vanilla, an empty password or a port outside 1 to 65535 leaves RCON off with a
+warning in the log, and a port already in use is a warning too, not a server that doesn't start. The settings are
+read when the server starts. To turn it off again, set `enable-rcon = false`: taking the lines out of
+`server.toml` leaves what `server.properties` already holds, as for any other key.
+
+Where it differs from vanilla: a connection that hasn't logged in within 30 seconds is closed, at most 16 are open
+at once, and a command a client's TCP splits in two still works. A command shows as the console's (`Server`, not
+`Rcon`), and `broadcast-rcon-to-ops` isn't honoured yet.
+
 ## 7. Backups
 
 ```sh
@@ -491,6 +519,24 @@ short:
   stopped it.
 
 For more than 50 active players, give it more cores.
+
+### Less memory: `low_memory`
+
+Off by default. On Linux, the game's allocator (mimalloc) backs its memory with transparent huge pages
+(2 MB each) where the system allows them. Many of those pages are only partly used, so the server holds
+more memory than it needs, but the tick runs a little faster. Under `[engine]`, `low_memory = true` starts
+the game with huge pages off. Measured on a 4-core EPYC VPS with 20 bots playing (2026-11-01):
+
+| | Default | `low_memory = true` |
+|---|---|---|
+| Memory, idle after start | ~300 MB | ~245 MB (−60 MB) |
+| Memory, 20 players | ~1180 MB | ~980 MB (−190 MB) |
+| Average tick, 20 players | 27.1 ms | 27.5 ms (+1.2 %) |
+| Start | 2.1 s | 2.2 s |
+
+Turn it on when memory is what you're short of, for example on a small VPS. It applies at the next start.
+A game started without `horizon-server` (`horizon-client --dedicated`, a container of your own) gets the same
+effect from the environment variable `MIMALLOC_ALLOW_THP=0`. On macOS and Windows it changes nothing.
 
 ## When something goes wrong
 

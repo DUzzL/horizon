@@ -522,6 +522,10 @@ impl<'a> Game<'a> {
     /// then `tickSpawningChunk` in the shuffled spawning chunks of every
     /// player: inhabited time, then `spawnForChunk`.
     pub(super) fn spawn_natural(&mut self) {
+        // `tickChunks` does nothing in a Debug world.
+        if self.world_debug {
+            return;
+        }
         let players = self.level_players();
         if players.is_empty() {
             return;
@@ -614,6 +618,10 @@ impl<'a> Game<'a> {
         let Some(terrain) = self.end.locator() else {
             return;
         };
+        // `FlatLevelSource.spawnOriginalMobs` is empty: a superflat world places no packs.
+        if terrain.is_flat() {
+            return;
+        }
         let mut region = terrain.region_random(cx, cz);
         let any = region.as_any();
         let added = if let Some(r) = any.downcast_mut::<LegacyRandom>() {

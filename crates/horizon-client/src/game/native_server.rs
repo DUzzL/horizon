@@ -275,20 +275,13 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// A system line in that player's chat; false when they aren't on.
-    pub(super) fn native_tell(&self, uuid: u128, line: Text) -> bool {
-        let Some(host) = &self.lan else {
-            return false;
-        };
-        let Some(g) = host.hub.guests.iter().find(|g| g.placed && g.uuid == uuid) else {
-            return false;
-        };
-        host.hub.send_to(g.conn, &system_chat(&line));
-        true
+    /// A system line in that player's chat, also inside a player's hook for
+    /// the acting player; false when they aren't on.
+    pub(super) fn native_tell(&mut self, uuid: u128, line: Text) -> bool {
+        self.native_send(uuid, system_chat(&line))
     }
     /// A line over that player's hotbar (the action bar), also inside a
-    /// player's hook for the acting player (`native_tell` reaches nobody
-    /// there); false when they aren't on. API 21.
+    /// player's hook for the acting player; false when they aren't on. API 21.
     pub(super) fn native_action_bar(&mut self, uuid: u128, line: Text) -> bool {
         let packet = C::SystemChat(play::SystemChat {
             content: component_nbt(&line.component()),

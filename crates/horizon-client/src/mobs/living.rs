@@ -653,7 +653,7 @@ impl Mob {
         if self.on_ground {
             if self.fall_distance > 0.0 {
                 self.trample_farmland(w, events);
-                self.cause_fall_damage(events);
+                self.cause_fall_damage(w, events);
             }
             self.fall_distance = 0.0;
         }
@@ -896,8 +896,29 @@ impl Mob {
     }
     /// The landing of `check_fall_damage`: the whole fall, with no block
     /// softening it.
-    fn cause_fall_damage(&mut self, events: &mut Vec<MobEvent>) {
-        self.cause_fall_damage_from(self.fall_distance, 1.0, events);
+    fn cause_fall_damage(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
+        let pos = self.block_on_legacy(w);
+        self.cause_fall_damage_at(self.fall_distance, 1.0, events, Some((w, pos)));
+    }
+    fn mod_block_fall(
+        &self,
+        contact: Option<(&MobWorld, [i32; 3])>,
+        distance: f64,
+        damage: f32,
+    ) -> f32 {
+        contact.map_or(damage, |(w, p)| {
+            crate::block_contact::fall(
+                crate::block_contact::Contact {
+                    entity: self.id as i32,
+                    kind: &self.kind.id,
+                    block: w.block_name(p[0], p[1], p[2]),
+                    state: w.world.block(p[0], p[1], p[2]),
+                    position: horizon_core::position::BlockPos::new(p[0], p[1], p[2]),
+                },
+                distance,
+                damage,
+            )
+        })
     }
     /// `LivingEntity.causeFallDamage`: a fall of `distance` blocks at `modifier`
     /// (its own landing, or a vehicle's passed on by `propagateFallToPassengers`)
@@ -909,6 +930,15 @@ impl Mob {
         distance: f64,
         modifier: f32,
         events: &mut Vec<MobEvent>,
+    ) {
+        self.cause_fall_damage_at(distance, modifier, events, None);
+    }
+    fn cause_fall_damage_at(
+        &mut self,
+        distance: f64,
+        modifier: f32,
+        events: &mut Vec<MobEvent>,
+        contact: Option<(&MobWorld, [i32; 3])>,
     ) {
         // Breeze.causeFallDamage: a landing from higher than three blocks.
         if self.species() == super::Species::Breeze && distance > 3.0 {
@@ -939,6 +969,7 @@ impl Mob {
         // Entity.causeFallDamage: nothing happens to a fall immune entity, nor
         // to those on it.
         if self.kind.flags.fall_immune {
+            self.mod_block_fall(contact, distance, 0.0);
             return;
         }
         let power = distance + 1.0e-6 - self.kind.safe_fall_distance;
@@ -950,6 +981,7 @@ impl Mob {
             super::Species::Goat => damage -= 10.0,
             _ => {}
         }
+        let damage = f64::from(self.mod_block_fall(contact, distance, damage as f32));
         // LivingEntity.causeFallDamage lets the riders fall first.
         if !horse {
             self.fall_to_passengers(distance, modifier, events);

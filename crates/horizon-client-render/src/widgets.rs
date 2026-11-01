@@ -98,6 +98,25 @@ thread_local! {
     static TARGETS: RefCell<(Vec<Target>, Vec<Target>, u64)> = const { RefCell::new((Vec::new(), Vec::new(), 0)) };
 }
 
+/// Splitscreen: one player's buttons and focus targets, kept aside while another player's game
+/// runs on this thread ([`take`] and [`put`] around each turn).
+#[derive(Default)]
+pub struct Saved(
+    (Vec<Widget>, Vec<Widget>, u64),
+    (Vec<Target>, Vec<Target>, u64),
+);
+
+/// This thread's buttons and targets, leaving none.
+pub fn take() -> Saved {
+    Saved(WIDGETS.take(), TARGETS.take())
+}
+
+/// Bring back what [`take`] kept.
+pub fn put(saved: Saved) {
+    WIDGETS.set(saved.0);
+    TARGETS.set(saved.1);
+}
+
 /// An interactive rectangle (GUI pixels) a controller can focus and click.
 pub fn target(rect: [f32; 4]) {
     target_as(rect, Kind::Button);

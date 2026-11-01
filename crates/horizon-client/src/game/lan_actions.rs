@@ -42,6 +42,7 @@ pub(super) struct GuestPlay {
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
+    use_duration: i32,
     use_delay: u32,
     /// The shield's ItemCooldowns entry: an axe disabled it for this many ticks.
     pub(super) shield_cooldown: u32,
@@ -172,6 +173,7 @@ pub(super) struct GuestSwap {
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
+    use_duration: i32,
     use_delay: u32,
     pub(super) shield_cooldown: u32,
     /// The guest's item cooldowns (`Game::cooldowns` for its turn).
@@ -295,7 +297,9 @@ impl Game<'_> {
         f: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
         let swap = self.enter_guest(host, conn)?;
-        let result = f(self);
+        let dimension =
+            (self.serving.is_some() || self.options.dedicated.is_some()).then_some(self.dim.id());
+        let result = horizon_client::block_contact::in_level(dimension, || f(self));
         self.leave_guest(host, swap);
         Some(result)
     }
@@ -464,6 +468,7 @@ impl Game<'_> {
         let mining = std::mem::replace(&mut self.mining, play.mining.take());
         let destroy_delay = std::mem::replace(&mut self.destroy_delay, play.destroy_delay);
         let using = std::mem::replace(&mut self.using, play.using.take());
+        let use_duration = std::mem::replace(&mut self.use_duration, play.use_duration);
         let use_delay = std::mem::replace(&mut self.use_delay, play.use_delay);
         let shield_cooldown = std::mem::replace(&mut self.shield_cooldown, play.shield_cooldown);
         let cooldowns = std::mem::replace(&mut self.cooldowns, std::mem::take(&mut play.cooldowns));
@@ -482,6 +487,9 @@ impl Game<'_> {
         if let Some(p) = self.player.as_mut() {
             p.is_passenger = g.vehicle.is_some();
         }
+        // Entity.collide: the guest's body collides with the level's world
+        // border too, as it is this turn (it moves with /worldborder).
+        self.player_border();
         let host_station = self.station.take();
         // The guest's bed, sleep counter and respawn point; the host's
         // respawn point, anchor and action bar stay theirs.
@@ -574,6 +582,7 @@ impl Game<'_> {
             mining,
             destroy_delay,
             using,
+            use_duration,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -649,6 +658,7 @@ impl Game<'_> {
             mining,
             destroy_delay,
             using,
+            use_duration,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -766,6 +776,7 @@ impl Game<'_> {
         play.mining = std::mem::replace(&mut self.mining, mining);
         play.destroy_delay = std::mem::replace(&mut self.destroy_delay, destroy_delay);
         play.using = std::mem::replace(&mut self.using, using);
+        play.use_duration = std::mem::replace(&mut self.use_duration, use_duration);
         play.use_delay = std::mem::replace(&mut self.use_delay, use_delay);
         play.shield_cooldown = std::mem::replace(&mut self.shield_cooldown, shield_cooldown);
         play.cooldowns = std::mem::replace(&mut self.cooldowns, cooldowns);
@@ -1178,9 +1189,14 @@ impl Game<'_> {
             );
             return false;
         }
+        // A mod menu type only for a client that has it: as
+        // `ServerPlayer.openMenu` with no menu, nothing opens.
+        let brand = host.hub.guest(conn).map_or("", |g| g.brand.as_str());
+        if !horizon_client::containers::menu_reaches(brand, menu) {
+            return false;
+        }
         // ServerPlayer.openMenu closes the menu that was open.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        self.guest_close_all(host, conn);
         let hidden = self.native_hidden_slots(pos, items.len());
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
@@ -1228,8 +1244,7 @@ impl Game<'_> {
             return false;
         };
         // ServerPlayer.openMenu closes the menu that was open.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        self.guest_close_all(host, conn);
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
         true
@@ -1248,6 +1263,38 @@ impl Game<'_> {
         {
             self.container_edge_sound(pos, false);
         }
+    }
+
+    /// Closes whatever menu the guest has open, the way each `ContainerClose`
+    /// does (`ServerPlayer.doCloseContainer`, `AbstractContainerMenu.removed`):
+    /// the container's lid, a vehicle's stand-in (its items go back to the
+    /// vehicle), the trade (written back to the villager), the crafting table,
+    /// station and mount menus, and the cursor stack back to the inventory.
+    /// Nothing is sent to the client: this is for a guest who is leaving or
+    /// whose server is closing. The guest must be in `host.hub.guests` and the
+    /// level they are in must be the one in place.
+    pub(super) fn guest_close_all(&mut self, host: &mut LanHost, conn: u32) {
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        if let Some((window, slots)) = host.hub.guests[gi]
+            .menu
+            .as_ref()
+            .map(|m| (m.window, m.slots))
+        {
+            self.guest_container_closed(host, conn);
+            if let Slots::Block(key) = slots
+                && key.1 == super::minecarts::CART_KEY_Y
+            {
+                self.close_guest_vehicle_menu(host, conn, key);
+            }
+            host.hub.container_closed(conn, window);
+        }
+        self.lan_merchant_closed(host, conn, None);
+        self.lan_crafting_closed(host, conn, None);
+        self.lan_station_closed(host, conn, None);
+        self.lan_mount_closed(host, conn, None);
+        self.guest_carried_back(host, gi);
     }
 
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
@@ -1294,15 +1341,7 @@ impl Game<'_> {
             .guests
             .iter()
             .filter(|g| host.hub.here(g))
-            .filter(|g| {
-                g.menu.as_ref().is_some_and(|m| {
-                    (m.slots.valid(&self.world) && !m.slots.still_valid(&self.world, g, m.pos))
-                        || m.pos.is_some_and(|k| {
-                            k.1 == super::minecarts::CART_KEY_Y
-                                && !self.chest_vehicle_still_valid(k.2, g)
-                        })
-                })
-            })
+            .filter(|g| !self.container_menu_valid(g))
             .map(|g| {
                 let vehicle = g.menu.as_ref().and_then(|m| match m.slots {
                     Slots::Block(key) if key.1 == super::minecarts::CART_KEY_Y => Some(key),
@@ -1320,6 +1359,78 @@ impl Game<'_> {
             if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
                 self.guest_carried_back(host, gi);
             }
+        }
+    }
+
+    /// `stillValid` of the guest's open container: its blocks are still there
+    /// and in reach, or its vehicle exists and is in reach. True with none open.
+    fn container_menu_valid(&self, g: &horizon_client::lan::guest::Guest) -> bool {
+        g.menu.as_ref().is_none_or(|m| {
+            !(m.slots.valid(&self.world) && !m.slots.still_valid(&self.world, g, m.pos))
+                && !m.pos.is_some_and(|k| {
+                    k.1 == super::minecarts::CART_KEY_Y && !self.chest_vehicle_still_valid(k.2, g)
+                })
+        })
+    }
+
+    /// `AbstractContainerMenu.stillValid` of whatever menu the guest has open
+    /// (a container or vehicle, a trade, the crafting table, a station, a
+    /// lectern, a mount's inventory). True when none is open.
+    fn guest_menu_still_valid(&self, host: &LanHost, conn: u32) -> bool {
+        let Some(g) = host.hub.guest(conn) else {
+            return true;
+        };
+        if !self.container_menu_valid(g) {
+            return false;
+        }
+        let Some(p) = host.play.get(&conn) else {
+            return true;
+        };
+        p.crafting
+            .table
+            .as_ref()
+            .is_none_or(|t| self.lan_table_valid(g, t.3))
+            && p.station
+                .as_ref()
+                .is_none_or(|s| self.lan_station_valid(g, s))
+            && p.lectern
+                .as_ref()
+                .is_none_or(|l| self.lan_lectern_valid(g, l.key))
+            && p.merchant
+                .as_ref()
+                .and_then(|m| m.merchant.mob)
+                .is_none_or(|id| self.lan_merchant_valid(g, id))
+            && p.mount_window
+                .as_ref()
+                .is_none_or(|m| self.lan_mount_valid(g, m.mob))
+    }
+
+    /// The check before a menu click: a menu that is no longer valid closes
+    /// (returning what it held, as `ContainerClose` does) and the client's
+    /// window with it, so the click lands on nothing
+    /// (`ServerGamePacketListenerImpl.handleContainerClick` and the others
+    /// ask `stillValid` first).
+    fn guest_validate_menu(&mut self, host: &mut LanHost, conn: u32) {
+        if self.guest_menu_still_valid(host, conn) {
+            return;
+        }
+        let mut windows: Vec<i32> = host
+            .hub
+            .guest(conn)
+            .and_then(|g| g.menu.as_ref().map(|m| m.window))
+            .into_iter()
+            .collect();
+        if let Some(p) = host.play.get(&conn) {
+            windows.extend(p.crafting.table.as_ref().map(|t| t.0));
+            windows.extend(p.station.as_ref().map(|s| s.window));
+            windows.extend(p.lectern.as_ref().map(|l| l.window));
+            windows.extend(p.merchant.as_ref().map(|m| m.window));
+            windows.extend(p.mount_window.as_ref().map(|m| m.window));
+        }
+        self.guest_close_all(host, conn);
+        for container in windows {
+            host.hub
+                .send_to(conn, &C::ContainerClose(play::ContainerClose { container }));
         }
     }
 
@@ -1433,6 +1544,19 @@ impl Game<'_> {
             )
         {
             return;
+        }
+        if matches!(
+            packet,
+            S::ContainerClick(_)
+                | S::ContainerButtonClick(_)
+                | S::ContainerSlotStateChanged(_)
+                | S::RenameItem(_)
+                | S::SetBeacon(_)
+                | S::SelectTrade(_)
+                | S::SelectBundleItem(_)
+                | S::PlaceRecipe(_)
+        ) {
+            self.guest_validate_menu(host, conn);
         }
         let spectator = host.hub.guests[gi].spectator();
         match packet {

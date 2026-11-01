@@ -326,6 +326,9 @@ impl Game<'_> {
         // The new atlas's skin and map slots are blank: players and maps
         // upload into it again instead of naming sprites it does not have.
         self.skin_slots.forget();
+        self.skin_downloads
+            .borrow_mut()
+            .set_resource_root(self.options.resources.clone());
         self.maps.slots.forget();
         self.map_patches.clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
@@ -350,7 +353,12 @@ impl Game<'_> {
         self.pending_uploads.clear();
         // New GPU textures: a renderer built from the reloaded resources; the
         // sections are uploaded again as they are meshed.
-        if let Some(renderer) = renderer {
+        if let Some(mut renderer) = renderer {
+            // The old one's size: a splitscreen player's view is smaller than the window the new
+            // one was sized from (it drew a window-sized frame into the view, cut off).
+            if let Some(old) = &self.renderer {
+                renderer.resize(old.config.width, old.config.height);
+            }
             self.renderer = Some(renderer);
             self.apply_ui_settings();
         }
@@ -362,6 +370,7 @@ impl Game<'_> {
         self.ui.chat.rescale(&self.gui.atlas);
         // The creative screen survives the reload; item names may not.
         self.creative_screen.forget_items();
+        self.native_client_resources_reloaded();
         Ok(())
     }
 }
