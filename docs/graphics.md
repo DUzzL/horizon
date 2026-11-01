@@ -5,7 +5,7 @@
 Horizon's graphics settings are two screens built from vanilla's widgets, opened from the top of **Video Settings** (**Horizon Graphics...** and **Advanced Graphics...**) or from **Options → Horizon Settings...**:
 
 - **Graphics** (Simple): a preset (Performance, Balanced, Quality, Ultra or Custom) and LOD distance.
-- **Advanced Graphics**: every Horizon setting, grouped under Rendering, Quality, Display, Preferences, Performance and Overlay.
+- **Advanced Graphics**: every Horizon setting, grouped under Rendering, Quality, Display, Preferences, Performance and Overlay. Cave Culling, Entity Culling and Leaf Culling share the Culling group under Rendering.
 
 Vanilla's own settings (render distance, FOV, framerate, VSync, GUI scale, smooth lighting...) stay where vanilla has them, in Video Settings; both screens leave them out.
 
@@ -17,7 +17,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Group | Setting | Stored in |
 | --- | --- | --- |
 | Rendering | render distance, simulation distance, entity distance | `options.txt` (vanilla keys) |
-| | LOD distance, cave culling, chunk updates per frame | `horizon-graphics.txt` |
+| | LOD distance, cave culling, entity culling, leaf culling, chunk updates per frame | `horizon-graphics.txt` |
 | Quality | smooth lighting, mipmap levels, biome blend, clouds, cloud distance, weather radius, particles, entity shadows, cutout leaves | `options.txt` |
 | | sky, fog, weather, animated textures | `horizon-graphics.txt` |
 | | distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up) | `horizon-graphics.txt` |
@@ -27,7 +27,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Performance | battery mode, worker threads, upload budget per frame | `horizon-graphics.txt` |
 | Overlay | performance overlay: FPS, frame/CPU/GPU times, frame-time graph | `horizon-graphics.txt` |
 
-`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
+`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
 
 **Battery mode** (Performance, off by default) is for laptops and handhelds: at most 60 frames per second in a world, 30 in menus without a world or while another window has focus, and half the automatic worker threads (chunks load slower). It changes only when frames are drawn: what they show and the game's 20 ticks per second stay as they are.
 
@@ -38,6 +38,17 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 HDR's light sources shine by the kind of light rather than its level (`mesher::hdr_tier`): the sun most, then glowstone, campfires and the soul fires, then flames and lava, torch and candle flames among them (particles too), then faint glowers such as a redstone torch or magma; glow lichen stays as in SDR. Each tier has its share of the headroom and the brightness its lift starts and ends at (`gfx/hdr.rs` `TIERS`); `HORIZON_HDR_DEBUG=1` greys what isn't lifted and tints what is magenta.
 
 Which settings each screen shows, their descriptions and costs are in `crates/horizon-client-render/src/graphics_ui.rs` (`rows`); `graphics_style.rs` draws them.
+
+## Leaf culling
+
+**Leaf Culling** (Advanced Graphics → Culling, off by default) changes only terrain section meshes: entities, particles and block entities are untouched, and the work happens on the mesh workers with the section's padded block snapshot, never on the render thread or per frame. Changing the mode remeshes loaded sections, like `cutoutLeaves`. It is stored as `leafCulling` in `horizon-graphics.txt` with the stable values `off`, `solid`, `solid_aggressive` and `hollow`; presets keep the player's choice.
+
+- **Off** draws every leaf face as vanilla's fancy leaves do. The section-mesh parity gate runs with Off and compares it byte for byte with the pinned client.
+- **Solid** marks a leaf that has leaves or full opaque cubes on all six sides as interior and puts all its quads in the opaque layer, so their cutouts no longer show the layers behind. Every quad stays, so the silhouette is unchanged; the inside seen through a canopy's holes looks more solid.
+- **Solid Aggressive** also marks a leaf with exactly one open side, thinning the cutout shell by one layer. Concave edges and one-block holes look chunkier; this is the largest change to a canopy's visible surface of the two solid modes.
+- **Hollow** removes a quad only when the block on the other side is a known leaf. Faces toward air, cavities, partial models, missing chunks, a section boundary and the end of a column stay. This saves the most geometry but gaps can see straight through a canopy.
+
+A full opaque cube means `RenderShape::Model`, `can_occlude`, `solid_render` and a full collision shape. Glass, water, slabs, stairs, chests and unknown or partial models are not opaque neighbours, so they always expose a leaf. Missing chunks, missing sections, the column's Y limits, section boundaries and the mask's outer shell are unknown rather than assumed to continue, so nothing is hidden at an edge the worker cannot see (or that the neighbouring section may not have meshed yet). A resource pack that may replace block models (anything besides `vanilla`) turns leaf culling off, as it does for entity culling.
 
 ## Distant terrain
 

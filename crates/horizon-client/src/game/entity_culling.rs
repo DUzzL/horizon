@@ -25,7 +25,7 @@ impl Game<'_> {
         let at = camera.to_array().map(|v| v.floor() as i32);
         self.entity_culler = (self.settings.horizon.entity_culling
             // Packs can replace an opaque block's model or texture.
-            && self.settings.resource_packs.iter().all(|id| id == "vanilla")
+            && self.model_packs_are_vanilla()
             && self.player.is_some()
             && !self.spectator()
             && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2]))))
