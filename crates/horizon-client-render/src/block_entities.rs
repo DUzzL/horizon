@@ -267,9 +267,18 @@ impl BlockEntities {
     }
     /// `LevelChunk.setBlockEntity` (+ `addAndRegisterBlockEntity`): a new
     /// block entity may get a slot; one replacing another keeps its slot.
+    /// One of the same type rewrites it in place (a jukebox taking a disc,
+    /// `/data merge block`), where vanilla keeps the object, so its
+    /// attachments stay; any other replacement starts them over.
     pub fn insert(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
-        self.attachments.remove(&pos);
         let new_is_mod = matches!(entity, BlockEntity::Mod(_));
+        let same_type = |old: &BlockEntity| match (old, &entity) {
+            (BlockEntity::Mod(old), BlockEntity::Mod(new)) => old.id == new.id,
+            (old, new) => std::mem::discriminant(old) == std::mem::discriminant(new),
+        };
+        if !self.map.get(&pos).is_some_and(same_type) {
+            self.attachments.remove(&pos);
+        }
         let old = self.map.insert(pos, entity);
         if old.is_none() {
             self.add(pos);
@@ -523,6 +532,22 @@ mod tests {
         let held = entities.take(&p).unwrap();
         entities.put(p, held);
         assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(4));
+        entities.insert(p, hopper());
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(4));
+        let machine = |id: &str| {
+            BlockEntity::Mod(Box::new(crate::chunk::block_entity::ModBlockEntity {
+                id: id.into(),
+                ..Default::default()
+            }))
+        };
+        entities.insert(p, machine("test:a"));
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(0));
+        entities.attachments_mut(p).unwrap().set(&ty, 4).unwrap();
+        entities.insert(p, machine("test:a"));
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(4));
+        entities.insert(p, machine("test:b"));
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(0));
+        entities.attachments_mut(p).unwrap().set(&ty, 4).unwrap();
         entities.remove(&p);
         entities.insert(p, hopper());
         assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(0));
