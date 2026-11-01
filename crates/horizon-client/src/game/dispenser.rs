@@ -10,10 +10,11 @@ use horizon_client::{
     containers::BlockEntity,
     items::ItemStack,
     mobs::{Mob, Species, sulfur_cube},
-    mod_api::NativeDispensed,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
 };
+// Its old home, for mixin code that names it here.
+pub(super) use horizon_client::mod_api::NativeDispensed;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3},
     position::BlockPos,

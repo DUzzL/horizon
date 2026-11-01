@@ -8,7 +8,8 @@
 //! players (the hub's: a dedicated server's, a LAN host's, single player's
 //! server thread's), never on a client's.
 use super::{Dim, Game, commands::execute, lan::LanHost};
-use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
+// Their old home, for mixin code that names them here.
+pub(crate) use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
 use horizon_client::{items::ItemStack, lan::data::component_nbt, text::Text};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use serde_json::{Map, Value, json};

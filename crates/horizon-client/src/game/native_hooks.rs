@@ -278,13 +278,13 @@ use super::{
     native_panel_recipes::RecipePage,
 };
 use horizon_client::mod_api::{
-    self, NativeCommand, NativeDispensed, NativeLifecycleContext, NativeLootDrops,
-    NativeScreenView, NativeServerPlayer, NativeZoom, ServerTickPhase, WorldPhase,
+    self, NativeCommand, NativeDispensed, NativeLifecycleContext, NativeServerPlayer,
+    ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder};
 pub(crate) use horizon_client::mod_api::{
-    NativeBlockRim, NativeColoredLight, NativeMinimap, NativeMod, NativePanelEvent, NativeScreen,
-    NativeStack,
+    NativeBlockRim, NativeColoredLight, NativeLootDrops, NativeMinimap, NativeMod,
+    NativePanelEvent, NativeScreen, NativeScreenView, NativeStack, NativeZoom,
 };
 use horizon_client::{
     atlas_sources::qualified,
