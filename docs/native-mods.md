@@ -913,6 +913,14 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_player_changed_dimension(player, name, from, to)`**: a player changed dimension, once per move
+  (`from` and `to` are ids such as `minecraft:overworld` and `minecraft:the_nether`), heard when the move has ended:
+  the portal's exit is found and the player stands there, a command's teleport has landed, or a respawn in another
+  level than the death's is placed for good. `to` is the level in place and the player's state is swapped in (as in
+  `native_perform_command`), so `native_acting_player` and `native_tell` reach them. Heard for Nether and End portals
+  (also riding, and leaving the End as its winner), `/execute in ... run tp` and any command teleporting into another
+  level, and the death respawn. Not heard: a move within a level (`/tp`, an End gateway), a player who leaves before
+  the move ends, a respawn in the dimension of the death, and anything outside a dedicated server.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
