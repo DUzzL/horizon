@@ -3,6 +3,7 @@
 //! through `World::edit_runs`, with what `fill ... strict` does for the block
 //! entities and the watched blocks of each block changed.
 use super::Game;
+use super::native_world_columns::NativeColumnBlocks as ColumnBlocks;
 use super::native_world_edit::{NativeBlockEdit as BlockEdit, NativeHeightmap as Heightmap};
 use horizon_client::{
     block_edit::Run,
@@ -113,6 +114,105 @@ impl Game<'_> {
             }
         }
         Ok(out.changed)
+    }
+
+    /// `world.surface-height`: each column's height on `h` as `edit_height` reads it, none where its chunk is not
+    /// loaded. (A chunk read is looked up once for a run of columns in it.)
+    pub(super) fn surface_heights(&self, columns: &[(i32, i32)], h: Heightmap) -> Vec<Option<i32>> {
+        let mut last: Option<((i32, i32), bool)> = None;
+        columns
+            .iter()
+            .map(|&(x, z)| {
+                let key = (x >> 4, z >> 4);
+                let loaded = match last {
+                    Some((k, l)) if k == key => l,
+                    _ => {
+                        let l = self.world.chunks.get(&key).is_some();
+                        last = Some((key, l));
+                        l
+                    }
+                };
+                loaded.then(|| self.edit_height(h, x, z))
+            })
+            .collect()
+    }
+
+    /// `world.read-columns`: each column's height on `h` (none where its chunk is not loaded) and its blocks from `below`
+    /// under it to `above` - 1 over it, bottom first (air outside the world's height and where it is not loaded), the
+    /// blocks as indices into the names seen (the tag is the caller's).
+    pub(super) fn read_columns(
+        &self,
+        columns: &[(i32, i32)],
+        h: Heightmap,
+        below: u32,
+        above: u32,
+    ) -> ColumnBlocks {
+        let bases = self.surface_heights(columns, h);
+        let per = (below + above) as usize;
+        let mut blocks = Vec::with_capacity(columns.len() * per);
+        let mut palette: Vec<String> = Vec::new();
+        // (a state's index into the names, worked out once a state)
+        let mut seen: FxHashMap<u32, u16> = FxHashMap::default();
+        let facts = self.res.facts();
+        let mut index = |s: BlockStateId| -> u16 {
+            *seen.entry(s.0).or_insert_with(|| {
+                let name = &facts.get(s).name;
+                let i = palette
+                    .iter()
+                    .position(|n| **n == **name)
+                    .unwrap_or_else(|| {
+                        palette.push(name.to_string());
+                        palette.len() - 1
+                    });
+                i as u16
+            })
+        };
+        let top = MIN_Y + horizon_client::chunk::HEIGHT - 1;
+        let biomes = self.res.biomes();
+        let mut tints = Vec::with_capacity(columns.len() * 3);
+        for (&(x, z), base) in columns.iter().zip(&bases) {
+            // (the biome tints at the column's top, as the block there is tinted)
+            match base.and_then(|b| {
+                self.world
+                    .chunks
+                    .get(&(x >> 4, z >> 4))
+                    .map(|c| c.biome(x, b - 1, z))
+            }) {
+                Some(id) => {
+                    let b = biomes.get(id);
+                    tints.extend([
+                        biomes.grass(id, f64::from(x), f64::from(z)),
+                        b.foliage,
+                        b.water,
+                    ]);
+                }
+                None => tints.extend([0, 0, 0]),
+            }
+            match base {
+                Some(b) => {
+                    let y0 = b - below as i32;
+                    for y in y0..y0 + per as i32 {
+                        let s = if (MIN_Y..=top).contains(&y) {
+                            self.world.block(x, y, z)
+                        } else {
+                            self.world.air
+                        };
+                        blocks.push(index(s));
+                    }
+                }
+                None => {
+                    let air = index(self.world.air);
+                    blocks.extend(std::iter::repeat_n(air, per));
+                }
+            }
+        }
+        ColumnBlocks {
+            tag: 0,
+            palette,
+            bases,
+            blocks,
+            tints,
+        }
     }
 
     /// One above the highest block of column (x, z) that counts on heightmap `h`, or the bottom of the world (also
