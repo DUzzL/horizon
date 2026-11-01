@@ -47,6 +47,8 @@ pub struct Over {
     pub worst: f64,
     /// Each one's offset in tolerances, at most 5 a tick, added up.
     pub weight: f32,
+    /// The farthest tick, as played: what the log tells of it.
+    pub at_worst: Option<Played>,
 }
 
 /// Below this the moves agree again after an excuse: within the tolerance is not enough, as the
@@ -78,6 +80,53 @@ pub struct Played {
     pub candidate: u8,
     /// The replay and the client agree about the ground (the move's flag 1).
     pub ground: bool,
+    /// Where the client said it went less where the replay ended, in blocks.
+    pub off: [f64; 3],
+    /// How far the client said it went in the tick.
+    pub moved: f64,
+    /// What the replayed body was doing when the tick ended ([`Played::state`]).
+    pub state: u8,
+}
+
+impl Played {
+    /// Bits of [`Played::state`].
+    pub const GROUND: u8 = 1;
+    pub const WATER: u8 = 2;
+    pub const GLIDING: u8 = 4;
+    pub const SPRINTING: u8 = 8;
+    pub const SNEAKING: u8 = 16;
+    pub const SWIMMING: u8 = 32;
+    pub const FLYING: u8 = 64;
+    pub const RIDING: u8 = 128;
+
+    /// What a log line says of the tick: `off +0.000 +0.173 +0.000, moved 0.281, air sprinting`.
+    pub fn describe(&self) -> String {
+        let names = [
+            (Self::WATER, "water"),
+            (Self::GLIDING, "gliding"),
+            (Self::SPRINTING, "sprinting"),
+            (Self::SNEAKING, "sneaking"),
+            (Self::SWIMMING, "swimming"),
+            (Self::FLYING, "flying"),
+            (Self::RIDING, "riding"),
+        ];
+        let mut state = String::from(if self.state & Self::GROUND != 0 {
+            "ground"
+        } else {
+            "air"
+        });
+        for (bit, name) in names {
+            if self.state & bit != 0 {
+                state.push(' ');
+                state.push_str(name);
+            }
+        }
+        let [x, y, z] = self.off;
+        format!(
+            "off {x:+.3} {y:+.3} {z:+.3}, moved {:.3}, {state}",
+            self.moved
+        )
+    }
 }
 
 /// A player as its client moves it.
@@ -238,6 +287,9 @@ impl Replay {
             } else {
                 counted = true;
                 over.ticks += 1;
+                if offset > over.worst {
+                    over.at_worst = self.ticks.back().copied();
+                }
                 over.worst = over.worst.max(offset);
                 over.weight += (offset / tolerance).min(MOST_WEIGHT) as f32;
             }
@@ -354,6 +406,26 @@ impl Replay {
             (off, candidate)
         };
         let body = &mut self.body;
+        let end = said.unwrap_or(last);
+        let off = [
+            end.x - body.position.x,
+            end.y - body.position.y,
+            end.z - body.position.z,
+        ];
+        let moved = said.map_or(0.0, |p| p.distance(last));
+        let state = [
+            (body.ground.on_ground, Played::GROUND),
+            (body.fluids.was_touching_water, Played::WATER),
+            (body.fall_flying, Played::GLIDING),
+            (body.sprinting, Played::SPRINTING),
+            (body.shift_key_down, Played::SNEAKING),
+            (body.swimming, Played::SWIMMING),
+            (body.flying, Played::FLYING),
+            (body.is_passenger, Played::RIDING),
+        ]
+        .into_iter()
+        .filter(|&(on, _)| on)
+        .fold(0, |bits, (_, bit)| bits | bit);
         body.events.clear();
         body.item_use_speed = server.item_use_speed;
         // Under an excuse the client's velocity is off by about what its move was: take it, and the
@@ -378,6 +450,9 @@ impl Replay {
             offset,
             candidate,
             ground,
+            off,
+            moved,
+            state,
         };
         if self.ticks.len() == KEPT {
             self.ticks.pop_front();
@@ -652,6 +727,40 @@ mod tests {
             });
         }
         Some(played)
+    }
+
+    #[test]
+    fn a_played_tick_tells_its_offset_and_state() {
+        let played = Played {
+            offset: 0.173,
+            candidate: 0,
+            ground: true,
+            off: [0.0, 0.1729, -0.001],
+            moved: 0.2806,
+            state: Played::SPRINTING | Played::WATER,
+        };
+        assert_eq!(
+            played.describe(),
+            "off +0.000 +0.173 -0.001, moved 0.281, air water sprinting"
+        );
+    }
+
+    #[test]
+    fn a_cheats_worst_tick_is_kept_with_its_offset() {
+        let Some(steps) = steps(
+            |i, _, honest| honest.add_vector(Vec3::new(if i == 10 { 1.0 } else { 0.0 }, 0.0, 0.0)),
+            None,
+        ) else {
+            return;
+        };
+        let worst = steps[10].over.at_worst.expect("the lying tick is kept");
+        assert!((worst.off[0] - 1.0).abs() < 0.05, "{worst:?}");
+        assert!(worst.off[1].abs() < 1e-6 && worst.moved > 0.9, "{worst:?}");
+        assert!(
+            worst.describe().starts_with("off +1.0"),
+            "{}",
+            worst.describe()
+        );
     }
 
     #[test]

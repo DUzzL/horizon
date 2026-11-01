@@ -247,7 +247,7 @@ pub fn shadow_culling(frame: &Frame, shadow: &Shadow) -> Mat4 {
 
 /// How far toward the light the shadow projection starts, in blocks: part of the projection,
 /// not of `shadowModelView` (Iris's matrices, measured).
-const SHADOW_EYE: f32 = 100.0;
+pub const SHADOW_EYE: f32 = 100.0;
 
 /// The shadow camera as Iris places it (7.1; measured from the outside): its view (player
 /// space to shadow view space) and GL projection. The view undoes `sunPathRotation`, turns the
@@ -266,7 +266,12 @@ pub fn shadow_camera(light: Vec3, camera: DVec3, shadow: &Shadow) -> (Mat4, Mat4
         * DMat4::from_rotation_x(tilt);
     let step = f64::from(shadow.interval);
     let origin = if step > 0.0 {
-        DVec3::splat(step / 2.0) - camera % step
+        let remainder = if shadow.euclidean_snap {
+            camera.rem_euclid(DVec3::splat(step))
+        } else {
+            camera % step
+        };
+        DVec3::splat(step / 2.0) - remainder
     } else {
         DVec3::ZERO
     };

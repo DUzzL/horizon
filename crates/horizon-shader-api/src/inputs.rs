@@ -180,6 +180,26 @@ uniform! {
         /// docs/native-mods.md): what they mean is that mod's, such as where and when
         /// something happened in the world. All 0 when no mod sets them.
         mods: [[f32; 4]; 8],
+        /// Unit vector toward the body casting this frame's shadows: the sun by day, the moon
+        /// by night.
+        light_direction: [f32; 3],
+        /// 1 while `shadow_map` holds this frame's shadow map, else 0.
+        has_shadow: u32,
+        /// Camera-relative world to the shadow camera's clip space, before the distortion
+        /// (orthographic, looking along `-light_direction`; z 0 at the light, 1 away from it).
+        shadow_view_proj: [[f32; 4]; 4],
+        /// Half the side of the square the shadow map covers, in blocks (the manifest's
+        /// `[shadow] distance`); 0 without a shadow map.
+        shadow_distance: f32,
+        /// How strongly the shadow map is distorted toward its centre, 0..1: a point at
+        /// shadow clip `xy` is stored at `xy / (length(xy) * k + 1 - k)`, so texels near the
+        /// camera cover less ground (`shadow_position` applies it).
+        shadow_distortion: f32,
+        /// The shadow map's side, in texels; 0 without a shadow map.
+        shadow_resolution: f32,
+        /// The ground one shadow texel covers at the map's centre, in blocks (for a bias that
+        /// scales with it); 0 without a shadow map.
+        shadow_center_texel: f32,
     }
 }
 
@@ -251,9 +271,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 42);
+        assert_eq!(wgsl.fields.len(), 49);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 13 * 16 + 8 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 6 * 64 + 15 * 16 + 8 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

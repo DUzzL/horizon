@@ -41,6 +41,34 @@ pub struct Manifest {
     pub budget: Budget,
     /// When the material stage's water mirror (`reflection`) is drawn.
     pub reflection: Option<Reflection>,
+    /// The shadow map the material and post stages read, if the pack asks for one.
+    pub shadow: Option<Shadow>,
+}
+
+/// `[shadow]`: the renderer draws the solid terrain as the sun (the moon by night) sees it into
+/// a square depth map each frame, which the material and post stages read.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Shadow {
+    /// The map's side, in texels.
+    #[serde(default = "default_shadow_resolution")]
+    pub resolution: u32,
+    /// Half the side of the square the map covers around the camera, in blocks.
+    #[serde(default = "default_shadow_distance")]
+    pub distance: f32,
+}
+
+/// The shadow map's side, in texels.
+pub const SHADOW_RESOLUTIONS: std::ops::RangeInclusive<u32> = 256..=8192;
+/// Half the side of the square the shadow map covers, in blocks.
+pub const SHADOW_DISTANCES: std::ops::RangeInclusive<f32> = 32.0..=512.0;
+
+fn default_shadow_resolution() -> u32 {
+    2048
+}
+
+fn default_shadow_distance() -> f32 {
+    128.0
 }
 
 /// `[reflection]`: when Horizon draws the water mirror the material stage reads as
@@ -157,6 +185,7 @@ struct Raw {
     #[serde(default)]
     budget: RawBudget,
     reflection: Option<Reflection>,
+    shadow: Option<Shadow>,
 }
 
 #[derive(Deserialize)]
@@ -284,6 +313,23 @@ impl Manifest {
                 return Err(err(format!("reflection.option: `{id}` is no option")));
             }
         }
+        if let Some(s) = &raw.shadow {
+            if raw.material.is_none() && raw.post.is_empty() {
+                return Err(err("[shadow] needs [material] or [[post]]".into()));
+            }
+            if !SHADOW_RESOLUTIONS.contains(&s.resolution) {
+                return Err(err(format!(
+                    "shadow.resolution {} is not in {SHADOW_RESOLUTIONS:?}",
+                    s.resolution
+                )));
+            }
+            if !SHADOW_DISTANCES.contains(&s.distance) {
+                return Err(err(format!(
+                    "shadow.distance {} is not in {SHADOW_DISTANCES:?}",
+                    s.distance
+                )));
+            }
+        }
         Ok(Manifest {
             id: raw.id,
             name: raw.name,
@@ -300,6 +346,7 @@ impl Manifest {
             tags: raw.tags,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
+            shadow: raw.shadow,
         })
     }
 
