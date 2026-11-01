@@ -445,11 +445,12 @@ pub fn mob_to_nbt(
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
                 let ambient = m.extra.ambient_effects.contains(&effect);
-                let mut e = vec![
-                    ("id", string(crate::brewing::namespaced(effect))),
-                    ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
-                    ("duration", Tag::Int(duration)),
-                ];
+                let mut e = vec![("id", string(crate::brewing::namespaced(effect)))];
+                // The codec leaves out an amplifier of 0 (its default).
+                if amplifier != 0 {
+                    e.push(("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)));
+                }
+                e.push(("duration", Tag::Int(duration)));
                 if ambient {
                     e.push(("ambient", Tag::Byte(1)));
                 }
@@ -796,7 +797,29 @@ pub fn mob_to_nbt(
             put_memories(map, m);
             crate::mobs::villager::write_nbt(m, map);
         }
-        "minecraft:wandering_trader" => put_offers(map, m),
+        // Dolphin.addAdditionalSaveData: the fish it was fed, and how wet it is.
+        "minecraft:dolphin" => {
+            map.insert("GotFish".into(), Tag::Byte(i8::from(m.extra.flag)));
+            map.insert("Moistness".into(), Tag::Int(m.extra.counter));
+        }
+        "minecraft:wandering_trader" => {
+            put_offers(map, m);
+            // WanderingTrader.addAdditionalSaveData: the visit's countdown and
+            // the place it is walking to, a BlockPos codec (an int array).
+            map.insert("DespawnDelay".into(), Tag::Int(m.extra.ints[5]));
+            if let Some(p) = m.extra.point {
+                // The trader keeps its target as a position; the tag is a
+                // BlockPos, so only the block it is in is saved.
+                map.insert(
+                    "wander_target".into(),
+                    Tag::IntArray(vec![
+                        p[0].floor() as i32,
+                        p[1].floor() as i32,
+                        p[2].floor() as i32,
+                    ]),
+                );
+            }
+        }
         "minecraft:axolotl" => {
             write_axolotl_memories(m, map);
             map.insert(
@@ -1744,6 +1767,12 @@ pub fn mob_from_nbt(
         }
         crate::mobs::zombie_villager::read_nbt(&mut m, tag);
     }
+    if m.species() == crate::mobs::Species::Dolphin {
+        // Dolphin.readAdditionalSaveData: a save that names neither field is an
+        // unfed dolphin at full moistness.
+        m.extra.flag = flag(tag, "GotFish");
+        m.extra.counter = number(tag.get("Moistness")).unwrap_or(2400) as i32;
+    }
     if m.species() == crate::mobs::Species::Axolotl {
         restore_axolotl_memories(&mut m, tag);
     }
@@ -2066,6 +2095,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         bob_offset,
         ticks: 0,
         needs_sync: false,
+        stuck: Vec3::ZERO,
     })
 }
 
@@ -2089,7 +2119,14 @@ pub fn ominous_item_spawner_to_nbt(
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
-    put(&mut tag, "item", item_to_nbt(item));
+    // `ItemStack.CODEC` can't encode `ItemStack.EMPTY`, so an empty item
+    // writes no key.
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"item".into());
+    }
+    if &*item.item != "minecraft:air" {
+        put(&mut tag, "item", item_to_nbt(item));
+    }
     put(
         &mut tag,
         "spawn_item_after_ticks",
@@ -2101,7 +2138,11 @@ pub fn ominous_item_spawner_to_nbt(
 /// and `spawn_item_after_ticks` (0 when absent). None without an item:
 /// such a spawner would spawn nothing.
 pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemStack, Vec3, i64)> {
-    let item = tag.get("item").and_then(item_from_nbt)?;
+    // `readAdditionalSaveData`: `ItemStack.EMPTY` when it has none.
+    let item = tag
+        .get("item")
+        .and_then(item_from_nbt)
+        .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:air", 1));
     let after = number(tag.get("spawn_item_after_ticks")).unwrap_or(0);
     Some((item, position(tag)?, after))
 }
@@ -3024,6 +3065,16 @@ fn read_villager(m: &mut Mob, tag: &Tag) {
     if m.species() == crate::mobs::Species::Villager {
         crate::mobs::villager::read_nbt(m, tag);
     }
+    if m.species() == crate::mobs::Species::WanderingTrader {
+        // WanderingTrader.readAdditionalSaveData: both default to idle.
+        m.extra.ints[5] = number(tag.get("DespawnDelay")).unwrap_or(0) as i32;
+        m.extra.point = match tag.get("wander_target") {
+            Some(Tag::IntArray(a)) if a.len() == 3 => {
+                Some([f64::from(a[0]), f64::from(a[1]), f64::from(a[2])])
+            }
+            _ => None,
+        };
+    }
     let offers_tag = tag.get("Offers");
     let xp = number(tag.get("Xp")).unwrap_or(0) as i32;
     if offers_tag.is_none() && xp == 0 && tag.get("LastRestock").is_none() {
@@ -3075,6 +3126,17 @@ mod tests {
         );
         assert_eq!((pos, after), (at, 97));
         assert!(ominous_item_spawner_from_nbt(&raw).is_none());
+        // No item is `ItemStack.EMPTY`, which writes no key back.
+        let empty = ominous_item_spawner_to_nbt(
+            &crate::items::ItemStack::new("minecraft:air", 1),
+            at,
+            0,
+            [1, 2, 3, 4],
+            Some(&tag),
+        );
+        assert!(empty.get("item").is_none());
+        let (back, pos, after) = ominous_item_spawner_from_nbt(&empty).unwrap();
+        assert_eq!((back.item.as_ref(), pos, after), ("minecraft:air", at, 0));
     }
 
     #[test]
@@ -3155,6 +3217,7 @@ mod tests {
             ticks: 0,
             bob_offset: 0.0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -3499,6 +3562,8 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
             Some("minecraft:pig/variant"),
             Some("minecraft:pig/sound_variant"),
         ),
+        // ZombieNautilus.applyImplicitComponents: the variant only.
+        crate::mobs::Species::ZombieNautilus => (Some("minecraft:zombie_nautilus/variant"), None),
         _ => (None, None),
     };
     if let Some(name) = variant.and_then(|id| text(components.other(id))) {
@@ -3880,6 +3945,39 @@ mod sheep_nbt_tests {
     }
 
     #[test]
+    fn an_amplifier_of_zero_is_left_out_of_active_effects() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let types: HashMap<String, Arc<MobType>> = crate::mobs::MobTypes::load(&root)
+            .unwrap()
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let mut m = Mob::new(1, types["minecraft:pig"].clone(), Vec3::ZERO, 0.0);
+        let speed = crate::brewing::effect("minecraft:speed").unwrap().id;
+        m.add_effect(speed, 200, 0);
+        m.add_effect(
+            crate::brewing::effect("minecraft:slowness").unwrap().id,
+            200,
+            2,
+        );
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        let Some(Tag::List(saved)) = tag.get("active_effects") else {
+            panic!("no active_effects");
+        };
+        assert!(saved[0].get("amplifier").is_none());
+        assert!(saved[1].get("amplifier").is_some());
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.effects[0].2, 0);
+        assert_eq!(back.extra.effects[1].2, 2);
+    }
+
+    #[test]
     fn farm_animals_keep_their_variant_and_sound_variant() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -3972,6 +4070,92 @@ mod sheep_nbt_tests {
         assert_eq!(number(tag.get("Age")), Some(-21359));
         assert_eq!(number(tag.get("AgeLocked")), Some(0));
         assert_eq!(number(tag.get("VillagerDataFinalized")), Some(1));
+    }
+
+    /// `Dolphin.addAdditionalSaveData`: a fed dolphin stays fed and a wet one
+    /// stays wet across a reload; a save with neither field reads as an unfed
+    /// dolphin at full moistness.
+    #[test]
+    fn a_dolphins_moistness_and_fish_survive_a_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        // A fresh dolphin starts full, as `Dolphin`'s field does.
+        let mut m = Mob::new(
+            1,
+            types["minecraft:dolphin"].clone(),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        assert_eq!(m.extra.counter, 2400);
+        m.extra.flag = true;
+        m.extra.counter = 123;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Moistness")), Some(123));
+        assert_eq!(number(tag.get("GotFish")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert!(back.extra.flag, "fed");
+        assert_eq!(back.extra.counter, 123);
+        // A save with neither field: unfed, full.
+        let bare = Tag::compound([
+            ("id", string("minecraft:dolphin")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+        ]);
+        let back = mob_from_nbt(&bare, &types, 3, None).unwrap();
+        assert!(!back.extra.flag);
+        assert_eq!(back.extra.counter, 2400);
+    }
+
+    /// `WanderingTrader.addAdditionalSaveData`: the visit's countdown and the
+    /// place it is walking to (a `BlockPos` codec, so an int array), which the
+    /// despawn and stroll goals read back after a reload.
+    #[test]
+    fn a_wandering_traders_countdown_and_target_survive_a_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            types["minecraft:wandering_trader"].clone(),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        m.extra.ints[5] = 48000;
+        m.extra.point = Some([12.0, 65.0, -30.0]);
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("DespawnDelay")), Some(48000));
+        let Some(Tag::IntArray(target)) = tag.get("wander_target") else {
+            panic!("wander_target missing");
+        };
+        assert_eq!(target, &vec![12, 65, -30]);
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.ints[5], 48000);
+        assert_eq!(back.extra.point, Some([12.0, 65.0, -30.0]));
+        // A save with neither field: idle, and nothing to walk to.
+        let bare = Tag::compound([
+            ("id", string("minecraft:wandering_trader")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+        ]);
+        let back = mob_from_nbt(&bare, &types, 3, None).unwrap();
+        assert_eq!((back.extra.ints[5], back.extra.point), (0, None));
     }
 
     #[test]
@@ -4224,6 +4408,16 @@ mod item_component_tests {
         let mut sheep = spawn("minecraft:sheep", 2);
         apply_item_components(&mut sheep, &egg);
         assert_eq!(sheep.extra.color, 5, "lime, not the white it started as");
+        // ZombieNautilus.applyImplicitComponents: the egg carries the coral
+        // variant over the temperate one the biome picked.
+        let mut egg = crate::items::ItemStack::new("minecraft:zombie_nautilus_spawn_egg", 1);
+        egg.data_mut().set_other(
+            "minecraft:zombie_nautilus/variant",
+            Some(string("minecraft:warm")),
+        );
+        let mut nautilus = spawn("minecraft:zombie_nautilus", 4);
+        apply_item_components(&mut nautilus, &egg);
+        assert_eq!(nautilus.extra.variant, 1, "minecraft:warm, not temperate");
     }
 
     /// `EntityType.updateCustomEntityTag`: the egg's `entity_data` on the mob it

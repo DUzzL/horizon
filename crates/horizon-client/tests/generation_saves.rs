@@ -3,6 +3,7 @@
 //! after its own decoration and its eight neighbours', and chunks that
 //! decoration wrote to are saved rather than generated again without those
 //! writes. Bastions lost whole chunks of pieces this way.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     assets::Assets,
     biome::Biomes,

@@ -505,19 +505,37 @@ fn signum(v: f64) -> f64 {
 /// entity stops there and is not kept: the game hands it to
 /// `finish_entity_hit` once it has hurt the entity.
 pub fn tick(p: &mut Projectile, scene: &ArrowScene, targets: &[(Who, Aabb)]) -> (bool, Hit) {
+    tick_with(p, scene, targets, true)
+}
+/// One arrow tick whose hit is canceled (`ProjectileImpactEvent`): the arrow
+/// moves on to where it would have hit, as `AbstractArrow.stepMoveAndHit` leaves
+/// it when the event is canceled, and flies on: not stuck, nothing hurt, no hit.
+pub fn tick_through(
+    p: &mut Projectile,
+    scene: &ArrowScene,
+    targets: &[(Who, Aabb)],
+) -> (bool, Hit) {
+    tick_with(p, scene, targets, false)
+}
+fn tick_with(
+    p: &mut Projectile,
+    scene: &ArrowScene,
+    targets: &[(Who, Aabb)],
+    impact: bool,
+) -> (bool, Hit) {
     let Some(mut st) = p.arrow.take() else {
         return (false, Hit::None);
     };
     // Entity.setOldPosAndRot: the renderer interpolates from here, in flight
     // and stuck alike; ServerLevel.tickNonPassenger counts the tick.
-    p.previous = p.position;
+    p.set_old_pos_and_rot();
     p.age += 1;
     let hit = Ticker {
         p,
         st: &mut st,
         scene,
     }
-    .tick(targets);
+    .tick(targets, impact);
     p.stuck = st.in_ground;
     let keep = !st.removed && !matches!(hit, Hit::Entity { .. });
     p.arrow = Some(st);
@@ -600,7 +618,7 @@ impl Ticker<'_, '_, '_, '_> {
     fn trident(&self) -> bool {
         matches!(self.p.kind, ProjectileKind::Trident)
     }
-    fn tick(&mut self, targets: &[(Who, Aabb)]) -> Hit {
+    fn tick(&mut self, targets: &[(Who, Aabb)], impact: bool) -> Hit {
         // ThrownTrident.tick.
         if self.trident() && self.st.in_ground_time > 4 {
             self.st.dealt_damage = true;
@@ -711,7 +729,7 @@ impl Ticker<'_, '_, '_, '_> {
             original.z + movement.z,
         );
         if physics {
-            hit = self.step_move_and_hit(original, end, targets);
+            hit = self.step_move_and_hit(original, end, targets, impact);
             if matches!(hit, Hit::Entity { .. }) {
                 return hit;
             }
@@ -795,7 +813,13 @@ impl Ticker<'_, '_, '_, '_> {
     /// `AbstractArrow.stepMoveAndHit`: the nearest entity on the way, else the
     /// block. A piercing arrow that hits an entity here goes on from it next
     /// tick (`finish_entity_hit`); vanilla's loop goes on within the same tick.
-    fn step_move_and_hit(&mut self, from: Vec3, to: Vec3, targets: &[(Who, Aabb)]) -> Hit {
+    fn step_move_and_hit(
+        &mut self,
+        from: Vec3,
+        to: Vec3,
+        targets: &[(Who, Aabb)],
+        impact: bool,
+    ) -> Hit {
         let block = self.scene.clip(from, to);
         let end = block.map_or(to, |b| b.0);
         // findHitEntities: ProjectileUtil.computeMargin and the search box.
@@ -828,6 +852,10 @@ impl Ticker<'_, '_, '_, '_> {
         self.p.position = next;
         self.apply_effects_from_blocks(from, next);
         if let Some((who, at, _)) = best {
+            // A canceled impact ends the search, the arrow where it would have hit.
+            if !impact {
+                return Hit::None;
+            }
             // AbstractArrow.onHitEntity: past pierce level + 1 entities the
             // arrow is discarded before it hurts the next one.
             if self.st.pierce > 0 {
@@ -847,6 +875,9 @@ impl Ticker<'_, '_, '_, '_> {
         }
         let state = self.scene.block(pos);
         if self.scene.is_air(state) {
+            return Hit::None;
+        }
+        if !impact {
             return Hit::None;
         }
         self.on_hit_block(pos, state);

@@ -63,7 +63,7 @@ impl PackOverlay<'_> {
 /// A loot function of a mod's own kind: the entry named a `type` in a
 /// namespace outside `minecraft:`, and the roll kept it for this call.
 /// The kind, the JSON, the context and the stack to change are here.
-/// API @API:loot_kinds@.
+/// API 133.
 #[inline(never)]
 pub fn native_loot_function(
     kind: &str,
@@ -77,7 +77,7 @@ pub fn native_loot_function(
 /// A loot condition of a mod's own kind: the entry named a `type` in a
 /// namespace outside `minecraft:`. The kind, the JSON, the context and
 /// whether it holds are here (`holds` starts `false`; a mod that claims
-/// the kind sets it). API @API:loot_kinds@.
+/// the kind sets it). API 133.
 #[inline(never)]
 pub fn native_loot_condition(
     kind: &str,

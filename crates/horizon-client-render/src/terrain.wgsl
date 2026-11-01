@@ -24,7 +24,7 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
-    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_lights: array<vec4<f32>, 32>,
     colored_count: vec4<u32>,
     emissive_layers: array<vec4<u32>, 32>,
     emissive_count: vec4<u32>,
@@ -34,6 +34,9 @@ struct Globals {
     // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the sprite arrays' width
     // in texels (vanilla's TextureSize).
     filtering: vec4<f32>,
+    // HDR output's tier windows (hdr.rs `Hdr::windows`): x..w low to very bright,
+    // [0] where the lift starts, [1] where it is full.
+    hdr_windows: array<vec4<f32>, 2>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -249,8 +252,8 @@ fn dynamic_block_light(pos: vec3<f32>) -> f32 {
 fn native_colored_light(pos: vec3<f32>) -> vec3<f32> {
     var rgb = vec3(0.0);
     for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
-        let at = globals.colored_lights[i][0];
-        let color = globals.colored_lights[i][1];
+        let at = globals.colored_lights[i * 2u];
+        let color = globals.colored_lights[i * 2u + 1u];
         rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
     }
     return min(rgb, vec3(1.0));
@@ -404,6 +407,14 @@ fn brightness(c: vec3<f32>) -> f32 {
     let l = pow(max(c, vec3(0.0)), vec3(2.2));
     return 0.5 * (dot(l, vec3(0.2126, 0.7152, 0.0722)) + max(l.r, max(l.g, l.b)));
 }
+// HDR output's mark (hdr.wgsl): the frame's alpha below 0.75, a band of 0.175 per
+// tier (1 low .. 4 very bright, from 0.525 down to 0) and in it how much the pixel
+// lifts, from its own brightness `y` before lighting through the tier's window.
+fn hdr_mark(tier: u32, y: f32) -> f32 {
+    let t = clamp(tier, 1u, 4u) - 1u;
+    let lift = smoothstep(globals.hdr_windows[0][t], globals.hdr_windows[1][t], y);
+    return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
+}
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     return solid_color(in);
 }
@@ -434,23 +445,25 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
-    // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel may
-    // shine, and at which tier (mesher::hdr_tier): 0.525 at the lowest, 0 at the
-    // brightest. Only pixels as bright as their sprite's threshold may: its
-    // bright parts, or all of it. Nothing else reads the frame's alpha.
+    // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel
+    // shines, at which tier (mesher::hdr_tier) and how much (hdr_mark), by the
+    // texel's own brightness, so its light level and face shading don't change
+    // it. Only pixels as bright as their sprite's threshold may: its bright
+    // parts, or all of it. Nothing else reads the frame's alpha.
     var emissive = 1.0;
     if in.emission > 0u {
         let whole = in.emission > 4u;
         let tier = select(in.emission, in.emission - 4u, whole);
         let l = in.layer & 0x7fffu;
         let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
-        if brightness(texel.rgb) >= select(t.r, t.g, whole) {
-            emissive = 0.7 * f32(4u - min(tier, 4u)) / 4.0;
+        let y = brightness(texel.rgb);
+        if y >= select(t.r, t.g, whole) {
+            emissive = hdr_mark(tier, y);
         }
     }
     if in.emissive_layer != 0xffffffffu {
         let mask = sprite(in.uv, in.emissive_layer);
-        return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, 0.1, mask.a)), in.spherical, in.cylindrical);
+        return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, hdr_mark(3u, 1.0), mask.a)), in.spherical, in.cylindrical);
     }
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);
 }
