@@ -5494,7 +5494,7 @@ mod tests {
 
     #[test]
     fn loot_table_load_stays_hookable() {
-        let source = include_str!("../../../horizon-world/src/loot.rs");
+        let source = include_str!("../../../horizon-world/src/loot.rs").replace("\r\n", "\n");
         // From its doc comment's last line, so an attribute above it counts.
         let hook = source.find("pub fn native_loot_table_load(").unwrap();
         let start = source[..hook].rfind("///").unwrap();
