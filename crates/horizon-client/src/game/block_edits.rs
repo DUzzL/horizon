@@ -120,22 +120,23 @@ impl Game<'_> {
 
     /// Each column's height on `h` (none where its chunk is not loaded) and its blocks from `below` under it to
     /// `above` - 1 over it, bottom first (air outside the column and where it is not loaded), as indices into the
-    /// names seen, with the biome's grass, foliage and water tints at the column's top (0 where it is not loaded).
-    /// None, reading nothing, when `below + above` is more than the level's height, or the read would be more than
-    /// `MAX_READ` blocks.
+    /// names seen, with the biome's grass, foliage and water tints at the column's top (0 where it is not loaded;
+    /// unblended). `Err`, reading nothing, when `below + above` is 0 or more than the level's height, or the read
+    /// would be more than `MAX_READ` blocks.
     pub(super) fn read_columns(
         &self,
         columns: &[(i32, i32)],
         h: Heightmap,
         below: u32,
         above: u32,
-    ) -> Option<ColumnBlocks> {
+    ) -> Result<ColumnBlocks, String> {
         read_size(columns.len(), below, above, self.world.layout().height())?;
         let bases = self.surface_heights(columns, h);
         let facts = self.res.facts();
         let (palette, blocks) = column_blocks(&self.world, columns, &bases, below, above, |s| {
             facts.get(s).name.clone()
-        })?;
+        })
+        .ok_or("the read is too big")?;
         let biomes = self.res.biomes();
         let mut tints = Vec::with_capacity(columns.len() * 3);
         for (&(x, z), base) in columns.iter().zip(&bases) {
@@ -157,7 +158,7 @@ impl Game<'_> {
                 None => tints.extend([0, 0, 0]),
             }
         }
-        Some(ColumnBlocks {
+        Ok(ColumnBlocks {
             palette,
             bases,
             blocks,
@@ -179,18 +180,26 @@ impl Game<'_> {
     }
 }
 
-/// The most blocks one `read_columns` reads (32 MiB of indices).
-pub(super) const MAX_READ: usize = 1 << 24;
+/// The most blocks one `read_columns` reads (2 MiB of indices): it runs on the
+/// server tick, so a mod reads a big area in pieces.
+pub(super) const MAX_READ: usize = 1 << 20;
+/// The most columns one `surface_heights` reads.
+pub(super) const MAX_COLUMNS: usize = 1 << 16;
 
 /// The blocks a column read of `columns` columns, `below` + `above` each,
-/// reads: None when a column's span is more than `height` (the level's) or
-/// the whole more than `MAX_READ`.
-fn read_size(columns: usize, below: u32, above: u32, height: i32) -> Option<usize> {
-    let per = below.checked_add(above)?;
-    if i64::from(per) > i64::from(height) {
-        return None;
-    }
-    columns.checked_mul(per as usize).filter(|&n| n <= MAX_READ)
+/// reads, or why it can't: a span of 0 or more than `height` (the level's),
+/// or the whole more than `MAX_READ`.
+fn read_size(columns: usize, below: u32, above: u32, height: i32) -> Result<usize, String> {
+    let per = below
+        .checked_add(above)
+        .filter(|&per| per > 0 && i64::from(per) <= i64::from(height))
+        .ok_or_else(|| format!("below + above must be 1 to {height}, the level's height"))?;
+    columns
+        .checked_mul(per as usize)
+        .filter(|&n| n <= MAX_READ)
+        .ok_or_else(|| {
+            format!("the read is more than {MAX_READ} blocks: read fewer columns a call")
+        })
 }
 
 /// One above the highest block of column `(x, z)` on heightmap `h`, or the
@@ -267,7 +276,8 @@ fn column_blocks(
         below,
         above,
         ColumnLayout::HIGHEST_Y + 1 - ColumnLayout::LOWEST_Y,
-    )?;
+    )
+    .ok()?;
     let per = (below + above) as usize;
     let mut blocks = Vec::with_capacity(total);
     let mut palette: Vec<String> = Vec::new();
@@ -628,12 +638,16 @@ mod tests {
 
     #[test]
     fn a_read_is_bounded() {
-        assert_eq!(read_size(10, 200, 184, 384), Some(3840));
-        assert_eq!(read_size(1, 200, 185, 384), None);
-        assert_eq!(read_size(1, u32::MAX, 1, 4064), None);
-        assert_eq!(read_size(1 << 20, 100, 0, 384), None);
-        assert_eq!(read_size(usize::MAX, 2, 0, 384), None);
-        assert_eq!(read_size(1 << 16, 256, 0, 384), Some(MAX_READ));
+        assert_eq!(read_size(10, 200, 184, 384), Ok(3840));
+        assert!(
+            read_size(1, 200, 185, 384).is_err(),
+            "more than the level's height"
+        );
+        assert!(read_size(1, 0, 0, 384).is_err(), "an empty span");
+        assert!(read_size(1, u32::MAX, 1, 4064).is_err());
+        assert!(read_size(1 << 14, 100, 0, 384).is_err(), "over MAX_READ");
+        assert!(read_size(usize::MAX, 2, 0, 384).is_err());
+        assert_eq!(read_size(1 << 12, 256, 0, 384), Ok(MAX_READ));
         let w = columns_world();
         assert!(column_blocks(&w, &[(1, 1)], &[Some(0)], u32::MAX, 2, |s| names(s.0)).is_none());
     }

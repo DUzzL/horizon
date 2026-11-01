@@ -1,6 +1,7 @@
 //! Column reads for server mods, as helpers on the level being ticked: many columns' heights, and the blocks round
 //! them, in one call.
 use super::Game;
+use super::block_edits::MAX_COLUMNS;
 use super::native_world_edit::NativeHeightmap;
 
 /// What `native_read_columns` read: the blocks round each column's height (`bases`, none where it isn't loaded),
@@ -15,27 +16,35 @@ pub(crate) struct NativeColumnBlocks {
 
 #[allow(dead_code)]
 impl Game<'_> {
-    /// For a server mod: each column's height by `heightmap` in the authoritative level
-    /// `dimension` (the one being ticked), none for a column not loaded; none at all for another dimension or a
-    /// client of a server. API @API:native_read_columns@.
+    /// For a server mod: each column's height by `heightmap` in the authoritative level `dimension` (the one being
+    /// ticked), none for a column not loaded. `Err` says why nothing was read: another dimension or a client of a
+    /// server, or more than 65,536 columns (`MAX_COLUMNS`). API @API:native_read_columns@.
     pub(super) fn native_surface_heights(
         &self,
         dimension: &str,
         columns: &[(i32, i32)],
         heightmap: NativeHeightmap,
-    ) -> Option<Vec<Option<i32>>> {
+    ) -> Result<Vec<Option<i32>>, String> {
         if !self.native_level_open(dimension) {
-            return None;
+            return Err(format!("{dimension} is not the level being ticked"));
+        }
+        if columns.len() > MAX_COLUMNS {
+            return Err(format!(
+                "{} columns, more than {MAX_COLUMNS} a call",
+                columns.len()
+            ));
         }
         let started = std::time::Instant::now();
         let out = self.surface_heights(columns, heightmap);
         self.native_read_logged(started, "height query", columns.len());
-        Some(out)
+        Ok(out)
     }
     /// For a server mod: `below` blocks under and `above` blocks from each column's height by `heightmap`, as a
     /// palette and indexes, with the biome's grass, foliage and water tints (air outside the column and in columns
-    /// not loaded); none for another dimension or a client of a server, and none, reading nothing, when
-    /// `below + above` is more than the level's height or the read more than 16,777,216 blocks (`MAX_READ`).
+    /// not loaded). The tints are the biome's at the column's top, not blended over the biome blend radius as the
+    /// game draws them: near a biome border they can differ from what players see. `Err` says why nothing was
+    /// read: another dimension or a client of a server, `below + above` of 0 or more than the level's height, or
+    /// a read of more than 1,048,576 blocks (`MAX_READ`; it runs on the server tick, so read big areas in pieces).
     /// API @API:native_read_columns@.
     pub(super) fn native_read_columns(
         &self,
@@ -43,14 +52,14 @@ impl Game<'_> {
         columns: &[(i32, i32)],
         heightmap: NativeHeightmap,
         (below, above): (u32, u32),
-    ) -> Option<NativeColumnBlocks> {
+    ) -> Result<NativeColumnBlocks, String> {
         if !self.native_level_open(dimension) {
-            return None;
+            return Err(format!("{dimension} is not the level being ticked"));
         }
         let started = std::time::Instant::now();
         let out = self.read_columns(columns, heightmap, below, above)?;
         self.native_read_logged(started, "column read", columns.len());
-        Some(out)
+        Ok(out)
     }
     /// A read's time logged with `HORIZON_SPIKES`, as an edit's is.
     fn native_read_logged(&self, started: std::time::Instant, what: &str, columns: usize) {
