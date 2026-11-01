@@ -2764,6 +2764,46 @@ impl Game<'_> {
     ) {
         let _ = (dimension, pos, viewers, previous);
     }
+    /// A client started tracking an entity (NeoForge's
+    /// `PlayerEvent.StartTracking`, posted at the end of
+    /// `ServerEntity.addPairing`): `player` (`name`) is now sent `entity`
+    /// (its ID, `uuid` its UUID, `kind` its type, `minecraft:zombie`) and its
+    /// changes. It comes into range, its client's chunks reach it, or it is
+    /// put in the level; another player is an entity too, and a player never
+    /// tracks their own. A mod sends the player what they need to show it
+    /// (`native_net_send_to_player`). The entity is as it was last tick: it
+    /// may be gone by now. Heard after the tick's players and entities have
+    /// moved, in order, with no player's state swapped in. Server-side.
+    /// API @API:player_tracking@.
+    pub(super) fn native_player_start_tracking(
+        &mut self,
+        player: u128,
+        name: &str,
+        entity: u32,
+        uuid: u128,
+        kind: &str,
+    ) {
+        let _ = (player, name, entity, uuid, kind);
+    }
+    /// A client stopped tracking an entity (NeoForge's
+    /// `PlayerEvent.StopTracking`, posted at the end of
+    /// `ServerEntity.removePairing`): it went out of range, left the level or
+    /// died, or `player` (`name`) left, changed level or respawned, which
+    /// stops everything they tracked. `entity`, `uuid` and `kind` are as
+    /// `native_player_start_tracking` told. Once for each start, a leaving
+    /// player's after `native_player_logged_out`. The entity is not
+    /// necessarily still there, and a player who left is gone: no player's
+    /// state is swapped in. Server-side. API @API:player_tracking@.
+    pub(super) fn native_player_stop_tracking(
+        &mut self,
+        player: u128,
+        name: &str,
+        entity: u32,
+        uuid: u128,
+        kind: &str,
+    ) {
+        let _ = (player, name, entity, uuid, kind);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
