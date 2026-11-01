@@ -40,9 +40,9 @@ mod entity_outline;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
-    TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
-    WATER_MASK_OVERLAY, mark_oit,
+    DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY,
+    TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
+    TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, mark_oit,
 };
 pub use view::{View, ViewSet};
 
@@ -394,6 +394,9 @@ pub struct Frame<'a> {
     pub nether_lighting: bool,
     /// Camera-relative entity geometry textured from the shared atlas.
     pub entities: &'a [Vertex],
+    /// Which entity `entities`' vertices belong to: (first vertex, entity id), each run up
+    /// to the next; id 0 for none. Frame generation follows these entities' own motion.
+    pub entity_motion: &'a [(u32, u64)],
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
     pub glowing: &'a [Vertex],
@@ -579,6 +582,7 @@ pub struct Renderer {
     cloud_uniform: wgpu::Buffer,
     cloud_group: wgpu::BindGroup,
     additive_pipeline: wgpu::RenderPipeline,
+    dragon_rays_pipeline: wgpu::RenderPipeline,
     /// `RenderPipelines.ENERGY_SWIRL`: additive, unlit, the sprite repeated within itself.
     energy_swirl_pipeline: wgpu::RenderPipeline,
     lightning_pipeline: wgpu::RenderPipeline,
@@ -2720,6 +2724,20 @@ impl Renderer {
             cache: None,
         };
         let additive_pipeline = device.create_render_pipeline(&additive_descriptor);
+        // `RenderPipelines.DRAGON_RAYS` uses DepthStencilState.DEFAULT:
+        // unlike eyes, a ray hides the faces and rays behind it.
+        let dragon_rays_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Dragon death rays"),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..additive_descriptor.primitive
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                depth_write_enabled: Some(true),
+                ..additive_descriptor.depth_stencil.clone().unwrap()
+            }),
+            ..additive_descriptor.clone()
+        });
         // HDR output's mark on lightning bolts: fs_hdr_mark over the bolts' own vertex layout,
         // as hdr_mark_pipeline marks entities and particles (only alpha written).
         let mark_targets = [Some(wgpu::ColorTargetState {
@@ -3233,6 +3251,7 @@ impl Renderer {
             cloud_uniform,
             cloud_group,
             additive_pipeline,
+            dragon_rays_pipeline,
             energy_swirl_pipeline,
             lightning_pipeline,
             lightning: lightning::Renderer::new(),
@@ -6509,10 +6528,23 @@ impl Renderer {
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if additive_quads > 0 && !oit_on {
-                pass.set_pipeline(&self.additive_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                pass.draw_indexed(0..additive_quads * 6, (world_quads * 4) as i32, 0..1);
+                let mut first = 0;
+                for run in frame.additive.as_chunks::<4>().0.chunk_by(|a, b| {
+                    (a[0].layer & 0xffff == DRAGON_RAYS_OVERLAY)
+                        == (b[0].layer & 0xffff == DRAGON_RAYS_OVERLAY)
+                }) {
+                    let rays = run[0][0].layer & 0xffff == DRAGON_RAYS_OVERLAY;
+                    pass.set_pipeline(if rays {
+                        &self.dragon_rays_pipeline
+                    } else {
+                        &self.additive_pipeline
+                    });
+                    let end = first + run.len() as u32;
+                    pass.draw_indexed(first * 6..end * 6, (world_quads * 4) as i32, 0..1);
+                    first = end;
+                }
                 if self.hdr.is_some() {
                     // The dragon's eyes and death rays, marked as entities are.
                     pass.set_pipeline(&self.hdr_mark_pipeline);

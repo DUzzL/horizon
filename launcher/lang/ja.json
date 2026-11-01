@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "保存されたサインイン情報を読み込めませんでした。",
   "Could not save the renewed sign-in.": "更新したサインイン情報を保存できませんでした。",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "更新したサインイン情報をキーチェーンに保存できませんでした。ロックを解除して再試行してください。",
-  "Another account operation is running. Try again in a moment.": "別のアカウント操作を実行中です。しばらくしてからもう一度お試しください。"
+  "Another account operation is running. Try again in a moment.": "別のアカウント操作を実行中です。しばらくしてからもう一度お試しください。",
+  "Built on {base}": "{base} でビルド",
+  "Native mod builds": "ネイティブMODのビルド"
 }

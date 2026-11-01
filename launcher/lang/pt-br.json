@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "Não foi possível ler o login salvo.",
   "Could not save the renewed sign-in.": "Não foi possível salvar o login renovado.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Não foi possível salvar o login renovado no chaveiro. Desbloqueie-o e tente novamente.",
-  "Another account operation is running. Try again in a moment.": "Outra operação de conta está em andamento. Tente novamente em instantes."
+  "Another account operation is running. Try again in a moment.": "Outra operação de conta está em andamento. Tente novamente em instantes.",
+  "Built on {base}": "Compilado sobre {base}",
+  "Native mod builds": "Compilações com mods nativos"
 }
