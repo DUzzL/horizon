@@ -3022,17 +3022,12 @@ fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
 /// break with its next point of wear (`ItemStack.nextDamageWillBreak`).
 fn gliding_pieces(items: &Items, armor: &[Option<ItemStack>; 4]) -> [bool; 4] {
     const SLOTS: [&str; 4] = ["head", "chest", "legs", "feet"];
+    // `canGlideUsing`: the stack's own `glider` and `equippable` (its
+    // components, a server's patch), else its item's.
     std::array::from_fn(|i| {
-        let Some(stack) = armor[i].as_ref() else {
-            return false;
-        };
-        let info = items.get(&stack.item);
-        let glider = info.is_some_and(|d| d.glider)
-            || stack
-                .data()
-                .is_some_and(|d| d.other("minecraft:glider").is_some());
-        let will_break = info.is_some_and(|d| d.max_damage > 0 && stack.damage + 1 >= d.max_damage);
-        glider && !will_break && info.and_then(|d| d.equip_slot.as_deref()) == Some(SLOTS[i])
+        armor[i]
+            .as_ref()
+            .is_some_and(|s| horizon_client::item_sync::can_glide_using(s, SLOTS[i], items))
     })
 }
 /// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
@@ -3273,9 +3268,17 @@ impl Game<'_> {
         self.stack_in_mut(self.held_slot())
     }
     /// The slot of the hand that acts: the selected one, or `OFFHAND_SLOT`.
-    /// `LivingEntity.canGlide`: some worn piece `gliding_pieces` lets glide.
+    /// `LivingEntity.canGlide`: some worn piece `gliding_pieces` lets glide,
+    /// or a stack in a hand that glides there (`canGlideUsing` walks every
+    /// `EquipmentSlot`).
     fn glider_worn(&self) -> bool {
-        gliding_pieces(self.res.items(), &self.armor).contains(&true)
+        let items = self.res.items();
+        let hand = |stack: Option<&ItemStack>, slot: &str| {
+            stack.is_some_and(|s| horizon_client::item_sync::can_glide_using(s, slot, items))
+        };
+        gliding_pieces(items, &self.armor).contains(&true)
+            || hand(self.inventory[self.selected].as_ref(), "mainhand")
+            || hand(self.offhand.as_ref(), "offhand")
     }
     /// `LivingEntity.updateFallFlying`: the glide's wear. `Util.getRandom`
     /// picks one of the gliders that will not break (from the entity's own
