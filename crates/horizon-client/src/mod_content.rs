@@ -777,7 +777,8 @@ impl<'a> Plan<'a> {
                     && let Some(early) = decl.state_properties.keys().find(|k| k.as_str() < last)
                 {
                     return Err(format!(
-                        "{}: state property {early} sorts before {last}, a property of {}: the                          game orders states by property name, so name it after {last}",
+                        "{}: state property {early} sorts before {last}, a property of {}: the \
+                         game orders states by property name, so name it after {last}",
                         decl.id, decl.template
                     )
                     .into());

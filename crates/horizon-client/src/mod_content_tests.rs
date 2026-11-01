@@ -2681,10 +2681,10 @@ fn content_block_state_properties_are_validated() {
         Ok(_) => panic!("a property sorting before the template's was accepted"),
     };
     assert!(
-        error.contains("testmod:") || error.contains("alpha sorts before axis"),
+        error.contains("testmod:") && error.contains("alpha sorts before axis, a property of"),
         "{error}"
     );
-    assert!(error.contains("alpha sorts before axis"), "{error}");
+    assert!(!error.contains("  "), "one space between words: {error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 
