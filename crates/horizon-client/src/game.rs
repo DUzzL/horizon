@@ -7554,6 +7554,17 @@ impl Game<'_> {
         Ok(())
     }
     /// Keep the held-key state of toggled sneak and sprint in step with their mapping.
+    /// `KeyMapping.resetToggleKeys`: every toggle mapping up, and the latched sneak and sprint
+    /// keys with it.
+    fn reset_toggle_keys(&mut self) {
+        for key in &mut self.toggles.0 {
+            key.reset();
+        }
+        self.sync_toggle(0);
+        self.sync_toggle(1);
+        self.left = false;
+        self.right = false;
+    }
     fn sync_toggle(&mut self, slot: usize) {
         let key = [KeyCode::ShiftLeft, KeyCode::ControlLeft][slot];
         if self.toggles.is_down(slot) {
@@ -12255,6 +12266,9 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
+        // `LocalPlayer`'s constructor: `KeyMapping.resetToggleKeys`, so a sneak or sprint toggled
+        // in this world is not still on in the next one.
+        self.reset_toggle_keys();
         self.sleeping = None;
         self.sleep_timer = 0;
         self.player_beds.clear();
