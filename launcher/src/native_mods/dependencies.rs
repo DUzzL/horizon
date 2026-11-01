@@ -164,7 +164,14 @@ pub(super) fn resolve(mods: &[Mod<'_>]) -> Result<Resolution, Error> {
                     target: dep.id.clone(),
                 });
             }
-            let version = Version::parse(other.version).map_err(|e| Error::Manifest {
+            // A `[mod] version` may leave out minor and patch (`"1"`, `"1.2"`), as Cargo's
+            // requirements do: they count as zero.
+            let padded = match other.version.matches('.').count() {
+                0 => format!("{}.0.0", other.version),
+                1 => format!("{}.0", other.version),
+                _ => other.version.to_owned(),
+            };
+            let version = Version::parse(&padded).map_err(|e| Error::Manifest {
                 owner: item.id.into(),
                 target: dep.id.clone(),
                 reason: format!("invalid installed version {:?}: {e}", other.version),
@@ -313,8 +320,8 @@ mod tests {
         let user = deps("[dependencies]\nbase = '^1'\nextra = { version = '^2', optional = true }");
         let mods = [
             item("user", "1.0.0", &user),
-            item("base", "1.2.0", &[]),
-            item("extra", "2.0.0", &[]),
+            item("base", "1.2", &[]),
+            item("extra", "2", &[]),
             item("other", "1.0.0", &[]),
         ];
         let result = resolve(&mods).unwrap();
