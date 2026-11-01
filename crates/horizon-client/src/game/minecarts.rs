@@ -1292,6 +1292,7 @@ impl Game<'_> {
         self.push_carts();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        let mut round = self.native_tick_round();
         // A server player's minecart moves with its rider (lan_vehicles.rs).
         let ridden = self.guest_vehicles();
         // By id: an exploding cart can destroy or prime others mid-loop.
@@ -1307,11 +1308,19 @@ impl Game<'_> {
             {
                 continue;
             }
+            let kind = self.carts[i].kind.id();
+            if !self.native_tick_pre_one(&mut round, id, kind) {
+                continue;
+            }
+            let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+                continue;
+            };
             let mut c = self.carts[i].clone();
             let alive = self.tick_cart(&mut c, [0.0; 2]);
             if c.kind == CartKind::Hopper && c.enabled {
                 self.hopper_cart_suck(&mut c);
             }
+            self.native_tick_post_one(&round, id, kind);
             let Some(i) = self.carts.iter().position(|c| c.id == id) else {
                 continue;
             };
@@ -1330,6 +1339,9 @@ impl Game<'_> {
         }
         // On the server for every cart, the ridden ones too.
         for id in ids {
+            if round.canceled(id) {
+                continue;
+            }
             if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                 let p = self.carts[i].position;
                 if ticking(p.x.floor() as i32, p.z.floor() as i32) {

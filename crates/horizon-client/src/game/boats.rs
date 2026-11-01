@@ -720,9 +720,14 @@ impl Game<'_> {
     pub(super) fn tick_boats(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
+        let mut round = self.native_tick_round();
         // A server player's boat is driven by its client (lan_vehicles.rs).
         let driven = self.guest_vehicles();
         for i in 0..self.boats.len() {
+            // A mod's hook may have removed boats.
+            if i >= self.boats.len() {
+                break;
+            }
             let p = self.boats[i].position;
             if Some(self.boats[i].id) == self.riding
                 || driven.contains(&self.boats[i].id)
@@ -736,8 +741,25 @@ impl Game<'_> {
                 }
                 continue;
             }
+            let id = self.boats[i].id;
+            let kind = if round.listening() {
+                self.boats[i].entity_type()
+            } else {
+                String::new()
+            };
+            if !self.native_tick_pre_one(&mut round, id, &kind) {
+                continue;
+            }
+            // The hook may have removed boats.
+            let Some(i) = Some(i)
+                .filter(|&i| self.boats.get(i).is_some_and(|b| b.id == id))
+                .or_else(|| self.boats.iter().position(|b| b.id == id))
+            else {
+                continue;
+            };
             let b = self.boats[i].clone();
             self.boats[i] = self.tick_boat(b, false);
+            self.native_tick_post_one(&round, id, &kind);
         }
         // AbstractBoat.tick's applyEffectsFromBlocks, on the server for every
         // boat, the client-driven ones too.
@@ -745,6 +767,7 @@ impl Game<'_> {
         while i < self.boats.len() {
             let p = self.boats[i].position;
             let skip = Some(self.boats[i].id) == self.riding
+                || round.canceled(self.boats[i].id)
                 || !ticking(p.x.floor() as i32, p.z.floor() as i32);
             if skip || !self.boat_lava_tick(i) {
                 i += 1;
@@ -755,7 +778,8 @@ impl Game<'_> {
         // pushes what it touches.
         for i in 0..self.boats.len() {
             let p = self.boats[i].position;
-            if !ticking(p.x.floor() as i32, p.z.floor() as i32) {
+            if !ticking(p.x.floor() as i32, p.z.floor() as i32) || round.canceled(self.boats[i].id)
+            {
                 continue;
             }
             // `AbstractBoat.tick` counts submersion on the server even when
