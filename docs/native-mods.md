@@ -1175,7 +1175,9 @@ of its `results` ([mods.md](mods.md#menu-types)), true elsewhere, and 99): chang
 `max_stack` is kept to 1 to 99, and the item's own stack size still caps it. It runs inside a click, a drag or a
 shift-click (several times for one), with no level or player at hand: answer from the stack, and fast. It is asked
 only for a server's players (single player's server thread, LAN guests, a dedicated server), never in-frame
-(`--in-frame`), and vanilla's menus never ask it.
+(`--in-frame`), and vanilla's menus never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
+shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
+slot from filling that way, lower `max_stack`.
 
 ### Items' default components
 
