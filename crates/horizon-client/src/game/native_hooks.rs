@@ -3444,7 +3444,8 @@ impl Game<'_> {
         let _ = (player, item, count, canceled);
     }
     /// Before `player` picks up orb `orb` in `dimension`. Mutations to `value`
-    /// and `count` take effect only when not canceled; both are at least one.
+    /// and `count` take effect only when not canceled; value is clamped to
+    /// 1..=i32::MAX and count to at least one.
     /// Canceling leaves the orb and pickup delay unchanged. Server-side. API 81.
     pub(super) fn native_experience_orb_pickup(
         &mut self,
@@ -3458,7 +3459,9 @@ impl Game<'_> {
         let _ = (player, dimension, orb, value, count, canceled);
     }
     /// The selected damaged Mending `stack` and the proposed durability repair
-    /// for `experience` points. The amount is clamped to the stack's damage.
+    /// for `experience` points. The amount is clamped to the stack's current damage. Zero leaves the
+    /// experience unspent when it overrides a positive proposal. If the selected
+    /// stack changes, the repair is skipped.
     /// Server-side, including `native_give_experience`. API 81.
     pub(super) fn native_mending_repair(
         &mut self,
