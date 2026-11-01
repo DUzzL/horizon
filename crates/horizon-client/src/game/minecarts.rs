@@ -911,6 +911,11 @@ impl Game<'_> {
         let v = c.velocity;
         let fall = c.fall_distance;
         self.move_cart(c, v);
+        // `comeOffTrack` moves the cart and keeps the delta the move resolved
+        // (then scales it by the air drag), so a cart an obstacle stopped here
+        // is not moving any more and `MinecartTNT.tick` does not detonate it -
+        // unlike the rail paths, which re-apply the track's velocity.
+        c.collision_speed = 0.0;
         if !c.on_ground {
             c.velocity = Vec3::new(
                 c.velocity.x * 0.95,
