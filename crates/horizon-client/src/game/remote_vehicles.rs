@@ -322,6 +322,10 @@ impl Game<'_> {
         for i in 0..self.boats.len() {
             let driven = self.riding == Some(self.boats[i].id);
             if !driven {
+                // `AbstractBoat.tick`: the non-authoritative copy carries no
+                // cached motion into the next time this player drives it.
+                self.boats[i].velocity = Vec3::ZERO;
+                self.boats[i].delta_rotation = 0.0;
                 self.refresh_boat_status(i);
             }
             let touches = self.boat_bubble_columns(i);
