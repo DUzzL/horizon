@@ -323,6 +323,9 @@ struct Globals {
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
     /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
     filtering: [f32; 4],
+    /// HDR output's tier windows, low to very bright: where the lift starts, where it is
+    /// full (`hdr::Hdr::windows`); zero without HDR.
+    hdr_windows: [[f32; 4]; 2],
 }
 pub type SectionKey = (i32, i32, i32);
 /// The water mirror's targets: the world as a camera mirrored about the water plane sees
@@ -5397,6 +5400,7 @@ impl Renderer {
                 0.0,
                 0.0,
             ],
+            hdr_windows: self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
