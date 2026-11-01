@@ -504,7 +504,7 @@ pub fn release_version(entry: &Entry, r: &Release, path: &Path) -> Result<Versio
         ));
     }
     let want = entry.kind.extension();
-    if want.is_some() && !entry.kind.names(r.asset) {
+    if want.is_some_and(|e| !r.asset.ends_with(&format!(".{e}"))) {
         return Err(format!(
             "{:?} is not a .{} file",
             r.asset,

@@ -842,7 +842,7 @@ async fn a_retry_takes_up_its_own_branch() {
     assert_eq!(mock.lock().unwrap().resets, [branch.as_str()]);
 }
 
-/// A native rewrite of `coords_hud` at `version`: its code only, published as a `.hmod`.
+/// A native rewrite (`.hnmod`) of `coords_hud` at `version`.
 fn hnmod(version: &str) -> Vec<u8> {
     use std::io::Write;
     let revision = "a".repeat(40);
@@ -902,7 +902,7 @@ async fn a_mod_turns_native_once() {
             "mods/coords_hud.toml".into(),
         )];
         assert_eq!(replaced.as_deref(), Some("blob1"));
-        assert!(m.assets[0].0.ends_with(".hmod"), "{:?}", m.assets);
+        assert!(m.assets[0].0.ends_with(".hnmod"), "{:?}", m.assets);
         let body = m.pulls[0]["body"].as_str().unwrap();
         assert!(body.contains("(native-mod, update: turns native"), "{body}");
         // Reviewed by hand: never merged as an owner update.
@@ -915,7 +915,7 @@ async fn a_mod_turns_native_once() {
     let entry: Entry = toml::from_str(&text).unwrap();
     assert_eq!(entry.kind.name(), "native-mod");
     let files: Vec<&str> = entry.versions.iter().map(|v| v.file.as_str()).collect();
-    assert_eq!(files, ["coords_hud-0.2.0.hmod", "coords_hud-0.1.0.hmod"]);
+    assert_eq!(files, ["coords_hud-0.2.0.hnmod", "coords_hud-0.1.0.hmod"]);
 
     // Once native, never back.
     mock.lock()
