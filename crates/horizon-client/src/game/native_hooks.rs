@@ -296,6 +296,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
     keybinds,
+    lan::menu::Slots,
     mobs::{Damage, Who},
     mod_list::{self, Installed, NativePage},
     music::{Music, MusicLayer},
@@ -315,6 +316,7 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -1549,9 +1551,12 @@ impl Game<'_> {
     }
     /// Block `block` (`mymod:machine`) gets a block entity
     /// (`EntityBlock.newBlockEntity`): set `entity` to its id and saved
-    /// compound when the block is yours and `entity` is none yet. The block's
-    /// template must have a block entity (a chest, a furnace...), so that
-    /// breaking the block removes it; on another template it gets none. API 15.
+    /// compound when the block is yours and `entity` is none yet. It works on
+    /// any template: the engine removes the block entity when its block is
+    /// broken or replaced, no piston moves it, and a mod that draws it
+    /// (`native_block_entity_submit`) is asked for it. API 15; before
+    /// @API:mod_block_entity_any_template@ the block's template had to have a
+    /// block entity of its own (a chest, a furnace...), or the block got none.
     pub(super) fn native_block_entity(
         &mut self,
         block: &str,
@@ -2361,9 +2366,11 @@ impl Game<'_> {
     /// `stack` in `hand` (`LivingEntity.startUsingItem`), for `duration`
     /// ticks (`native_use_duration`'s answer). `entity` is a mob's
     /// `Entity.getId`, None for a player (`native_acting_player` says who);
-    /// only players fire it so far. Change `duration` (consumables other
-    /// than potions, and mods' items, count to it; 0 or less lasts until let
-    /// go), or set `canceled` and the use doesn't start. Both sides, as
+    /// only players fire it so far. Change `duration` (consumables, potions,
+    /// spyglasses and mods' items count to it; below 0 refuses the use, and
+    /// 0 runs it out on its first tick, as `native_living_entity_use_item_tick`
+    /// running it out, unless the item's own is 0 already), or set
+    /// `canceled` and the use doesn't start. Both sides, as
     /// vanilla's: wherever the world runs (the server, single player
     /// in-frame, a LAN host) for every player of the world, and on a
     /// server's client for the uses it predicts. Answer the same on both,
@@ -2386,7 +2393,7 @@ impl Game<'_> {
     /// `native_living_entity_use_item_start`. `result` arrives with what
     /// `finishUsingItem` left in the hand (the bowl of a stew, none for the
     /// last apple; a mod's own item is kept) and may be replaced. Fired for
-    /// consumables, potions and mods' items. Server-side, for every player
+    /// consumables, potions, spyglasses and mods' items. Server-side, for every player
     /// of the world (the helpers read the acting one). API @API:item_use_over_time@.
     pub(super) fn native_living_entity_use_item_finish(
         &mut self,
@@ -2397,6 +2404,90 @@ impl Game<'_> {
         result: &mut Option<ItemStack>,
     ) {
         let _ = (stack, entity, hand, duration, result);
+    }
+    /// NeoForge's `LivingEntityUseItemEvent.Tick`: each tick `entity` uses
+    /// `stack` in `hand`, where `LivingEntity.updatingUsingItem` starts,
+    /// `duration` the ticks left. `entity` is as in
+    /// `native_living_entity_use_item_start`. Change `duration` to move the
+    /// end (consumables, potions, spyglasses and mods' items count to it,
+    /// and so do a client's eating crumbs and first person pose, as the
+    /// started duration of `native_living_entity_use_item_start` does). A
+    /// cancel sets it to -1. Once a mod set it, the use goes on
+    /// only while it is above 0: at 0 or less, by a cancel or set, the
+    /// item's tick is skipped and the server finishes the use
+    /// (`completeUsingItem`: `finishUsingItem`, the food eaten,
+    /// `native_living_entity_use_item_finish`), while an item used on
+    /// release (a crossbow) stays frozen until let go. NeoForge's javadoc
+    /// says a cancel stops the use, but its code finishes it; this follows
+    /// the code. On a server's client a run-out use stays in use, frozen,
+    /// so letting go still tells the server. Both sides, as vanilla's
+    /// `updatingUsingItem`: answer the same on both, and change the world
+    /// only where this `Game` runs the world, not on a server's client (no
+    /// helper tells the two apart yet; `native_window` is also true
+    /// in-frame and on an in-frame LAN host). Runs every tick of every use:
+    /// check the item first. API @API:item_use_tick_release@.
+    pub(super) fn native_living_entity_use_item_tick(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: &mut i32,
+        canceled: &mut bool,
+    ) {
+        let _ = (stack, entity, hand, duration, canceled);
+    }
+    /// `Item.onUseTick` of `stack`, used by `entity` with `remaining` ticks
+    /// left, always above 0: what a mod's own item does each tick it is used
+    /// (cook, charge, drain). It comes where `ItemStack.onUseTick` calls the
+    /// item, once `native_living_entity_use_item_tick` let the use go on:
+    /// after a consumable's crumbs, for consumables, shields and mods' items
+    /// (vanilla's other items do their own, and a kinetic weapon has none on
+    /// the server). Both sides, as `native_living_entity_use_item_tick`:
+    /// change the world only where this `Game` runs the world, not on a
+    /// server's client. Runs every tick of every use: check the item first.
+    /// API @API:item_use_tick_release@.
+    pub(super) fn native_on_use_tick(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        remaining: i32,
+    ) {
+        let _ = (stack, entity, remaining);
+    }
+    /// NeoForge's `LivingEntityUseItemEvent.Stop`: `entity` lets go of
+    /// `stack` in `hand` before its use ran its time
+    /// (`LivingEntity.releaseUsingItem`: the use button let go, a screen
+    /// opened), `duration` the ticks left. Set `canceled` to skip the item's
+    /// release (a bow doesn't shoot, a spyglass makes no sound,
+    /// `native_release_using` isn't called); the use stops anyway. Not when
+    /// the hand changed item, which stops the use without a release. Both
+    /// sides, as `native_living_entity_use_item_tick`. API @API:item_use_tick_release@.
+    pub(super) fn native_living_entity_use_item_stop(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: i32,
+        canceled: &mut bool,
+    ) {
+        let _ = (stack, entity, hand, duration, canceled);
+    }
+    /// `Item.releaseUsing` of `stack`: `entity` let it go with `time_left`
+    /// ticks of its `native_use_duration` left, so it was held for
+    /// `duration - time_left` (a bow-like item shoots by that charge). Set
+    /// `used` as vanilla's return, and the stack's use cooldown starts
+    /// (`ItemStack.releaseUsing`). After the vanilla item's own release, once
+    /// `native_living_entity_use_item_stop` let it through. Both sides, as
+    /// vanilla's: change the world only where this `Game` runs the world,
+    /// not on a server's client. API @API:item_use_tick_release@.
+    pub(super) fn native_release_using(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        time_left: i32,
+        used: &mut bool,
+    ) {
+        let _ = (stack, entity, time_left, used);
     }
     /// A player breaks the block `state` at `pos`, once the game allowed it
     /// (the held item can break blocks, the debug stick didn't take the
@@ -2614,6 +2705,41 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (dimension, entity, kind, pos, loaded_from_disk, canceled);
+    }
+    /// Whether the experience orb `into` takes the orb `from` in (vanilla's
+    /// `ExperienceOrb.canMerge`): the same value, and ids a multiple of 40 apart. Asked
+    /// for each pair whose boxes meet, when an orb spawns (`tryMergeToExisting`: `from` is
+    /// 0, the new orb isn't an entity yet, and only `from_value` is known) and every 20
+    /// ticks as an orb scans for neighbours (`scanForMerges`). `can_merge` holds vanilla's
+    /// answer; change it either way. A merged orb counts as `count` orbs of `into`'s
+    /// value, so forcing orbs of different values together drops points unless the mod
+    /// raises `into`'s value with `native_set_experience_orb` in `native_experience_orb_merge`.
+    /// Server-side. API @API:experience_orb_merge@.
+    pub(super) fn native_experience_orb_can_merge(
+        &mut self,
+        dimension: &str,
+        into: u32,
+        from: u32,
+        into_value: u32,
+        from_value: u32,
+        can_merge: &mut bool,
+    ) {
+        let _ = (dimension, into, from, into_value, from_value, can_merge);
+    }
+    /// The experience orb `into` is about to take `from` in, after
+    /// `native_experience_orb_can_merge` said yes (`from` is 0 and `from_value` the
+    /// points of a new orb that is spawning). Set `canceled` to stop it: both orbs stay, and
+    /// a spawning orb tries the next orb in reach, then spawns on its own. Server-side.
+    /// API @API:experience_orb_merge@.
+    pub(super) fn native_experience_orb_merge(
+        &mut self,
+        dimension: &str,
+        into: u32,
+        from: u32,
+        from_value: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (dimension, into, from, from_value, canceled);
     }
     /// `player`'s melee blow killed the mob `entity` of `kind` (other deaths
     /// aren't told yet). It only hears, after the blow landed. Server-side.
@@ -2973,6 +3099,34 @@ fn sound_id(id: &str) -> bool {
         && !path.is_empty()
         && namespace.chars().all(|c| allowed(c, false))
         && path.chars().all(|c| allowed(c, true))
+}
+
+/// Sets the viewer counts `known` holds for `dim` to `now` and returns the
+/// changes as `(pos, previous, viewers)`, in position order. A container that
+/// is no longer counted goes to 0 and leaves `known`.
+pub(super) fn viewer_changes(
+    known: &mut HashMap<(&'static str, (i32, i32, i32)), u32>,
+    dim: &'static str,
+    mut now: HashMap<(i32, i32, i32), u32>,
+) -> Vec<((i32, i32, i32), u32, u32)> {
+    let mut changes = Vec::new();
+    known.retain(|&(d, pos), previous| {
+        if d != dim {
+            return true;
+        }
+        let viewers = now.remove(&pos).unwrap_or(0);
+        if viewers != *previous {
+            changes.push((pos, *previous, viewers));
+            *previous = viewers;
+        }
+        viewers > 0
+    });
+    for (pos, viewers) in now {
+        known.insert((dim, pos), viewers);
+        changes.push((pos, 0, viewers));
+    }
+    changes.sort_unstable();
+    changes
 }
 
 fn dimension_id(dimension: LevelDimension) -> &'static str {
@@ -4274,12 +4428,6 @@ impl Game<'_> {
         let mut entity = None;
         self.native_block_entity(name, &mut entity);
         let (id, nbt) = entity?;
-        // A template with no block entity (stone) never removes one, so it would stay in the save.
-        let state = self.pack.assets.registry.default_state(name)?;
-        if !self.res.facts().get(state).block_entity {
-            super::mods::warn_no_block_entity(name, &id);
-            return None;
-        }
         Some(BlockEntity::Mod(Box::new(ModBlockEntity {
             id,
             nbt,
@@ -4380,6 +4528,44 @@ impl Game<'_> {
             m.items.resize(slots, None);
         }
         true
+    }
+    /// `ContainerOpenersCounter` for the mod containers of the level in place:
+    /// everyone with one open, recounted every tick, so a change is heard
+    /// whichever way an opener left (`native_mod_container_viewers`). The
+    /// openers are the guests (but not a spectator, `BarrelBlockEntity.startOpen`),
+    /// the host's own player, and the copper golems that opened it
+    /// (`chest_openers`).
+    pub(super) fn tick_mod_container_viewers(&mut self) {
+        let mut now: HashMap<(i32, i32, i32), u32> = HashMap::new();
+        let mut open = |game: &Self, pos: (i32, i32, i32), n: u32| {
+            if n > 0 && game.mod_menu_at(pos).is_some() {
+                *now.entry(pos).or_default() += n;
+            }
+        };
+        if let Some(host) = &self.lan {
+            for g in host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| host.hub.here(g) && !g.spectator())
+            {
+                if let Some(m) = &g.menu
+                    && let Slots::Block(pos) = m.slots
+                {
+                    open(self, pos, 1);
+                }
+            }
+        }
+        if let Some(pos) = self.container.filter(|_| !self.spectator()) {
+            open(self, pos, 1);
+        }
+        for (&pos, &(golems, _)) in &self.world.chest_openers {
+            open(self, pos, golems.max(0) as u32);
+        }
+        let dim = self.dim.id();
+        for (pos, previous, viewers) in viewer_changes(&mut self.mod_container_viewers, dim, now) {
+            self.native_mod_container_viewers(dim, [pos.0, pos.1, pos.2], viewers, previous);
+        }
     }
     /// The menu type of the mod container at `key`, if it has one.
     pub(super) fn mod_menu_at(&self, key: Pos) -> Option<&'static str> {
@@ -5362,6 +5548,8 @@ mod tests {
         let item_hooks = free_hooks(include_str!("../../../horizon-world/src/item_defaults.rs"));
         // The loot tables' hook point (`horizon_world::loot`).
         let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
+        // The menu engine's (`horizon_client::menu`).
+        let menu_hooks = free_hooks(include_str!("../menu.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -5374,6 +5562,7 @@ mod tests {
             .chain(render_hooks.iter().copied())
             .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
+            .chain(menu_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -5391,6 +5580,8 @@ mod tests {
                 format!("horizon_world::item_defaults::native_{name}")
             } else if loot_hooks.contains(name) {
                 format!("horizon_world::loot::native_{name}")
+            } else if menu_hooks.contains(name) {
+                format!("horizon_client::menu::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {

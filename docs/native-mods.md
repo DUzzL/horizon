@@ -28,7 +28,8 @@ the commit of the installed version the build starts from.
 
 A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`, with a few
 free functions in other crates: [render hook points](#render-hook-points), [items' default
-components](#items-default-components), `horizon_world::loot::native_loot_table_load`; empty functions the game
+components](#items-default-components), `horizon_world::loot::native_loot_table_load`, [menu slot
+rules](#menu-slot-rules); empty functions the game
 calls at fixed places, plus helpers, kept stable across releases) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
@@ -1284,6 +1285,45 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
 - It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
   loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
 
+### Bulk block edits
+
+`crates/horizon-client/src/game/native_world_edit.rs`: a helper for server mods, for the level in place, on a server only.
+It names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_edit_blocks(dimension, edit)` makes many blocks at once: `NativeBlockEdit` holds a `palette` of block states and
+  a list of `filters` (block predicates, `#minecraft:logs`), both written as commands write them, and `runs`, each
+  `height` blocks up column (`x`, `z`) from `y`, set to palette entry `block`, only where filter `only` passes the block
+  there. With `surface` (`NativeHeightmap`: `WorldSurface`, `MotionBlocking`, `MotionBlockingNoLeaves` or `OceanFloor`),
+  `y` counts from that height of the column, read once a column before anything changes. Runs are made in order, each
+  seeing the changes of those before it.
+- The blocks go straight into the chunks, a section packed once however many of its blocks change, as `fill ... strict`
+  does: no neighbour is told, nothing drops, and no block updates or ticks; light is worked out again for the chunks
+  changed, and they go to the players whole. A block replaced by another loses its block entity, and a new block gets
+  the one `native_set_block` would give it (a mod block's own, API 15, included).
+- It answers the number of blocks changed. Runs in chunks that aren't loaded, and the parts of runs outside the level's
+  height, are left out. It answers `Err`, changing nothing, on a client, for another dimension, a palette entry or filter
+  that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
+  the end, or more than 65536 filters.
+
+### Column reads
+
+`crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
+only, that read many columns in one call. They name the level they mean by its `dimension` (`minecraft:overworld`), as
+`native_set_block` does, and answer `Err` with the reason, reading nothing, on a client, for another dimension or for
+a read too big, so a mod can tell "ask for less" from "wrong level". They run on the server tick: read a big area in
+pieces.
+
+- `native_surface_heights(dimension, columns, heightmap)` answers each column's height on `heightmap` (`NativeHeightmap`,
+  as `native_edit_blocks` reads it: one above the highest block that counts), `None` for a column whose chunk isn't
+  loaded; at most 65,536 columns a call.
+- `native_read_columns(dimension, columns, heightmap, (below, above))` reads, for each column, the blocks from `below`
+  under its height to `above` - 1 over it, bottom first: `NativeColumnBlocks` holds the heights (`bases`), the block
+  names seen (`palette`), the blocks as indexes into it, a column after another, and three biome tints a column (grass,
+  foliage and water, at the column's top). Blocks outside the level's height, and every block of a column not loaded,
+  read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
+  The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
+  near a biome border they can differ from what players see by a few blocks.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
@@ -1335,6 +1375,20 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+
+### Menu slot rules
+
+`crates/horizon-client/src/menu.rs`: `native_menu_slot_rules(menu, slot, stack, may_place, max_stack)`, a free function
+a bundle targets as `horizon_client::menu::native_menu_slot_rules`. A content mod menu type's container slot `slot`
+(from 0) is asked whether it takes `stack` (`Slot.mayPlace`) and how many it holds (`Slot.getMaxStackSize`), as a
+NeoForge mod's own `Slot` overrides them. `may_place` and `max_stack` come in with the type's own answer (false on one
+of its `results` ([mods.md](mods.md#menu-types)), true elsewhere, and 99): change them for your own menu types.
+`max_stack` is kept to 1 to 99, and the item's own stack size still caps it. It runs inside a click, a drag or a
+shift-click (several times for one), with no level or player at hand: answer from the stack, and fast. It is asked
+only for a server's players (single player's server thread, LAN guests, a dedicated server), never in-frame
+(`--in-frame`), and vanilla's menus never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
+shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
+slot from filling that way, lower `max_stack`.
 
 ### Items' default components
 

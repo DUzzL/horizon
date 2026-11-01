@@ -32,36 +32,7 @@ use horizon_protocol::{
     text::literal,
 };
 use horizon_world::entity_move::EntityMoveWorld;
-use std::collections::HashMap;
 use winit::keyboard::KeyCode;
-
-/// Sets the viewer counts `known` holds for `dim` to `now` and returns the
-/// changes as `(pos, previous, viewers)`, in position order. A container that
-/// is no longer counted goes to 0 and leaves `known`.
-pub(super) fn viewer_changes(
-    known: &mut HashMap<(&'static str, (i32, i32, i32)), u32>,
-    dim: &'static str,
-    mut now: HashMap<(i32, i32, i32), u32>,
-) -> Vec<((i32, i32, i32), u32, u32)> {
-    let mut changes = Vec::new();
-    known.retain(|&(d, pos), previous| {
-        if d != dim {
-            return true;
-        }
-        let viewers = now.remove(&pos).unwrap_or(0);
-        if viewers != *previous {
-            changes.push((pos, *previous, viewers));
-            *previous = viewers;
-        }
-        viewers > 0
-    });
-    for (pos, viewers) in now {
-        known.insert((dim, pos), viewers);
-        changes.push((pos, 0, viewers));
-    }
-    changes.sort_unstable();
-    changes
-}
 
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
@@ -72,6 +43,7 @@ pub(super) struct GuestPlay {
     destroy_delay: u32,
     using: Option<(usize, u32)>,
     use_duration: i32,
+    use_ticks_set: bool,
     use_delay: u32,
     /// The shield's ItemCooldowns entry: an axe disabled it for this many ticks.
     pub(super) shield_cooldown: u32,
@@ -203,6 +175,7 @@ pub(super) struct GuestSwap {
     destroy_delay: u32,
     using: Option<(usize, u32)>,
     use_duration: i32,
+    use_ticks_set: bool,
     use_delay: u32,
     pub(super) shield_cooldown: u32,
     /// The guest's item cooldowns (`Game::cooldowns` for its turn).
@@ -502,6 +475,7 @@ impl Game<'_> {
         let destroy_delay = std::mem::replace(&mut self.destroy_delay, play.destroy_delay);
         let using = std::mem::replace(&mut self.using, play.using.take());
         let use_duration = std::mem::replace(&mut self.use_duration, play.use_duration);
+        let use_ticks_set = std::mem::replace(&mut self.use_ticks_set, play.use_ticks_set);
         let use_delay = std::mem::replace(&mut self.use_delay, play.use_delay);
         let shield_cooldown = std::mem::replace(&mut self.shield_cooldown, play.shield_cooldown);
         let cooldowns = std::mem::replace(&mut self.cooldowns, std::mem::take(&mut play.cooldowns));
@@ -616,6 +590,7 @@ impl Game<'_> {
             destroy_delay,
             using,
             use_duration,
+            use_ticks_set,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -692,6 +667,7 @@ impl Game<'_> {
             destroy_delay,
             using,
             use_duration,
+            use_ticks_set,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -810,6 +786,7 @@ impl Game<'_> {
         play.destroy_delay = std::mem::replace(&mut self.destroy_delay, destroy_delay);
         play.using = std::mem::replace(&mut self.using, using);
         play.use_duration = std::mem::replace(&mut self.use_duration, use_duration);
+        play.use_ticks_set = std::mem::replace(&mut self.use_ticks_set, use_ticks_set);
         play.use_delay = std::mem::replace(&mut self.use_delay, use_delay);
         play.shield_cooldown = std::mem::replace(&mut self.shield_cooldown, shield_cooldown);
         play.cooldowns = std::mem::replace(&mut self.cooldowns, cooldowns);
@@ -1392,27 +1369,6 @@ impl Game<'_> {
             if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
                 self.guest_carried_back(host, gi);
             }
-        }
-    }
-
-    /// `ContainerOpenersCounter` for the mod containers of the level in place:
-    /// the players with each one open, recounted from their menus, so a
-    /// change is heard whichever way a player left (`native_mod_container_viewers`).
-    fn tick_mod_container_viewers(&mut self, host: &LanHost) {
-        let mut now: HashMap<(i32, i32, i32), u32> = HashMap::new();
-        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
-            // `BarrelBlockEntity.startOpen`: a spectator does not open it.
-            if !g.spectator()
-                && let Some(m) = &g.menu
-                && let Slots::Block(pos) = m.slots
-                && self.mod_menu_at(pos).is_some()
-            {
-                *now.entry(pos).or_default() += 1;
-            }
-        }
-        let dim = self.dim.id();
-        for (pos, previous, viewers) in viewer_changes(&mut self.mod_container_viewers, dim, now) {
-            self.native_mod_container_viewers(dim, [pos.0, pos.1, pos.2], viewers, previous);
         }
     }
 
@@ -3019,12 +2975,12 @@ impl Game<'_> {
     pub(super) fn send_admin_feedback(&mut self, host: &mut LanHost, source: Option<u32>) {
         // PlayerList.isOp for the host of a world open to LAN: the owner when
         // the world allows commands, everyone when the LAN does.
-        let host_op = source.is_some()
-            && !host.hub.config.dedicated
-            && (self.allow_commands() || host.hub.config.guest_commands);
+        let host_ops =
+            !host.hub.config.dedicated && (self.allow_commands() || host.hub.config.guest_commands);
+        let host_op = source.is_some() && host_ops;
         // server.toml's `admin_feedback_to_ops` off: the console's log only.
         let to_ops = host.hub.admin_feedback_to_ops;
-        for (line, ops, console) in std::mem::take(&mut self.admin_feedback) {
+        for (line, ops, console, no_player) in std::mem::take(&mut self.admin_feedback) {
             if ops && to_ops {
                 let content = horizon_client::lan::data::component_nbt(&line.component());
                 for g in host
@@ -3038,7 +2994,8 @@ impl Game<'_> {
                         overlay: false,
                     }));
                 }
-                if host_op {
+                // A line no player's command made (a command block's) reaches the host too.
+                if host_op || (no_player && host_ops) {
                     self.system_message(line.clone());
                 }
             }
@@ -3305,7 +3262,6 @@ impl Game<'_> {
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
         self.lan_containers_tick(host);
-        self.tick_mod_container_viewers(host);
         self.tick_lan_mount_menus(host);
         self.announce_guest_advancements(host);
         let conns: Vec<u32> = host
@@ -3963,6 +3919,24 @@ impl Game<'_> {
                     count,
                     speed,
                 }) => self.landing_dust(Some(host), state, position, count, speed),
+                // A block's own sound names no player: the guest hears it too.
+                MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {
+                    sound,
+                    position: Some(pos),
+                    volume,
+                    pitch,
+                }) if sound.block_sound().is_some() => {
+                    if let Some(name) = sound.block_sound() {
+                        let source = horizon_client::settings::sound_source(name) as i32;
+                        let at = [
+                            f64::from(pos.x) + 0.5,
+                            f64::from(pos.y) + 0.5,
+                            f64::from(pos.z) + 0.5,
+                        ];
+                        self.audio.play_unshared(name, Some(at), volume, pitch);
+                        host.hub.sound(name, at, volume, pitch, source, None);
+                    }
+                }
                 // LivingEntity.causeFallDamage: Player.playSound skips the
                 // guest, whose own client plays it; everyone else hears it.
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {

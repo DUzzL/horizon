@@ -1492,6 +1492,7 @@ impl Hub {
                 if let Some(far) = self.far.as_mut() {
                     far.forget_level();
                 }
+                ctx.world.bulk_log.clear();
             }
             return events;
         }
@@ -1928,9 +1929,71 @@ impl Hub {
     }
 
     fn broadcast_block_changes(&mut self, world: &mut World) {
+        // Chunks changed in bulk (`World::edit_runs`) go whole to those who see them: one packet each, where a
+        // change of each block would be thousands (the client lights and meshes them once, on its workers).
+        let bulk: Vec<(i32, i32)> = if world.bulk_log.is_empty() {
+            Vec::new()
+        } else {
+            let mut keys: Vec<_> = world.bulk_log.drain().collect();
+            keys.sort_unstable();
+            keys
+        };
+        if !bulk.is_empty() {
+            let recording = self.recording();
+            let columns: Vec<&Chunk> = bulk
+                .iter()
+                .filter_map(|k| world.chunks.get(k).map(|c| &**c))
+                .collect();
+            self.encoder.warm(&columns);
+            for chunk in columns {
+                let key = (chunk.x, chunk.z);
+                if let Some(far) = self.far.as_mut() {
+                    far.changed(key.0, key.1);
+                }
+                let viewers: Vec<usize> = (0..self.guests.len())
+                    .filter(|&i| {
+                        self.here(&self.guests[i]) && self.guests[i].sent_chunks.contains(&key)
+                    })
+                    .collect();
+                if viewers.is_empty() {
+                    continue;
+                }
+                let body = self.encoder.body_in(chunk, world);
+                for &i in &viewers {
+                    self.guests[i].sender.send(body.clone());
+                }
+                if recording {
+                    // The prediction's replay excuses a client near the column: any of its blocks may have
+                    // changed, so the one nearest the player stands for them.
+                    for &i in &viewers {
+                        let g = &mut self.guests[i];
+                        let Some(record) = g.anticheat.record.as_deref_mut() else {
+                            continue;
+                        };
+                        let slack = super::prediction::slack(std::array::from_fn(|i| {
+                            g.position[i] - g.previous_position[i]
+                        }));
+                        let column =
+                            |c: f64, at: i32| (c.floor() as i32).clamp(at * 16, at * 16 + 15);
+                        let at = [
+                            column(g.position[0], key.0),
+                            g.position[1].floor() as i32,
+                            column(g.position[2], key.1),
+                        ];
+                        if super::prediction::near(g.position, at, slack) {
+                            record.changed_near(self.ticks, at);
+                        }
+                    }
+                }
+            }
+        }
         let Some(log) = world.block_log.as_mut() else {
             return;
         };
+        if !bulk.is_empty() {
+            // (what changed in them one at a time went with them)
+            log.retain(|p| bulk.binary_search(&(p.0 >> 4, p.2 >> 4)).is_err());
+        }
         if log.is_empty() {
             return;
         }

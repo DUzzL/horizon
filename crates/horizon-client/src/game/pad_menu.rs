@@ -1017,7 +1017,8 @@ impl Game<'_> {
     /// (`Screen.keyPressed`): Tab, Shift+Tab and the arrows move the focus,
     /// Enter, Space and keypad Enter press the focused widget; the focused
     /// widget's own keys come first (a text field's caret, a slider's
-    /// value). Whether the key was used; when not, the screen has it.
+    /// value). Whether the key was used; when not, the screen has it (a
+    /// container also has Tab and the arrows once they moved the focus).
     pub(super) fn key_focus_key(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
         let Some(nav) = key_focus::nav_of(key, self.has_shift_down()) else {
             return false;
@@ -1102,7 +1103,9 @@ impl Game<'_> {
                 InputType::KeyboardArrow
             });
         }
-        true
+        let container =
+            self.title.is_none() && matches!(self.screen, Screen::Inventory | Screen::Creative);
+        !key_focus::passes_on(act, container)
     }
 
     /// Which screen is open, as far as the keyboard's focus cares.
@@ -1119,7 +1122,7 @@ impl Game<'_> {
             .hash(&mut hasher);
         (self.sign_edit.is_some(), self.book.is_some()).hash(&mut hasher);
         (
-            self.link_prompt.is_some(),
+            self.link_prompt.is_some() || self.command_prompt.is_some(),
             self.server_packs.prompt.is_some(),
         )
             .hash(&mut hasher);

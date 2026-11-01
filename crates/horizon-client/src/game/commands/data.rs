@@ -176,6 +176,18 @@ impl Game<'_> {
                 let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
                 d.to_nbt(uuid.unwrap_or_else(random_uuid), raw)
             }
+            Target::Tnt(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.tnts.iter().find(|t| t.id == id)?;
+                entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
+            }
         })
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is

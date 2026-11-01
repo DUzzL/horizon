@@ -167,8 +167,10 @@ impl Game<'_> {
             f64::from(pos.y),
             f64::from(pos.z) + 0.5,
         );
+        // An id from the entity counter at once, so a command can name it.
+        self.next_entity += 1;
         self.tnts.push(PrimedTnt {
-            id: 0,
+            id: self.next_entity,
             position,
             previous: position,
             velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
