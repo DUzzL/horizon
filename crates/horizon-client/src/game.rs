@@ -2895,6 +2895,9 @@ struct Game<'a> {
     /// the operators (`DedicatedServer.shouldInformAdmins`,
     /// `broadcast-console-to-ops`).
     console_broadcast: Option<bool>,
+    /// The command the console is running came over RCON: its source is named `Rcon`
+    /// (`RconConsoleSource.createCommandSourceStack`), not `Server`.
+    rcon_source: bool,
     /// A dedicated server's operator, whitelist and ban lists, for `/op`,
     /// `/ban` and friends (`DedicatedPlayerList`).
     server_lists: Option<std::sync::Arc<std::sync::Mutex<dedicated::Lists>>>,
@@ -18426,6 +18429,7 @@ impl<'a> Game<'a> {
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,
+            rcon_source: false,
             server_lists: None,
             world_tables: None,
             cmds: Default::default(),
