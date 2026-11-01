@@ -4,15 +4,17 @@
 //! `optifine/` (or legacy `mcpatcher/`) folders that hold them. Each feature's own rules sit in
 //! a module of their own, free of the game's types (`random`: random entity textures' rules;
 //! `random_textures`: where a pack keeps their variants; [`ctm`]: connected textures; `cit`:
-//! custom item textures, which the client matches against its stacks).
+//! custom item textures, which the client matches against its stacks; `emissive`: emissive
+//! overlays).
 //!
 //! Written from OptiFine's public documentation of the file formats (and ETF's, for its additions
-//! to random entities); `cit` also from CIT Resewn's wiki and the conditions of its MIT-licensed
+//! to random entities and emissive textures); `cit` also from CIT Resewn's wiki and the conditions of its MIT-licensed
 //! source (THIRD_PARTY_NOTICES.md). No OptiFine code was read.
 
 pub mod cem;
 pub mod cit;
 pub mod ctm;
+pub mod emissive;
 pub mod matchers;
 pub mod paths;
 pub mod properties;
