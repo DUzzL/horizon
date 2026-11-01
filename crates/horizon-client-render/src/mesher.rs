@@ -1417,12 +1417,11 @@ impl Mesher<'_> {
         // Overlays: the face again, after it (equal depth passes), tinted as their rule says.
         // `layer=cutout` is an alpha cutout whatever the tile's alpha, but over a translucent
         // face it must be in the translucent pass too, or the face would draw over it.
-        let face_translucent = face.translucent
-            || self
-                .translucent_layers
-                .get(face.layer as usize)
-                .copied()
-                .unwrap_or(false);
+        let face_translucent = match pick {
+            Pick::Keep => self.translucent(own),
+            Pick::Tile(t) => self.translucent(tile(t)),
+            Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
+        };
         for overlay in overlays.into_iter().flatten() {
             let tint = overlay.tint.and_then(|(index, block)| {
                 let info = block
@@ -1449,6 +1448,22 @@ impl Mesher<'_> {
     ) {
         self.quad_as(out, solid_leaves, tile, v, true);
     }
+    /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
+    fn translucent(&self, tile: TileLayer) -> bool {
+        match tile {
+            TileLayer::Layer {
+                layer, translucent, ..
+            } => {
+                translucent
+                    || self
+                        .translucent_layers
+                        .get(usize::from(layer))
+                        .copied()
+                        .unwrap_or(false)
+            }
+            TileLayer::Skip | TileLayer::Default => false,
+        }
+    }
     /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
     /// when `by_sprite`: an overlay's pass is its rule's.
     fn quad_as(
@@ -1470,13 +1485,11 @@ impl Mesher<'_> {
         if self.tables.is_animated(layer) {
             out.note_sprite_layer(layer);
         }
-        let translucent = translucent
-            || by_sprite
-                && self
-                    .translucent_layers
-                    .get(usize::from(layer))
-                    .copied()
-                    .unwrap_or(false);
+        let translucent = if by_sprite {
+            self.translucent(tile)
+        } else {
+            translucent
+        };
         // Quads over opaque texels draw in the solid layer: no alpha cutout (a dirt path's side
         // skips its clear top row). All four vertices share the layer.
         let layer = if opaque && !translucent || solid_leaves {

@@ -554,7 +554,7 @@ mod tests {
     }
 
     /// State 0 air, 1 glass, 2 stone, 3 and 4 oak logs (axis y, x), 5 and 6 a door (lower,
-    /// upper); the stone sprite is layer 7.
+    /// upper); the stone sprite is layer 7, glass 3.
     fn world(files: &[(&str, &str)]) -> ConnectedTextures {
         let props = |pairs: &[(&str, &str)]| -> BlockProperties {
             pairs
@@ -574,7 +574,11 @@ mod tests {
         ConnectedTextures::build(
             rules(files),
             states.iter().map(|(n, p)| Some((*n, p))),
-            |name| (name == "minecraft:block/stone").then_some(7),
+            |name| match name {
+                "minecraft:block/stone" => Some(7),
+                "minecraft:block/glass" => Some(3),
+                _ => None,
+            },
         )
     }
 
@@ -910,11 +914,10 @@ mod tests {
             ),
         ]);
         // connectTiles joins neighbours showing a named sprite on the same side: the door to the
-        // north shows sprite 3 on top (`world` knows no glass sprite, so set both by hand).
+        // north shows glass (sprite 3) on top.
         let mut faces = vec![[9u16; 6]; 7];
         faces[5][Face::Up as usize] = 3;
         ctm.face_layers = faces;
-        ctm.rules[0].overlay.tiles = vec![3];
         let mut got = Vec::new();
         let door_north = |o: [i32; 3]| if o == [0, 0, -1] { 5 } else { 0 };
         ctm.pick(
