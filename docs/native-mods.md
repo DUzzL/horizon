@@ -400,6 +400,15 @@ text files a crate folder carries (`README*`, `LICENSE*`, `COPYING*`, `NOTICE*`,
 folder or a crate's), so a crate that compiles its README in builds the same from the registry as from a folder. At
 most 512 files and 64 MiB unpacked; anything else refuses the bundle. A local folder build has no such limits.
 
+**One `.hmod` for content and code.** A mod's content and its native code ship as one `.hmod`, and what is inside
+decides what happens: only `horizon-mod.toml` with `assets/` and `data/` is a content mod, nothing compiles; with
+`horizon-native.json` and `mixins/<id>/` (a bundle as above) it is a native mod, built into the game. Both may be in
+one file: `horizon-mod.toml`, `assets/` and `data/` are its content, checked as a content mod's
+(`horizon_mods::Content`) and left out of the build, and the two manifests name the same mod id. A `.hmod` with
+native code is never a WebAssembly mod: one carrying `mod.wasm` is refused with
+`horizon_mods::index::native::WASM_GONE`. An `.hnmod` (code only) keeps loading as before. The registry publishes a
+`native-mod`'s new versions as `.hmod` and still accepts `.hnmod` releases.
+
 ### Post-build steps
 
 A `[[post_build]]` names a bin of one of the mod's crates. After the game compiles, the launcher builds it with the
@@ -854,13 +863,13 @@ each was built or last used): switching a mod off and on again plays the kept bu
   Horizon's own.
 - **The registry** (horizon-rust/horizon-mods) lists them as their own kind, `native-mod`, only after a maintainer
   has read the source and the repository they come from. Its entry names the GitHub repository (`repo`); each
-  release of it with a `.hnmod` asset is a version once the bundle passes the registry's checks, with no further
+  release of it with a `.hmod` (or older `.hnmod`) asset is a version once the bundle passes the registry's checks, with no further
   review (nothing is built or run by the registry; the player's launcher builds it behind its warning). The `.hnmod` contains `.rs` and `.toml` files and may contain data files under
   `mixins/<id>/data/` or a crate's `data/`. The launcher checks the bundle without running anything. Native code is trusted.
   The file is pinned by SHA-256 like every registry file, and the version, game and pins are the bundle's own
   `horizon-native.json`. `revoked.toml` takes a bad release down.
   A content mod's entry may turn `native-mod` once (never back): its `.hmod` versions stay published and
-  are checked as `.hmod`s, the index lists only its `.hnmod` versions, and the launcher's update keeps the
+  are checked as `.hmod`s, the index lists only its versions with native code, and the launcher's update keeps the
   player's `.hmod` (the game runs it until a native build has the mod, then skips it); removing the mod removes both.
 - **Isolation of data.** Native mods run only in the instance they are installed in, with its worlds, options and
   logs (the default Horizon instance's, when they are installed there); other instances play their own versions.

@@ -41,9 +41,10 @@ pub struct Index {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Kind {
-    /// A `.hmod`.
+    /// A `.hmod` of content only.
     Mod,
-    /// A source-only native mixin bundle, compiled into an isolated game build.
+    /// A `.hmod` with a source-only native mixin bundle, compiled into an isolated game build,
+    /// and its content if it has any (older versions: an `.hnmod`, code only).
     NativeMod,
     /// A `.hpack`: registry mods played together as a profile.
     Modpack,
@@ -71,12 +72,21 @@ impl Kind {
     pub fn extension(&self) -> Option<&'static str> {
         match self {
             Kind::Mod => Some("hmod"),
-            Kind::NativeMod => Some("hnmod"),
+            Kind::NativeMod => Some("hmod"),
             Kind::Modpack => Some("hpack"),
             Kind::ResourcePack => Some("zip"),
             Kind::Shader => Some(horizon_shader_api::EXTENSION),
             Kind::Other(_) => None,
         }
+    }
+}
+
+impl Kind {
+    /// Whether `file` is named as a file of this kind: its extension, or for a native mod an
+    /// older version's `.hnmod`.
+    pub fn names(&self, file: &str) -> bool {
+        let has = |e: &str| file.strip_suffix(e).is_some_and(|stem| stem.ends_with('.'));
+        self.extension().is_some_and(has) || (*self == Kind::NativeMod && has("hnmod"))
     }
 }
 
@@ -557,8 +567,22 @@ impl Facts {
 /// this build doesn't know are refused: their checks come with their formats.
 pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
     match kind {
-        Kind::NativeMod => Ok(native::Bundle::read(path)?.manifest.facts()),
+        Kind::NativeMod => {
+            let facts = native::Bundle::read(path)?.manifest.facts();
+            // A `.hmod` with content too: checked as the game reads it.
+            if Package::has_manifest(path) {
+                let m = Package::read(path)?.manifest;
+                crate::Content::read(path, &m)?;
+            }
+            Ok(facts)
+        }
         Kind::Mod => {
+            if native::holds(path) {
+                return Err(format!(
+                    "it has native code ({}): it is a native-mod",
+                    native::MANIFEST
+                ));
+            }
             let Package { manifest: m, wasm } = Package::read(path)?;
             crate::Content::read(path, &m)?;
             let api_level = match wasm {
