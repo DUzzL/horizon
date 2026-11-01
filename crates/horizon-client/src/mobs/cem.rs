@@ -10,8 +10,10 @@
 //! nothing is built and every model stays vanilla's, and a file no layer uses isn't parsed.
 //!
 //! The seam with random entity textures (ETF): a `.jem`'s own `texture` replaces the layer's
-//! vanilla texture name, and the texture selection then works on that name as on vanilla's.
-//! It paints the layer the file is for, not the overlays drawn on that layer's model (a wolf's
+//! vanilla texture name, and the random texture lookup then gets that name. Variants without
+//! rules (`green2.png` beside `green.png`) follow it; a `.properties` with rules for it is not
+//! matched yet, because the random-texture picks are made for the vanilla names. That half
+//! belongs with random textures. The `.jem` texture paints the layer the file is for, not the overlays drawn on that layer's model (a wolf's
 //! collar, a spider's eyes, the cracks on a wolf's armour): those keep their textures over the
 //! new geometry.
 
