@@ -2996,6 +2996,25 @@ fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
     let (y, p) = (f64::from(yaw).to_radians(), f64::from(pitch).to_radians());
     [-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
 }
+/// `LivingEntity.canGlideUsing`: for each worn piece (head, chest, legs,
+/// feet), whether it is a glider (its own component, or one the server
+/// patched onto the stack) in the slot its `equippable` names, and will not
+/// break with its next point of wear (`ItemStack.nextDamageWillBreak`).
+fn gliding_pieces(items: &Items, armor: &[Option<ItemStack>; 4]) -> [bool; 4] {
+    const SLOTS: [&str; 4] = ["head", "chest", "legs", "feet"];
+    std::array::from_fn(|i| {
+        let Some(stack) = armor[i].as_ref() else {
+            return false;
+        };
+        let info = items.get(&stack.item);
+        let glider = info.is_some_and(|d| d.glider)
+            || stack
+                .data()
+                .is_some_and(|d| d.other("minecraft:glider").is_some());
+        let will_break = info.is_some_and(|d| d.max_damage > 0 && stack.damage + 1 >= d.max_damage);
+        glider && !will_break && info.and_then(|d| d.equip_slot.as_deref()) == Some(SLOTS[i])
+    })
+}
 /// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
 /// view, turned round in third-person front view (`Camera.setup`).
 fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -> glam::Quat {
@@ -3234,15 +3253,31 @@ impl Game<'_> {
         self.stack_in_mut(self.held_slot())
     }
     /// The slot of the hand that acts: the selected one, or `OFFHAND_SLOT`.
-    /// `LivingEntity.canGlideUsing`: a glider in the chest slot that will
-    /// not break with its next point of wear.
+    /// `LivingEntity.canGlide`: some worn piece `gliding_pieces` lets glide.
     fn glider_worn(&self) -> bool {
-        self.armor[1].as_ref().is_some_and(|s| {
-            self.res
-                .items()
-                .get(&s.item)
-                .is_some_and(|i| i.glider && (i.max_damage == 0 || s.damage + 1 < i.max_damage))
-        })
+        gliding_pieces(self.res.items(), &self.armor).contains(&true)
+    }
+    /// `LivingEntity.updateFallFlying`: the glide's wear. `Util.getRandom`
+    /// picks one of the gliders that will not break (from the entity's own
+    /// random), and
+    /// `ItemStack.hurtAndBreak` takes `points` of its durability (Unbreaking
+    /// may save it). Callers skip creative.
+    pub(super) fn wear_glider(&mut self, points: u32) {
+        let gliding = gliding_pieces(self.res.items(), &self.armor);
+        let pieces: Vec<usize> = (0..4).filter(|&i| gliding[i]).collect();
+        if pieces.is_empty() {
+            return;
+        }
+        // `Util.getRandom(slotsWithGliders, this.random)`: the entity's own
+        // random, which never touches the level's stream.
+        let pick = dispenser::entity_random().next_int_bound(pieces.len() as i32);
+        let pick = pieces[pick.unwrap_or(0) as usize];
+        if let Some(stack) = self.armor[pick].clone() {
+            let loss = self.wear(&stack, points);
+            if let Some(piece) = self.armor[pick].as_mut() {
+                piece.damage += loss;
+            }
+        }
     }
     /// `LivingEntity.canFreeze`'s armor half: any worn piece in
     /// `freeze_immune_wearables`.
@@ -6985,15 +7020,8 @@ impl Game<'_> {
                 lan_particles::send_soul_particle(host, at, velocity);
             }
         }
-        // `ItemStack.hurtAndBreak` for the glide: Unbreaking can save the wear.
-        if glider_wear > 0
-            && !self.creative
-            && let Some(stack) = self.armor[1].clone()
-        {
-            let loss = self.wear(&stack, glider_wear);
-            if let Some(elytra) = self.armor[1].as_mut() {
-                elytra.damage += loss;
-            }
+        if glider_wear > 0 && !self.creative {
+            self.wear_glider(glider_wear);
         }
         self.tick_avatar(before, riding);
         self.end_spin_attack(spin_hit);
