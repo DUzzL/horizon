@@ -632,13 +632,13 @@ impl Game<'_> {
                         kind: kind.to_owned(),
                         texture: None,
                         animation: worn_head_animation(
-                            horizon_client::mobs::anim::state(mob, alpha as f32).pos,
+                            mob,
+                            // The local player's synthetic mob carries no `mount`.
                             mob.extra
                                 .mount
-                                .and_then(|id| self.mobs.iter().find(|m| m.id == id))
-                                .map(|v| {
-                                    horizon_client::mobs::anim::walk_position(v, alpha as f32)
-                                }),
+                                .or(if local_player { self.riding } else { None }),
+                            &self.mobs,
+                            alpha as f32,
                         ),
                     }
                 },
@@ -694,9 +694,15 @@ impl Game<'_> {
 }
 
 /// `LivingEntityRenderer.extractRenderState`'s `wornHeadAnimationPos`: the
-/// living vehicle's walk position when riding one, else the wearer's own.
-fn worn_head_animation(own: f32, vehicle: Option<f32>) -> f32 {
-    vehicle.unwrap_or(own)
+/// walk position of the living mob `mount` carries the wearer on (a boat or
+/// minecart is no mob, so it is not found), else the wearer's own.
+fn worn_head_animation(wearer: &Mob, mount: Option<u32>, mobs: &[Mob], alpha: f32) -> f32 {
+    mount
+        .and_then(|id| mobs.iter().find(|m| m.id == id))
+        .map_or_else(
+            || horizon_client::mobs::anim::state(wearer, alpha).pos,
+            |v| horizon_client::mobs::anim::walk_position(v, alpha),
+        )
 }
 
 #[cfg(test)]
@@ -704,10 +710,44 @@ mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
 
+    /// A mob of the prepared resources' type `kind` (None without them).
+    fn mob(id: u32, kind: &str) -> Option<horizon_client::mobs::Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(horizon_client::mobs::Mob::new(
+            id,
+            t,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+            0.0,
+        ))
+    }
+
     #[test]
-    fn worn_head_animation_prefers_the_living_vehicle() {
-        assert_eq!(worn_head_animation(1.5, None), 1.5);
-        assert_eq!(worn_head_animation(0.0, Some(2.25)), 2.25);
+    fn a_worn_head_follows_the_living_vehicle() {
+        let (Some(mut wearer), Some(mut horse)) =
+            (mob(1, "minecraft:zombie"), mob(2, "minecraft:horse"))
+        else {
+            return;
+        };
+        wearer.limb_position = 1.0;
+        wearer.limb_speed = 0.5;
+        horse.limb_position = 4.0;
+        horse.limb_speed = 1.0;
+        let mobs = [horse];
+        // Walking on its own: its own position (1 - 0.5 * 0.5).
+        assert_eq!(worn_head_animation(&wearer, None, &mobs, 0.5), 0.75);
+        // A mount that is no mob (boat, minecart) or unknown: still its own.
+        assert_eq!(worn_head_animation(&wearer, Some(99), &mobs, 0.5), 0.75);
+        // Riding the horse (a passenger's own position is 0): the horse's.
+        wearer.extra.passenger = true;
+        assert_eq!(worn_head_animation(&wearer, None, &mobs, 0.5), 0.0);
+        assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
+        // Dead wearer, living vehicle: the vehicle's.
+        wearer.health = 0.0;
+        assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
     }
 
     #[test]
