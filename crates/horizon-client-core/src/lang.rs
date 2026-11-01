@@ -323,6 +323,148 @@ mod tests {
         );
     }
 
+    /// `crates/horizon-client/assets/horizon/lang`, where Horizon's own strings live.
+    fn bundled_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../horizon-client/assets/horizon/lang")
+    }
+    /// The keys of a flat bundled file in file order, duplicates included (a map
+    /// would keep only the last of two equal keys). One `"key": "value"` per line.
+    fn file_keys(body: &str) -> Vec<String> {
+        body.lines()
+            .filter(|line| line.starts_with("  \""))
+            .map(|line| {
+                serde_json::Deserializer::from_str(line.trim_start())
+                    .into_iter::<String>()
+                    .next()
+                    .and_then(Result::ok)
+                    .unwrap_or_else(|| panic!("no key on line {line}"))
+            })
+            .collect()
+    }
+    /// The fields the code fills in (`%s`, `%d`, `%1$s`, `%.2f`, `%%`), sorted. A
+    /// percent sign that starts none of them ("100% is") is plain text.
+    fn placeholders(text: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find('%') {
+            rest = &rest[at + 1..];
+            let spec = rest
+                .find(|c: char| !(c.is_ascii_digit() || c == '$' || c == '.'))
+                .unwrap_or(rest.len());
+            let after = rest[spec..].chars().next();
+            if after.is_some_and(|c| matches!(c, 's' | 'd' | 'f' | '%')) {
+                let end = spec + 1;
+                found.push(format!("%{}", &rest[..end]));
+                rest = &rest[end..];
+            }
+        }
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn bundled_files_are_served_and_have_no_stale_or_repeated_keys() {
+        let dir = bundled_dir();
+        let en_body = std::fs::read_to_string(dir.join("en_us.json")).unwrap();
+        let en: HashMap<String, String> = serde_json::from_str(&en_body).unwrap();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().into_string().unwrap();
+            let Some(code) = name.strip_suffix(".json") else {
+                continue;
+            };
+            seen += 1;
+            // A file that Bundled::read does not name is never loaded.
+            let path = format!("assets/horizon/lang/{name}");
+            assert!(
+                Bundled.read(&path).is_some(),
+                "{name} is not served by Bundled"
+            );
+            let body = std::fs::read_to_string(entry.path()).unwrap();
+            let map: HashMap<String, String> = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("{name} is not a flat string map: {e}"));
+            let keys = file_keys(&body);
+            assert_eq!(
+                keys.len(),
+                map.len(),
+                "{name} repeats a key or has a multi-line entry"
+            );
+            for (key, value) in &map {
+                // Stale: the code no longer asks for it, or it was renamed in en_us only.
+                let english = en
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{code}: {key} is not in en_us.json"));
+                // A translation keeps the fields the code fills in.
+                assert_eq!(
+                    placeholders(value),
+                    placeholders(english),
+                    "{code}: {key} changes the placeholders of the English text"
+                );
+                assert!(!value.trim().is_empty(), "{code}: {key} is empty");
+            }
+        }
+        assert!(
+            seen >= 7,
+            "found {seen} bundled lang files in {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn every_horizon_key_the_code_names_is_in_en_us() {
+        fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let en: HashMap<String, String> = serde_json::from_str(
+            &std::fs::read_to_string(bundled_dir().join("en_us.json")).unwrap(),
+        )
+        .unwrap();
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files = Vec::new();
+        for krate in [
+            "horizon-client",
+            "horizon-client-render",
+            "horizon-client-core",
+        ] {
+            rust_files(&crates.join(krate).join("src"), &mut files);
+        }
+        assert!(files.len() > 100, "found only {} sources", files.len());
+        let mut found = 0;
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (at, _) in text.match_indices("\"horizon.") {
+                let rest = &text[at + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let key = &rest[..end];
+                // A key is `horizon.<group>.<name>`: lower-case letters, digits and `_`
+                // between the dots. A key built at run time has a brace; a file name
+                // has one dot; the server addresses that look like keys are listed.
+                const NOT_KEYS: &[&str] = &["horizon.bunchy7s.dev"];
+                let key_like = key
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.".contains(&b));
+                if key.matches('.').count() < 2 || !key_like || NOT_KEYS.contains(&key) {
+                    continue;
+                }
+                found += 1;
+                assert!(
+                    en.contains_key(key),
+                    "{} names {key}, which is not in en_us.json",
+                    file.display()
+                );
+            }
+        }
+        assert!(found > 50, "found only {found} key names");
+    }
+
     #[test]
     fn layers_selected_language_over_english() {
         let base = Mem(HashMap::from([
