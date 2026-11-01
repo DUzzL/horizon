@@ -27,6 +27,7 @@ use std::process::{Command, Stdio};
 
 mod api;
 mod crates;
+mod dependencies;
 mod inject;
 mod inject_cache;
 
@@ -434,7 +435,7 @@ fn bundle(dir: &Path, mixins: Option<String>) -> Result<Bundle, String> {
         .transpose()?;
     let mixins_content = value
         .keys()
-        .any(|key| !["mod", "compatibility", "api"].contains(&key.as_str()));
+        .any(|key| !["mod", "compatibility", "api", "dependencies"].contains(&key.as_str()));
     // Reject links before copying the bundle into the incoming folder.
     files_with_api(dir, api.as_deref())?;
     let id = need("id")?;
@@ -1354,6 +1355,29 @@ pub fn build(
             ..b
         })
         .collect();
+    let declared: Vec<Vec<dependencies::Dependency>> = mods
+        .iter()
+        .map(|bundle| {
+            let path = bundle.dir.join(MANIFEST);
+            let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let table: toml::Table = text
+                .parse()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            dependencies::parse(&bundle.id, table.get("dependencies")).map_err(|e| e.to_string())
+        })
+        .collect::<Result<_, String>>()?;
+    let inputs: Vec<_> = mods
+        .iter()
+        .zip(&declared)
+        .map(|(bundle, deps)| dependencies::Mod {
+            id: &bundle.id,
+            version: &bundle.version,
+            has_api: bundle.api.is_some(),
+            dependencies: deps,
+        })
+        .collect();
+    let resolution = dependencies::resolve(&inputs).map_err(|e| e.to_string())?;
+    let ordered: Vec<Bundle> = resolution.order.iter().map(|&i| mods[i].clone()).collect();
     // A mod naming a hook points' version doesn't pin: it follows the others, else the game.
     let pins: Vec<Bundle> = mods.iter().filter(|b| b.hooks.is_none()).cloned().collect();
     let free = pins.iter().all(|b| b.horizon.is_none());
@@ -1421,16 +1445,16 @@ pub fn build(
         let fresh = real.join("stage.new");
         let _ = fs::remove_dir_all(&fresh);
         if needs_mixins {
-            let key = inject_cache::key(&revision, &mixins, profile, &mods)?;
+            let key = inject_cache::key(&revision, &mixins, profile, &ordered)?;
             let snapshot = inject_cache::snapshot(&real, &key);
             if snapshot.is_dir() {
                 progress(Step::CachedMixins);
                 sync(&snapshot, &fresh)?;
             } else {
-                let injections = inject::prepare(&mods, &source)?;
+                let injections = inject::prepare(&ordered, &source)?;
                 let tool = tool(&rust, &mixins, &progress)?;
                 let mixin_input = real.join("mixins.incoming");
-                stage_mixins(&mods, &mixin_input)?;
+                stage_mixins(&ordered, &mixin_input)?;
                 progress(Step::Mixins);
                 let result = run(
                     apply(&rust, &tool, &source, &mixin_input, &fresh),
@@ -1457,7 +1481,7 @@ pub fn build(
             fetch.arg("--locked");
             run(fetch, "Downloading Horizon's crates", |_| {})?;
         }
-        let has_api = api::stage(&fresh, &mods)?;
+        let has_api = api::stage(&fresh, &mods, &declared, &resolution)?;
         if has_api {
             // Add path packages to Cargo.lock before the locked dependency check.
             let mut metadata = cargo(&rust, &fresh, "metadata");

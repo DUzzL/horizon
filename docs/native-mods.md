@@ -1328,6 +1328,30 @@ into a generated game executable and calls `hooks()` in bundle order. The packag
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
 
+### Dependencies between trait mods
+
+A mod can publish functions and statics from its `[api]` package for another mod to call:
+
+```toml
+[dependencies]
+base_mod = "^1"
+extra_mod = { version = "^2", optional = true }
+```
+
+Requirements use Cargo semver syntax and are checked against each installed bundle's `[mod] version`,
+not its Cargo package version. The dependent and every installed dependency need an `[api]` package.
+Missing required dependencies, incompatible versions and cycles stop the build with the mods named.
+An absent optional dependency is permitted; an installed optional dependency must match its requirement.
+
+The launcher adds a path dependency using the mod ID as the Cargo alias and the target's actual Cargo
+package name. In Rust, replace hyphens in the alias with underscores. Optional dependencies also get a
+Cargo feature named exactly as their mod ID, enabled only when that mod is installed. Guard calls with
+`#[cfg(feature = "extra_mod")]`. Do not define these dependencies or features yourself in Cargo.toml.
+Public statics must use appropriate synchronization for shared and reentrant hooks; private state in
+another mod's hook object is not exposed.
+
+Trait dispatch follows dependency order, with ties kept in bundle order. Mixin injection order remains
+horizon-mixins' priority, mod ID, then injection ID; dependency order does not change injection order.
 A bundle with an `[api]` package may declare its own HEAD injection in the trait:
 
 ```toml
