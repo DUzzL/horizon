@@ -1184,6 +1184,12 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         Species::Guardian if !m.fluids.in_water => "entity.guardian.ambient_land",
         Species::ElderGuardian if !m.fluids.in_water => "entity.elder_guardian.ambient_land",
         Species::Axolotl if !m.fluids.in_water => "entity.axolotl.idle_air",
+        // Villager.getAmbientSound: silent while asleep, the trade sound
+        // while a player has its menu open.
+        Species::Villager if super::villager::sleeping(m) => return,
+        Species::Villager if m.extra.flag2 => "entity.villager.trade",
+        // WanderingTrader.getAmbientSound: only the trade branch, it never sleeps.
+        Species::WanderingTrader if m.extra.flag2 => "entity.wandering_trader.trade",
         Species::Bat if m.extra.flag && m.random.next_int_bound(4).unwrap_or(1) != 0 => return,
         Species::Allay if m.extra.main_hand.is_some() => "entity.allay.ambient_with_item",
         // Strider.getAmbientSound: quiet while panicking or tempted.
@@ -3150,6 +3156,69 @@ mod endermite_goal_tests {
             assert!(m.ai.targets.has("NearestTarget"));
         });
         let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod villager_ambient_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// The ambient sound one tick of `play_ambient` makes, after `setup`.
+    fn sound(
+        w: &MobWorld<'_>,
+        types: &crate::mobs::MobTypes,
+        kind: &str,
+        setup: impl FnOnce(&mut Mob),
+    ) -> Option<&'static str> {
+        let mut m = Mob::new(
+            1,
+            std::sync::Arc::new(types.types[kind].clone()),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        setup(&mut m);
+        let mut events = Vec::new();
+        play_ambient(&mut m, w, &mut events);
+        events.into_iter().find_map(|e| match e {
+            MobEvent::Sound(s, ..) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// `Villager.getAmbientSound`: silent while asleep, the trade sound while a
+    /// player has its menu open, ambient otherwise. `WanderingTrader` only has
+    /// the trade branch.
+    #[test]
+    fn a_villager_is_silent_asleep_and_noisy_while_trading() {
+        with_test_world(&[], |w, types| {
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |_| {}),
+                Some("entity.villager.ambient")
+            );
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |m| m.extra.flag2 = true),
+                Some("entity.villager.trade")
+            );
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |m| m.extra.ints[1] = 1),
+                None,
+                "asleep"
+            );
+            assert_eq!(
+                sound(w, types, "minecraft:villager", |m| {
+                    m.extra.ints[1] = 1;
+                    m.extra.flag2 = true;
+                }),
+                None,
+                "sleeping wins over trading"
+            );
+            let trading = |m: &mut Mob| m.extra.flag2 = true;
+            assert_eq!(
+                sound(w, types, "minecraft:wandering_trader", trading),
+                Some("entity.wandering_trader.trade")
+            );
+        });
     }
 }
 
