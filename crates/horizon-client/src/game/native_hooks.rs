@@ -1394,6 +1394,27 @@ impl Game<'_> {
     ) {
         let _ = (scroll, accumulated, buttons, cursor, modifiers, canceled);
     }
+    /// An interaction key acts on what the crosshair points at
+    /// (`InputEvent.InteractionKeyMappingTriggered`), while playing: `button` 0 is
+    /// the attack key (`key_mapping` `key.attack`), 1 the use key (`key.use`, once
+    /// for each hand it tries, the main hand first), 2 pick block (`key.pickItem`,
+    /// only with something aimed at). The attack fires when an attack is allowed
+    /// and again each tick a held attack key keeps digging a block. Set `canceled`
+    /// to skip the action: a cancelled use also skips the other hand. A cancelled
+    /// attack or use still swings `hand` unless the mod clears `swing_hand` (it
+    /// starts true). A server's player and a single player's window only; a mod
+    /// that claims an item's use (`mod_use_start`) sees the event first. API
+    /// @API:interaction_key@.
+    pub(super) fn native_interaction_key(
+        &mut self,
+        button: i32,
+        key_mapping: &str,
+        hand: horizon_client::first_person::Hand,
+        swing_hand: &mut bool,
+        canceled: &mut bool,
+    ) {
+        let _ = (button, key_mapping, hand, swing_hand, canceled);
+    }
     /// A command typed or clicked in chat, without its slash, before the
     /// server and Horizon's commands see it: set `ran` when the mod ran it.
     pub(super) fn native_command(&mut self, command: &str, ran: &mut bool) {
@@ -4950,6 +4971,23 @@ impl Game<'_> {
             }
             self.native_key(name, pressed);
         }
+    }
+    /// `ClientHooks.onClickInput`: tells `native_interaction_key` that `button`
+    /// (0 attack, 1 use, 2 pick) is about to act with `hand`. `None` when the
+    /// action goes on; when a mod cancelled it, `Some` of whether the hand swings.
+    pub(super) fn native_interaction(
+        &mut self,
+        button: i32,
+        hand: horizon_client::first_person::Hand,
+    ) -> Option<bool> {
+        let key_mapping = match button {
+            0 => "key.attack",
+            1 => "key.use",
+            _ => "key.pickItem",
+        };
+        let (mut swing_hand, mut canceled) = (true, false);
+        self.native_interaction_key(button, key_mapping, hand, &mut swing_hand, &mut canceled);
+        canceled.then_some(swing_hand)
     }
     /// A mouse button while playing, for `native_key`.
     pub(super) fn native_mouse_event(&mut self, button: MouseButton, pressed: bool) {
