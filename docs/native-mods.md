@@ -430,6 +430,12 @@ there follows when the stack types converge. In the items engine's context the `
 and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
 fields are `None`.
 
+Both engines' contexts carry `place`, where the roll happens: `origin` (a broken block's centre, a dead mob's
+position), `block_entity` (the broken block's entity as it was before the break, saved with its id, position and
+`Items`) and `level` (the dimension, the game time, the time of day, the rain and the thunder, for conditions like
+vanilla's `time_check` and `weather_check`). The game sets it for a block a player or an explosion breaks and for a
+mob's death loot; on other rolls `place` is `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
