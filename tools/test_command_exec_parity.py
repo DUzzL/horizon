@@ -108,16 +108,19 @@ def main():
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
-    for v, r in zip(vanilla, rust):
+    failed_positions = set()
+    for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
         kind = compare(v, r)
         if kind:
+            failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})
     (build / 'mismatches.jsonl').write_text(''.join(json.dumps(m, ensure_ascii=False) + '\n' for m in mismatches), encoding='utf-8')
     summary = []
-    bad = {m['cmd'] for m in mismatches}
     for name, lo, hi in commands_by_group:
-        failed = sum(1 for rec in vanilla[lo:hi] if rec['cmd'] in bad)
+        # By position: two groups that run the same probe command (the orb
+        # groups' `data get` lines) must not be charged each other's failures.
+        failed = sum(1 for position in failed_positions if lo <= position < hi)
         summary.append({'group': name, 'commands': hi - lo, 'mismatches': failed})
         print(f'{name}: {hi - lo - failed}/{hi - lo} commands match', flush=True)
     for m in mismatches[:args.limit]:

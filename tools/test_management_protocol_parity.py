@@ -15,7 +15,8 @@ sent the same things over TLS, and every answer is compared exactly:
   answer to nothing, `rpc.discover` (its document must also equal `reports/json-rpc-api-schema.json` from
   vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
   `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
-  `clear`; with no profile service, players named resolve to offline players on both), and `server/stop`;
+  `clear`; with no profile service, players named resolve to offline players on both), difficulty read and
+  changed (including the saved server property), and `server/stop`;
 - the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications vanilla
@@ -121,6 +122,11 @@ MESSAGES = [
     '{"player":{"id":"93e029a5-04a0-349d-90b2-f7e145b2644f"}}]]}',
     '{"jsonrpc":"2.0","id":38,"method":"minecraft:operators/remove","params":[[{"name":"Lou0"}]]}',
     '{"jsonrpc":"2.0","id":39,"method":"minecraft:operators/clear"}',
+    '{"jsonrpc":"2.0","id":45,"method":"minecraft:serversettings/difficulty"}',
+    '{"jsonrpc":"2.0","id":46,"method":"minecraft:serversettings/difficulty/set","params":["hard"]}',
+    '{"jsonrpc":"2.0","id":47,"method":"minecraft:serversettings/difficulty"}',
+    '{"jsonrpc":"2.0","id":48,"method":"minecraft:serversettings/difficulty/set","params":["peaceful"]}',
+    '{"jsonrpc":"2.0","id":49,"method":"minecraft:serversettings/difficulty"}',
 ]
 
 
@@ -336,6 +342,13 @@ def main():
                 with (build / f'{side}-session.log').open('w') as log:
                     sides[side] = session(management, context, log)
                 server.process.wait(timeout=180)
+                properties = (folder / 'server.properties').read_text()
+                sides[side]['saved_difficulty'] = next(
+                    (line.partition('=')[2] for line in properties.splitlines()
+                     if line.startswith('difficulty=')), None)
+                if side == 'horizon':
+                    world = (folder / 'server.toml').read_text().partition('[world]')[2].split('\n[', 1)[0]
+                    sides[side]['saved_config_difficulty'] = 'difficulty = "peaceful"' in world
             finally:
                 server.stop()
         vanilla, horizon = sides['vanilla'], sides['horizon']
@@ -346,11 +359,15 @@ def main():
         for message, v, h in zip(MESSAGES, vanilla['answers'], horizon['answers']):
             if v != h:
                 failures.append(f'{message}\n  vanilla {json.dumps(v)[:400]}\n  Horizon {json.dumps(h)[:400]}')
+        if vanilla['saved_difficulty'] != horizon['saved_difficulty'] or vanilla['saved_difficulty'] != 'peaceful':
+            failures.append(f"saved difficulty: vanilla {vanilla['saved_difficulty']!r}, Horizon {horizon['saved_difficulty']!r}")
+        if not horizon['saved_config_difficulty']:
+            failures.append('Horizon did not save peaceful difficulty in server.toml')
+        (build / 'report.json').write_text(json.dumps(sides, indent=1))
         report = lab.LOCAL / 'datagen/out/reports/json-rpc-api-schema.json'
         discovered = horizon['answers'][MESSAGES.index('{"jsonrpc":"2.0","id":12,"method":"rpc.discover"}')]
         if json.loads(report.read_text()) != discovered.get('result'):
             failures.append(f'rpc.discover differs from {report}')
-        (build / 'report.json').write_text(json.dumps(sides, indent=1))
         if failures:
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))
     finally:

@@ -93,7 +93,7 @@ fn shadow_position(position: vec3<f32>) -> vec3<f32> {
 }
 ";
 
-const POST_RESOURCES: [Resource; 11] = [
+const POST_RESOURCES: [Resource; 12] = [
     FRAME,
     Resource {
         binding: 1,
@@ -135,6 +135,12 @@ const POST_RESOURCES: [Resource; 11] = [
     },
     shadow_map_translucent(9),
     shadow_color(10),
+    Resource {
+        binding: 11,
+        name: "scene_surface",
+        ty: "var scene_surface: texture_2d<f32>",
+        doc: "What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`.",
+    },
 ];
 
 /// The material stage's resources: the frame, and the world as it was before translucent
@@ -214,9 +220,41 @@ fn block_light_color(position: vec3<f32>) -> vec4<f32> {
     let c = textureSampleLevel(block_light_colors, reflection_sampler, uvw, 0.0);
     return vec4<f32>(c.rgb * 4.0, c.a);
 }
-// The point being shaded: its layer and mip level in the LabPBR maps (the entries set them).
+// What the post stage's `surface_at` reads for this point of solid terrain: its `normal` (a
+// unit vector in world axes), `smoothness` (0..1, say for reflections) and `data`, a value of
+// the pack's own passed through. Unset, the point keeps the face's own normal and 0 for both;
+// translucent terrain stores none.
+var<private> horizon_surface: vec4<f32>;
+fn set_surface(normal: vec3<f32>, smoothness: f32, data: f32) {
+    // Octahedral, y up: the upper half folds onto xz, the lower half unfolds around it.
+    let n = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));
+    var e = n.xz;
+    if n.y < 0.0 {
+        e = (1.0 - abs(n.zx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), n.xz >= vec2<f32>(0.0));
+    }
+    horizon_surface = vec4<f32>(bitcast<f32>(pack2x16snorm(e)), smoothness, data, 1.0);
+}
+// The point being shaded: its sprite's layer and mip level (the entries set them).
 var<private> horizon_block_layer: u32;
 var<private> horizon_block_lod: f32;
+// The surface's block texture at `uv` (the sprite's space, as `input.uv`), without the tint:
+// what `input.albedo` holds at the point itself, readable anywhere on the sprite, for normals
+// or detail generated from the texture.
+fn block_texture(uv: vec2<f32>) -> vec4<f32> {
+    return horizon_block_sample(uv, horizon_block_layer, horizon_block_lod);
+}
+// `block_texture` at mip level `lod` (0 the full-size texture).
+fn block_texture_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
+    return horizon_block_sample(uv, horizon_block_layer, lod);
+}
+// The block texture's size, in texels (16 x 16 for vanilla's).
+fn block_texture_size() -> vec2<f32> {
+    return horizon_block_size();
+}
+// The mip level `block_texture` reads at this point (0 up close, more far away).
+fn block_texture_lod() -> f32 {
+    return horizon_block_lod;
+}
 // LabPBR: whether the resource packs ship normal (`_n`) or specular (`_s`) maps beside their
 // block textures. Without them `block_normal_map` and `block_specular_map` give the defaults
 // below.
@@ -230,7 +268,8 @@ fn block_pbr_maps() -> bool {
 fn block_normal_map(uv: vec2<f32>) -> vec4<f32> {
     return horizon_block_pbr(uv, horizon_block_layer, horizon_block_lod, 0u);
 }
-// `block_normal_map` at mip level `lod` (0 the full-size map).
+// `block_normal_map` at the block texture's mip level `lod` (the same footprint on the surface,
+// where the map is smaller than the texture).
 fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
     return horizon_block_pbr(uv, horizon_block_layer, lod, 0u);
 }
@@ -240,7 +279,7 @@ fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
 fn block_specular_map(uv: vec2<f32>) -> vec4<f32> {
     return horizon_block_pbr(uv, horizon_block_layer, horizon_block_lod, 1u);
 }
-// `block_specular_map` at mip level `lod`.
+// `block_specular_map` at the block texture's mip level `lod`.
 fn block_specular_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
     return horizon_block_pbr(uv, horizon_block_layer, lod, 1u);
 }
@@ -280,6 +319,36 @@ fn horizon_material_tangent(position: vec3<f32>, uv: vec2<f32>, normal: vec3<f32
 }
 ";
 
+/// The post prelude's `surface_at`, for the post helpers' end.
+const POST_SURFACE: &str = "\
+// The solid terrain's surface at a pixel, as the material stage's `set_surface` left it.
+struct SurfaceData {
+    // False where the sky, an entity, water, glass or a particle shows instead.
+    present: bool,
+    // A unit vector in world axes.
+    normal: vec3<f32>,
+    smoothness: f32,
+    // The pack's own value, passed through.
+    data: f32,
+}
+fn surface_at(texel: vec2<i32>) -> SurfaceData {
+    let size = vec2<i32>(textureDimensions(scene_surface));
+    let t = clamp(texel, vec2<i32>(0), size - 1);
+    let s = textureLoad(scene_surface, t, 0);
+    let depth_size = vec2<i32>(textureDimensions(scene_depth));
+    let depth = textureLoad(scene_depth, clamp(texel, vec2<i32>(0), depth_size - 1), 0);
+    // The terrain's own depth is stored with it: anything drawn nearer since hides it.
+    let present = s.w > 0.0 && abs(s.w - depth) <= s.w * 1e-5;
+    let e = unpack2x16snorm(bitcast<u32>(s.x));
+    var n = vec3<f32>(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    if n.y < 0.0 {
+        n = vec3<f32>((1.0 - abs(n.z)) * sign(n.x), n.y, (1.0 - abs(n.x)) * sign(n.z));
+    }
+    return SurfaceData(present, select(vec3<f32>(0.0), normalize(n), present),
+        select(0.0, s.y, present), select(0.0, s.z, present));
+}
+";
+
 /// The post stage's entry points, as the renderer builds them: a full-screen
 /// triangle, and a fragment that calls the pack's `post` for each pixel.
 const POST_ENTRIES: &str = "\
@@ -304,7 +373,13 @@ struct HorizonPostOut {
 /// check and the entries below put a stand-in in its place.
 macro_rules! pbr_stub {
     () => {
-        "fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32> {
+        "fn horizon_block_sample(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
+    return vec4<f32>(1.0);
+}
+fn horizon_block_size() -> vec2<f32> {
+    return vec2<f32>(16.0);
+}
+fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32> {
     return select(vec4<f32>(0.5, 0.5, 1.0, 1.0), vec4<f32>(0.0), map == 1u);
 }
 fn horizon_block_pbr_present() -> bool {
@@ -450,6 +525,7 @@ impl StageKind {
         match self {
             StageKind::Post => {
                 out += POST_HELPERS;
+                out += POST_SURFACE;
                 out += SHADOW_HELPERS;
             }
             StageKind::Material => {
@@ -576,4 +652,11 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
     push(file, pack.source(file).unwrap_or_default());
     push("<entries>", kind.entries());
     composed
+}
+
+/// Whether a material stage's `source` (with its prelude) calls `set_surface` itself, and so
+/// needs the surface target, which a pack without it doesn't pay for.
+pub fn calls_set_surface(source: &str) -> bool {
+    let call = "set_surface(";
+    source.matches(call).count() > MATERIAL_HELPERS.matches(call).count()
 }

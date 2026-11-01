@@ -63,6 +63,8 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
+        // The window answers this one itself, as it does a client mod's.
+        names.push(horizon_client::ram_limit::COMMAND);
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
@@ -1092,9 +1094,12 @@ impl Game<'_> {
         if self.ui.hide_gui && !focused {
             return;
         }
-        self.ui
-            .chat
-            .draw(batch, &self.gui.atlas, self.ticks, focused);
+        self.ui.chat.smooth = self.settings.extras.chat_animation;
+        self.ui.chat.hide_indicator = !self.settings.extras.chat_indicator;
+        // The fractional tick makes the smooth chat extra's slide move every
+        // frame; vanilla's fade reads it too.
+        let now = self.ticks as f32 + self.clock.fraction() as f32;
+        self.ui.chat.draw(batch, &self.gui.atlas, now, focused);
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
     /// event has one, the entity type and the UUID.
@@ -1421,9 +1426,7 @@ impl Game<'_> {
     }
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name.
     pub(super) fn take_screenshot(&mut self) {
-        let dir = std::env::current_dir()
-            .unwrap_or_default()
-            .join("screenshots");
+        let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
@@ -1555,6 +1558,17 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &command_export(&dir).unwrap()));
         assert!(command_export(&dir.join("missing")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ram_limit_command_is_known_to_the_chat_box() {
+        let reg = Registries::default();
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        assert!(vanilla.find(horizon_client::ram_limit::COMMAND).is_none());
+        let tree = with_native_commands(vanilla, &[horizon_client::ram_limit::COMMAND]);
+        for typed in ["ramlimit", "ramlimit 2048", "ramlimit off"] {
+            assert!(tree.parse(typed, &reg).executable().is_ok(), "{typed}");
+        }
     }
 
     /// A native mod's command is in the tree the chat box uses (#456): known
