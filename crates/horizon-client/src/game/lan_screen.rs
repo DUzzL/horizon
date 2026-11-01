@@ -1188,7 +1188,7 @@ impl Game<'_> {
         let PhysicalKey::Code(key) = event.physical_key else {
             return;
         };
-        let ctrl = self.keys.contains(&winit::keyboard::KeyCode::ControlLeft);
+        let ctrl = self.has_control_down_with_quirk();
         let shortcut = self.edit_shortcut(event);
         let types_text = self.types_text();
         let shift = self.has_shift_down();
@@ -1205,8 +1205,14 @@ impl Game<'_> {
                 None => {
                     let mut handled = false;
                     rules.edit(|b| handled = b.key(key, ctrl, false));
-                    if !handled && types_text {
-                        self.world_options_text(event.text.as_deref());
+                    // Only a key with text types: a `None` text is a
+                    // backspace to `world_options_text`, which is the
+                    // control socket's `\b`, not a key's.
+                    if !handled
+                        && types_text
+                        && let Some(text) = event.text.as_deref()
+                    {
+                        self.world_options_text(Some(text));
                     }
                 }
             }
@@ -1312,8 +1318,13 @@ impl Game<'_> {
                 o.port.shortcut(shortcut, &mut self.clipboard);
                 return;
             }
-            if !o.port.key(key, ctrl, false) && types_text {
-                self.world_options_text(event.text.as_deref());
+            // Only a key with text types (a `None` is a backspace to
+            // `world_options_text`, the control socket's `\b`).
+            if !o.port.key(key, ctrl, false)
+                && types_text
+                && let Some(text) = event.text.as_deref()
+            {
+                self.world_options_text(Some(text));
             }
             return;
         }

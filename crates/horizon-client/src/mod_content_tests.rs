@@ -528,7 +528,7 @@ fn content_root_loads_with_every_table() {
         BlockFacts::load_with_behaviours(&root, new, &shared_json).unwrap();
     let independent_behaviours = horizon_world::level::Behaviours::load(new, &root).unwrap();
     let (deferred_facts, gameplay) =
-        BlockFacts::load_with_projection(&root, new, &shared_json).unwrap();
+        BlockFacts::load_with_projection(&root, new, &shared_json, true).unwrap();
     let deferred_behaviours =
         horizon_world::level::Behaviours::load_with_gameplay(new, &root, &shared_json, &gameplay)
             .unwrap();
@@ -744,7 +744,7 @@ fn shared_behaviour_document_matches_independent_loaders() {
     let original = BlockFacts::load(&root, assets.registry).unwrap();
     let (shared, b) = BlockFacts::load_with_behaviours(&root, assets.registry, &doc).unwrap();
     let (deferred_facts, projection) =
-        BlockFacts::load_with_projection(&root, assets.registry, &doc).unwrap();
+        BlockFacts::load_with_projection(&root, assets.registry, &doc, true).unwrap();
     let deferred = horizon_world::level::Behaviours::load_with_gameplay(
         assets.registry,
         &root,

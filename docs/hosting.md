@@ -278,6 +278,15 @@ playhorizon.dev", and the console says which client it was. The check reads the 
 by (`minecraft:brand`), which any client can fake: it keeps out players who didn't install Horizon, not
 cheaters. The server's own checks (reach, movement) are what protect it.
 
+Horizon clients can get their far terrain (Video Settings → LOD Distance) from the server: set
+`horizon-lod-distance` under `[properties]` to how far, in chunks (1024 at most), and the server samples the
+tiles each player's client asks for out to there. It is off (0) by default: far tiles show the world's terrain
+far past the view distance, which helps players find the seed. A player's own LOD Distance applies when it is
+shorter. Each player may have 8 tiles waiting and ask for 64 a second on average, and one background thread
+samples them for everyone in turn, behind the ticks, so far terrain never slows the server down; a tile past the
+distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
+Tiles are sampled again for each player who asks (there is no cache yet). Vanilla clients never hear of it.
+
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600),
 then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
 the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
@@ -437,6 +446,27 @@ read when the server starts. To turn it off again, set `enable-rcon = false`: ta
 Where it differs from vanilla: a connection that hasn't logged in within 30 seconds is closed, at most 16 are open
 at once, and a command a client's TCP splits in two still works. A command shows as the console's (`Server`, not
 `Rcon`), and `broadcast-rcon-to-ops` isn't honoured yet.
+
+### Tools that read the query
+
+Server lists, status pages and monitoring tools (`mcstatus`, Prometheus exporters, hosting panels) often read the
+MOTD, the version and who is online through vanilla's GS4 query, a UDP port, and Horizon's server serves it. It's off
+by default; turn it on in `server.toml`:
+
+```toml
+[properties]
+enable-query = true
+"query.port" = 25565
+```
+
+It listens on UDP on the address `[server] bind` names (every address when it's empty), as vanilla's does: the same
+number as the game's TCP port is fine, they are different ports. The query tells anyone who can reach the port the
+player names and the version, and has no password: open the port only if you want that. As in vanilla, a port
+outside 1 to 65535 leaves it off with a warning in the log, and a port already in use is a warning too. The
+settings are read when the server starts. To turn it off again, set `enable-query = false`.
+
+Where it differs from vanilla: while the game isn't running (starting, restarting) nothing answers, and who is
+online is read from the game at most once a second.
 
 ## 7. Backups
 

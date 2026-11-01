@@ -7,7 +7,7 @@ use horizon_world::loot::PackOverlay;
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs,
     path::Path,
     sync::Arc,
@@ -374,7 +374,7 @@ pub struct Items {
     /// Item tags in vanilla's order (`TagLoader`: file order, nested tags in
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
-    loot: Arc<HashMap<String, Value>>,
+    loot: Arc<horizon_world::loot::LootTables>,
     /// The `jukebox_song` registry.
     pub songs: HashMap<String, Song>,
     /// The `instrument` registry (goat horns).
@@ -1043,7 +1043,7 @@ impl Items {
         table: &Value,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1236,7 +1236,7 @@ impl Items {
         let Some(table) = self.loot.get(id) else {
             return vec![];
         };
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1295,7 +1295,7 @@ impl Items {
         let Some(table) = self.loot.get(id) else {
             return vec![];
         };
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1318,7 +1318,7 @@ impl Items {
         let Some(table) = self.loot.get(&format!("minecraft:entities/{name}")) else {
             return vec![];
         };
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1365,7 +1365,7 @@ impl LootContext<'_> {
 struct LootContext<'a> {
     items: &'a Items,
     block: &'a str,
-    properties: &'a BTreeMap<String, String>,
+    properties: &'a horizon_world::chunk::BlockProperties,
     held: Option<&'a ItemStack>,
     killed_by_player: bool,
     /// `LootContextParams.EXPLOSION_RADIUS`: an explosion that decays drops.
@@ -1551,6 +1551,31 @@ impl LootContext<'_> {
             // does not have: held true (a double plant's other half is taken
             // as there). Unknown types fail, as in loot.rs.
             "minecraft:location_check" => true,
+            // A mod's own kind: the condition hook answers. This engine
+            // (block drops, entity drops, loot_table, interact_loot) has
+            // no LootStack, so the function hook isn't here yet.
+            k if !c.is_null() && k.contains(':') && !k.starts_with("minecraft:") => {
+                let ctx = horizon_world::loot::NativeLootContext {
+                    entity: None,
+                    damage: None,
+                    player: None,
+                    block: (!self.block.is_empty()).then_some(self.block),
+                    tool: self.held.map(|h| horizon_world::loot::NativeLootTool {
+                        item: h.item.to_string(),
+                        enchantments: h
+                            .enchantments()
+                            .iter()
+                            .map(|(id, lvl)| (id.to_string(), *lvl as i32))
+                            .collect(),
+                    }),
+                    luck: 0.0,
+                    biome: None,
+                    seed: random.next_long(),
+                };
+                let mut holds = false;
+                horizon_world::loot::native_loot_condition(k, c, &ctx, &mut holds);
+                holds
+            }
             _ => false,
         }
     }
@@ -2097,7 +2122,7 @@ mod tests {
     fn ctx<'a>(
         items: &'a Items,
         held: Option<&'a ItemStack>,
-        props: &'a BTreeMap<String, String>,
+        props: &'a horizon_world::chunk::BlockProperties,
         block: &'a str,
     ) -> LootContext<'a> {
         LootContext {
@@ -2111,10 +2136,32 @@ mod tests {
         }
     }
 
+    /// A mod's kind nobody claims fails; a reference by name isn't a kind,
+    /// and fails too.
+    #[test]
+    fn an_unclaimed_condition_of_a_mods_kind_fails() {
+        let items = Items::for_tests(HashMap::new());
+        let props = horizon_world::chunk::BlockProperties::new();
+        let table = |condition: Value| {
+            json!({"pools":[{"rolls":1,"entries":[
+                {"type":"minecraft:item","name":"minecraft:stone","condition":condition}]}]})
+        };
+        let mut random = LegacyRandom::new(7);
+        let mut drops = |condition: Value, block: &str| {
+            ctx(&items, None, &props, block)
+                .evaluate(&table(condition), &mut random)
+                .len()
+        };
+        assert_eq!(drops(json!({"type":"mymod:always"}), "minecraft:stone"), 0);
+        assert_eq!(drops(json!({"type":"mymod:always"}), ""), 0);
+        assert_eq!(drops(json!("mymod:always"), "minecraft:stone"), 0);
+        assert_eq!(drops(Value::Null, "minecraft:stone"), 1);
+    }
+
     #[test]
     fn fortune_silk_touch_and_looting() {
         let items = Items::for_tests(HashMap::new());
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let mut pick = ItemStack::new("minecraft:diamond_pickaxe", 1);
         pick.enchant("minecraft:fortune", 3);
         let ore = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:alternatives","children":[
@@ -2186,7 +2233,7 @@ mod tests {
     #[test]
     fn set_potion_gives_the_potion_its_contents() {
         let items = Items::for_tests(HashMap::new());
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:splash_potion",
             "modifier":{"type":"minecraft:set_potion","id":"minecraft:fire_resistance"}}]}]});
         let drops = ctx(&items, None, &props, "").evaluate(&table, &mut LegacyRandom::new(1));
@@ -2203,7 +2250,7 @@ mod tests {
         let Some(items) = super::prepared_items() else {
             return;
         };
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let mut random = LegacyRandom::new(11);
         // A sword at levels 20..39 comes out enchanted, as in an End city.
         let levels = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item",
@@ -2264,7 +2311,7 @@ mod tests {
         let Some(items) = super::prepared_items() else {
             return;
         };
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item",
             "name":"minecraft:book","modifier":[
             {"type":"minecraft:enchant_randomly","options":"minecraft:mending"},

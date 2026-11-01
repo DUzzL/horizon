@@ -6,7 +6,7 @@ use horizon_client::lan::hub::Hub;
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_protocol::{
-    entity_data::{Particle, ParticleData},
+    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData},
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -28,6 +28,7 @@ fn send_native_nearby(
     host: &LanHost,
     dimension: &str,
     packet: Vec<u8>,
+    horizon_only: bool,
     within_range: impl Fn([f64; 3]) -> bool,
 ) {
     for guest in host
@@ -36,8 +37,20 @@ fn send_native_nearby(
         .iter()
         .filter(|g| g.placed && g.dimension == dimension && within_range(g.position))
     {
+        // A vanilla client cannot decode a native mod's particle id; see
+        // `mod_particle_only_for_horizon`.
+        if horizon_only && guest.brand != "horizon" {
+            continue;
+        }
         guest.sender.send(packet.clone());
     }
+}
+
+/// A native mod's particle travels as `MOD_PARTICLE_ID` (-1) plus its name.
+/// Vanilla reads the id with `IdMap.byIdOrThrow`, which throws on -1 and
+/// drops the connection, so such a particle may only go to Horizon clients.
+fn mod_particle_only_for_horizon(particle: &Particle) -> bool {
+    matches!(particle.data, Some(ParticleData::Mod(_)))
 }
 
 /// One of a packet's `count` particles (`handleParticleEvent`): its position
@@ -108,6 +121,39 @@ pub(super) fn send_soul_particle(host: &super::lan::LanHost, at: [f64; 3], veloc
     }
 }
 
+/// `PowderSnowBlock.entityInside`'s `ServerLevel.sendParticles` of one
+/// snowflake (`count` 1, no spread, `RandomizationType.ALTERNATIVE`).
+pub(super) fn send_snowflake_particle(
+    host: &super::lan::LanHost,
+    at: [f64; 3],
+    velocity: [f64; 3],
+) {
+    let Some(id) = host
+        .hub
+        .registry_id("minecraft:particle_type", "minecraft:snowflake")
+    else {
+        return;
+    };
+    let packet = C::LevelParticles(play::LevelParticles {
+        particle: Particle { id, data: None },
+        override_limiter: false,
+        always_show: false,
+        pos: at,
+        dist: [0.0; 3],
+        max_speed: velocity.map(|v| v as f32),
+        count: 1,
+        randomization: 1,
+    });
+    for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+        let distance: f64 = (0..3)
+            .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
+            .sum();
+        if distance < 32.0 * 32.0 {
+            g.send(&packet);
+        }
+    }
+}
+
 impl Game<'_> {
     /// `SonicBoom.tick` uses `ServerLevel.sendParticles` for each ray point.
     /// Keep the local event's rendering; connected players receive one at rest.
@@ -152,6 +198,7 @@ impl Game<'_> {
         else {
             return;
         };
+        let horizon_only = mod_particle_only_for_horizon(&particle);
         let packet = C::LevelParticles(play::LevelParticles {
             particle,
             override_limiter: false,
@@ -163,6 +210,9 @@ impl Game<'_> {
             randomization: 0,
         });
         for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+            if horizon_only && g.brand != "horizon" {
+                continue;
+            }
             // ServerLevel compares the player's block centre, strictly within 32.
             let distance: f64 = (0..3)
                 .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
@@ -252,6 +302,13 @@ impl Game<'_> {
         options: &ParticleOptions,
         state: Option<BlockStateId>,
     ) -> Option<Particle> {
+        // A native mod's own type: no registry id, so the sentinel and the name.
+        if let Some(name) = &options.mod_particle {
+            return Some(Particle {
+                id: MOD_PARTICLE_ID,
+                data: Some(ParticleData::Mod(name.clone())),
+            });
+        }
         let name = format!("minecraft:{}", options.ty.name());
         let id = hub.registry_id("minecraft:particle_type", &name)?;
         use ParticleType as T;
@@ -292,6 +349,11 @@ impl Game<'_> {
         p: &Particle,
         at: [f64; 3],
     ) -> Option<ParticleOptions> {
+        if p.id == MOD_PARTICLE_ID
+            && let Some(ParticleData::Mod(name)) = &p.data
+        {
+            return Some(ParticleOptions::named(name.clone()));
+        }
         let name = self
             .remote
             .as_ref()?
@@ -434,6 +496,7 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
+        let horizon_only = mod_particle_only_for_horizon(&particle);
         let body = C::LevelParticles(play::LevelParticles {
             particle,
             override_limiter: false,
@@ -447,7 +510,7 @@ impl Game<'_> {
         .encode();
         // BlockPos.closerToCenterThan(at, 32): from the centre of the
         // player's block.
-        send_native_nearby(host, dimension, body, |position| {
+        send_native_nearby(host, dimension, body, horizon_only, |position| {
             let d: f64 = (0..3)
                 .map(|k| (position[k].floor() + 0.5 - at[k]).powi(2))
                 .sum();
@@ -480,7 +543,7 @@ impl Game<'_> {
                 )
                 .encode();
             let range = f64::from(sound.volume.max(1.0)) * 16.0;
-            send_native_nearby(host, sound.dimension, packet, |position| {
+            send_native_nearby(host, sound.dimension, packet, false, |position| {
                 let distance: f64 = (0..3).map(|k| (position[k] - sound.at[k]).powi(2)).sum();
                 distance <= range * range
             });

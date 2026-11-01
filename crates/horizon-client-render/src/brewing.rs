@@ -205,7 +205,9 @@ impl Brewing {
         }
         // The gate answers the merged file, as the crafting loader's does:
         // a false-conditioned pack file leaves the lower one gone too.
-        sources.retain(|(_, v)| conditions_hold(v));
+        // The data's recipe filters, over the final set.
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        sources.retain_mut(|(id, v)| conditions_hold(v) && filters.apply(id, v));
         sources.sort_by(|a, b| a.0.cmp(&b.0));
         let mut recipes = Vec::new();
         for (id, v) in sources {

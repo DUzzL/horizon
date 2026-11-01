@@ -234,6 +234,7 @@ pub const MATERIAL_INPUT: Struct = Struct {
         uv: "vec2<f32>" = "The texture coordinate inside the block atlas.",
         translucent: "bool" = "Drawn in the translucent pass (water, stained glass, ice).",
         tags: "u32" = "The pack's sprite tags this surface's sprite has: bit i for the manifest's i-th `[[tags]]`.",
+        material: "u32" = "The `[[materials]]` id of this surface's sprite (0 when no entry names it).",
         screen: "vec2<f32>" = "Where the point is on the screen, 0..1 from the top left (`opaque_depth` and `opaque_color` at `screen * frame.resolution`).",
         face: "u32" = "For a fluid, which face of the block the point is on, `Direction` order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. 0 elsewhere.",
         fluid: "u32" = "0 not a fluid, 1 water, 2 lava.",
@@ -261,6 +262,34 @@ pub const SKY_INPUT: Struct = Struct {
     fields: fields! {
         direction: "vec3<f32>" = "Unit view ray, camera-relative world axes.",
         color: "vec4<f32>" = "Vanilla's sky colour along the ray (sky, fog and sunrise).",
+    },
+};
+
+/// The vertex stage's input: one corner of a block's surface.
+pub const VERTEX_INPUT: Struct = Struct {
+    name: "VertexInput",
+    doc: "One corner of a block's surface, for `fn vertex(input: VertexInput) -> vec3<f32>`, which returns where it is drawn (camera-relative, in blocks; `input.position` where it stays).",
+    fields: fields! {
+        position: "vec3<f32>" = "The corner, camera-relative, in blocks (`+ frame.camera_position` for the world's).",
+        uv: "vec2<f32>" = "The texture coordinate inside the block's sprite.",
+        material: "u32" = "The `[[materials]]` id of the block's sprite (0 when none matches).",
+        light: "vec2<f32>" = "Block and sky light, 0..1.",
+        tint: "vec4<f32>" = "The vertex colour (biome tint, face shade, ambient occlusion); alpha 1.",
+        face: "u32" = "For a fluid, the face of the block the corner is on (as `MaterialInput.face`), else 0.",
+        fluid: "u32" = "1 on a fluid's surface (water or lava), else 0.",
+    },
+};
+
+/// The weather stage's input: one point of a rain or snow streak.
+pub const WEATHER_INPUT: Struct = Struct {
+    name: "WeatherInput",
+    doc: "One point of a rain or snow streak, for `fn weather(input: WeatherInput) -> vec4<f32>`, \
+          which returns the colour blended over the world (alpha its opacity).",
+    fields: fields! {
+        color: "vec4<f32>" = "The rain or snow texture's colour here times the streak's vertex colour (alpha 0.1..1).",
+        light: "vec2<f32>" = "Block and sky light, 0..1.",
+        position: "vec3<f32>" = "The point, camera-relative, in blocks.",
+        snow: "bool" = "A snow streak (rain otherwise).",
     },
 };
 
