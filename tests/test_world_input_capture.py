@@ -247,18 +247,21 @@ fn main() {
     // Grabbing and releasing put the pointer at the window's centre
     // (MouseHandler.grabMouse / releaseMouse), in the surface's pixels when it
     // has one; releasing an already released pointer leaves it where it is.
+    // Windows also warps before the Locked grab, which clips the pointer
+    // where it is (#6076).
+    let grab_warps = if cfg!(windows) { 2 } else { 1 };
     game.renderer = Some(Renderer { config: Config { width: 1000, height: 600 } });
     game.capture(true);
     assert!(game.captured);
     let window = game.window.as_ref().unwrap();
-    assert_eq!((window.warps.get(), window.at.get()), (1, (500.0, 300.0)));
+    assert_eq!((window.warps.get(), window.at.get()), (grab_warps, (500.0, 300.0)));
     game.capture(false);
     let window = game.window.as_ref().unwrap();
-    assert_eq!(window.warps.get(), 3);
+    assert_eq!(window.warps.get(), grab_warps + 2);
     assert_eq!(game.cursor, (250.0, 150.0));
     game.cursor = (1.0, 1.0);
     game.capture(false);
-    assert_eq!(game.window.as_ref().unwrap().warps.get(), 3);
+    assert_eq!(game.window.as_ref().unwrap().warps.get(), grab_warps + 2);
     assert_eq!(game.cursor, (1.0, 1.0));
     game.renderer = None;
     game.window.as_mut().unwrap().fail = true;

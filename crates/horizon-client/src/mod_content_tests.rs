@@ -389,7 +389,8 @@ fn ruby_mod(dir: &Path) -> ContentMod {
         (
             "data/ruby/horizon/block/ruby_block.json",
             r##"{"template": "minecraft:iron_block", "properties": {"hardness": 4.0, "light": 3,
-                "sounds": "minecraft:amethyst_block", "map_color": 28, "friction": 0.8},
+                "sounds": "minecraft:amethyst_block", "map_color": 28, "friction": 0.8,
+                "random_ticks": true},
                 "components": {"minecraft:max_stack_size": 16,
                     "minecraft:damage_resistant": {"types": "#minecraft:is_fire"}}}"##,
         ),
@@ -533,6 +534,12 @@ fn content_root_loads_with_every_table() {
         horizon_world::level::Behaviours::load_with_gameplay(new, &root, &shared_json, &gameplay)
             .unwrap();
     assert_eq!(shared_facts.states.len(), facts.states.len());
+    // `random_ticks` makes the block tick randomly although its template (iron) never does; the
+    // sections' counts read the same flag (`random_tick_candidate`).
+    assert!(independent_behaviours.is_randomly_ticking(ruby));
+    assert!(independent_behaviours.random_tick_candidate(ruby));
+    assert!(!independent_behaviours.is_randomly_ticking(iron));
+    assert!(deferred_behaviours.is_randomly_ticking(ruby));
     for state in [ruby, ruby_door, BlockStateId(n + 65)] {
         assert_eq!(shared_facts.get(state).hardness, facts.get(state).hardness);
         assert_eq!(
@@ -2667,6 +2674,24 @@ fn content_block_state_properties_are_validated() {
         Ok(_) => panic!("a shadowed template property was accepted"),
     };
     assert!(error.contains("axis is already on"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // A declared name that sorts before the template's `axis` would make the state table
+    // disagree with vanilla's order and stop the game at load: refused, naming the block.
+    let (base, mods) = block_base(
+        "block-name-order",
+        &[r#"{"template":"minecraft:test","state_properties":{"alpha":{"type":"boolean"}}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a property sorting before the template's was accepted"),
+    };
+    assert!(
+        error.contains("testmod:") && error.contains("alpha sorts before axis, a property of"),
+        "{error}"
+    );
+    assert!(!error.contains("  "), "one space between words: {error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 
