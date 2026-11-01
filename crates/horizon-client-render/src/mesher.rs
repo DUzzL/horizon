@@ -1414,19 +1414,28 @@ impl Mesher<'_> {
                 }
             }
         }
-        // Overlays: the face again, after it (equal depth passes), with an alpha cutout or
-        // translucent, tinted as their rule says.
+        // Overlays: the face again, after it (equal depth passes), tinted as their rule says.
+        // `layer=cutout` is an alpha cutout whatever the tile's alpha, but over a translucent
+        // face it must be in the translucent pass too, or the face would draw over it.
+        let face_translucent = face.translucent
+            || self
+                .translucent_layers
+                .get(face.layer as usize)
+                .copied()
+                .unwrap_or(false);
         for overlay in overlays.into_iter().flatten() {
             let tint = overlay.tint.and_then(|(index, block)| {
-                let info = block.map_or(state, |b| &self.tables.info[b as usize]);
+                let info = block
+                    .and_then(|b| self.tables.info.get(b as usize))
+                    .unwrap_or(state);
                 Self::tint(info, index, tints, pos)
             });
             let tile = TileLayer::Layer {
                 layer: overlay.layer,
-                translucent: overlay.translucent,
+                translucent: overlay.translucent || face_translucent,
                 opaque: false,
             };
-            self.quad(out, false, tile, vertices(tint).map(|c| c.0));
+            self.quad_as(out, false, tile, vertices(tint).map(|c| c.0), false);
         }
     }
     /// One terrain quad with sprite `tile`, in the pass its alpha needs (`solid_leaves`: no
@@ -1436,7 +1445,19 @@ impl Mesher<'_> {
         out: &mut SectionMesh,
         solid_leaves: bool,
         tile: TileLayer,
+        v: [TerrainVertex; 4],
+    ) {
+        self.quad_as(out, solid_leaves, tile, v, true);
+    }
+    /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
+    /// when `by_sprite`: an overlay's pass is its rule's.
+    fn quad_as(
+        &self,
+        out: &mut SectionMesh,
+        solid_leaves: bool,
+        tile: TileLayer,
         mut v: [TerrainVertex; 4],
+        by_sprite: bool,
     ) {
         let TileLayer::Layer {
             layer,
@@ -1450,11 +1471,12 @@ impl Mesher<'_> {
             out.note_sprite_layer(layer);
         }
         let translucent = translucent
-            || self
-                .translucent_layers
-                .get(usize::from(layer))
-                .copied()
-                .unwrap_or(false);
+            || by_sprite
+                && self
+                    .translucent_layers
+                    .get(usize::from(layer))
+                    .copied()
+                    .unwrap_or(false);
         // Quads over opaque texels draw in the solid layer: no alpha cutout (a dirt path's side
         // skips its clear top row). All four vertices share the layer.
         let layer = if opaque && !translucent || solid_leaves {

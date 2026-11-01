@@ -199,6 +199,48 @@ impl ConnectedTextures {
             rules,
             ..Self::default()
         };
+        let states: Vec<_> = states.collect();
+        // Each block's states, for `connectBlocks` and `tintBlock`.
+        let mut block_states: HashMap<&str, Vec<u32>> = HashMap::new();
+        if out.rules.iter().any(|r| r.rule.method.is_overlay()) {
+            for (id, state) in states.iter().enumerate() {
+                if let Some((name, _)) = state {
+                    block_states.entry(name).or_default().push(id as u32);
+                }
+            }
+        }
+        for r in out.rules.iter_mut().filter(|r| r.rule.method.is_overlay()) {
+            let rule = &r.rule;
+            // `connectBlocks` and `connectTiles` are "only for method overlay".
+            if rule.method == Method::Overlay {
+                for m in &rule.connect_blocks {
+                    let candidates = block_states
+                        .get(m.id.as_str())
+                        .map_or(&[][..], Vec::as_slice);
+                    r.overlay.states.extend(candidates.iter().filter(|&&id| {
+                        states[id as usize].is_some_and(|(name, props)| {
+                            m.matches(name, |k| props.get(k).map(String::as_str))
+                        })
+                    }));
+                }
+                r.overlay.states.sort_unstable();
+                r.overlay.states.dedup();
+                r.overlay.tiles = rule
+                    .connect_tiles
+                    .iter()
+                    .filter_map(|t| layer(&sprite_name(t)).map(|l| l as u16))
+                    .collect();
+                r.overlay.tiles.sort_unstable();
+            }
+            // A `tintBlock` the game doesn't have tints nothing.
+            let tint = match rule.tint_block.as_deref() {
+                None => Some(None),
+                Some(block) => block_states.get(block).map(|ids| Some(ids[0])),
+            };
+            r.overlay.tint = tint
+                .filter(|_| rule.tint_index >= 0)
+                .map(|b| (rule.tint_index, b));
+        }
         let mut blocks = HashMap::new();
         let mut by_layer: Vec<Vec<u16>> = Vec::new();
         // Block rules by the block each entry names, so a state tests only its own.
@@ -226,33 +268,6 @@ impl ConnectedTextures {
         for list in by_layer {
             let range = push_list(&mut out.lists, &list);
             out.by_layer.push(range);
-        }
-        let states: Vec<_> = states.collect();
-        for r in out.rules.iter_mut().filter(|r| r.rule.method.is_overlay()) {
-            let rule = &r.rule;
-            let matching = |m: &[horizon_optifine::BlockMatch], id: usize| {
-                states[id].is_some_and(|(name, props)| {
-                    m.iter()
-                        .any(|m| m.matches(name, |k| props.get(k).map(String::as_str)))
-                })
-            };
-            r.overlay.states = (0..states.len())
-                .filter(|&id| matching(&rule.connect_blocks, id))
-                .map(|id| id as u32)
-                .collect();
-            r.overlay.tiles = rule
-                .connect_tiles
-                .iter()
-                .filter_map(|t| layer(&sprite_name(t)).map(|l| l as u16))
-                .collect();
-            r.overlay.tiles.sort_unstable();
-            let tint_state = rule.tint_block.as_deref().and_then(|block| {
-                states
-                    .iter()
-                    .position(|s| s.is_some_and(|(name, _)| name == block))
-                    .map(|id| id as u32)
-            });
-            r.overlay.tint = (rule.tint_index >= 0).then_some((rule.tint_index, tint_state));
         }
         let mut list = Vec::new();
         for state in states {
@@ -518,6 +533,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(n, rule)| LoadedRule {
+                overlay: OverlayJoin::default(),
                 tiles: rule
                     .tiles
                     .iter()
@@ -879,6 +895,51 @@ mod tests {
             Some((Some((0, Some(3))), false)),
             "oak_log's first state is 3"
         );
+    }
+
+    #[test]
+    fn overlay_joins_layers_and_tints() {
+        let mut ctm = world(&[
+            (
+                "a.properties",
+                "matchBlocks=stone\nmethod=overlay\nconnectTiles=glass\ntiles=0-16\nlayer=translucent\ntintIndex=0\ntintBlock=no_such_block",
+            ),
+            (
+                "b.properties",
+                "matchBlocks=glass\nmethod=overlay_ctm\nconnectBlocks=stone\ntiles=0-46",
+            ),
+        ]);
+        // connectTiles joins neighbours showing a named sprite on the same side: the door to the
+        // north shows sprite 3 on top (`world` knows no glass sprite, so set both by hand).
+        let mut faces = vec![[9u16; 6]; 7];
+        faces[5][Face::Up as usize] = 3;
+        ctm.face_layers = faces;
+        ctm.rules[0].overlay.tiles = vec![3];
+        let mut got = Vec::new();
+        let door_north = |o: [i32; 3]| if o == [0, 0, -1] { 5 } else { 0 };
+        ctm.pick(
+            2,
+            7,
+            Face::Up,
+            [0, 64, 0],
+            door_north,
+            || None,
+            |o| got.push(o),
+        );
+        assert_eq!(
+            got,
+            [Overlay {
+                layer: 1015,
+                translucent: true,
+                // A tintBlock the game lacks tints nothing.
+                tint: None,
+            }]
+        );
+        // connectBlocks is only for `overlay`: overlay_ctm joins glass by `connect`, not stone.
+        let (layers, _) = overlays_in(&ctm, 1, Face::North, &[([-1, 0, 0], 2)]);
+        assert_eq!(layers, [2000]);
+        let (layers, _) = overlays_in(&ctm, 1, Face::North, &[([-1, 0, 0], 1)]);
+        assert_eq!(layers, [2001]);
     }
 
     #[test]
