@@ -8,6 +8,7 @@
 //! Written from OptiFine's public documentation of the file formats (and ETF's, for its additions
 //! to random entities); no mod's source was read.
 
+pub mod blink;
 pub mod emissive;
 pub mod matchers;
 pub mod paths;
