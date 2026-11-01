@@ -142,6 +142,9 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     Ok((info.width, info.height, rgba))
 }
 /// A PNG's width and height, from its header alone.
+/// The most texels of OptiFine random entity variants the entity atlas packs: 2048 rows of
+/// its 4096, which keeps the default atlas (4096x5120) under the 8192 rows many GPUs take.
+const RANDOM_TEXELS: u64 = 4096 * 2048;
 fn png_size(path: &Path) -> Option<(u32, u32)> {
     use std::io::Read;
     let mut header = [0u8; 24];
@@ -618,6 +621,21 @@ impl HudAtlas {
                 .cloned()
                 .collect();
             extra.sort();
+            // A pack's variants can't grow the shared atlas past what a GPU takes: those past
+            // the budget stay out (their mobs wear the texture itself), not the whole pack.
+            let mut texels = 0u64;
+            let before = extra.len();
+            extra.retain(|p| {
+                let (w, h) = png_size(p).unwrap_or((0, 0));
+                texels += u64::from(w) * u64::from(h);
+                texels <= RANDOM_TEXELS
+            });
+            if extra.len() < before {
+                log::warn!(
+                    "{} random entity textures left out of the atlas: past its budget",
+                    before - extra.len()
+                );
+            }
             files.extend(extra);
         }
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
@@ -2340,6 +2358,29 @@ mod tests {
         assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
         // Only entity textures: the mods' others reach the atlas through atlas definitions.
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+    /// OptiFine random entity variants outside `textures/` pack under the names
+    /// `RandomTextures` gives them; one beside its texture packs once, under its own.
+    #[test]
+    fn random_entity_variants_pack_under_their_scan_names() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-random-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let random = root.join("assets/minecraft/optifine/random/entity/pig");
+        fs::create_dir_all(&random).unwrap();
+        write_strip(&random.join("pig2.png"), 64, 64, &[[0, 200, 0, 255]], None);
+        let beside = root.join("assets/minecraft/textures/entity/cat");
+        fs::create_dir_all(&beside).unwrap();
+        fs::write(beside.join("cat.properties"), "textures.1=2").unwrap();
+        write_strip(&beside.join("cat.png"), 64, 32, &[[1, 1, 1, 255]], None);
+        write_strip(&beside.join("cat2.png"), 64, 32, &[[0, 0, 200, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["minecraft:optifine/random/entity/pig/pig2"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 200, 0, 255]);
+        let rect = atlas.sprites["entity/cat/cat2"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
+        assert!(atlas.random_textures.get("entity/pig/pig").is_some());
         fs::remove_dir_all(&root).unwrap();
     }
     #[test]
