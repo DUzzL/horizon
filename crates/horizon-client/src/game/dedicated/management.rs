@@ -49,6 +49,27 @@ impl Game<'_> {
         let entries = body["entries"].as_array().cloned().unwrap_or_default();
         let lists = state.lists.clone();
         match body["method"].as_str().unwrap_or_default() {
+            "serversettings/motd" => {
+                return json!({
+                    "value": self.lan.as_ref().map(|lan| lan.hub.lan.shared.motd()).unwrap_or_default()
+                });
+            }
+            "serversettings/motd/set" => {
+                let Some(value) = body["value"].as_str() else {
+                    return json!({ "error": "MOTD must be a string" });
+                };
+                if let Some(lan) = &self.lan {
+                    rpc(format!(
+                        "Update MOTD from '{}' to '{}'",
+                        lan.hub.lan.shared.motd(),
+                        value
+                    ));
+                    lan.hub.lan.shared.set_motd(value.to_owned());
+                }
+                // DedicatedServer.setMotd: server.properties keeps it too.
+                self.store_property("motd", value.to_owned());
+                return json!({ "value": value });
+            }
             "serversettings/difficulty" => {
                 return json!({ "value": DIFFICULTIES[self.level.difficulty_id() as usize] });
             }
