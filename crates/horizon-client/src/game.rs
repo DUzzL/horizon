@@ -3210,7 +3210,8 @@ impl Game<'_> {
         gliding_pieces(self.res.items(), &self.armor).contains(&true)
     }
     /// `LivingEntity.updateFallFlying`: the glide's wear. `Util.getRandom`
-    /// picks one of the gliders that will not break, and
+    /// picks one of the gliders that will not break (from the entity's own
+    /// random), and
     /// `ItemStack.hurtAndBreak` takes `points` of its durability (Unbreaking
     /// may save it). Callers skip creative.
     pub(super) fn wear_glider(&mut self, points: u32) {
@@ -3219,10 +3220,9 @@ impl Game<'_> {
         if pieces.is_empty() {
             return;
         }
-        let pick = self
-            .particles
-            .level_random()
-            .next_int_bound(pieces.len() as i32);
+        // `Util.getRandom(slotsWithGliders, this.random)`: the entity's own
+        // random, which never touches the level's stream.
+        let pick = dispenser::entity_random().next_int_bound(pieces.len() as i32);
         let pick = pieces[pick.unwrap_or(0) as usize];
         if let Some(stack) = self.armor[pick].clone() {
             let loss = self.wear(&stack, points);
