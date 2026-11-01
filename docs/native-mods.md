@@ -1269,6 +1269,26 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
 - It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
   loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
 
+### Bulk block edits
+
+`crates/horizon-client/src/game/native_world_edit.rs`: a helper for server mods, for the level in place, on a server only.
+It names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_edit_blocks(dimension, edit)` makes many blocks at once: `NativeBlockEdit` holds a `palette` of block states and
+  a list of `filters` (block predicates, `#minecraft:logs`), both written as commands write them, and `runs`, each
+  `height` blocks up column (`x`, `z`) from `y`, set to palette entry `block`, only where filter `only` passes the block
+  there. With `surface` (`NativeHeightmap`: `WorldSurface`, `MotionBlocking`, `MotionBlockingNoLeaves` or `OceanFloor`),
+  `y` counts from that height of the column, read once a column before anything changes. Runs are made in order, each
+  seeing the changes of those before it.
+- The blocks go straight into the chunks, a section packed once however many of its blocks change, as `fill ... strict`
+  does: no neighbour is told, nothing drops, and no block updates or ticks; light is worked out again for the chunks
+  changed, and they go to the players whole. A block replaced by another loses its block entity, and a new block gets
+  the one `native_set_block` would give it (a mod block's own, API 15, included).
+- It answers the number of blocks changed. Runs in chunks that aren't loaded, and the parts of runs outside the level's
+  height, are left out. It answers `Err`, changing nothing, on a client, for another dimension, a palette entry or filter
+  that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
+  the end, or more than 65536 filters.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the

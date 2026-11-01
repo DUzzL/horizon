@@ -2162,26 +2162,12 @@ impl Game<'_> {
     }
     /// BlockPredicateArgument test.
     fn block_matches(&self, b: &BlockInput, state: BlockStateId) -> bool {
-        let Some(s) = self.pack.assets.registry.state(state) else {
-            return false;
-        };
-        let name_ok = if b.tag {
-            let tag = b.id.trim_start_matches("minecraft:");
-            self.res
-                .items()
-                .block_tags
-                .get(tag)
-                .or_else(|| self.items().block_tags.get(&b.id))
-                .is_some_and(|set| {
-                    set.contains(&s.name) || set.contains(s.name.trim_start_matches("minecraft:"))
-                })
-        } else {
-            s.name == b.id
-        };
-        name_ok
-            && b.properties
-                .iter()
-                .all(|(k, v)| s.properties.get(k) == Some(v))
+        block_input_matches(
+            self.pack.assets.registry,
+            [&self.res.items().block_tags, &self.items().block_tags],
+            b,
+            state,
+        )
     }
     /// Place a state like BlockInput.place: false when nothing changed.
     pub(super) fn place_state(
@@ -3585,6 +3571,35 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     }
     out.push(&s[start..]);
     out
+}
+
+/// BlockPredicateArgument test, against the registry and the block tags:
+/// a `#tag` is looked up by its path in `tags[0]`, then by its whole id in
+/// `tags[1]` (as `Game::block_matches` reads them).
+pub(super) fn block_input_matches(
+    registry: &horizon_world::registry::BlockRegistry,
+    tags: [&std::collections::HashMap<String, std::collections::HashSet<String>>; 2],
+    b: &BlockInput,
+    state: BlockStateId,
+) -> bool {
+    let Some(s) = registry.state(state) else {
+        return false;
+    };
+    let name_ok = if b.tag {
+        let tag = b.id.trim_start_matches("minecraft:");
+        tags[0]
+            .get(tag)
+            .or_else(|| tags[1].get(&b.id))
+            .is_some_and(|set| {
+                set.contains(&s.name) || set.contains(s.name.trim_start_matches("minecraft:"))
+            })
+    } else {
+        s.name == b.id
+    };
+    name_ok
+        && b.properties
+            .iter()
+            .all(|(k, v)| s.properties.get(k) == Some(v))
 }
 
 #[cfg(test)]
