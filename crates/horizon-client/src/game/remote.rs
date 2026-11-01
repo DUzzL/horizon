@@ -5464,6 +5464,9 @@ impl Game<'_> {
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
     pub(super) fn tick_remote(&mut self) -> Result<()> {
         self.tick_remote_level()?;
+        // The rockets boosting this player tick after it, also while it waits
+        // for chunks.
+        self.tick_own_rockets();
         // Client mods tick on any server, single player's own included.
         self.native_net.to_server = 0;
         self.native_tick();
@@ -7215,7 +7218,7 @@ impl Game<'_> {
                 self.with_hand(hand, Game::swing_arm);
                 return true;
             } else if let Some(stack) = held.as_ref()
-                && (self.predict_item_on_block(stack, &hit)
+                && (self.predict_item_on_block(stack, &hit, hand)
                     || self.predict_map_on_banner(stack, &hit))
             {
                 // Item.useOn succeeded here (InteractionResult.SUCCESS):
@@ -7281,9 +7284,26 @@ impl Game<'_> {
     /// `playSound(player, ...)`: the server sends them to the others only):
     /// honeycomb waxing copper, and an axe, hoe or shovel transforming a
     /// block (stripping, scraping, removing wax, tilling, making a path).
-    /// A cushion succeeds where it may be placed and spawns on the server.
+    /// A cushion succeeds where it may be placed and spawns on the server, a
+    /// firework rocket wherever it may be used, and the server launches it.
     /// Whether the item's use succeeded, which ends the click.
-    fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
+    fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit, hand: Hand) -> bool {
+        // FireworkRocketItem.useOn: SUCCESS on the client too, so neither
+        // UseItem nor the off hand follows. It passes while gliding (the use
+        // boosts instead), cooling down (MultiPlayerGameMode.performUseItemOn
+        // skips useOn) and in adventure mode off its can_place_on
+        // (ItemStack.useOn).
+        if &*stack.item == "minecraft:firework_rocket" {
+            let cooling = self.items().get(&stack.item).is_some_and(|info| {
+                let group = horizon_client::cooldowns::group(stack, info.use_cooldown.as_ref());
+                self.cooldowns.is_on_cooldown(&group)
+            });
+            let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
+            return !cooling
+                && !gliding
+                && (self.may_build()
+                    || self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos)));
+        }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
             f64::from(hit.pos[1]) + 0.5,
@@ -7758,6 +7778,12 @@ impl Game<'_> {
             return false;
         }
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
+        // FireworkRocketItem.use while gliding: SUCCESS (SwingSource.PREDICTED),
+        // so startUseItem swings this hand itself; a vanilla server swings it
+        // for the other players only.
+        if gliding && &*held.item == "minecraft:firework_rocket" {
+            self.with_hand(hand, Game::swing_arm);
+        }
         // A stack's own `blocks_attacks` raises it as a shield's does.
         let blocks = self.blocks_attacks(&held).is_some();
         let ends = use_ends_click(&info, gliding) || blocks;
