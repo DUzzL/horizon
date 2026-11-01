@@ -1388,9 +1388,15 @@ impl Mesher<'_> {
     }
 }
 /// The vertex at `(s, t)` across a quad's corners (`s` from corner 0 to 1, `t` from 0 to 3),
-/// with its UV in sprite units: a quarter of a `ctm_compact` face.
+/// with its UV in sprite units: a quarter of a `ctm_compact` face. Blended within the quad's
+/// two triangles (0-1-2 and 0-2-3), as the GPU blends the whole quad, so a split face shades
+/// like an unsplit one.
 fn bilinear(c: &[(TerrainVertex, [f32; 2]); 4], s: f32, t: f32) -> (TerrainVertex, [f32; 2]) {
-    let w = [(1.0 - s) * (1.0 - t), s * (1.0 - t), s * t, (1.0 - s) * t];
+    let w = if s >= t {
+        [1.0 - s, s - t, t, 0.0]
+    } else {
+        [1.0 - t, 0.0, s, t - s]
+    };
     let mix = |f: &dyn Fn(&(TerrainVertex, [f32; 2])) -> f32| {
         (0..4).map(|i| w[i] * f(&c[i])).sum::<f32>()
     };
@@ -1416,7 +1422,7 @@ mod quarter_tests {
     use super::*;
 
     #[test]
-    fn quarters_blend_the_corners() {
+    fn quarters_blend_the_corners_by_triangle() {
         let corner = |pos: [f32; 3], uv: [f32; 2], red: u32, sky: u16| {
             (TerrainVertex::new(pos, uv, 0, 0xFF00_0000 | red, sky), uv)
         };
@@ -1431,6 +1437,9 @@ mod quarter_tests {
         assert_eq!(uv, [0.5, 0.5]);
         assert_eq!(centre.color, 0xFF00_0000 | 100);
         assert_eq!(centre.light, 16);
+        // On the 0-2 diagonal only corners 0 and 2 count, as in the GPU's triangles.
+        let (diagonal, _) = bilinear(&c, 0.25, 0.25);
+        assert_eq!(diagonal.color & 255, 50);
         let (edge, _) = bilinear(&c, 0.5, 0.0);
         assert_eq!(
             (edge.pos, edge.color & 255, edge.light),
