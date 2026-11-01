@@ -1,7 +1,7 @@
 //! A content mod's `assets/` and `data/` (API 0.2, docs/modpacks.md): the
 //! files it adds to the game's resource tree, and the blocks, items, mob
-//! effects and entity types it declares in
-//! `data/<id>/horizon/{block,item,mob_effect,entity_type}/`.
+//! effects, entity types and menu types it declares in
+//! `data/<id>/horizon/{block,item,mob_effect,entity_type,menu}/`.
 //!
 //! Content is data, not code: nothing here runs in the sandbox. What a mod
 //! may add is fenced instead. Its own namespaces (its id and the ones its
@@ -276,6 +276,31 @@ pub struct EntityType {
     pub damage: f32,
 }
 
+/// a menu type the mod adds (vanilla's `MenuType`, NeoForge's
+/// `IMenuTypeExtension.create`): its container's slot count, the
+/// `ContainerData` count its menu syncs, and its take-only slots
+/// (`FurnaceResultSlot.mayPlace`). The slots come first in the menu, then the
+/// player's 36, and a mod screen (`native_screen`) places them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuType {
+    /// `<mod id>:<path>`.
+    #[serde(skip)]
+    pub id: String,
+    /// 1 to [`MAX_MENU_SLOTS`].
+    pub slots: u16,
+    /// 0 to [`MAX_MENU_SLOTS`].
+    #[serde(default)]
+    pub data_slots: u16,
+    /// slots a player takes from but never puts into, each below `slots`.
+    #[serde(default)]
+    pub results: Vec<u16>,
+}
+
+/// the most container or data slots a mod menu type has, as many as a mod
+/// container (`native_block_entity_container`) may.
+pub const MAX_MENU_SLOTS: u16 = 256;
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
@@ -294,6 +319,7 @@ pub struct Content {
     /// Its creative inventory tabs, by id.
     pub creative_tabs: Vec<CreativeTab>,
     pub entity_types: Vec<EntityType>,
+    pub menu_types: Vec<MenuType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -383,6 +409,7 @@ impl Content {
             effects: Vec::new(),
             creative_tabs: Vec::new(),
             entity_types: Vec::new(),
+            menu_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest)?;
@@ -428,6 +455,7 @@ impl Content {
         let mut effects = Vec::new();
         let mut tabs = Vec::new();
         let mut types = Vec::new();
+        let mut menus = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -448,7 +476,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items, mob effects and entity types are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -474,9 +502,11 @@ impl Content {
                 tabs.push((tab, name.clone()));
             } else if let Some(kind) = parse("entity_type") {
                 types.push((kind, name.clone()));
+            } else if let Some(menu) = parse("menu") {
+                menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/ and entity_type/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
@@ -599,6 +629,28 @@ impl Content {
                 return Err(format!("{name}: damage is 0 or more"));
             }
             self.entity_types.push(EntityType { id: kind, ..file });
+        }
+        for (menu, name) in menus {
+            let file: MenuType =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !(1..=MAX_MENU_SLOTS).contains(&file.slots) || file.data_slots > MAX_MENU_SLOTS {
+                return Err(format!(
+                    "{name}: slots is 1 to {MAX_MENU_SLOTS}, data_slots 0 to {MAX_MENU_SLOTS}"
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            for &r in &file.results {
+                if r >= file.slots {
+                    return Err(format!(
+                        "{name}: result {r} is past the last slot, {}",
+                        file.slots - 1
+                    ));
+                }
+                if !seen.insert(r) {
+                    return Err(format!("{name}: result {r} is listed twice"));
+                }
+            }
+            self.menu_types.push(MenuType { id: menu, ..file });
         }
         Ok(())
     }
@@ -943,6 +995,52 @@ capabilities = ["registries"]
         ] {
             let files: &[(&str, &[u8])] =
                 &[("data/ruby/horizon/mob_effect/a.json", file.as_bytes())];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+    }
+
+    #[test]
+    fn menu_types_take_slots_data_slots_and_results() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/menu/press.json",
+                br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
+            ),
+            ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+        ];
+        let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
+        let menus: Vec<_> = content
+            .menu_types
+            .iter()
+            .map(|m| (m.id.as_str(), m.slots, m.data_slots, m.results.clone()))
+            .collect();
+        assert_eq!(
+            menus,
+            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+        );
+        for (case, file, why) in [
+            ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
+            ("menu-large", r#"{"slots": 257}"#, "slots is 1 to 256"),
+            (
+                "menu-data",
+                r#"{"slots": 1, "data_slots": 257}"#,
+                "data_slots 0 to 256",
+            ),
+            (
+                "menu-result",
+                r#"{"slots": 3, "results": [3]}"#,
+                "result 3 is past the last slot, 2",
+            ),
+            (
+                "menu-twice",
+                r#"{"slots": 3, "results": [1, 1]}"#,
+                "result 1 is listed twice",
+            ),
+            ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
+        ] {
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];
             let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
         }

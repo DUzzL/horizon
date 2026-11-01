@@ -80,6 +80,9 @@ pub(super) struct CombatTracker {
     pending: Vec<(String, (u32, Text), Option<Text>)>,
     /// `pending` for a direct entity with no causing entity: only its name.
     pending_direct: Vec<(String, Text)>,
+    /// The lengths of `pending` and `pending_direct` before the first
+    /// attacker noted for the hurt being dealt now (`forget_noted`).
+    noted_since: Option<(usize, usize)>,
     /// `LivingEntity.lastHurtByMob` and its timestamp (the kill credit).
     last_hurt_by: Option<((u32, Text), i64)>,
     /// The mob the player last hurt (`getLastHurtMob`) and when.
@@ -91,6 +94,12 @@ pub(super) struct CombatTracker {
     /// known (`AbstractArrow.onHitEntity` makes an ownerless arrow its own
     /// cause).
     pub(super) projectile_direct: Option<Text>,
+    /// The player whose primed TNT is going off now (`PrimedTnt.getOwner`):
+    /// its entity id and display name, the blast's causing entity.
+    pub(super) blast_owner: Option<(u32, Text)>,
+    /// The guest behind `blast_owner`, when that player is a LAN guest; the
+    /// host's own blast leaves it None.
+    pub(super) blast_guest: Option<u32>,
     pub(super) projectile_attacker: Option<(u32, Text)>,
     /// The projectile hitting the player now is another player's that
     /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).
@@ -145,6 +154,23 @@ pub(super) struct CombatTracker {
     /// end of the last one).
     fall_before: f64,
 }
+impl CombatTracker {
+    fn mark(&mut self) {
+        let marks = (self.pending.len(), self.pending_direct.len());
+        self.noted_since.get_or_insert(marks);
+    }
+    /// The player's hurt is over: when a native mod canceled it, the
+    /// attackers noted for it go, as no combat entry takes them and the next
+    /// hit of the same damage type must not be credited to them.
+    pub(super) fn forget_noted(&mut self, canceled: bool) {
+        if let Some((attackers, directs)) = self.noted_since.take()
+            && canceled
+        {
+            self.pending.truncate(attackers);
+            self.pending_direct.truncate(directs);
+        }
+    }
+}
 impl Game<'_> {
     /// `LivingEntity.makeDrownParticles`: eight bubbles around the entity,
     /// moving with it.
@@ -197,18 +223,6 @@ impl Game<'_> {
             self.note_named_attacker(damage_type, mob, name);
         }
     }
-    /// How many attackers wait for the damage they caused, for
-    /// [`Game::drop_pending_since`].
-    pub(super) fn pending_marks(&self) -> (usize, usize) {
-        (self.combat.pending.len(), self.combat.pending_direct.len())
-    }
-    /// Forgets the attackers noted since `marks`: their hit didn't land (a
-    /// native mod canceled it), so no combat entry takes them, and the next
-    /// hit of the same damage type must not be credited to them.
-    pub(super) fn drop_pending_since(&mut self, marks: (usize, usize)) {
-        self.combat.pending.truncate(marks.0);
-        self.combat.pending_direct.truncate(marks.1);
-    }
     /// `note_attacker` for an entity that is not one of `self.mobs` (the
     /// ender dragon).
     pub(super) fn note_named_attacker(&mut self, damage_type: &str, id: u32, name: Text) {
@@ -223,6 +237,7 @@ impl Game<'_> {
         name: Text,
         item: Option<Text>,
     ) {
+        self.combat.mark();
         self.combat
             .pending
             .push((damage_type.to_owned(), (id, name), item));
@@ -231,6 +246,7 @@ impl Game<'_> {
     /// nothing caused it (a splash potion nobody threw): the death message
     /// names it instead (`getLocalizedDeathMessage`). It is no kill credit.
     pub(super) fn note_direct_entity(&mut self, damage_type: &str, name: Text) {
+        self.combat.mark();
         self.combat
             .pending_direct
             .push((damage_type.to_owned(), name));
@@ -314,6 +330,7 @@ impl Game<'_> {
         }
         self.combat.pending.clear();
         self.combat.pending_direct.clear();
+        self.combat.noted_since = None;
         self.combat.projectile_direct = None;
         self.combat.projectile_attacker = None;
         self.combat.fall_before = self.player.as_ref().map_or(0.0, |p| p.fall_distance);
@@ -741,7 +758,43 @@ mod held_item_tests {
         assert!(!has_custom_name(&gone));
     }
 }
+#[cfg(test)]
+mod noted_tests {
+    use super::CombatTracker;
+    use horizon_client::text::Text;
 
+    /// A canceled hit forgets what was noted for it, also before its hurt
+    /// started (a PvP blow, `/damage`), and nothing a landed hit noted.
+    #[test]
+    fn a_canceled_hit_forgets_only_its_own_attackers() {
+        let mut c = CombatTracker::default();
+        let arrow = |c: &mut CombatTracker, id| {
+            c.mark();
+            c.pending.push((
+                "minecraft:arrow".into(),
+                (id, Text::literal("skeleton")),
+                None,
+            ));
+        };
+        arrow(&mut c, 1);
+        c.forget_noted(false);
+        arrow(&mut c, 2);
+        c.mark();
+        c.pending_direct
+            .push(("minecraft:arrow".into(), Text::literal("arrow")));
+        c.forget_noted(true);
+        assert_eq!(c.pending.iter().map(|p| p.1.0).collect::<Vec<_>>(), [1]);
+        assert!(c.pending_direct.is_empty());
+        // A hit noted and landed, then one noted and canceled: the landed
+        // one keeps its attacker.
+        c.forget_noted(false);
+        arrow(&mut c, 3);
+        c.forget_noted(false);
+        arrow(&mut c, 4);
+        c.forget_noted(true);
+        assert_eq!(c.pending.iter().map(|p| p.1.0).collect::<Vec<_>>(), [1, 3]);
+    }
+}
 #[cfg(test)]
 mod stuck_tests {
     use super::Stuck;

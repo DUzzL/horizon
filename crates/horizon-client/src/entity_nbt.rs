@@ -355,6 +355,7 @@ pub fn mob_to_nbt(
         ),
         ("Air", Tag::Short(m.air as i16)),
         ("Health", Tag::Float(m.health.max(0.0).to_bits())),
+        ("AbsorptionAmount", Tag::Float(m.absorption.to_bits())),
         (
             "HurtTime",
             Tag::Short(m.hurt_time.clamp(0, i32::from(i16::MAX)) as i16),
@@ -511,6 +512,10 @@ pub fn mob_to_nbt(
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
+        // Animal.addAdditionalSaveData: the player who fed it.
+        if let Some(cause) = m.extra.love_cause {
+            map.insert("LoveCause".into(), Tag::IntArray(cause.to_vec()));
+        }
     }
     let species = m.species();
     // MushroomCow saves its variant under `Type` (below), not `variant`.
@@ -538,7 +543,15 @@ pub fn mob_to_nbt(
         "minecraft:fox" => {
             let kind = if m.extra.variant == 1 { "snow" } else { "red" };
             map.insert("Type".into(), string(kind));
-            map.entry("Trusted".into()).or_insert(Tag::List(Vec::new()));
+            // The trusted UUIDs (`Fox.TRUSTED_LIST_CODEC`: a list of int arrays).
+            map.insert(
+                "Trusted".into(),
+                Tag::List(
+                    crate::mobs::fox::trusted_entities(m)
+                        .map(|uuid| Tag::IntArray(uuid.to_vec()))
+                        .collect(),
+                ),
+            );
             for (key, bit) in [
                 ("Sleeping", crate::mobs::fox::SLEEPING),
                 ("Sitting", crate::mobs::fox::SITTING),
@@ -575,7 +588,10 @@ pub fn mob_to_nbt(
         // Rabbit.addAdditionalSaveData (the legacy id; 99 is the killer bunny).
         "minecraft:rabbit" => {
             map.insert("RabbitType".into(), Tag::Int(i32::from(m.extra.variant)));
-            map.entry("MoreCarrotTicks".into()).or_insert(Tag::Int(0));
+            map.insert(
+                "MoreCarrotTicks".into(),
+                Tag::Int(m.extra.more_carrot_ticks),
+            );
         }
         "minecraft:goat" => {
             map.insert(
@@ -1382,6 +1398,7 @@ pub fn mob_from_nbt(
                 "minecraft:max_health" => m.attrs.max_health = v as f32,
                 "minecraft:movement_speed" => m.attrs.speed = v,
                 "minecraft:attack_damage" => m.attrs.attack_damage = v as f32,
+                "minecraft:attack_knockback" => m.attrs.attack_knockback = v,
                 _ => {}
             }
         }
@@ -1392,6 +1409,9 @@ pub fn mob_from_nbt(
         add_modifier(&mut m, Attr::FollowRange, id, bonus, Op::AddMultipliedBase);
     }
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
+    m.absorption = float(tag.get("AbsorptionAmount"))
+        .map_or(0.0, |h| h as f32)
+        .max(0.0);
     // LivingEntity.setHealth clamps to the max health: a horse or llama is made
     // with the type's and saved before it drops to the one it rolled. (Only
     // the base is read here, so the clamp would cut a leader zombie's bonus.)
@@ -1486,6 +1506,8 @@ pub fn mob_from_nbt(
     }
     if is_animal(&m.kind.id) {
         m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
+        // Animal.readAdditionalSaveData: the player who fed it into love.
+        m.extra.love_cause = crate::save::uuid_from_tag(tag.get("LoveCause"));
     }
     m.name_visible = flag(tag, "CustomNameVisible");
     m.no_ai = flag(tag, "NoAI");
@@ -1615,6 +1637,17 @@ pub fn mob_from_nbt(
     match m.species() {
         crate::mobs::Species::Fox => {
             m.extra.variant = u8::from(text(tag.get("Type")).as_deref() == Some("snow"));
+            // Fox.readAdditionalSaveData: clearTrusted, then addTrustedEntity for
+            // each of "Trusted".
+            crate::mobs::fox::clear_trusted(&mut m);
+            if let Some(Tag::List(trusted)) = tag.get("Trusted") {
+                for uuid in trusted
+                    .iter()
+                    .filter_map(|t| crate::save::uuid_from_tag(Some(t)))
+                {
+                    crate::mobs::fox::add_trusted_entity(&mut m, uuid);
+                }
+            }
             // Fox.readAdditionalSaveData: the sleeping, sitting and crouching flags.
             for (key, bit) in [
                 ("Sleeping", crate::mobs::fox::SLEEPING),
@@ -1655,6 +1688,10 @@ pub fn mob_from_nbt(
             m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
         }
         _ => {}
+    }
+    // `Rabbit.readAdditionalSaveData`.
+    if m.species() == crate::mobs::Species::Rabbit {
+        m.extra.more_carrot_ticks = number(tag.get("MoreCarrotTicks")).unwrap_or(0) as i32;
     }
     // `Ocelot.readAdditionalSaveData`.
     if m.species() == crate::mobs::Species::Ocelot {
@@ -1987,6 +2024,28 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
     }
     tag
 }
+/// `PrimedTnt.addAdditionalSaveData`: its `fuse`.
+pub fn tnt_to_nbt(
+    position: Vec3,
+    motion: Vec3,
+    on_ground: bool,
+    fuse: i32,
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+) -> Tag {
+    let mut tag = Base {
+        id: "minecraft:tnt",
+        uuid,
+        position,
+        motion,
+        rotation: [0.0, 0.0],
+        on_ground,
+        fall_distance: 0.0,
+    }
+    .tag(raw);
+    put(&mut tag, "fuse", Tag::Short(fuse as i16));
+    tag
+}
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
@@ -2255,10 +2314,21 @@ const THROWABLES: [(ProjectileKind, &str); 3] = [
     (ProjectileKind::EnderPearl, "minecraft:ender_pearl"),
 ];
 fn throwable_item(kind: &ProjectileKind) -> Option<&'static str> {
+    if let ProjectileKind::Thrown(t) = kind {
+        return Some(t.item);
+    }
     THROWABLES
         .iter()
         .find(|(k, _)| k == kind)
         .map(|&(_, id)| id)
+}
+
+/// The thrown kind an entity id names: vanilla's, or a content mod's type.
+pub fn throwable_kind(id: &str) -> Option<ProjectileKind> {
+    match THROWABLES.iter().find(|(_, i)| *i == id) {
+        Some((kind, _)) => Some(kind.clone()),
+        None => crate::projectiles::thrown_type(id).map(ProjectileKind::Thrown),
+    }
 }
 
 /// Whether its chunk saves it: the kinds `arrow_to_nbt`, `fireball_to_nbt`
@@ -2291,6 +2361,10 @@ pub fn throwable_to_nbt(
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    // Entity.saveWithoutId writes NoGravity only when set.
+    if p.no_gravity {
+        put(&mut tag, "NoGravity", Tag::Byte(1));
+    }
     // the loaded item stays (a blue egg's, a renamed one's).
     if tag.get("Item").is_none() {
         put(
@@ -2305,8 +2379,7 @@ pub fn throwable_to_nbt(
 /// `ThrowableItemProjectile.readAdditionalSaveData` for the kinds
 /// [`throwable_to_nbt`] writes; the owner is the player when it is theirs.
 pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
-    let id = kind(tag)?;
-    let (kind, _) = THROWABLES.iter().find(|(_, i)| *i == id)?.clone();
+    let kind = throwable_kind(&kind(tag)?)?;
     let owner = owner_uuid(tag);
     let from_player = player.is_some() && owner == player;
     let mut p = Projectile::new(kind, position(tag)?, from_player.then_some(Who::Player));
@@ -2314,6 +2387,7 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
+    p.no_gravity = flag(tag, "NoGravity");
     Some(p)
 }
 
@@ -3626,6 +3700,34 @@ mod sheep_nbt_tests {
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
     }
 
+    /// `Rabbit.addAdditionalSaveData` and `readAdditionalSaveData`: `MoreCarrotTicks`.
+    #[test]
+    fn a_rabbit_keeps_how_full_of_carrots_it_is() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            Arc::new(data.types["minecraft:rabbit"].clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        m.extra.more_carrot_ticks = 33;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("MoreCarrotTicks")), Some(33));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.more_carrot_ticks, 33);
+    }
+
     /// `Ocelot.addAdditionalSaveData` and `readAdditionalSaveData`: `Trusting`.
     #[test]
     fn an_ocelot_keeps_its_trust() {
@@ -4253,6 +4355,22 @@ mod fireball_nbt_tests {
         assert_eq!(number(tag.get("HasBeenShot")), Some(0));
         let wind = Projectile::new(ProjectileKind::WindCharge, Vec3::ZERO, None);
         assert!(throwable_to_nbt(&wind, [1; 4], None, None).is_none());
+        // NoGravity is loaded and saved again (a summoned pearl that floats).
+        let floating = Tag::compound([
+            ("id", Tag::String("minecraft:ender_pearl".into())),
+            ("Pos", doubles(&[0.0, 64.0, 0.0])),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        let pearl = throwable_from_nbt(&floating, None).unwrap();
+        assert!(pearl.no_gravity);
+        let tag = throwable_to_nbt(&pearl, [1; 4], None, None).unwrap();
+        assert_eq!(number(tag.get("NoGravity")), Some(1));
+        assert!(
+            throwable_to_nbt(&egg, [1; 4], None, None)
+                .unwrap()
+                .get("NoGravity")
+                .is_none()
+        );
     }
 }
 
@@ -4389,5 +4507,35 @@ mod held_item_name_tests {
                 .custom_name()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod mod_thrown_nbt_tests {
+    use super::*;
+
+    #[test]
+    fn a_mod_thrown_type_saves_its_id_and_item_and_loads_back() {
+        crate::projectiles::register_test_types();
+        let bolt = crate::projectiles::thrown_type("ruby:bolt").unwrap();
+        let mut p = Projectile::new(
+            ProjectileKind::Thrown(bolt),
+            Vec3::new(1.0, 80.0, 2.0),
+            None,
+        );
+        p.velocity = Vec3::new(0.0, 0.5, 1.0);
+        assert!(saved_with_chunk(&p));
+        let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
+        assert_eq!(super::kind(&tag).as_deref(), Some("ruby:bolt"));
+        let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+        assert_eq!(&*item.item, "ruby:gem");
+        let back = throwable_from_nbt(&tag, None).unwrap();
+        assert_eq!((&back.kind, back.velocity), (&p.kind, p.velocity));
+        // NoGravity comes back too, as for vanilla's (a summoned bolt that floats).
+        p.no_gravity = true;
+        let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
+        assert!(throwable_from_nbt(&tag, None).unwrap().no_gravity);
+        // a type no mod declares now is not a thrown kind.
+        assert!(throwable_kind("gone:bolt").is_none());
     }
 }

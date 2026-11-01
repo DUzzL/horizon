@@ -324,7 +324,7 @@ impl Book {
                 Recipe::Special(special) => {
                     for shown in special.book_displays() {
                         entries.push(Entry {
-                            id: format!("minecraft:{name}"),
+                            id: crate::crafting::recipe_id(name),
                             display_id: -1,
                             category: crafting_category(&category),
                             group: group(&grp),
@@ -338,7 +338,7 @@ impl Book {
                 }
             };
             entries.push(Entry {
-                id: format!("minecraft:{name}"),
+                id: crate::crafting::recipe_id(name),
                 display_id: -1,
                 category: crafting_category(&category),
                 group: group(&grp),
@@ -359,7 +359,7 @@ impl Book {
                 _ => continue,
             };
             entries.push(Entry {
-                id: format!("minecraft:{}", c.id),
+                id: crate::crafting::recipe_id(&c.id),
                 display_id: -1,
                 category,
                 group: group(&c.group),
@@ -699,24 +699,47 @@ impl RecipeIndex {
             );
         };
         let dir = root.join("data/minecraft/recipe");
+        // NeoForge's load conditions: the book lists only what loaded; a
+        // recipe gated on an absent mod isn't in the manager either.
+        let mods: Vec<String> = {
+            let mut mods = horizon_items::content_namespaces::mod_ids(root);
+            if !mods.iter().any(|m| m == "minecraft") {
+                mods.push("minecraft".to_owned());
+            }
+            mods
+        };
+        let conditions_hold = |v: &serde_json::Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
         // The whole folder, `brewing/` under it too, in id order
         // (`SimpleJsonResourceReloadListener` walks it recursively): a
         // subfolder's recipe keeps it in its id, `minecraft:brewing/<name>`.
-        for (name, path) in crate::crafting::recipe_files(&dir).unwrap_or_default() {
-            let Some(v) = std::fs::read(&path)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            else {
-                continue;
-            };
-            insert(format!("minecraft:{name}"), &v);
-        }
-        // The world's packs' recipes over the game's own: the top pack's
-        // file for each id replaces it (`SimpleJsonResourceReloadListener`).
+        // The packs' files replace first and the gate answers the merged
+        // file, as the crafting loader's does: a false-conditioned pack
+        // file leaves the lower one gone too.
+        let mut sources: Vec<(String, serde_json::Value)> = crate::crafting::recipe_files(&dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(name, path)| {
+                let v = std::fs::read(&path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())?;
+                Some((format!("minecraft:{name}"), v))
+            })
+            .collect();
         for (id, files) in overlay.kind("recipe") {
             match serde_json::from_slice::<serde_json::Value>(PackOverlay::top(files)) {
-                Ok(v) => insert(id.to_owned(), &v),
+                Ok(v) => match sources.iter_mut().find(|(n, _)| n == id) {
+                    Some(slot) => slot.1 = v,
+                    None => sources.push((id.to_owned(), v)),
+                },
                 Err(e) => log::warn!("Horizon: pack recipe {id} not shown in the book: {e}"),
+            }
+        }
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        for (id, mut v) in sources {
+            if conditions_hold(&v) && filters.apply(&id, &mut v) {
+                insert(id, &v);
             }
         }
         // RecipeManager keeps its recipes sorted by id and numbers the displays in that order.

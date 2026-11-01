@@ -8,7 +8,7 @@ BlockEntity.saveCustomOnly	port	crates/horizon-client/src/block_entity_item.rs::
 BlockEntity.loadStatic	port	crates/horizon-client/src/save.rs::decode_block_entity	creates the block entity from its saved tag
 BlockEntity.fillCrashReportCategory	skip:debug		crash report detail
 BlockEntity.applyComponents	inline	crates/horizon-client/src/block_entity_item.rs::place	implicit components applied as part of placing the item's data
-BlockEntity.collectComponents	port	crates/horizon-client/src/block_entity_item.rs::pick	component patch built when a block entity is picked
+BlockEntity.collectComponents	port	crates/horizon-client/src/block_entity_item.rs::collected_components	explicit plus implicit components for picked items and creative shulker drops
 BrewingStandBlockEntity.getPotionBits	inline	crates/horizon-client-render/src/brewing.rs::BrewingStand::tick	bottle occupancy sent as out.bottles
 BrewingStandBlockEntity.isBrewable	port	crates/horizon-client-render/src/brewing.rs::BrewingStand::brewable	
 BrewingStandBlockEntity.doBrew	port	crates/horizon-client-render/src/brewing.rs::BrewingStand::brew	

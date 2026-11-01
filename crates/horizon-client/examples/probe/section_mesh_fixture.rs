@@ -7,6 +7,7 @@ use horizon_client::{
     biome::{BiomeInfo, Biomes, GrassModifier},
     blocks::BlockFacts,
     chunk::{Chunk, Light, MIN_Y, index},
+    graphics::LeafCullingMode,
     mesher::{EMISSION_BITS, FLUID_FACE_BITS, MeshTables, Mesher, OPAQUE_LAYER, TerrainVertex},
     models,
 };
@@ -137,6 +138,8 @@ fn scene(
         blend_radius,
         smooth_lighting,
         cutout_leaves,
+        translucent_layers: &[],
+        leaf_culling: LeafCullingMode::Off,
     };
     let section_y = int(&row["section_y"])?;
     let started = Instant::now();
