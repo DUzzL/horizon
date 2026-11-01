@@ -735,6 +735,40 @@ mod tests {
         assert_eq!(sprites.animations[0].frame_count(), 3);
     }
     #[test]
+    fn custom_item_textures_skip_the_disk_cache() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-cit-disk-{}", std::process::id()));
+        // The cache's fingerprint needs a `textures` tree.
+        let vanilla = root.join("assets/minecraft/textures/item/stick.png");
+        let file = root.join("assets/minecraft/optifine/cit/a.png");
+        let write = |path: &Path, red: u8| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut encoder = png::Encoder::new(File::create(path).unwrap(), 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let pixels: Vec<u8> = (0..256).flat_map(|_| [red, 0, 0, 255]).collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        };
+        write(&vanilla, 1);
+        write(&file, 10);
+        let id = "horizon_cit:minecraft/optifine/cit/a";
+        let red = |sprites: &Sprites, layer: u32| sprites.native[layer as usize].1[0][0];
+        let mut first = Sprites::with_disk_cache(&root);
+        let layer = first.insert(&root, id).unwrap();
+        assert_eq!(red(&first, layer), 10);
+        first.save_disk_cache();
+        // The pack's file changes; `textures/` does not, so a cached copy would still match.
+        write(&file, 20);
+        let mut second = Sprites::with_disk_cache(&root);
+        let layer = second.insert(&root, id).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(red(&second, layer), 20);
+    }
+    #[test]
     fn identical_still_textures_share_a_layer() {
         let root =
             std::env::temp_dir().join(format!("horizon-sprite-share-{}", std::process::id()));

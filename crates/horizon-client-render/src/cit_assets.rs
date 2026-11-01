@@ -14,7 +14,7 @@ pub const NAMESPACE: &str = "horizon_cit";
 /// `<namespace>:<path>`, if both keep to the identifier rules (lower-case letters, digits,
 /// `_.-`, and `/` in the path). CIT Resewn refuses the other paths too.
 fn identifier(namespace: &str, path: &str) -> Option<String> {
-    if path.is_empty() {
+    if namespace.is_empty() || path.is_empty() {
         return None;
     }
     horizon_client_core::identifier::parse_identifier(&format!("{namespace}:{path}"))
@@ -136,7 +136,12 @@ mod tests {
             "horizon_cit:a\\..\\x",
         ] {
             assert_eq!(resource(id, "png"), None, "{id}");
+            // Nor does the texture's file: refused, not read from elsewhere.
+            let file = texture_path(Path::new("/r"), id, "textures");
+            assert!(file.starts_with("/r/assets") && !file.to_string_lossy().contains(".."));
         }
+        let escape = texture_path(Path::new("/r"), "minecraft:../../../x", "textures");
+        assert!(!escape.to_string_lossy().contains(".."), "{escape:?}");
     }
 
     #[test]
