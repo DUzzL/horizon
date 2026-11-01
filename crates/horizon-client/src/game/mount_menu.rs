@@ -541,7 +541,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let mut verts = Vec::new();
-        // Custom entity model animations read is_in_gui here.
+        // A screen preview: custom entity model animations see is_in_gui = 1.
         horizon_client::mobs::cem_anim::in_gui(|| {
             horizon_client::mobs::render::render_with(
                 &m,

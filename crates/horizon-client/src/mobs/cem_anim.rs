@@ -11,7 +11,11 @@
 
 use super::{Mob, Part, anim::Poses, anim::State};
 use horizon_optifine::cem::expr::{Expr, compile};
-use std::{cell::RefCell, collections::HashMap, sync::Mutex};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 
 /// The model variables of a part, in slot order.
 const PART_VARS: [&str; 11] = [
@@ -82,8 +86,6 @@ pub struct Frame {
     pub paused: bool,
     pub first_person: bool,
     pub third_person_reversed: bool,
-    /// Drawn in a screen's preview (the inventory's player, a mount's box), not in the world.
-    pub in_gui: bool,
 }
 
 impl Frame {
@@ -99,7 +101,6 @@ impl Frame {
         paused: false,
         first_person: true,
         third_person_reversed: false,
-        in_gui: false,
     };
 }
 
@@ -111,73 +112,55 @@ impl Default for Frame {
 
 static FRAME: Mutex<Frame> = Mutex::new(Frame::DEFAULT);
 
+/// `m`'s value, even if a thread panicked holding it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The frame the next animations see. Its `frame_time` and `frame_counter` come from the
 /// calls themselves: the time since the previous one, and how many there were.
 pub fn set_frame(mut frame: Frame) {
     static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
     let now = std::time::Instant::now();
-    let mut last = LAST
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut last = lock(&LAST);
     frame.frame_time = last.map_or(0.0, |t| (now - t).as_secs_f32());
     *last = Some(now);
-    let mut current = FRAME
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut current = lock(&FRAME);
     frame.frame_counter = current.frame_counter.wrapping_add(1);
     *current = frame;
 }
 
 fn frame() -> Frame {
-    *FRAME
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    *lock(&FRAME)
 }
 
-/// Runs `draw` with `is_in_gui` set: a screen's preview of an entity. The world's frame
-/// comes back afterwards.
+thread_local!(static IN_GUI: Cell<bool> = const { Cell::new(false) });
+
+/// Runs `draw` as a screen's preview of an entity (the inventory's player, a mount's box):
+/// its animations see `is_in_gui = 1` and leave the entity's variables as the world's draw
+/// left them. `set_frame` must not be called inside it.
 pub fn in_gui<R>(draw: impl FnOnce() -> R) -> R {
-    /// Puts the world's frame back, even if `draw` panics.
-    struct Restore(Frame);
+    /// Puts the previous value back, even if `draw` panics.
+    struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
-            *FRAME
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = self.0;
+            IN_GUI.set(self.0);
         }
     }
-    let world = {
-        let mut current = FRAME
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let world = *current;
-        current.in_gui = true;
-        world
-    };
-    let _restore = Restore(world);
+    let _restore = Restore(IN_GUI.replace(true));
     draw()
 }
 
-/// A part an animation names: its `Poses` name, its first slot, and what of it the
-/// animation sets.
+/// A part an animation names: its `Poses` name and its first slot.
 struct Bound {
     name: String,
     base: u32,
-    /// Some step targets `tx`..`sz`.
-    pose: bool,
-    /// Some step targets `visible`.
-    visible: bool,
-    /// Some step targets `visible_boxes`.
-    boxes: bool,
 }
 
 /// One compiled `target = expression`.
 struct Step {
     slot: u32,
     expr: Expr,
-    /// The target is a part's variable: a value that isn't finite keeps the pose it had
-    /// (any other target only refuses NaN).
-    part: bool,
 }
 
 /// The compiled `animations` of one model layer.
@@ -204,11 +187,13 @@ struct Saved {
 struct Vars {
     /// The frame counter of the last run.
     frame: u32,
+    /// A run outside a preview stored `now` in that frame.
+    stored: bool,
     /// The variables when that frame began: a model drawn again in the same frame (the
     /// illusioner's copies, a preview, the glowing pass) starts from them, not from the
     /// first draw's result.
     start: Box<[f32]>,
-    /// The variables after the last run.
+    /// The variables the frame's first draw in the world left.
     now: Box<[f32]>,
 }
 
@@ -225,9 +210,7 @@ static GLOBALS: Mutex<Globals> = Mutex::new(Globals {
 
 /// The index of the global variable `name`, registered on first sight.
 fn global(name: &str) -> u32 {
-    let mut g = GLOBALS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut g = lock(&GLOBALS);
     let i = match g.names.iter().position(|n| n == name) {
         Some(i) => i,
         None => {
@@ -324,36 +307,13 @@ impl Layout<'_, '_> {
                     None => {
                         let base = self.next;
                         self.next += PART_VARS.len() as u32;
-                        self.parts.push(Bound {
-                            name: found,
-                            base,
-                            pose: false,
-                            visible: false,
-                            boxes: false,
-                        });
+                        self.parts.push(Bound { name: found, base });
                         base
                     }
                 };
                 base + var
             }
         })
-    }
-
-    /// Notes that a step sets `slot`: true when it is a part's.
-    fn target(&mut self, slot: u32) -> bool {
-        let Some(b) = self
-            .parts
-            .iter_mut()
-            .find(|b| (b.base..b.base + PART_VARS.len() as u32).contains(&slot))
-        else {
-            return false;
-        };
-        match slot - b.base {
-            0..9 => b.pose = true,
-            9 => b.visible = true,
-            _ => b.boxes = true,
-        }
-        true
     }
 }
 
@@ -393,11 +353,7 @@ pub(super) fn compile_animation(
             };
             let compiled = compile(src, &mut |name: &str| layout.slot(name, this, part));
             match compiled {
-                Ok(expr) => steps.push(Step {
-                    slot,
-                    expr,
-                    part: layout.target(slot),
-                }),
+                Ok(expr) => steps.push(Step { slot, expr }),
                 Err(e) => log::warn!("Horizon: custom entity model {file}: {target}: {e}"),
             }
         }
@@ -447,6 +403,7 @@ impl Animation {
 
     /// `run` for the entity `id` in the frame `counter`, whose parameters `fill` writes.
     fn run_with(&self, id: u32, counter: u32, fill: impl FnOnce(&mut [f32]), poses: &mut Poses) {
+        let preview = IN_GUI.get();
         SLOTS.with_borrow_mut(|slots| {
             slots.clear();
             slots.resize(self.slots, 0.0);
@@ -458,49 +415,13 @@ impl Animation {
                 slots[base + 9] = flag(!poses.is_hidden_named(&b.name));
                 slots[base + 10] = flag(!poses.skips_named(&b.name));
             }
-            let mut saved = self
-                .saved
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !self.vars.is_empty()
-                && let Some(v) = saved.entities.get_mut(&id)
-            {
-                // The first run of a frame goes on from the last one; another run in the
-                // same frame starts where the first one did.
-                if v.frame != counter {
-                    v.start.copy_from_slice(&v.now);
-                    v.frame = counter;
-                }
-                for (&slot, value) in self.vars.iter().zip(v.start.iter()) {
-                    slots[slot as usize] = *value;
-                }
-            }
-            if !self.globals.is_empty() {
-                let g = GLOBALS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for &(slot, i) in &self.globals {
-                    slots[slot as usize] = g.values[i as usize];
-                }
-            }
-            for step in &self.steps {
-                let v = step.expr.eval(slots);
-                // A part keeps the pose vanilla gave it, a variable its last value.
-                if v.is_nan() || (step.part && v.is_infinite()) {
-                    continue;
-                }
-                slots[step.slot as usize] = v;
-            }
-            if !self.globals.is_empty() {
-                let mut g = GLOBALS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for &(slot, i) in &self.globals {
-                    g.values[i as usize] = slots[slot as usize];
-                }
-            }
-            if !self.vars.is_empty() {
-                if !saved.entities.contains_key(&id) {
+            let mut saved = lock(&self.saved);
+            // Each run of a frame starts from the variables the frame began with; only the
+            // first one in the world keeps its result, so that drawing again (or in a
+            // preview) changes nothing.
+            let mut vars = None;
+            if !self.vars.is_empty() || !self.globals.is_empty() {
+                if saved.entities.len() >= SAVED && !saved.entities.contains_key(&id) {
                     saved.make_room(counter);
                 }
                 let v = saved.entities.entry(id).or_insert_with(|| {
@@ -508,30 +429,61 @@ impl Animation {
                     let zero: Box<[f32]> = vec![0.0; self.vars.len()].into_boxed_slice();
                     Vars {
                         frame: counter,
+                        stored: false,
                         start: zero.clone(),
                         now: zero,
                     }
                 });
+                if v.frame != counter {
+                    v.start.copy_from_slice(&v.now);
+                    v.frame = counter;
+                    v.stored = false;
+                }
+                for (&slot, value) in self.vars.iter().zip(v.start.iter()) {
+                    slots[slot as usize] = *value;
+                }
+                vars = Some(v);
+            }
+            if !self.globals.is_empty() {
+                let g = lock(&GLOBALS);
+                for &(slot, i) in &self.globals {
+                    slots[slot as usize] = g.values[i as usize];
+                }
+            }
+            for step in &self.steps {
+                let v = step.expr.eval(slots);
+                // A part keeps the pose vanilla gave it, a variable its last value.
+                if v.is_finite() {
+                    slots[step.slot as usize] = v;
+                }
+            }
+            if let Some(v) = vars
+                && !preview
+                && !v.stored
+            {
+                v.stored = true;
                 for (&slot, value) in self.vars.iter().zip(v.now.iter_mut()) {
                     *value = slots[slot as usize];
+                }
+                if !self.globals.is_empty() {
+                    let mut g = lock(&GLOBALS);
+                    for &(slot, i) in &self.globals {
+                        g.values[i as usize] = slots[slot as usize];
+                    }
                 }
             }
             drop(saved);
             for b in &self.parts {
                 let base = b.base as usize;
-                if b.pose {
-                    poses.get(&b.name).copy_from_slice(&slots[base..base + 9]);
-                }
-                // Only what the animation changed is written: naming a part keeps what
-                // vanilla hid.
-                if b.visible {
-                    let visible = slots[base + 9] != 0.0;
-                    if visible == poses.is_hidden_named(&b.name) {
-                        poses.visible(&b.name, visible);
-                    }
+                // The slots began as the pose: writing back what no step changed keeps it.
+                poses.get(&b.name).copy_from_slice(&slots[base..base + 9]);
+                // Only a change is written: naming a part keeps what vanilla hid.
+                let visible = slots[base + 9] != 0.0;
+                if visible == poses.is_hidden_named(&b.name) {
+                    poses.visible(&b.name, visible);
                 }
                 // `visible_boxes = 0` skips the part's own boxes; 1 leaves vanilla's skipDraw.
-                if b.boxes && slots[base + 10] == 0.0 && !poses.skips_named(&b.name) {
+                if slots[base + 10] == 0.0 && !poses.skips_named(&b.name) {
                     poses.skip_draw(&b.name);
                 }
             }
@@ -540,18 +492,21 @@ impl Animation {
 }
 
 impl Saved {
-    /// Before a new entity joins a full table, forgets the entities not drawn for a while.
+    /// Before a new entity joins a full table, forgets the entities not drawn for a while,
+    /// and everything if that is not enough.
     fn make_room(&mut self, counter: u32) {
-        if self.entities.len() >= SAVED && self.evicted != Some(counter) {
+        if self.evicted != Some(counter) {
             self.evicted = Some(counter);
             self.entities
                 .retain(|_, v| counter.wrapping_sub(v.frame) <= STALE);
+        }
+        if self.entities.len() >= 2 * SAVED {
+            self.entities.clear();
         }
     }
 }
 
 fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
-    let t = flag;
     let max_health = super::finalize::max_health(m);
     let (dx, dy, dz) = (
         m.position.x - frame.player[0],
@@ -612,30 +567,30 @@ fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
             FluidDepth | FluidDepthDown => m.fluids.water.max(m.fluids.lava) as f32,
             HeightAboveGround | FluidDepthUp => 0.0,
             // The synced `Mob.isAggressive`, which a client's mobs have too.
-            Aggressive => t(m.ai.aggressive),
-            Alive => t(m.alive()),
-            Burning => t(m.fire_ticks > 0),
-            Child => t(s.baby),
-            Glowing => t(m.glowing),
-            Hurt => t(m.hurt_time > 0),
-            InWater => t(m.fluids.in_water),
-            InLava => t(m.fluids.in_lava),
-            Wet => t(m.fluids.in_water),
-            Invisible => t(m.invisible),
-            OnGround => t(m.on_ground),
-            Riding => t(m.extra.passenger),
-            Climbing => t(m.climbing),
-            Jumping => t(!m.on_ground && m.velocity.y > 0.0),
-            Paused => t(frame.paused),
-            InGui => t(frame.in_gui),
-            FirstPerson => t(frame.first_person),
-            ThirdPerson => t(!frame.first_person && !frame.third_person_reversed),
-            ThirdPersonReversed => t(frame.third_person_reversed),
-            RightHanded => t(!m.extra.left_handed),
-            Sitting => t(m.extra.sitting),
-            Tamed => t(m.extra.tame),
-            Sprinting => t(m.extra.sprinting),
-            Sneaking => t(m.extra.crouching),
+            Aggressive => flag(m.ai.aggressive),
+            Alive => flag(m.alive()),
+            Burning => flag(m.fire_ticks > 0),
+            Child => flag(s.baby),
+            Glowing => flag(m.glowing),
+            Hurt => flag(m.hurt_time > 0),
+            InWater => flag(m.fluids.in_water),
+            InLava => flag(m.fluids.in_lava),
+            Wet => flag(m.fluids.in_water),
+            Invisible => flag(m.invisible),
+            OnGround => flag(m.on_ground),
+            Riding => flag(m.extra.passenger),
+            Climbing => flag(m.climbing),
+            Jumping => flag(!m.on_ground && m.velocity.y > 0.0),
+            Paused => flag(frame.paused),
+            InGui => flag(IN_GUI.get()),
+            FirstPerson => flag(frame.first_person),
+            ThirdPerson => flag(!frame.first_person && !frame.third_person_reversed),
+            ThirdPersonReversed => flag(frame.third_person_reversed),
+            RightHanded => flag(!m.main_arm_left()),
+            Sitting => flag(m.extra.sitting),
+            Tamed => flag(m.extra.tame),
+            Sprinting => flag(m.extra.sprinting),
+            Sneaking => flag(m.extra.crouching),
             // Not known to the draw yet: 0 until something reads them.
             InHand | InItemFrame | InGround | OnHead | OnShoulder | Ridden | Blocking
             | Crawling | Swimming | SwingingRight | SwingingLeft | FirstPersonHand | UsingItem
@@ -813,13 +768,14 @@ mod tests {
                 ("root.tx", "sqrt(-1)"),
                 ("root.ty", "5"),
                 ("root.rx", "1 / 0"),
-                ("var.k", "3"),
-                ("var.k", "sqrt(-1)"),
+                ("var.k", "7"),
+                ("var.k", "0 / 0"),
+                ("var.k", "1 / 0"),
                 ("root.tz", "var.k"),
             ],
         )
         .run_with(1, 1, |_| {}, &mut poses);
-        assert_eq!(poses.get("root")[..4], [1.0, 5.0, 3.0, 0.0]);
+        assert_eq!(poses.get("root")[..4], [1.0, 5.0, 7.0, 0.0]);
     }
 
     #[test]
@@ -866,6 +822,88 @@ mod tests {
         let mut poses = Poses::new(&model);
         animation.run_in(&frame, &m, &s, &mut poses);
         assert_eq!(poses.get("root")[..6], [4.75, 1.5, 30.0, 7.0, 5.0, 2.0]);
+    }
+
+    /// A mob at the origin of the test species.
+    fn mob() -> Mob {
+        Mob::new(
+            1,
+            crate::mobs::sensor_scan_tests::kind(),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        )
+    }
+
+    /// A state with every value at rest.
+    fn still() -> State {
+        State {
+            pos: 0.0,
+            speed: 0.0,
+            age: 0.0,
+            y_rot: 0.0,
+            x_rot: 0.0,
+            swing: 0.0,
+            baby: false,
+            partial: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_flags_come_from_the_synced_mob_fields() {
+        let mut m = mob();
+        m.ai.aggressive = true;
+        m.extra.sitting = true;
+        m.extra.tame = true;
+        m.extra.sprinting = true;
+        m.extra.crouching = true;
+        // The player's main hand option set to left.
+        m.extra.main_hand_left = true;
+        let model = bone("root", vec![]);
+        let animation = animate(
+            &model,
+            &[(
+                "root.tx",
+                "is_aggressive + is_sitting * 2 + is_tamed * 4 + is_sprinting * 8 \
+                 + is_sneaking * 16 + is_right_handed * 32",
+            )],
+        );
+        let mut poses = Poses::new(&model);
+        animation.run_in(&Frame::default(), &m, &still(), &mut poses);
+        assert_eq!(poses.get("root")[0], 31.0);
+    }
+
+    #[test]
+    fn expressions_past_the_cap_are_left_out() {
+        let model = bone("root", vec![]);
+        let list = vec![("root.tx", "1"); MAX_EXPRESSIONS + 1];
+        assert_eq!(animate(&model, &list).steps.len(), MAX_EXPRESSIONS);
+    }
+
+    #[test]
+    fn a_preview_leaves_the_world_entity_variables_alone() {
+        let model = bone("root", vec![]);
+        let animation = animate(
+            &model,
+            &[
+                ("var.n", "var.n + 1 + is_in_gui * 100"),
+                ("root.tx", "var.n"),
+            ],
+        );
+        let (m, s) = (mob(), still());
+        let tx = |counter: u32| {
+            let frame = Frame {
+                frame_counter: counter,
+                ..Frame::default()
+            };
+            let mut poses = Poses::new(&model);
+            animation.run_in(&frame, &m, &s, &mut poses);
+            poses.get("root")[0]
+        };
+        // A preview in a frame the world drew, then one in a frame it didn't.
+        assert_eq!(
+            [tx(1), in_gui(|| tx(1)), tx(2), in_gui(|| tx(3)), tx(4)],
+            [1.0, 101.0, 2.0, 102.0, 3.0]
+        );
     }
 
     #[test]
@@ -932,29 +970,12 @@ mod tests {
 
     #[test]
     fn a_preview_runs_in_the_gui_and_the_world_frame_comes_back() {
-        let _lock = FRAME_TEST
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = lock(&FRAME_TEST);
         set_frame(Frame {
             time: 77.0,
             ..Frame::default()
         });
-        let m = Mob::new(
-            1,
-            crate::mobs::sensor_scan_tests::kind(),
-            horizon_core::geometry::Vec3::ZERO,
-            0.0,
-        );
-        let s = State {
-            pos: 0.0,
-            speed: 0.0,
-            age: 0.0,
-            y_rot: 0.0,
-            x_rot: 0.0,
-            swing: 0.0,
-            baby: false,
-            partial: 0.0,
-        };
+        let (m, s) = (mob(), still());
         let model = bone("root", vec![]);
         let animation = animate(&model, &[("root.tx", "is_in_gui"), ("root.ty", "time")]);
         let mut run = || {
@@ -970,9 +991,7 @@ mod tests {
 
     #[test]
     fn each_frame_counts_one_more() {
-        let _lock = FRAME_TEST
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = lock(&FRAME_TEST);
         let counter = || frame().frame_counter;
         let a = counter();
         set_frame(Frame::default());

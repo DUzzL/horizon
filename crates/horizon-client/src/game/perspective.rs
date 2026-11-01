@@ -737,7 +737,7 @@ impl Game<'_> {
         } else {
             horizon_client::mobs::render::render_layers
         };
-        // Custom entity model animations read is_in_gui here.
+        // A screen preview: custom entity model animations see is_in_gui = 1.
         horizon_client::mobs::cem_anim::in_gui(|| {
             render(
                 &m,
