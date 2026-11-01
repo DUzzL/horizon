@@ -4146,6 +4146,19 @@ impl Game<'_> {
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
             (ProjectileKind::Trident, Hit::Block { .. }) => {}
+            // AbstractArrow.onHitEntity on a wind charge: `hurtOrSimulate` fails
+            // (the charge turned in `Projectile.onHit`, which already ran), so the
+            // arrow takes `deflect(REVERSE, 0.2)` instead of vanishing.
+            (
+                ProjectileKind::Arrow { .. },
+                Hit::Entity {
+                    who: Who::Mob(id), ..
+                },
+            ) if wind_charge_hit(id).is_some() => {
+                let mut arrow = p.clone();
+                arrow_damage(&mut arrow, &mut self.world.random);
+                self.finish_arrow_hit(arrow, EntityHit::Refused);
+            }
             (ProjectileKind::Arrow { .. }, Hit::Entity { who, .. }) => {
                 let mut arrow = p.clone();
                 let amount = arrow_damage(&mut arrow, &mut self.world.random) + p.bonus.damage;
