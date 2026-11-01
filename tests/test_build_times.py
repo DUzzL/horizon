@@ -592,5 +592,82 @@ class RunTests(unittest.TestCase):
         self.assertIn("FAILED", out)
 
 
+def sample(seconds, cpu="Test CPU", jobs=8, commit="aaaaaaaaa"):
+    return {"format": "horizon-build-times", "version": 1, "created": "2026-11-01T10:00:00Z", "label": None,
+            "commit": {"short": commit, "sha": commit, "branch": "main", "subject": "s", "dirty": False},
+            "machine": {"os": "linux", "cpu": cpu, "cpu_threads": 8, "ram_mb": 16384},
+            "toolchain": {"rustc": "rustc 1.99.1", "cargo": "cargo 1.99.1", "host": "x"}, "jobs": {"jobs": jobs, "source": "default"},
+            "options": {"edit": "middle", "repeats": 1, "files": {"horizon-items": "crates/horizon-items/src/items.rs"}},
+            "warnings": [], "environment": {}, "command": "cargo build",
+            "cold": {"dev": {"ok": True, "seconds": seconds["cold"], "timings": {
+                "units": 3, "total_s": seconds["cold"],
+                "top": [{"crate": "horizon-world", "seconds": seconds["world"], "units": 1}],
+                "critical_path": [{"unit": "horizon-world", "start_s": 0, "end_s": seconds["world"], "seconds": seconds["world"]}]}}},
+            "noop": {"dev": {"ok": True, "seconds": seconds["noop"]}},
+            "incremental": {"dev": {"horizon-items": {"ok": True, "seconds": seconds["items"], "file": "x"}}}}
+
+
+class CompareTests(unittest.TestCase):
+    def test_shows_before_after_and_the_change(self):
+        a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
+        b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0}, commit="bbbbbbbbb")
+        text = bt.compare(a, b)
+        self.assertIn("| dev | 200.0 | 150.0 | -50.0 | -25% |", text)
+        self.assertIn("| dev | horizon-items | 20.0 | 25.0 | +5.0 | +25% |", text)
+        self.assertIn("| dev | 1.0 | 1.0 | +0.0 | +0% |", text)
+        self.assertIn("| horizon-world | 80.0 | 40.0 | -40.0 | -50% |", text)
+        self.assertIn("`aaaaaaaaa`", text)
+        self.assertIn("`bbbbbbbbb`", text)
+        self.assertNotIn("Read with care", text)
+
+    def test_warns_when_the_machines_differ(self):
+        a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
+        b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0}, cpu="Other CPU", jobs=4)
+        text = bt.compare(a, b)
+        self.assertIn("Read with care", text)
+        self.assertIn("CPU differs: Test CPU / Other CPU", text)
+        self.assertIn("jobs differs: 8 / 4", text)
+
+    def test_warns_when_the_build_environment_differs(self):
+        a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
+        b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0})
+        a["environment"] = {"CARGO_TARGET_DIR": "/a"}
+        b["environment"] = {"CARGO_TARGET_DIR": "/b"}
+        self.assertNotIn("Read with care", bt.compare(a, b))  # the tool never builds there
+        b["environment"]["RUSTFLAGS"] = "-C target-cpu=native"
+        self.assertIn('environment differs: {} / {"RUSTFLAGS": "-C target-cpu=native"}', bt.compare(a, b))
+
+    def test_a_report_whose_first_incremental_build_failed_can_be_compared(self):
+        a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
+        b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0})
+        b["incremental"]["dev"] = {"error": "the first build failed:\nerror[E0000]"}
+        self.assertIn("| dev | horizon-items | 20.0 | - | - | - |", bt.compare(a, b))
+        self.assertIn("| dev | horizon-items | - | 20.0 | - | - |", bt.compare(b, a))
+
+    def test_crates_and_profiles_on_one_side_only_get_a_dash(self):
+        a = sample({"cold": 200.0, "noop": 1.0, "items": 20.0, "world": 80.0})
+        b = sample({"cold": 150.0, "noop": 1.0, "items": 25.0, "world": 40.0})
+        b["cold"]["fast"] = dict(b["cold"]["dev"])
+        b["incremental"]["dev"]["horizon-new"] = {"ok": True, "seconds": 3.0, "file": "y"}
+        text = bt.compare(a, b)
+        self.assertIn("| fast | - | 150.0 | - | - |", text)
+        self.assertIn("| dev | horizon-new | - | 3.0 | - | - |", text)
+
+    def test_command_line_compare_reads_files_and_rejects_other_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Path(tmp, "a.json"), Path(tmp, "b.json")
+            a.write_text(json.dumps(sample({"cold": 10.0, "noop": 1.0, "items": 2.0, "world": 3.0})))
+            b.write_text(json.dumps(sample({"cold": 5.0, "noop": 1.0, "items": 2.0, "world": 3.0})))
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(bt.main(["compare", str(a), str(b), "--output", str(Path(tmp, "c.md"))]), 0)
+            self.assertIn("| dev | 10.0 | 5.0 | -5.0 | -50% |", out.getvalue())
+            self.assertEqual(Path(tmp, "c.md").read_text().strip(), out.getvalue().strip())
+            b.write_text('{"hello": 1}')
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(bt.main(["compare", str(a), str(b)]), 2)
+            self.assertIn("not a build_times report", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
