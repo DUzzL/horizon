@@ -577,6 +577,16 @@ impl Game<'_> {
             b.paddling = [false; 2];
             b.input = [false; 4];
         }
+        // `Entity.baseTick`: the boat is immersed and pushed by the current it
+        // sits in (`isPushedByFluid`), before `floatBoat` scales the velocity.
+        let _ = horizon_client::entities::update_entity_fluids(
+            b.bounds(),
+            b.position,
+            b.position.y + f64::from(HEIGHT),
+            &mut b.velocity,
+            &self.world,
+            &self.res.motion().fluids,
+        );
         // floatBoat
         let mut vspeed = -0.04;
         let mut buoyancy = 0.0;
