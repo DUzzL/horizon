@@ -79,6 +79,47 @@ impl Preset {
     }
 }
 
+/// Entity occlusion strategy. The synchronous mode preserves the original
+/// same-frame CPU test; asynchronous results only hide a mesh when their
+/// camera, bounds and occluder evidence still match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EntityCullingMode {
+    #[default]
+    Off,
+    Synchronous,
+    Asynchronous,
+}
+impl EntityCullingMode {
+    pub const ALL: [EntityCullingMode; 3] = [
+        EntityCullingMode::Off,
+        EntityCullingMode::Synchronous,
+        EntityCullingMode::Asynchronous,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Synchronous => "sync",
+            Self::Asynchronous => "async",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Synchronous => "Synchronous",
+            Self::Asynchronous => "Asynchronous",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            // Keep graphics files written before the mode selector readable.
+            "true" | "synchronous" | "sync" => Self::Synchronous,
+            "false" | "off" => Self::Off,
+            "asynchronous" | "async" => Self::Asynchronous,
+            _ => Self::default(),
+        }
+    }
+}
+
 /// How the swapchain presents frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PresentMode {
@@ -358,8 +399,8 @@ pub struct Graphics {
     pub far_detail: FarDetail,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
-    /// Skip drawing entities hidden behind opaque terrain.
-    pub entity_culling: bool,
+    /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
+    pub entity_culling: EntityCullingMode,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
     pub chunk_updates: u32,
     /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
@@ -427,7 +468,7 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
-            entity_culling: false,
+            entity_culling: EntityCullingMode::Off,
             chunk_updates: 0,
             upload_budget_kib: 0,
             texture_budget_mib: 0,
@@ -495,7 +536,7 @@ impl Graphics {
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
-                "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
                 "textureBudgetMiB" => {
@@ -565,7 +606,7 @@ impl Graphics {
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
-            bool_text(self.entity_culling),
+            self.entity_culling.name(),
             self.chunk_updates,
             self.upload_budget_kib,
             self.texture_budget_mib,
@@ -720,7 +761,7 @@ mod tests {
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             cave_culling: false,
-            entity_culling: true,
+            entity_culling: EntityCullingMode::Synchronous,
             chunk_updates: 12,
             upload_budget_kib: 4096,
             texture_budget_mib: 1536,
@@ -750,6 +791,21 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        for mode in EntityCullingMode::ALL {
+            let graphics = Graphics {
+                entity_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert_eq!(
+            Graphics::parse("entityCulling:true\n").entity_culling,
+            EntityCullingMode::Synchronous
+        );
+        assert_eq!(
+            Graphics::parse("entityCulling:false\n").entity_culling,
+            EntityCullingMode::Off
+        );
         assert_eq!(Graphics::parse(""), Graphics::default());
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
