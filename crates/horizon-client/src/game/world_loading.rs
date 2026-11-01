@@ -52,10 +52,43 @@ impl WorldRequest {
         // Before any chunk is read: a loaded container with a loot table is rolled as its chunk
         // is decoded (`save::roll_loaded_loot`), and the spawn chunks are read while the world
         // opens. Every world opens here: in-frame, on the server thread, on a dedicated server.
-        horizon_client::structure_blocks::loot_data(
-            &options.resources,
-            &horizon_world::loot::PackOverlay::NONE,
-        );
+        let loot = || {
+            horizon_client::structure_blocks::loot_data(
+                &options.resources,
+                &horizon_world::loot::PackOverlay::NONE,
+            );
+        };
+        // Bone meal's and saplings' features, over the plain worldgen bundle.
+        let live_features = || growth::install_live_features(res, pack, options);
+        if res.threads() <= 1 {
+            loot();
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade)?;
+            live_features();
+            return Ok(prepared);
+        }
+        // Neither needs the world: they load beside it (the generator's decoration keeps one
+        // core busy) and are done before it opens. A bundle both read loads once.
+        std::thread::scope(|scope| {
+            let loot = scope.spawn(loot);
+            let live_features = scope.spawn(live_features);
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade);
+            for helper in [loot, live_features] {
+                helper
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            }
+            prepared
+        })
+    }
+
+    fn prepare_world(
+        self,
+        res: &Resources,
+        pack: &PackResources,
+        options: &Options,
+        settings: &Settings,
+        upgrade: &horizon_world::datafix::progress::UpgradeProgress,
+    ) -> Result<PreparedWorld> {
         let Self {
             save_root,
             folder,
@@ -226,8 +259,6 @@ impl WorldRequest {
                 thunder_level: if thunder { (1.0, 1.0) } else { (0.0, 0.0) },
             };
         }
-
-        growth::install_live_features(res, pack, options);
 
         // Persist new metadata on the worker too, before publishing the world.
         if !save_root.join("level.dat").exists() {
