@@ -441,7 +441,8 @@ impl Hdr {
         pass.draw(0..3, 0..1);
     }
 
-    /// Where the hand's marks go: the kept world's alpha, which HDR output reads for it too.
+    /// The world as `keep_world` kept it: where the hand's marks go (its alpha, which HDR output
+    /// reads for it too), and what tints the world rather than covering it.
     pub fn hand_light_view(&self) -> Option<wgpu::TextureView> {
         let t = self.targets.as_ref()?;
         Some(t.world.create_view(&Default::default()))

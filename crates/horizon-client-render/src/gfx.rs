@@ -838,7 +838,7 @@ pub struct Renderer {
     border_vertices: wgpu::Buffer,
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
-    screen_pipelines: [wgpu::RenderPipeline; 8],
+    screen_pipelines: [wgpu::RenderPipeline; 16],
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
@@ -3359,7 +3359,7 @@ impl Renderer {
         };
         // One per blend and `.png.mcmeta` sampling (screen_effects::SAMPLE_*):
         // the shader is specialised, so a pixel pays for none of the others.
-        let screen_pipelines: [wgpu::RenderPipeline; 8] = std::array::from_fn(|i| {
+        let screen_pipelines: [wgpu::RenderPipeline; 16] = std::array::from_fn(|i| {
             let blur = i as u32 & crate::screen_effects::SAMPLE_BLUR != 0;
             let (entry, blend) = match (i & 4 == 0, blur) {
                 (true, false) => ("fs_screen", alpha_blend),
@@ -3395,7 +3395,12 @@ impl Renderer {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: config.format.remove_srgb_suffix(),
                         blend: Some(blend),
-                        write_mask: wgpu::ColorWrites::ALL,
+                        // 8 and up: colour only, for a tint of the world in HDR output.
+                        write_mask: if i & 8 == 0 {
+                            wgpu::ColorWrites::ALL
+                        } else {
+                            wgpu::ColorWrites::COLOR
+                        },
                     })],
                 }),
                 multiview_mask: None,
@@ -8337,8 +8342,46 @@ impl Renderer {
                     crate::screen_effects::Blend::Alpha => 0,
                     crate::screen_effects::Blend::Vignette => 4,
                 };
-                pass.set_pipeline(&self.screen_pipelines[blend + (quad.sampling & 3) as usize]);
+                let tint = if quad.world_tint && self.hdr.is_some() {
+                    8
+                } else {
+                    0
+                };
+                pass.set_pipeline(
+                    &self.screen_pipelines[tint + blend + (quad.sampling & 3) as usize],
+                );
                 pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+            }
+            drop(pass);
+            // A tint leaves the frame's alpha and goes over the kept world too: light sources
+            // under water still show the world, and still shine.
+            if let Some(view) = self.hdr.as_ref().and_then(|h| h.hand_light_view())
+                && frame.screen.iter().any(|quad| quad.world_tint)
+            {
+                let attachments = [Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Screen tints over the kept world"),
+                    timestamp_writes: None,
+                    color_attachments: &attachments,
+                    ..Default::default()
+                });
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
+                for (i, quad) in frame.screen.iter().enumerate() {
+                    if quad.world_tint {
+                        pass.set_pipeline(&self.screen_pipelines[8 + (quad.sampling & 3) as usize]);
+                        pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+                    }
+                }
             }
         }
         // GameRenderer.render3dHud: the debug crosshair after the hand and
