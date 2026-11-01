@@ -1,4 +1,8 @@
-"""A rocket boosting a server client's own player, run through the live method."""
+"""A rocket boosting a server client's own player, run through the live methods.
+
+Vanilla reference: FireworkRocketEntity.tick after the player's tick in ClientLevel.tickEntities;
+Entity.getHandHoldingItemAngle.
+"""
 from pathlib import Path
 import shutil
 import subprocess
@@ -6,14 +10,25 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+GAME = ROOT / "crates/horizon-client/src/game"
+
+
+def lift(path, start, end):
+    source = path.read_text()
+    a = source.index(start)
+    return source[a : source.index(end, a)].replace("pub(super) ", "")
 
 
 @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
 class RemoteOwnRocketTests(unittest.TestCase):
     def test_the_spark_follows_the_moved_player_at_the_rocket_hand(self):
-        source = (ROOT / "crates/horizon-client/src/game/remote_projectiles.rs").read_text()
-        start = source.index("    fn remote_player_id(")
-        end = source.index("    /// One tick of interpolation", start)
+        methods = lift(
+            GAME / "fireworks.rs", "    /// `Entity.getHandHoldingItemAngle", "    /// The trail ("
+        ) + lift(
+            GAME / "remote_projectiles.rs",
+            "    /// This client's own player's entity id",
+            "    /// One tick of interpolation",
+        )
         fixture = r'''
 #![allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -22,65 +37,94 @@ impl Vec3 {
     fn new(x: f64, y: f64, z: f64) -> Self { Self { x, y, z } }
     fn add_vector(self, o: Vec3) -> Self { Self::new(self.x + o.x, self.y + o.y, self.z + o.z) }
 }
-fn view_vector(_yaw: f32, _pitch: f32) -> [f64; 3] { [0.0, 0.6, 0.8] }
+// Entity.calculateViewVector(pitch, yaw).
+fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
+    let (p, y) = (f64::from(pitch).to_radians(), f64::from(-yaw).to_radians());
+    [y.sin() * p.cos(), -p.sin(), y.cos() * p.cos()]
+}
+struct ItemStack { item: String }
 struct Remote { entity_id: i32 }
 struct Clock { runs: bool }
 impl Clock { fn world_runs(&self) -> bool { self.runs } }
+struct Settings { main_hand_left: bool }
 struct Player { position: Vec3, velocity: Vec3, fall_flying: bool }
 #[derive(Default)]
 struct Rocket { attached_to: Option<u32>, position: Vec3, velocity: Vec3 }
 struct Game {
-    remote: Option<Remote>, clock: Clock, player: Option<Player>,
-    rockets: Vec<Rocket>, yaw: f32, pitch: f32, sparks: Vec<[f64; 3]>,
+    remote: Option<Remote>, clock: Clock, player: Option<Player>, settings: Settings,
+    hotbar: Option<ItemStack>, offhand: Option<ItemStack>, selected: usize,
+    rockets: Vec<Rocket>, yaw: f32, pitch: f32, sparks: Vec<([f64; 3], f64)>,
 }
 impl Game {
-fn rocket_hand_angle(&self) -> [f64; 3] { [0.5, 0.0, 0.0] }
-fn rocket_spark(&mut self, r: &Rocket) { self.sparks.push([r.position.x, r.position.y, r.position.z]); }
-METHOD
+fn stack_in(&self, _slot: usize) -> Option<&ItemStack> { self.hotbar.as_ref() }
+fn rocket_spark(&mut self, r: &Rocket) {
+    self.sparks.push(([r.position.x, r.position.y, r.position.z], -r.velocity.y * 0.5));
 }
+METHODS
+}
+fn rocket() -> Option<ItemStack> { Some(ItemStack { item: "minecraft:firework_rocket".into() }) }
 fn game(runs: bool) -> Game {
     Game {
         remote: Some(Remote { entity_id: 7 }),
         clock: Clock { runs },
-        // Where the player's own tick has just moved it.
+        // Where the player's own tick has just moved it, facing west.
         player: Some(Player {
             position: Vec3::new(10.0, 70.0, 20.0),
             velocity: Vec3::new(0.0, -0.2, 1.0),
             fall_flying: true,
         }),
+        settings: Settings { main_hand_left: false },
+        hotbar: rocket(), offhand: None, selected: 0,
         rockets: vec![
             Rocket { attached_to: Some(7), ..Rocket::default() },
             Rocket { attached_to: Some(8), position: Vec3::new(1.0, 2.0, 3.0), ..Rocket::default() },
             Rocket { attached_to: None, position: Vec3::new(4.0, 5.0, 6.0), ..Rocket::default() },
         ],
-        yaw: 0.0, pitch: 0.0, sparks: Vec::new(),
+        yaw: 90.0, pitch: 0.0, sparks: Vec::new(),
     }
+}
+fn near(a: [f64; 3], b: [f64; 3]) -> bool { a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-4) }
+fn at(v: Vec3) -> [f64; 3] { [v.x, v.y, v.z] }
+// The rocket's spot after one tick with this hand setup.
+fn hand(main_hand_left: bool, main: Option<ItemStack>, offhand: Option<ItemStack>) -> [f64; 3] {
+    let mut g = game(true);
+    g.settings.main_hand_left = main_hand_left;
+    g.hotbar = main;
+    g.offhand = offhand;
+    g.tick_own_rockets();
+    at(g.rockets[0].position)
 }
 fn main() {
     let mut g = game(true);
     g.tick_own_rockets();
-    // FireworkRocketEntity.tick: movement + look * 0.1 + (look * 1.5 - movement) * 0.5.
-    let boosted = Vec3::new(
-        0.0 + 0.0 * 0.1 + (0.0 * 1.5 - 0.0) * 0.5,
-        -0.2 + 0.6 * 0.1 + (0.6 * 1.5 - -0.2) * 0.5,
-        1.0 + 0.8 * 0.1 + (0.8 * 1.5 - 1.0) * 0.5,
-    );
-    let p = g.player.as_ref().unwrap();
-    assert_eq!(p.velocity, boosted);
-    assert_eq!(p.position, Vec3::new(10.0, 70.0, 20.0));
-    // The rocket at the moved player, half a block out at the rocket hand.
-    assert_eq!(g.rockets[0].position, Vec3::new(10.5, 70.0, 20.0));
-    assert_eq!(g.rockets[0].velocity, boosted);
-    assert_eq!(g.sparks, vec![[10.5, 70.0, 20.0]]);
+    // Looking west (-x): movement + look * 0.1 + (look * 1.5 - movement) * 0.5.
+    let boosted = [-0.85, -0.1, 0.5];
+    assert!(near(at(g.player.as_ref().unwrap().velocity), boosted), "{:?}", g.player.as_ref().unwrap().velocity);
+    assert_eq!(g.player.as_ref().unwrap().position, Vec3::new(10.0, 70.0, 20.0));
+    // Facing west the right hand is north: half a block out at yaw + 80.
+    let right = [10.0 - 0.0868, 70.0, 20.0 - 0.4924];
+    assert!(near(at(g.rockets[0].position), right), "{:?}", g.rockets[0].position);
+    assert!(near(at(g.rockets[0].velocity), boosted));
+    // One spark, at the rocket, drifting against the boosted motion.
+    assert_eq!(g.sparks.len(), 1);
+    assert!(near(g.sparks[0].0, right) && (g.sparks[0].1 - 0.05).abs() < 1e-9, "{:?}", g.sparks);
     // Rockets of another entity, or free ones, tick with the other entities.
     assert_eq!(g.rockets[1].position, Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(g.rockets[2].position, Vec3::new(4.0, 5.0, 6.0));
 
-    // Not gliding: it follows the player without boosting it.
+    // The other arm: a left main arm, or a rocket only in the offhand.
+    let left = [10.0 - 0.0868, 70.0, 20.0 + 0.4924];
+    assert!(near(hand(true, rocket(), None), left));
+    assert!(near(hand(false, None, rocket()), left));
+    assert!(near(hand(true, None, rocket()), right));
+    assert!(near(hand(false, rocket(), rocket()), right));
+
+    // Not gliding: it follows the player itself, without boosting it.
     let mut g = game(true);
     g.player.as_mut().unwrap().fall_flying = false;
     g.tick_own_rockets();
     assert_eq!(g.player.as_ref().unwrap().velocity, Vec3::new(0.0, -0.2, 1.0));
+    assert_eq!(g.rockets[0].position, Vec3::new(10.0, 70.0, 20.0));
     assert_eq!(g.sparks.len(), 1);
 
     // A frozen level ticks no entities.
@@ -89,7 +133,7 @@ fn main() {
     assert!(g.sparks.is_empty());
     assert_eq!(g.player.as_ref().unwrap().velocity, Vec3::new(0.0, -0.2, 1.0));
 }
-'''.replace("METHOD", source[start:end].replace("pub(super) ", ""))
+'''.replace("METHODS", methods)
         with tempfile.TemporaryDirectory(prefix="remote-own-rockets-") as directory:
             path = Path(directory)
             (path / "main.rs").write_text(fixture)

@@ -252,9 +252,9 @@ impl Game<'_> {
     }
     /// `Entity.getHandHoldingItemAngle(Items.FIREWORK_ROCKET)` for the local
     /// player: half a block out towards the hand holding the rocket while
-    /// gliding, zero otherwise. The main arm is the right one (the only arm
-    /// this client has), so a rocket only in the offhand is in the left hand.
-    pub(super) fn rocket_hand_angle(&self) -> [f64; 3] {
+    /// gliding, zero otherwise. A rocket only in the offhand is in the arm
+    /// opposite the main one.
+    fn rocket_hand_angle(&self) -> [f64; 3] {
         if !self.player.as_ref().is_some_and(|p| p.fall_flying) {
             return [0.0; 3];
         }
@@ -262,9 +262,30 @@ impl Game<'_> {
             |s: Option<&ItemStack>| s.is_some_and(|s| &*s.item == "minecraft:firework_rocket");
         let main = self.stack_in(self.selected);
         let offhand_only = is_rocket(self.offhand.as_ref()) && !is_rocket(main);
-        let arm = if offhand_only { -80 } else { 80 };
+        let right = offhand_only == self.settings.main_hand_left;
+        let arm = if right { 80 } else { -80 };
         let v = view_vector(self.yaw + arm as f32, 0.0);
         [v[0] * 0.5, v[1] * 0.5, v[2] * 0.5]
+    }
+    /// `FireworkRocketEntity.tick` for a rocket attached to the local player:
+    /// a glide is boosted towards the look, and the rocket sits at the rocket
+    /// hand with the player's motion.
+    pub(super) fn follow_own_player(&mut self, r: &mut Rocket) {
+        let hand = self.rocket_hand_angle();
+        let look = view_vector(self.yaw, self.pitch);
+        let Some(p) = self.player.as_mut() else {
+            return;
+        };
+        if p.fall_flying {
+            let m = p.velocity;
+            p.velocity = Vec3::new(
+                m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
+                m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
+                m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
+            );
+        }
+        r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
+        r.velocity = p.velocity;
     }
     /// The trail (`FireworkRocketEntity.tick` on a client): a spark each tick
     /// at the rocket, drifting against its motion.
@@ -337,20 +358,7 @@ impl Game<'_> {
                     r.position = Vec3::new(g.position[0], g.position[1], g.position[2]);
                 }
             } else if r.attached {
-                let hand = self.rocket_hand_angle();
-                if let Some(p) = self.player.as_mut() {
-                    if p.fall_flying {
-                        let look = view_vector(self.yaw, self.pitch);
-                        let m = p.velocity;
-                        p.velocity = Vec3::new(
-                            m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
-                            m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
-                            m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
-                        );
-                    }
-                    r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
-                    r.velocity = p.velocity;
-                }
+                self.follow_own_player(&mut r);
                 hit = self.rocket_struck(&targets, &r, r.velocity, skip);
             } else {
                 // getHitResultOnMoveVector before the move.

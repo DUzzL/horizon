@@ -2,7 +2,7 @@
 //! end crystals on a server's client (`ClientPacketListener.handleAddEntity`
 //! and `handleSetEntityData`): the server simulates them, the client draws
 //! them where it says and interpolates their moves.
-use super::{FallStep, FallingBlock, Game, fireworks::fireworks_of, view_vector};
+use super::{FallStep, FallingBlock, Game, fireworks::fireworks_of};
 use horizon_client::items::ItemStack;
 use horizon_client::projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld};
 use horizon_client::{
@@ -562,11 +562,7 @@ impl Game<'_> {
     /// `Entity.getEyePosition` of a projectile's owner: this game's player or
     /// another player the server sent.
     fn remote_eye(&self, id: u32) -> Option<Vec3> {
-        let me = self
-            .remote
-            .as_ref()
-            .and_then(|r| u32::try_from(r.entity_id).ok());
-        if me == Some(id) {
+        if self.remote_player_id() == Some(id) {
             let eye = self.eye_position()?;
             return Some(Vec3::new(eye[0], eye[1], eye[2]));
         }
@@ -578,6 +574,7 @@ impl Game<'_> {
         ))
     }
 
+    /// This client's own player's entity id on the server.
     fn remote_player_id(&self) -> Option<u32> {
         self.remote
             .as_ref()
@@ -586,33 +583,20 @@ impl Game<'_> {
 
     /// `FireworkRocketEntity.tick` for the rockets attached to this client's
     /// own player, once the player has moved (it ticks before them in
-    /// `ClientLevel.tickEntities`): the glide is boosted, the rocket sits at
-    /// the rocket hand (`getHandHoldingItemAngle`) and its spark goes there.
-    /// Placed before the move, the spark was left where the camera had been.
+    /// `ClientLevel.tickEntities`), each with its spark.
     pub(super) fn tick_own_rockets(&mut self) {
         let Some(me) = self.remote_player_id() else {
             return;
         };
-        if !self.clock.world_runs() || !self.rockets.iter().any(|r| r.attached_to == Some(me)) {
+        if !self.clock.world_runs()
+            || self.player.is_none()
+            || !self.rockets.iter().any(|r| r.attached_to == Some(me))
+        {
             return;
         }
-        let hand = self.rocket_hand_angle();
-        let look = view_vector(self.yaw, self.pitch);
         let mut rockets = std::mem::take(&mut self.rockets);
         for r in rockets.iter_mut().filter(|r| r.attached_to == Some(me)) {
-            let Some(p) = self.player.as_mut() else {
-                break;
-            };
-            if p.fall_flying {
-                let m = p.velocity;
-                p.velocity = Vec3::new(
-                    m.x + look[0] * 0.1 + (look[0] * 1.5 - m.x) * 0.5,
-                    m.y + look[1] * 0.1 + (look[1] * 1.5 - m.y) * 0.5,
-                    m.z + look[2] * 0.1 + (look[2] * 1.5 - m.z) * 0.5,
-                );
-            }
-            r.position = p.position.add_vector(Vec3::new(hand[0], hand[1], hand[2]));
-            r.velocity = p.velocity;
+            self.follow_own_player(r);
             self.rocket_spark(r);
         }
         self.rockets = rockets;
