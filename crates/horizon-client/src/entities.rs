@@ -896,31 +896,6 @@ fn towards_closest_space(
         _ => Vec3::new(v.x, v.y, push),
     }
 }
-/// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:
-/// it absorbs the orbs that `canMerge` within 0.5 blocks of its box,
-/// adding their counts and keeping the smaller age.
-pub fn merge_orbs(orbs: &mut Vec<ExperienceOrb>) {
-    let mut removed = vec![false; orbs.len()];
-    for i in 0..orbs.len() {
-        if removed[i] || orbs[i].ticks % 20 != 1 {
-            continue;
-        }
-        let area = orbs[i].bounds().inflate(Vec3::new(0.5, 0.5, 0.5));
-        for j in 0..orbs.len() {
-            if j != i
-                && !removed[j]
-                && orbs[j].can_merge(orbs[i].id, orbs[i].value)
-                && orbs[j].bounds().intersects(area)
-            {
-                orbs[i].count += orbs[j].count;
-                orbs[i].age = orbs[i].age.min(orbs[j].age);
-                removed[j] = true;
-            }
-        }
-    }
-    let mut removed = removed.into_iter();
-    orbs.retain(|_| !removed.next().unwrap_or(false));
-}
 /// Player experience (Player.giveExperiencePoints / getXpNeededForNextLevel).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Experience {

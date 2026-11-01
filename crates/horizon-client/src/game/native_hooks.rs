@@ -2615,6 +2615,41 @@ impl Game<'_> {
     ) {
         let _ = (dimension, entity, kind, pos, loaded_from_disk, canceled);
     }
+    /// Whether the experience orb `into` takes the orb `from` in (vanilla's
+    /// `ExperienceOrb.canMerge`): the same value, and ids a multiple of 40 apart. Asked
+    /// for each pair whose boxes meet, when an orb spawns (`tryMergeToExisting`: `from` is
+    /// 0, the new orb isn't an entity yet, and only `from_value` is known) and every 20
+    /// ticks as an orb scans for neighbours (`scanForMerges`). `can_merge` holds vanilla's
+    /// answer; change it either way. A merged orb counts as `count` orbs of `into`'s
+    /// value, so forcing orbs of different values together drops points unless the mod
+    /// raises `into`'s value with `native_set_experience_orb` in `native_experience_orb_merge`.
+    /// Server-side. API @API:experience_orb_merge@.
+    pub(super) fn native_experience_orb_can_merge(
+        &mut self,
+        dimension: &str,
+        into: u32,
+        from: u32,
+        into_value: u32,
+        from_value: u32,
+        can_merge: &mut bool,
+    ) {
+        let _ = (dimension, into, from, into_value, from_value, can_merge);
+    }
+    /// The experience orb `into` is about to take `from` in, after
+    /// `native_experience_orb_can_merge` said yes (`from` is 0 and `from_value` the
+    /// points of a new orb that is spawning). Set `canceled` to stop it: both orbs stay, and
+    /// a spawning orb tries the next orb in reach, then spawns on its own. Server-side.
+    /// API @API:experience_orb_merge@.
+    pub(super) fn native_experience_orb_merge(
+        &mut self,
+        dimension: &str,
+        into: u32,
+        from: u32,
+        from_value: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (dimension, into, from, from_value, canceled);
+    }
     /// `player`'s melee blow killed the mob `entity` of `kind` (other deaths
     /// aren't told yet). It only hears, after the blow landed. Server-side.
     /// API 40.
