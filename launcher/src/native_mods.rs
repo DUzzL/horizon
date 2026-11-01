@@ -540,7 +540,7 @@ fn remembered(
 
 fn ask_github(repo: &str, revision: &str) -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{repo}/commits/{revision}");
-    let commit: serde_json::Value = backend::get(&url)?.into_json().map_err(|e| e.to_string())?;
+    let commit = crate::github::json(&url)?;
     commit["commit"]["committer"]["date"]
         .as_str()
         .map(str::to_owned)
@@ -691,7 +691,7 @@ pub fn revision_of(version: &str) -> Result<String, String> {
         "https://api.github.com/repos/{}/commits/{reference}",
         backend::REPO
     );
-    let commit: serde_json::Value = backend::get(&url)?.into_json().map_err(|e| e.to_string())?;
+    let commit = crate::github::json(&url)?;
     commit["sha"]
         .as_str()
         .filter(|s| is_revision(s))
