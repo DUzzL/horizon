@@ -286,7 +286,7 @@ impl Game<'_> {
         // drawn on the HUD by draw_spyglass.
         let fx = &self.screen_fx;
         let overlays = hud_overlays::CameraOverlays {
-            vignette: self.settings.vignette.then_some((
+            vignette: self.vignette_shown().then_some((
                 fx.vignette_brightness,
                 self.border.warning_strength(p.position.x, p.position.z),
             )),

@@ -11012,5 +11012,55 @@ CHECKS += ['attack_over_slab']
 CHECK_FNS['attack_over_slab'] = check_attack_over_slab
 
 
+def check_shulker_lift(host, guest, out):
+    """ShulkerBoxBlockEntity.tick moves the local player on each client, even with its menu open."""
+    hx, _, hz = pos_of(host)
+    x, y, z = int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8
+    box = (x, y, z)
+    modes = {player: player('state')['gamemode'] for player in (host, guest)}
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+4} {y+5} {z+4} minecraft:air')
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+4} {y-1} {z+4} minecraft:stone')
+    host('command', command=f'setblock {x} {y} {z} minecraft:shulker_box[facing=up]')
+    seen = {}
+    try:
+        for player in (host, guest):
+            other = guest if player is host else host
+            other('command', command=f'tp @s {x+3.5} {y} {z+0.5}')
+            for mode in ('survival', 'creative'):
+                player('command', command=f'gamemode {mode}')
+                player('command', command=f'tp @s {x+0.5} {y+1} {z+0.5}')
+                player.wait(15)
+                before = pos_of(player)
+                assert abs(before[1] - (y+1)) < 0.01, f'not standing on the box: {before}'
+                label = f'shulker-lift-{player.name}-{mode}'
+                player.shot(out, label + '-before')
+                player.raw('interact', *box)
+                player.raw('wait-for', 'screen', 'container', '--timeout', 10)
+                player.wait(20)
+                opened = pos_of(player)
+                player.shot(out, label + '-open')
+                # Let the player settle on the open lid: it must remain a supporting shape.
+                player.wait(20)
+                settled = pos_of(player)
+                player.raw('key', 'esc', 'tap')
+                player.wait(30)
+                closed = pos_of(player)
+                seen[label] = dict(before=before, opened=opened, settled=settled, closed=closed)
+                lab.write_json(out / 'shulker-lift.json', seen)
+                assert abs(opened[1] - (y+1.5)) < 0.02, f'opening lid did not lift {label}: {seen[label]}'
+                assert abs(settled[1] - (y+1.5)) < 0.02, f'open lid did not support {label}: {seen[label]}'
+                assert abs(closed[1] - (y+1)) < 0.02, f'closing lid did not lower {label}: {seen[label]}'
+        return seen
+    finally:
+        for player in (host, guest):
+            back_to_game(player)
+            player('command', command=f'gamemode {modes[player]}')
+        host('command', command=f'setblock {x} {y} {z} minecraft:air')
+
+
+CHECKS += ['shulker_lift']
+CHECK_FNS['shulker_lift'] = check_shulker_lift
+
+
 if __name__ == '__main__':
     main()

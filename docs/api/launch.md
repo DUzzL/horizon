@@ -112,7 +112,7 @@ test keeps the contract and the code together.
 
 ## Changelog
 
-- 0.1.0 (not released yet, so still one version): `horizon-client`'s `--game-dir`, `--home`, `--fullscreen`,
+- 0.1.0 (not released yet, so still one version): `horizon-client`'s `--game-dir`, `--home`, `--player-dir`, `--fullscreen`,
   `--session-stdin`, `--launch-api`, exit code 2 for a refused command line; `horizon-prepare`'s `--output`,
   `--check`, `--complete`, `--progress json`, `--version-json`, `--client-jar`, `--libraries-dir`, `--assets-dir`
   and `--java-home`.
