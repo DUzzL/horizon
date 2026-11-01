@@ -770,15 +770,11 @@ impl Game<'_> {
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
-        // InputQuirks.EDIT_SHORTCUT_KEY_MODIFIER: Cmd on macOS, Ctrl elsewhere.
-        let (left, right) = if cfg!(target_os = "macos") {
-            (KeyCode::SuperLeft, KeyCode::SuperRight)
-        } else {
-            (KeyCode::ControlLeft, KeyCode::ControlRight)
-        };
-        let ctrl = self.keys.contains(&left) || self.keys.contains(&right);
-        let shift =
-            self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        // The live modifiers, not `self.keys`: every ModifiersChanged runs
+        // sync_toggle, which drops ShiftLeft and ControlLeft from `self.keys`
+        // while a screen is open.
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
         match key {
             // ChatScreen.keyPressed: the chat scrolls a page.
             KeyCode::PageUp | KeyCode::PageDown
