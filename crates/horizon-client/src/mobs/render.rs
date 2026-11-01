@@ -1673,8 +1673,9 @@ fn render_visible(
     } else {
         model_key.as_str()
     };
-    let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
-    let (model, texture) = match cem.layer(cem_key) {
+    let custom = cem.layer(cem_key);
+    let body_animation = custom.and_then(|c| c.animation.as_ref());
+    let (model, texture) = match custom {
         Some(custom) => (
             custom.model.clone(),
             custom.texture.clone().unwrap_or(texture),

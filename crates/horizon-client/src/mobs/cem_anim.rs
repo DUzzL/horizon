@@ -3,10 +3,11 @@
 //! reads the vanilla pose and `head.rx = ...` overrides it.
 //!
 //! One slot array holds everything an expression reads: the entity's parameters
-//! (`limb_swing`, `is_child`...), then 11 slots per model part an animation names (`tx ty tz rx
-//! ry rz sx sy sz visible visible_boxes`, as `ModelPart` keeps them: pixels, radians, on
-//! vanilla's axes), then the entity's `var.*` / `varb.*`, which persist from frame to frame,
-//! then `render.*`, which nothing reads back yet.
+//! (`limb_swing`, `is_child`...) at fixed slots, then, in the order the expressions first name
+//! them, 11 slots per model part (`tx ty tz rx ry rz sx sy sz visible visible_boxes`, as
+//! `ModelPart` keeps them: pixels, radians, on vanilla's axes) and one per variable: the
+//! entity's `var.*` / `varb.*`, which persist from frame to frame, the `global_var.*` /
+//! `global_varb.*` every entity shares, and `render.*`, which nothing reads back yet.
 
 use super::{Mob, Part, anim::Poses, anim::State};
 use horizon_optifine::cem::expr::{Expr, compile};
@@ -67,7 +68,7 @@ params! {
 }
 
 /// What every entity of a frame shares, set once per frame by the game.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Frame {
     /// The world's game time and day time in ticks, with the partial tick.
     pub time: f64,
@@ -81,20 +82,34 @@ pub struct Frame {
     pub paused: bool,
     pub first_person: bool,
     pub third_person_reversed: bool,
+    /// Drawn in a screen's preview (the inventory's player, a mount's box), not in the world.
+    pub in_gui: bool,
 }
 
-static FRAME: Mutex<Frame> = Mutex::new(Frame {
-    time: 0.0,
-    day_time: 0.0,
-    frame_time: 0.0,
-    frame_counter: 0,
-    dimension: 0.0,
-    player: [0.0; 3],
-    player_rot: [0.0; 2],
-    paused: false,
-    first_person: true,
-    third_person_reversed: false,
-});
+impl Frame {
+    /// Before the first frame: in the overworld at the origin, seen in first person.
+    pub const DEFAULT: Self = Self {
+        time: 0.0,
+        day_time: 0.0,
+        frame_time: 0.0,
+        frame_counter: 0,
+        dimension: 0.0,
+        player: [0.0; 3],
+        player_rot: [0.0; 2],
+        paused: false,
+        first_person: true,
+        third_person_reversed: false,
+        in_gui: false,
+    };
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+static FRAME: Mutex<Frame> = Mutex::new(Frame::DEFAULT);
 
 /// The frame the next animations see. Its `frame_time` and `frame_counter` come from the
 /// calls themselves: the time since the previous one, and how many there were.
@@ -113,21 +128,115 @@ pub fn set_frame(mut frame: Frame) {
     *current = frame;
 }
 
-/// A part an animation names: its `Poses` name and its first slot.
+fn frame() -> Frame {
+    *FRAME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Runs `draw` with `is_in_gui` set: a screen's preview of an entity. The world's frame
+/// comes back afterwards.
+pub fn in_gui<R>(draw: impl FnOnce() -> R) -> R {
+    /// Puts the world's frame back, even if `draw` panics.
+    struct Restore(Frame);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            *FRAME
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = self.0;
+        }
+    }
+    let world = {
+        let mut current = FRAME
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let world = *current;
+        current.in_gui = true;
+        world
+    };
+    let _restore = Restore(world);
+    draw()
+}
+
+/// A part an animation names: its `Poses` name, its first slot, and what of it the
+/// animation sets.
 struct Bound {
     name: String,
     base: u32,
+    /// Some step targets `tx`..`sz`.
+    pose: bool,
+    /// Some step targets `visible`.
+    visible: bool,
+    /// Some step targets `visible_boxes`.
+    boxes: bool,
+}
+
+/// One compiled `target = expression`.
+struct Step {
+    slot: u32,
+    expr: Expr,
+    /// The target is a part's variable: a value that isn't finite keeps the pose it had
+    /// (any other target only refuses NaN).
+    part: bool,
 }
 
 /// The compiled `animations` of one model layer.
 pub struct Animation {
-    steps: Vec<(u32, Expr)>,
+    steps: Vec<Step>,
     parts: Vec<Bound>,
-    /// `var.*` and `varb.*` slots, kept per entity.
-    vars: std::ops::Range<u32>,
+    /// The `var.*` and `varb.*` slots, kept per entity.
+    vars: Vec<u32>,
+    /// The `global_var.*` and `global_varb.*` slots and their index in `GLOBALS`.
+    globals: Vec<(u32, u32)>,
     slots: usize,
-    /// Each entity's variables, by entity id.
-    saved: Mutex<HashMap<u32, Box<[f32]>>>,
+    saved: Mutex<Saved>,
+}
+
+/// Each entity's variables, by entity id.
+#[derive(Default)]
+struct Saved {
+    entities: HashMap<u32, Vars>,
+    /// The frame of the last eviction, so that a full table is scanned once a frame at most.
+    evicted: Option<u32>,
+}
+
+/// One entity's variables.
+struct Vars {
+    /// The frame counter of the last run.
+    frame: u32,
+    /// The variables when that frame began: a model drawn again in the same frame (the
+    /// illusioner's copies, a preview, the glowing pass) starts from them, not from the
+    /// first draw's result.
+    start: Box<[f32]>,
+    /// The variables after the last run.
+    now: Box<[f32]>,
+}
+
+/// The variables every entity shares (`global_var.*`): their names, then their values.
+struct Globals {
+    names: Vec<String>,
+    values: Vec<f32>,
+}
+
+static GLOBALS: Mutex<Globals> = Mutex::new(Globals {
+    names: Vec::new(),
+    values: Vec::new(),
+});
+
+/// The index of the global variable `name`, registered on first sight.
+fn global(name: &str) -> u32 {
+    let mut g = GLOBALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let i = match g.names.iter().position(|n| n == name) {
+        Some(i) => i,
+        None => {
+            g.names.push(name.to_owned());
+            g.values.push(0.0);
+            g.names.len() - 1
+        }
+    };
+    i as u32
 }
 
 /// How an animation finds the parts it names.
@@ -166,6 +275,7 @@ impl Names<'_> {
     }
 }
 
+/// The first part of the tree, depth first, that passes `test`.
 fn find<'a>(part: &'a Part, test: &dyn Fn(&Part) -> bool) -> Option<&'a Part> {
     if test(part) {
         return Some(part);
@@ -173,60 +283,82 @@ fn find<'a>(part: &'a Part, test: &dyn Fn(&Part) -> bool) -> Option<&'a Part> {
     part.children.iter().find_map(|c| find(c, test))
 }
 
-/// Where a name an animation uses lives.
-#[derive(Clone, Copy)]
-enum Key {
-    Param(u32),
-    Part(u32, u32),
-    Var(u32),
-    Render(u32),
+/// Hands out slots as the expressions name things: the parameters are fixed at
+/// `0..PARAMS.len()`, then each new part takes the next 11, each variable the next one.
+struct Layout<'a, 'n> {
+    names: &'a Names<'n>,
+    next: u32,
+    parts: Vec<Bound>,
+    vars: Vec<(String, u32)>,
+    globals: Vec<(String, u32)>,
+    render: Vec<(String, u32)>,
 }
 
-/// The parts and variables a model's animations name, in the order they first appear.
-#[derive(Default)]
-struct Layout {
-    parts: Vec<String>,
-    vars: Vec<String>,
-    render: Vec<String>,
+/// The slot of `name` in `list`, the next free one on first sight.
+fn named(list: &mut Vec<(String, u32)>, next: &mut u32, name: &str) -> u32 {
+    if let Some((_, slot)) = list.iter().find(|(n, _)| n == name) {
+        return *slot;
+    }
+    let slot = *next;
+    *next += 1;
+    list.push((name.to_owned(), slot));
+    slot
 }
 
-fn index(list: &mut Vec<String>, name: &str) -> u32 {
-    let i = list.iter().position(|v| v == name).unwrap_or_else(|| {
-        list.push(name.to_owned());
-        list.len() - 1
-    });
-    i as u32
-}
-
-impl Layout {
-    fn key(&mut self, name: &str, names: &Names, this: &str, part: &str) -> Option<Key> {
+impl Layout<'_, '_> {
+    fn slot(&mut self, name: &str, this: &str, part: &str) -> Option<u32> {
         if let Some(i) = PARAMS.iter().position(|(n, _)| *n == name) {
-            return Some(Key::Param(i as u32));
+            return Some(i as u32);
         }
         let (model, var) = name.rsplit_once('.')?;
         Some(match model {
-            "var" | "varb" | "global_var" | "global_varb" => Key::Var(index(&mut self.vars, name)),
-            "render" => Key::Render(index(&mut self.render, name)),
+            "var" | "varb" => named(&mut self.vars, &mut self.next, name),
+            "global_var" | "global_varb" => named(&mut self.globals, &mut self.next, name),
+            "render" => named(&mut self.render, &mut self.next, name),
             _ => {
                 let var = PART_VARS.iter().position(|v| *v == var)? as u32;
-                let found = names.find(model, this, part)?;
-                Key::Part(index(&mut self.parts, &found), var)
+                let found = self.names.find(model, this, part)?;
+                let known = self.parts.iter().find(|b| b.name == found).map(|b| b.base);
+                let base = match known {
+                    Some(base) => base,
+                    None => {
+                        let base = self.next;
+                        self.next += PART_VARS.len() as u32;
+                        self.parts.push(Bound {
+                            name: found,
+                            base,
+                            pose: false,
+                            visible: false,
+                            boxes: false,
+                        });
+                        base
+                    }
+                };
+                base + var
             }
         })
     }
 
-    fn slot(&self, key: Key) -> u32 {
-        let parts = PARAMS.len() as u32;
-        let vars = parts + (self.parts.len() * PART_VARS.len()) as u32;
-        let render = vars + self.vars.len() as u32;
-        match key {
-            Key::Param(i) => i,
-            Key::Part(i, var) => parts + i * PART_VARS.len() as u32 + var,
-            Key::Var(i) => vars + i,
-            Key::Render(i) => render + i,
+    /// Notes that a step sets `slot`: true when it is a part's.
+    fn target(&mut self, slot: u32) -> bool {
+        let Some(b) = self
+            .parts
+            .iter_mut()
+            .find(|b| (b.base..b.base + PART_VARS.len() as u32).contains(&slot))
+        else {
+            return false;
+        };
+        match slot - b.base {
+            0..9 => b.pose = true,
+            9 => b.visible = true,
+            _ => b.boxes = true,
         }
+        true
     }
 }
+
+/// The most expressions one model's animations may have; the rest are left out.
+const MAX_EXPRESSIONS: usize = 4096;
 
 /// Builds an animation from `entries`: each model entry's `this` and `part` names and its
 /// (target, expression) pairs. An expression that doesn't compile is left out, with a warning.
@@ -235,29 +367,37 @@ pub(super) fn compile_animation(
     names: &Names,
     entries: &[(String, String, &[(String, String)])],
 ) -> Option<Animation> {
-    // First the names every entry uses, which fixes the slots; then the expressions.
-    let mut layout = Layout::default();
-    for (this, part, pairs) in entries {
-        for (target, src) in pairs.iter() {
-            let mut note = |name: &str| layout.key(name, names, this, part).map(|_| 0);
-            note(target);
-            let _ = compile(src, &mut note);
-        }
-    }
+    let mut layout = Layout {
+        names,
+        next: PARAMS.len() as u32,
+        parts: Vec::new(),
+        vars: Vec::new(),
+        globals: Vec::new(),
+        render: Vec::new(),
+    };
     let mut steps = Vec::new();
-    for (this, part, pairs) in entries {
+    let mut count = 0;
+    'entries: for (this, part, pairs) in entries {
         for (target, src) in pairs.iter() {
-            // Every name is in the layout already: the slots don't move.
-            let mut resolve = |name: &str| {
-                let key = layout.key(name, names, this, part)?;
-                Some(layout.slot(key))
-            };
-            let Some(slot) = resolve(target) else {
+            count += 1;
+            if count > MAX_EXPRESSIONS {
+                log::warn!(
+                    "Horizon: custom entity model {file}: more than {MAX_EXPRESSIONS} animation \
+                     expressions, the rest are left out"
+                );
+                break 'entries;
+            }
+            let Some(slot) = layout.slot(target, this, part) else {
                 log::warn!("Horizon: custom entity model {file}: unknown target {target}");
                 continue;
             };
-            match compile(src, &mut resolve) {
-                Ok(expr) => steps.push((slot, expr)),
+            let compiled = compile(src, &mut |name: &str| layout.slot(name, this, part));
+            match compiled {
+                Ok(expr) => steps.push(Step {
+                    slot,
+                    expr,
+                    part: layout.target(slot),
+                }),
                 Err(e) => log::warn!("Horizon: custom entity model {file}: {target}: {e}"),
             }
         }
@@ -265,73 +405,133 @@ pub(super) fn compile_animation(
     if steps.is_empty() {
         return None;
     }
-    let parts = layout
-        .parts
-        .iter()
-        .enumerate()
-        .map(|(i, name)| Bound {
-            name: name.clone(),
-            base: layout.slot(Key::Part(i as u32, 0)),
-        })
-        .collect();
-    let vars = layout.slot(Key::Var(0))..layout.slot(Key::Render(0));
     Some(Animation {
         steps,
-        parts,
-        vars,
-        slots: layout.slot(Key::Render(layout.render.len() as u32)) as usize,
+        slots: layout.next as usize,
+        parts: layout.parts,
+        vars: layout.vars.into_iter().map(|(_, slot)| slot).collect(),
+        globals: layout
+            .globals
+            .into_iter()
+            .map(|(name, slot)| (slot, global(&name)))
+            .collect(),
         saved: Mutex::default(),
     })
 }
 
 thread_local!(static SLOTS: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) });
 
-/// The most entities whose variables an animation keeps; past it they start over.
+/// Past this many entities, an animation forgets those it hasn't drawn for `STALE` frames.
 const SAVED: usize = 4096;
+const STALE: u32 = 600;
+
+fn flag(b: bool) -> f32 {
+    f32::from(b)
+}
 
 impl Animation {
     /// Runs the animation for `m` over `poses`, which the vanilla animation has set.
     pub fn run(&self, m: &Mob, s: &State, poses: &mut Poses) {
-        self.run_with(m.id, |slots| params(m, s, slots), poses);
+        self.run_in(&frame(), m, s, poses);
     }
 
-    /// `run` for the entity `id` whose parameters `fill` writes.
-    fn run_with(&self, id: u32, fill: impl FnOnce(&mut [f32]), poses: &mut Poses) {
+    /// `run` in `frame`.
+    fn run_in(&self, frame: &Frame, m: &Mob, s: &State, poses: &mut Poses) {
+        self.run_with(
+            m.id,
+            frame.frame_counter,
+            |slots| params(m, s, frame, slots),
+            poses,
+        );
+    }
+
+    /// `run` for the entity `id` in the frame `counter`, whose parameters `fill` writes.
+    fn run_with(&self, id: u32, counter: u32, fill: impl FnOnce(&mut [f32]), poses: &mut Poses) {
         SLOTS.with_borrow_mut(|slots| {
             slots.clear();
             slots.resize(self.slots, 0.0);
             fill(slots);
+            // What vanilla left: the pose, `visible` and `skipDraw`.
             for b in &self.parts {
                 let base = b.base as usize;
-                let pose = *poses.get(&b.name);
-                slots[base..base + 9].copy_from_slice(&pose);
-                slots[base + 9] = 1.0;
-                slots[base + 10] = 1.0;
+                slots[base..base + 9].copy_from_slice(poses.get(&b.name));
+                slots[base + 9] = flag(!poses.is_hidden_named(&b.name));
+                slots[base + 10] = flag(!poses.skips_named(&b.name));
             }
-            let vars = self.vars.start as usize..self.vars.end as usize;
             let mut saved = self
                 .saved
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(v) = saved.get(&id) {
-                slots[vars.clone()].copy_from_slice(v);
-            }
-            for (slot, expr) in &self.steps {
-                let v = expr.eval(slots);
-                slots[*slot as usize] = v;
-            }
-            if !vars.is_empty() {
-                if saved.len() >= SAVED && !saved.contains_key(&id) {
-                    saved.clear();
+            if !self.vars.is_empty()
+                && let Some(v) = saved.entities.get_mut(&id)
+            {
+                // The first run of a frame goes on from the last one; another run in the
+                // same frame starts where the first one did.
+                if v.frame != counter {
+                    v.start.copy_from_slice(&v.now);
+                    v.frame = counter;
                 }
-                saved.insert(id, slots[vars].into());
+                for (&slot, value) in self.vars.iter().zip(v.start.iter()) {
+                    slots[slot as usize] = *value;
+                }
+            }
+            if !self.globals.is_empty() {
+                let g = GLOBALS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for &(slot, i) in &self.globals {
+                    slots[slot as usize] = g.values[i as usize];
+                }
+            }
+            for step in &self.steps {
+                let v = step.expr.eval(slots);
+                // A part keeps the pose vanilla gave it, a variable its last value.
+                if v.is_nan() || (step.part && v.is_infinite()) {
+                    continue;
+                }
+                slots[step.slot as usize] = v;
+            }
+            if !self.globals.is_empty() {
+                let mut g = GLOBALS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for &(slot, i) in &self.globals {
+                    g.values[i as usize] = slots[slot as usize];
+                }
+            }
+            if !self.vars.is_empty() {
+                if !saved.entities.contains_key(&id) {
+                    saved.make_room(counter);
+                }
+                let v = saved.entities.entry(id).or_insert_with(|| {
+                    // Seen for the first time: its variables began this frame at 0.
+                    let zero: Box<[f32]> = vec![0.0; self.vars.len()].into_boxed_slice();
+                    Vars {
+                        frame: counter,
+                        start: zero.clone(),
+                        now: zero,
+                    }
+                });
+                for (&slot, value) in self.vars.iter().zip(v.now.iter_mut()) {
+                    *value = slots[slot as usize];
+                }
             }
             drop(saved);
             for b in &self.parts {
                 let base = b.base as usize;
-                poses.get(&b.name).copy_from_slice(&slots[base..base + 9]);
-                poses.visible(&b.name, slots[base + 9] != 0.0);
-                if slots[base + 10] == 0.0 {
+                if b.pose {
+                    poses.get(&b.name).copy_from_slice(&slots[base..base + 9]);
+                }
+                // Only what the animation changed is written: naming a part keeps what
+                // vanilla hid.
+                if b.visible {
+                    let visible = slots[base + 9] != 0.0;
+                    if visible == poses.is_hidden_named(&b.name) {
+                        poses.visible(&b.name, visible);
+                    }
+                }
+                // `visible_boxes = 0` skips the part's own boxes; 1 leaves vanilla's skipDraw.
+                if b.boxes && slots[base + 10] == 0.0 && !poses.skips_named(&b.name) {
                     poses.skip_draw(&b.name);
                 }
             }
@@ -339,11 +539,19 @@ impl Animation {
     }
 }
 
-fn params(m: &Mob, s: &State, slots: &mut [f32]) {
-    let frame = *FRAME
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let t = |b: bool| if b { 1.0 } else { 0.0 };
+impl Saved {
+    /// Before a new entity joins a full table, forgets the entities not drawn for a while.
+    fn make_room(&mut self, counter: u32) {
+        if self.entities.len() >= SAVED && self.evicted != Some(counter) {
+            self.evicted = Some(counter);
+            self.entities
+                .retain(|_, v| counter.wrapping_sub(v.frame) <= STALE);
+        }
+    }
+}
+
+fn params(m: &Mob, s: &State, frame: &Frame, slots: &mut [f32]) {
+    let t = flag;
     let max_health = super::finalize::max_health(m);
     let (dx, dy, dz) = (
         m.position.x - frame.player[0],
@@ -403,7 +611,8 @@ fn params(m: &Mob, s: &State, slots: &mut [f32]) {
             // once it touches the bottom.
             FluidDepth | FluidDepthDown => m.fluids.water.max(m.fluids.lava) as f32,
             HeightAboveGround | FluidDepthUp => 0.0,
-            Aggressive => t(m.ai.target.is_some()),
+            // The synced `Mob.isAggressive`, which a client's mobs have too.
+            Aggressive => t(m.ai.aggressive),
             Alive => t(m.alive()),
             Burning => t(m.fire_ticks > 0),
             Child => t(s.baby),
@@ -418,15 +627,19 @@ fn params(m: &Mob, s: &State, slots: &mut [f32]) {
             Climbing => t(m.climbing),
             Jumping => t(!m.on_ground && m.velocity.y > 0.0),
             Paused => t(frame.paused),
+            InGui => t(frame.in_gui),
             FirstPerson => t(frame.first_person),
             ThirdPerson => t(!frame.first_person && !frame.third_person_reversed),
             ThirdPersonReversed => t(frame.third_person_reversed),
-            RightHanded => 1.0,
-            InHand | InItemFrame | InGround | InGui | OnHead | OnShoulder | Ridden | Sitting
-            | Sneaking | Sprinting | Tamed | Blocking | Crawling | Swimming | SwingingRight
-            | SwingingLeft | FirstPersonHand | UsingItem | HoldingRight | HoldingLeft | Hovered => {
-                0.0
-            }
+            RightHanded => t(!m.extra.left_handed),
+            Sitting => t(m.extra.sitting),
+            Tamed => t(m.extra.tame),
+            Sprinting => t(m.extra.sprinting),
+            Sneaking => t(m.extra.crouching),
+            // Not known to the draw yet: 0 until something reads them.
+            InHand | InItemFrame | InGround | OnHead | OnShoulder | Ridden | Blocking
+            | Crawling | Swimming | SwingingRight | SwingingLeft | FirstPersonHand | UsingItem
+            | HoldingRight | HoldingLeft | Hovered => 0.0,
         };
     }
 }
@@ -496,11 +709,16 @@ mod tests {
             ("cem#0".to_owned(), "real_head".to_owned(), hat.as_slice()),
         ];
         let animation = compile_animation("test.jem", &names, &entries).unwrap();
-        let frame = |id: u32, poses: &mut Poses| {
-            animation.run_with(id, |s| s[LIMB_SWING] = std::f32::consts::FRAC_PI_2, poses);
+        let frame = |id: u32, counter: u32, poses: &mut Poses| {
+            animation.run_with(
+                id,
+                counter,
+                |s| s[LIMB_SWING] = std::f32::consts::FRAC_PI_2,
+                poses,
+            );
         };
         let mut poses = Poses::new(&model);
-        frame(7, &mut poses);
+        frame(7, 1, &mut poses);
         assert_eq!(poses.get("real_head")[..4], [1.0, 20.0, 3.0, 0.5]);
         assert_eq!(poses.get("cem#1")[2], 1.0);
         assert!((poses.get("cem#0")[4] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
@@ -509,12 +727,12 @@ mod tests {
         assert!(!poses.is_hidden(&bone("cem#1", vec![])));
         // The next frame starts from the vanilla pose again, with this entity's counter.
         let mut poses = Poses::new(&model);
-        frame(7, &mut poses);
+        frame(7, 2, &mut poses);
         assert_eq!(poses.get("cem#1")[2], 2.0);
         assert!(poses.is_hidden(&bone("cem#1", vec![])));
         // Another entity counts on its own.
         let mut poses = Poses::new(&model);
-        frame(8, &mut poses);
+        frame(8, 2, &mut poses);
         assert_eq!(poses.get("cem#1")[2], 1.0);
     }
 
@@ -530,5 +748,237 @@ mod tests {
         let bad = pairs(&[("missing.rx", "1"), ("root.rx", "1 +")]);
         let entries = [("root".to_owned(), "root".to_owned(), bad.as_slice())];
         assert!(compile_animation("test.jem", &names, &entries).is_none());
+    }
+
+    /// The animation `list` over a model whose parts keep their own names.
+    fn animate(model: &Part, list: &[(&str, &str)]) -> Animation {
+        let ids = HashMap::new();
+        let names = Names {
+            model,
+            vanilla: &|p| p.to_owned(),
+            ids: &ids,
+        };
+        let list = pairs(list);
+        let entries = [("root".to_owned(), "root".to_owned(), list.as_slice())];
+        compile_animation("test.jem", &names, &entries).unwrap()
+    }
+
+    #[test]
+    fn naming_a_part_keeps_what_vanilla_hid() {
+        let model = bone("root", vec![bone("head", vec![])]);
+        let hidden = || {
+            let mut poses = Poses::new(&model);
+            poses.visible("head", false);
+            poses.skip_draw("head");
+            poses
+        };
+        // Only the rotation changes: the part stays hidden and its boxes skipped.
+        let mut poses = hidden();
+        animate(&model, &[("head.rx", "1")]).run_with(1, 1, |_| {}, &mut poses);
+        assert_eq!(poses.get("head")[3], 1.0);
+        assert!(poses.is_hidden_named("head") && poses.skips_named("head"));
+        // An animation that reads the flags sees vanilla's: hidden and skipped are 0.
+        let mut poses = hidden();
+        animate(
+            &model,
+            &[("head.tx", "head.visible + head.visible_boxes * 2")],
+        )
+        .run_with(1, 1, |_| {}, &mut poses);
+        assert_eq!(poses.get("head")[0], 0.0);
+        // visible 1 shows the part; visible_boxes 1 leaves vanilla's skipDraw.
+        let mut poses = hidden();
+        animate(
+            &model,
+            &[("head.visible", "1"), ("head.visible_boxes", "1")],
+        )
+        .run_with(1, 1, |_| {}, &mut poses);
+        assert!(!poses.is_hidden_named("head") && poses.skips_named("head"));
+        // visible_boxes 0 skips the part's own boxes and leaves it visible.
+        let mut poses = Poses::new(&model);
+        animate(&model, &[("head.visible_boxes", "0")]).run_with(1, 1, |_| {}, &mut poses);
+        assert!(poses.skips_named("head") && !poses.is_hidden_named("head"));
+        // visible 0 hides a part vanilla showed.
+        let mut poses = Poses::new(&model);
+        animate(&model, &[("head.visible", "0")]).run_with(1, 1, |_| {}, &mut poses);
+        assert!(poses.is_hidden_named("head") && !poses.skips_named("head"));
+    }
+
+    #[test]
+    fn a_value_that_is_not_finite_keeps_the_vanilla_pose_and_the_variable() {
+        let model = bone("root", vec![]);
+        let mut poses = Poses::new(&model);
+        animate(
+            &model,
+            &[
+                ("root.tx", "sqrt(-1)"),
+                ("root.ty", "5"),
+                ("root.rx", "1 / 0"),
+                ("var.k", "3"),
+                ("var.k", "sqrt(-1)"),
+                ("root.tz", "var.k"),
+            ],
+        )
+        .run_with(1, 1, |_| {}, &mut poses);
+        assert_eq!(poses.get("root")[..4], [1.0, 5.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn the_parameters_come_from_the_mob_and_its_state() {
+        let mut m = Mob::new(
+            1,
+            crate::mobs::sensor_scan_tests::kind(),
+            horizon_core::geometry::Vec3::new(3.0, 4.0, 0.0),
+            0.0,
+        );
+        m.hurt_time = 5;
+        m.fire_ticks = 3;
+        m.on_ground = false;
+        m.velocity = horizon_core::geometry::Vec3::new(0.0, 0.1, 0.0);
+        let s = State {
+            pos: 1.5,
+            speed: 0.0,
+            age: 0.0,
+            y_rot: 30.0,
+            x_rot: 0.0,
+            swing: 0.0,
+            baby: true,
+            partial: 0.25,
+        };
+        let model = bone("root", vec![]);
+        let animation = animate(
+            &model,
+            &[
+                ("root.tx", "hurt_time"),
+                ("root.ty", "limb_swing"),
+                ("root.tz", "head_yaw"),
+                ("root.rx", "is_burning + is_jumping * 2 + is_child * 4"),
+                ("root.ry", "distance"),
+                (
+                    "root.rz",
+                    "is_player_third_person + is_player_first_person * 2",
+                ),
+            ],
+        );
+        let frame = Frame {
+            player: [0.0, 0.0, 0.0],
+            ..Frame::default()
+        };
+        let mut poses = Poses::new(&model);
+        animation.run_in(&frame, &m, &s, &mut poses);
+        assert_eq!(poses.get("root")[..6], [4.75, 1.5, 30.0, 7.0, 5.0, 2.0]);
+    }
+
+    #[test]
+    fn drawing_again_in_the_same_frame_does_not_advance_variables() {
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("var.n", "var.n + 1"), ("root.tx", "var.n")]);
+        let mut poses = Poses::new(&model);
+        let mut tx = |counter: u32| {
+            animation.run_with(1, counter, |_| {}, &mut poses);
+            poses.get("root")[0]
+        };
+        assert_eq!(
+            [tx(10), tx(10), tx(11), tx(11), tx(12)],
+            [1.0, 1.0, 2.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn global_variables_are_shared_by_every_entity() {
+        let model = bone("root", vec![]);
+        let animation = animate(
+            &model,
+            &[
+                (
+                    "global_var.cem_anim_test_shared",
+                    "global_var.cem_anim_test_shared + 1",
+                ),
+                ("root.tx", "global_var.cem_anim_test_shared"),
+            ],
+        );
+        let mut poses = Poses::new(&model);
+        animation.run_with(1, 1, |_| {}, &mut poses);
+        assert_eq!(poses.get("root")[0], 1.0);
+        animation.run_with(2, 1, |_| {}, &mut poses);
+        assert_eq!(poses.get("root")[0], 2.0);
+        // Another model reading the same name sees the same value.
+        let reader = animate(&model, &[("root.ty", "global_var.cem_anim_test_shared")]);
+        reader.run_with(3, 1, |_| {}, &mut poses);
+        assert_eq!(poses.get("root")[1], 2.0);
+    }
+
+    #[test]
+    fn a_full_table_forgets_only_entities_not_seen_for_a_while() {
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("var.n", "var.n + 1"), ("root.tx", "var.n")]);
+        let mut poses = Poses::new(&model);
+        let mut tx = |id: u32, counter: u32| {
+            animation.run_with(id, counter, |_| {}, &mut poses);
+            poses.get("root")[0]
+        };
+        for id in 0..SAVED as u32 {
+            tx(id, 1);
+        }
+        // Entity 0 comes back 699 frames later; a new one then fills the table.
+        assert_eq!(tx(0, 700), 2.0);
+        assert_eq!(tx(100_000, 701), 1.0);
+        // Entity 0 was seen recently and keeps counting; entity 1 was forgotten.
+        assert_eq!(tx(0, 702), 3.0);
+        assert_eq!(tx(1, 702), 1.0);
+    }
+
+    /// Held by the tests that change `FRAME`.
+    static FRAME_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_preview_runs_in_the_gui_and_the_world_frame_comes_back() {
+        let _lock = FRAME_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        set_frame(Frame {
+            time: 77.0,
+            ..Frame::default()
+        });
+        let m = Mob::new(
+            1,
+            crate::mobs::sensor_scan_tests::kind(),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        let s = State {
+            pos: 0.0,
+            speed: 0.0,
+            age: 0.0,
+            y_rot: 0.0,
+            x_rot: 0.0,
+            swing: 0.0,
+            baby: false,
+            partial: 0.0,
+        };
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("root.tx", "is_in_gui"), ("root.ty", "time")]);
+        let mut run = || {
+            let mut poses = Poses::new(&model);
+            animation.run(&m, &s, &mut poses);
+            let p = *poses.get("root");
+            [p[0], p[1]]
+        };
+        assert_eq!(run(), [0.0, 77.0]);
+        assert_eq!(in_gui(&mut run), [1.0, 77.0]);
+        assert_eq!(run(), [0.0, 77.0]);
+    }
+
+    #[test]
+    fn each_frame_counts_one_more() {
+        let _lock = FRAME_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let counter = || frame().frame_counter;
+        let a = counter();
+        set_frame(Frame::default());
+        let b = counter();
+        set_frame(Frame::default());
+        let c = counter();
+        assert_eq!([b.wrapping_sub(a), c.wrapping_sub(b)], [1, 1]);
     }
 }
