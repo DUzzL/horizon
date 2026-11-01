@@ -2410,9 +2410,16 @@ impl Hub {
         // track_entities). On the first tick vanilla's ran before
         // ServerPlayer.tick, whose updatePlayerAttributes (and doTick's
         // removeFrost) created the instances the guest's tick just made: they
-        // go out on the next tick, after the first chunk batch (#5560).
+        // go out on the next tick, after the first chunk batch (#5560). This
+        // server's first batch waits for the player's chunks to be ready, so
+        // they wait for it too: a slow load must not put them before it.
         let g = &mut self.guests[i];
-        if let Some(m) = g.motion.as_mut().filter(|_| !first_tick) {
+        let after_first_batch = g.unacknowledged > 0 || g.max_unacknowledged > 1;
+        if let Some(m) = g
+            .motion
+            .as_mut()
+            .filter(|_| !first_tick && after_first_batch)
+        {
             let values = super::attributes::take_dirty(&mut m.attributes);
             if !values.is_empty() {
                 g.send(&C::UpdateAttributes(play::UpdateAttributes {
@@ -2756,6 +2763,7 @@ impl Hub {
                 S::PlayerLoaded(_) => {
                     let g = &mut self.guests[i];
                     g.loaded = true;
+                    g.loading = false;
                     g.load_timeout = 0;
                 }
                 // PlayerChunkSender.onChunkBatchReceivedByClient.
@@ -3366,6 +3374,7 @@ impl Hub {
         // restartClientLoadTimerAfterRespawn: the client loads a whole new level before it
         // reports it loaded.
         g.load_timeout = super::guest::CLIENT_LOADED_TIMEOUT;
+        g.loading = true;
         // ServerLevel.removePlayerImmediately: the dead player's
         // Entity.setRemoved (KILLED) stops its riding; the new player rides
         // nothing.

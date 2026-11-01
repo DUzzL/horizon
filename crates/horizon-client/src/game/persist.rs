@@ -305,7 +305,7 @@ impl Game<'_> {
                 if uuid.is_some_and(|u| self.restored_vehicle(u).is_some()) {
                     continue;
                 }
-                if matches!(
+                if (matches!(
                     kind.as_str(),
                     "minecraft:experience_orb"
                         | "minecraft:arrow"
@@ -319,7 +319,8 @@ impl Game<'_> {
                         | "minecraft:falling_block"
                         | "minecraft:end_crystal"
                         | "minecraft:ender_dragon"
-                ) && let Some(at) = entity_nbt::position(&tag)
+                ) || horizon_client::projectiles::thrown_type(&kind).is_some())
+                    && let Some(at) = entity_nbt::position(&tag)
                 {
                     self.persist
                         .anon
@@ -384,7 +385,7 @@ impl Game<'_> {
                             self.add_projectile(p);
                         }
                     }
-                    "minecraft:snowball" | "minecraft:egg" | "minecraft:ender_pearl" => {
+                    id if entity_nbt::throwable_kind(id).is_some() => {
                         if let Some(mut p) = entity_nbt::throwable_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
                             self.add_projectile(p);

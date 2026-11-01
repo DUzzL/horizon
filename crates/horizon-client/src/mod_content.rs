@@ -594,6 +594,40 @@ fn read_json(path: &Path) -> Result<J> {
     Ok(serde_json::from_slice(&fs::read(path)?).map_err(|e| format!("{}: {e}", path.display()))?)
 }
 
+impl Plan<'_> {
+    /// `entity-types.json` with a row for each mod type: its template's, so its
+    /// size, eyes and category are the template's (`execute anchored eyes`,
+    /// spawner checks and the commands' entity type list, `reg.entity_types`).
+    /// The rows are appended as text: parsed and written back, a float such as
+    /// a zombie's `movement_speed` can come back one ulp off.
+    fn entity_types_json(&self, bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        use serde_json::value::RawValue;
+        let rows: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut out = bytes.trim_ascii_end().to_vec();
+        if out.pop() != Some(b'}') {
+            return Err("not an object".into());
+        }
+        let mut empty = rows.is_empty();
+        for t in &self.entity_types {
+            if rows.contains_key(&t.id) {
+                continue;
+            }
+            let Some(row) = rows.get(&t.template) else {
+                continue;
+            };
+            if !std::mem::take(&mut empty) {
+                out.push(b',');
+            }
+            out.extend(serde_json::to_vec(&t.id).map_err(|e| e.to_string())?);
+            out.push(b':');
+            out.extend(row.get().as_bytes());
+        }
+        out.push(b'}');
+        Ok(out)
+    }
+}
+
 impl<'a> Plan<'a> {
     fn new(base: &Path, mods: &'a [ContentMod]) -> Result<Self> {
         let vanilla_items = match base.join("items.json").exists() {
@@ -1431,8 +1465,9 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 15] = [
+const JSON_TABLES: [&str; 16] = [
     "facts.json",
+    "entity-types.json",
     "creative-inventory.json",
     "registries.json",
     "gameplay-facts.json",
@@ -1912,7 +1947,10 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
     }
     let table = |name: &str| -> Result<()> {
         let path = base.join(name);
-        let bytes = if JSON_TABLES.contains(&name) {
+        let bytes = if name == "entity-types.json" {
+            plan.entity_types_json(&fs::read(&path)?)
+                .map_err(|e| format!("{name}: {e}"))?
+        } else if JSON_TABLES.contains(&name) {
             let mut doc = read_json(&path)?;
             plan.json(name, &mut doc)
                 .map_err(|e| format!("{name}: {e}"))?;

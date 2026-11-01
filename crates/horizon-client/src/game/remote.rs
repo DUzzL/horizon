@@ -1064,6 +1064,8 @@ impl Game<'_> {
         self.titles.overlay_time = 0;
         // GameRenderer.resetData and narrator.clear (Minecraft.disconnect).
         self.item_activation.reset();
+        // Kept mod block entity geometry belongs to the world leaving.
+        self.kept_block_entities.get_mut().clear();
         self.clear_narrator();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
@@ -3451,6 +3453,14 @@ impl Game<'_> {
                                 self.using = synced_local_use(using, *flags, selected, |slot| {
                                     self.stack_in(slot).is_some()
                                 });
+                                // onSyncedDataUpdated's useItemRemaining: getUseDuration,
+                                // without startUsingItem's event.
+                                if using.is_none()
+                                    && let Some((slot, _)) = self.using
+                                    && let Some(stack) = self.stack_in(slot).cloned()
+                                {
+                                    self.use_duration = self.use_duration(&stack);
+                                }
                             }
                             _ => {}
                         }
@@ -7040,11 +7050,7 @@ impl Game<'_> {
             } else if held.as_ref().is_some_and(|s| &*s.item == "minecraft:brush") {
                 // BrushItem.useOn: brushing starts here (CONSUME, no swing); the
                 // server brushes and the dust is this client's own.
-                self.with_hand(hand, |g| {
-                    if g.using.is_none() {
-                        g.using = Some((g.held_slot(), 0));
-                    }
-                });
+                self.with_hand(hand, Game::start_using_item);
                 return true;
             } else if held
                 .as_ref()
@@ -7435,6 +7441,10 @@ impl Game<'_> {
         if self.cooldowns.is_on_cooldown(&group) {
             return false;
         }
+        // a mod's item used over time starts here too, as the server starts it.
+        if self.with_hand(hand, |g| g.start_mod_use(&held)) {
+            return true;
+        }
         // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
         // the armor slot and the hand change at once (the server confirms).
         if info.equip_slot.is_some() && self.with_hand(hand, |g| g.equip_from_hand(&held)) {
@@ -7608,7 +7618,7 @@ impl Game<'_> {
             }
         };
         if start {
-            self.using = Some((self.held_slot(), 0));
+            self.start_using_item();
         }
         start || !matches!(&*held.item, "minecraft:bow" | "minecraft:crossbow")
     }
@@ -7622,7 +7632,7 @@ impl Game<'_> {
         if self.cooldowns.is_on_cooldown(&group) {
             return;
         }
-        self.using = Some((self.held_slot(), 0));
+        self.start_using_item();
         let at = self
             .player
             .as_ref()
@@ -7635,9 +7645,12 @@ impl Game<'_> {
     }
     /// Whether `stack` stays in use until the button lets go (bows,
     /// crossbows, tridents, spyglasses, shields, eyes of ender, whose
-    /// `getUseDuration` 0 never counts down to the end): its use only counts
-    /// ticks here.
+    /// `getUseDuration` 0 never counts down to the end) or the server ends
+    /// it (a mod's item): its use only counts ticks here.
     fn held_until_released(&self, stack: &ItemStack) -> bool {
+        if self.mod_use(stack) {
+            return true;
+        }
         matches!(
             &*stack.item,
             "minecraft:bow"
@@ -7765,7 +7778,8 @@ impl Game<'_> {
         // Consumable.shouldEmitParticlesAndSounds, as in tick_used_item. The
         // countdown goes on past zero (LivingEntity.updateUsingItem completes
         // only on the server) until the server's USE_ITEM_COMPLETE.
-        let remaining = consumable.ticks() - ticks as i32;
+        // getUseItemRemainingTicks: the duration this use started with.
+        let remaining = self.use_duration - ticks as i32;
         if consumable.should_emit(remaining) {
             // `emit_consume` plays the eat sound and spawns the bites (when the
             // item has consume particles), as `tick_used_item` does on the

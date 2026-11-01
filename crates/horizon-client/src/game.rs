@@ -142,6 +142,7 @@ mod integrated;
 mod interactions;
 mod item_draw;
 mod item_particles;
+mod item_use;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -2245,6 +2246,9 @@ struct Game<'a> {
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
+    /// Mod block entities' geometry their mods kept
+    /// (game/native_block_entity_draw.rs).
+    kept_block_entities: std::cell::RefCell<native_block_entity_draw::KeptGeometry>,
     /// `item_level` for one frame, game time, day time and dimension.
     item_level_cache: std::cell::RefCell<
         Option<(
@@ -2342,6 +2346,9 @@ struct Game<'a> {
     be_anims: horizon_client::block_entity_anim::BlockEntityAnims,
     /// Item being used (eaten): hotbar slot and ticks used.
     using: Option<(usize, u32)>,
+    /// `getUseDuration` when that use started, as a mod left it
+    /// (`game/item_use.rs`): consumables and mod items count to it.
+    use_duration: i32,
     /// Camera.oldFovModifier / fovModifier.
     /// `Camera` (eye height and field-of-view easing, view placement).
     view: horizon_client::camera::Camera,
@@ -2845,6 +2852,56 @@ impl Dim {
         }
     }
 }
+/// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
+/// `max` the stack's own maximum: onto equal stacks first
+/// (`getSlotWithRemainingSpace`: the selected slot, the off hand, then the
+/// hotbar and the main inventory), then into empty slots of the inventory
+/// (`getFreeSlot`, never the off hand). What does not fit stays in `stack`;
+/// true when some of it is left.
+fn inventory_add(
+    inventory: &mut [Option<ItemStack>],
+    offhand: &mut Option<ItemStack>,
+    selected: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    let order = std::iter::once(selected)
+        .chain(std::iter::once(shield::OFFHAND_SLOT))
+        .chain((0..36).filter(|&i| i != selected));
+    for i in order {
+        let slot = if i == shield::OFFHAND_SLOT {
+            &mut *offhand
+        } else {
+            &mut inventory[i]
+        };
+        if let Some(slot) = slot
+            && slot.same_item_same_components(stack)
+            && slot.count < max
+        {
+            let moved = (max - slot.count).min(stack.count);
+            slot.count += moved;
+            stack.count -= moved;
+            if stack.count == 0 {
+                return false;
+            }
+        }
+    }
+    for slot in inventory.iter_mut().take(36) {
+        if slot.is_none() {
+            let moved = stack.count.min(max);
+            *slot = Some(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+            if stack.count == 0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn facing_offset(facing: &str) -> [i32; 3] {
     match facing {
         "north" => [0, 0, -1],
@@ -3236,57 +3293,23 @@ impl Game<'_> {
             tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
         )
         .then(|| stack.clone());
-        let mut added = false;
         let max = self
             .res
             .items()
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
-        // getSlotWithRemainingSpace: the selected slot, the off hand, then
-        // the hotbar and the main inventory.
-        let order: Vec<usize> = std::iter::once(self.selected)
-            .chain(std::iter::once(shield::OFFHAND_SLOT))
-            .chain((0..36).filter(|&i| i != self.selected))
-            .collect();
-        for &i in &order {
-            let slot = if i == shield::OFFHAND_SLOT {
-                &mut self.offhand
-            } else {
-                &mut self.inventory[i]
-            };
-            if let Some(slot) = slot
-                && slot.same_item_same_components(&stack)
-                && slot.count < max
-            {
-                let moved = (max - slot.count).min(stack.count);
-                slot.count += moved;
-                stack.count -= moved;
-                added |= moved > 0;
-                if stack.count == 0 {
-                    self.tutorial_get_item(tutorial_item.as_ref());
-                    return None;
-                }
-            }
-        }
-        for i in 0..36 {
-            if self.inventory[i].is_none() {
-                let moved = stack.count.min(max);
-                self.inventory[i] = Some(ItemStack {
-                    count: moved,
-                    ..stack.clone()
-                });
-                stack.count -= moved;
-                added |= moved > 0;
-                if stack.count == 0 {
-                    self.tutorial_get_item(tutorial_item.as_ref());
-                    return None;
-                }
-            }
-        }
-        if added {
+        let before = stack.count;
+        let left = inventory_add(
+            &mut self.inventory,
+            &mut self.offhand,
+            self.selected,
+            max,
+            &mut stack,
+        );
+        if stack.count < before {
             self.tutorial_get_item(tutorial_item.as_ref());
         }
-        Some(stack)
+        left.then_some(stack)
     }
     /// The block's first up face (or any face) and its fixed tint, for block
     /// models drawn as entities (falling blocks, carried blocks).
@@ -5835,6 +5858,12 @@ impl Game<'_> {
         {
             return Ok(true);
         }
+        // a mod's item used over time: its Item.use, once a block item's
+        // useOn had its turn.
+        if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_mod_use(&stack)
+        {
+            return Ok(true);
+        }
         if (!on_block && self.use_potion_item(&stack)?)
             || ((block_hit.is_some() || !spawn_egg)
                 && (!on_block || spawn_egg)
@@ -5844,9 +5873,7 @@ impl Game<'_> {
         }
         // BrushItem.useOn: brushing starts on the block aimed at (CONSUME).
         if block_hit.is_some() && &*stack.item == "minecraft:brush" {
-            if self.using.is_none() {
-                self.using = Some((self.held_slot(), 0));
-            }
+            self.start_using_item();
             return Ok(true);
         }
         if !on_block
@@ -5873,9 +5900,7 @@ impl Game<'_> {
         }
         // BundleItem.use: startUsingItem, then onUseTick empties it.
         if !on_block && info.bundle {
-            if self.using.is_none() {
-                self.using = Some((self.held_slot(), 0));
-            }
+            self.start_using_item();
             self.swing_arm();
             return Ok(true);
         }
@@ -5884,10 +5909,8 @@ impl Game<'_> {
             return Ok(true);
         }
         if !on_block && &*stack.item == "minecraft:bow" {
-            if self.using.is_none()
-                && (self.creative || self.projectile_slot("minecraft:bow").is_some())
-            {
-                self.using = Some((self.held_slot(), 0));
+            if self.creative || self.projectile_slot("minecraft:bow").is_some() {
+                self.start_using_item();
             }
             return Ok(true);
         }
@@ -6043,17 +6066,28 @@ impl Game<'_> {
     /// `Player.canEat` (`Consumable.canConsume`), anything else is always
     /// consumed. The right click is held for `consume_seconds`.
     fn start_eating(&mut self, info: &horizon_client::items::ItemInfo) -> bool {
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
         if info.consumable.is_none()
             || (info.food.is_some()
-                && !self.player.as_ref().is_some_and(|p| {
-                    info.can_always_eat || p.health.food.food < 20 || self.creative
-                }))
+                && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat)))
         {
             return false;
         }
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
+        // as Consumable.startConsuming does, no time is eaten at once, without a use
+        // (the server's eating reaches a client through the inventory).
+        if let Some(consumable) = info.consumable.as_ref()
+            && item_use::consumes_at_once(consumable.ticks())
+        {
+            if self.remote.is_none() {
+                // the cooldown of ItemStack.use's applyAfterUseComponentSideEffects.
+                self.apply_use_cooldown(&stack);
+                self.finish_consuming(info, consumable, &stack);
+            }
+            return true;
         }
+        self.start_using_item();
         true
     }
     /// `InstrumentItem.use` for a goat horn: the player holds it up for the
@@ -6065,9 +6099,7 @@ impl Game<'_> {
         let Some(instrument) = self.res.items().instrument(stack) else {
             return;
         };
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
-        }
+        self.start_using_item();
         let at = self
             .player
             .as_ref()
@@ -6188,6 +6220,9 @@ impl Game<'_> {
             return;
         }
         if self.tick_drinking(slot, ticks, &stack) {
+            if self.using.is_none() {
+                self.use_item_finished(&stack);
+            }
             return;
         }
         if &*stack.item == "minecraft:bow" {
@@ -6239,24 +6274,30 @@ impl Game<'_> {
             self.tick_bundle(slot, ticks);
             return;
         }
+        if self.mod_use(&stack) {
+            self.tick_mod_use(slot, ticks, &stack);
+            return;
+        }
         let Some(consumable) = info.consumable.as_ref() else {
             self.using = None;
             return;
         };
         // ItemStack.onUseTick: Consumable.shouldEmitParticlesAndSounds with
         // the remaining ticks before this tick counts them down.
-        let duration = consumable.ticks().max(0) as u32;
-        let remaining = duration - ticks.min(duration);
+        // the duration is getUseDuration's when the use started.
+        let remaining = self.use_duration - ticks as i32;
+        let done = item_use::count_down(ticks, self.use_duration).is_none();
         let ticks = ticks + 1;
-        if consumable.should_emit(remaining as i32) {
+        if consumable.should_emit(remaining) {
             self.emit_consume(consumable, &stack, 5);
         }
-        if ticks >= duration {
+        if done {
             self.using = None;
             self.send_use_item_complete();
             // ItemStack.finishUsingItem's applyAfterUseComponentSideEffects.
             self.apply_use_cooldown(&stack);
             self.finish_consuming(&info, consumable, &stack);
+            self.use_item_finished(&stack);
         } else {
             self.using = Some((slot, ticks));
         }
@@ -7686,6 +7727,7 @@ impl Game<'_> {
         ));
         draws.push(hud_layout::GuiDraw::Pop);
         hud_layout::paint(batch, &self.gui.atlas, &draws);
+        self.native_item_decorations(stack, x, y, batch);
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         // The pack prompt replaces the connecting screen (setScreen), but
@@ -11745,6 +11787,7 @@ impl Game<'_> {
         self.boss_overlay.reset();
         // GameRenderer.resetData (Minecraft.clearClientLevel).
         self.item_activation.reset();
+        self.kept_block_entities.get_mut().clear();
         self.bosses = Default::default();
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
@@ -12986,6 +13029,18 @@ impl Game<'_> {
             let attack = attacks[i];
             let inverse_height =
                 horizon_client::first_person::equip_displacement(heights[i], scale);
+            let mut canceled = false;
+            self.native_render_hand(
+                hand,
+                item.as_ref(),
+                a,
+                attack,
+                inverse_height,
+                &mut canceled,
+            );
+            if canceled {
+                continue;
+            }
             // The main hand on its arm, the off hand on the other one.
             let left = self.settings.main_hand_left != (hand == Hand::Off);
             let Some(stack) = item else {
@@ -13078,24 +13133,18 @@ impl Game<'_> {
                         .item_renderer
                         .models
                         .components(&horizon_client::item_render::stack_view(&stack));
-                    let animation = components
+                    let mut animation = components
                         .get("minecraft:consumable")
-                        .map(horizon_client::first_person::consumable_animation);
-                    if matches!(
+                        .map_or(horizon_world::consumable::UseAnimation::None, |c| {
+                            horizon_client::first_person::consumable_animation(c)
+                        });
+                    self.native_use_animation(&stack, &mut animation);
+                    item_use::use_pose(
                         animation,
-                        Some(
-                            horizon_world::consumable::UseAnimation::Eat
-                                | horizon_world::consumable::UseAnimation::Drink
-                        )
-                    ) {
-                        ItemPose::Eat {
-                            remaining: owner.use_item_remaining_ticks as f32,
-                            duration: owner.use_duration as f32,
-                            partial: a,
-                        }
-                    } else {
-                        ItemPose::Using
-                    }
+                        owner.use_item_remaining_ticks as f32,
+                        owner.use_duration as f32,
+                        a,
+                    )
                 }
                 _ if spinning => ItemPose::SpinAttack,
                 // ItemInHandRenderer: a STAB swing of this hand jabs.
@@ -16025,6 +16074,27 @@ impl Game<'_> {
                         }) * wheel_sensitivity
                     };
                     let d = scaled(raw_y) as f32;
+                    // ScreenEvent.MouseScrolled.Pre: the open screen hears of
+                    // the wheel before anything scrolls, and a cancelled turn
+                    // scrolls nothing — no bundle, no list, slider or
+                    // scrollbar. The hotbar below reads the wheel only while
+                    // playing, which the gate excludes. A wheel the pad or the
+                    // keyboard's focus made up is not the mouse: it fires
+                    // nothing.
+                    if !self.pad_synthetic_input()
+                        && let Some(screen) = self.screen_view_now()
+                    {
+                        let mut canceled = false;
+                        self.native_screen_mouse_scrolled_pre(
+                            &screen,
+                            [scaled(raw_x), scaled(raw_y)],
+                            glfw_modifiers(self.modifiers),
+                            &mut canceled,
+                        );
+                        if canceled {
+                            return Ok(());
+                        }
+                    }
                     if self.dialog_open() {
                         self.dialog_scroll(d);
                     } else if self.code_of_conduct.is_some() {
@@ -17124,6 +17194,7 @@ impl<'a> Game<'a> {
             pad: Default::default(),
             frames: 0,
             glint_frame: Default::default(),
+            kept_block_entities: Default::default(),
             item_level_cache: Default::default(),
             world_frames: 0,
             fps: 0.0,
@@ -17187,6 +17258,7 @@ impl<'a> Game<'a> {
                 anims
             },
             using: None,
+            use_duration: 0,
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             frame_clock: Default::default(),
@@ -18087,7 +18159,7 @@ fn gameplay_tables(
     ))
     .map_err(|e| e.to_string())?;
     let (facts, gameplay_projection) =
-        BlockFacts::load_with_projection(root, assets.registry, &behaviour_json)
+        BlockFacts::load_with_projection(root, assets.registry, &behaviour_json, parallel)
             .map_err(|e| e.to_string())?;
     horizon_client::block_contact::set_mod_blocks(
         facts

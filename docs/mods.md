@@ -198,9 +198,10 @@ It is the entity type `<id>:<name>`, with its network id after vanilla's. Using 
 thrown: same speed, spread, sound and cooldown, and one item used outside creative. It flies as a snowball, breaks on
 what it hits with its item's crumbs, and is drawn as its item's model (`ThrownItemRenderer`). Its name is the translation
 `entity.<id>.<name>`. It works in single player and on LAN with the same mods. Dedicated servers share that code,
-untested so far. Clients join a server only with the same mods' entity types, as with its blocks. Not yet: it is not
-saved (it is gone when the chunk unloads or the world closes), `/summon` doesn't know it, a dispenser doesn't throw it,
-and a vanilla client on a server with it may be disconnected when one spawns.
+untested so far. Clients join a server only with the same mods' entity types, as with its blocks. It is saved with its
+chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`. A world opened without the
+mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
+server with it may be disconnected when one spawns.
 
 #### Menu types
 

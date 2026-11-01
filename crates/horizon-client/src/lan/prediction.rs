@@ -49,6 +49,8 @@ pub struct Over {
     pub weight: f32,
     /// The farthest tick, as played: what the log tells of it.
     pub at_worst: Option<Played>,
+    /// One of them came with a move.
+    pub moved: bool,
 }
 
 /// Ticks within the tolerance in a row after which a replay that lands off takes the client's
@@ -314,6 +316,7 @@ impl Replay {
             } else {
                 counted = true;
                 over.ticks += 1;
+                over.moved |= tick.position.is_some();
                 if offset > over.worst {
                     over.at_worst = self.ticks.back().copied();
                 }
@@ -641,6 +644,9 @@ mod tests {
         /// On tick `.0`, the server sends the player attributes (the server's body has no sprint
         /// modifier): `.1` as in [`Change::Attributes`], which the client takes.
         attributes: Option<(usize, Option<bool>)>,
+        /// The first ticks the client is on its loading screen: it ends them without moving or
+        /// sending a move.
+        frozen: usize,
     }
 
     impl Run {
@@ -655,6 +661,7 @@ mod tests {
                 burst: None,
                 blocks: Vec::new(),
                 attributes: None,
+                frozen: 0,
             }
         }
     }
@@ -733,6 +740,7 @@ mod tests {
         let run_teleport = run.teleport;
         let run_burst = run.burst;
         let run_attributes = run.attributes;
+        let run_frozen = run.frozen;
         let mut back = start;
         for (i, (input, yaw)) in run.script.into_iter().enumerate() {
             let tick = i as u64;
@@ -757,13 +765,16 @@ mod tests {
                 back = before;
             }
             client.yaw = yaw;
-            world(&mut client, &mut |w| {
-                w.controlled_simulation_tick(keys(input)).unwrap()
-            });
-            client.position = cheat(i, before, client.position);
+            if i >= run_frozen {
+                world(&mut client, &mut |w| {
+                    w.controlled_simulation_tick(keys(input)).unwrap()
+                });
+                client.position = cheat(i, before, client.position);
+                let p = client.position;
+                let ground = u8::from(client.ground.on_ground);
+                record.moved(Some([p.x, p.y, p.z]), Some((yaw, run.pitch)), ground);
+            }
             let p = client.position;
-            let ground = u8::from(client.ground.on_ground);
-            record.moved(Some([p.x, p.y, p.z]), Some((yaw, run.pitch)), ground);
             record.tick_end(input, client.sprinting);
             // A burst: the server hears these ticks now and plays them together at the last one.
             if run_burst.is_some_and(|(from, to)| (from..to).contains(&i)) {
@@ -796,6 +807,26 @@ mod tests {
             });
         }
         Some(played)
+    }
+
+    /// A client still loading the level (#5849) neither moves nor sends a move, while the replay
+    /// falls from where it joined: those ticks are over, but none with a move, which is what lets
+    /// the server excuse them. Its first move after them counts as any other.
+    #[test]
+    fn a_client_on_its_loading_screen_is_over_without_a_move() {
+        let run = Run {
+            start: Vec3::new(20.5, 12.0, 20.5),
+            script: vec![(0, 0.0); 20],
+            frozen: 7,
+            ..Run::walk()
+        };
+        let Some(steps) = steps_in(run, |_, _, honest| honest, None) else {
+            return;
+        };
+        let (frozen, after) = steps.split_at(7);
+        assert!(frozen.iter().any(|s| s.over.ticks > 0), "the replay falls");
+        assert!(frozen.iter().all(|s| !s.over.moved));
+        assert!(after.iter().all(|s| s.over.ticks == 0 || s.over.moved));
     }
 
     #[test]
