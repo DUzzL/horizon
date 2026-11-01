@@ -17,6 +17,29 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 
+/// The inside-block effects of fire and lava (`InsideBlockEffectType`
+/// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt.
+fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
+    if fire > 0.0 && !m.kind.flags.fire_immune {
+        let multiplier = m.burning_time();
+        m.fire_ticks = crate::motion::environment::ignite_contact(
+            m.fire_ticks,
+            false,
+            &mut m.random,
+            multiplier,
+        );
+        m.damage(fire, Damage::of(DamageKind::InFire));
+    }
+    if m.fluids.in_lava && !m.kind.flags.fire_immune {
+        m.ignite_for_ticks(300);
+        m.damage(4.0, Damage::of(DamageKind::Lava));
+    }
+    // Entity.applyEffectsFromBlocks: rain puts the fire out afterwards.
+    if m.fire_ticks > 0 && in_rain(m, w) {
+        m.fire_ticks = 0;
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Ai {
     /// `Mob.homePosition` and `homeRadius`: where a restricted mob stays
@@ -936,16 +959,6 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if fire > 0.0 {
         m.ticks_frozen = 0;
     }
-    if fire > 0.0 && !m.kind.flags.fire_immune {
-        let multiplier = m.burning_time();
-        m.fire_ticks = crate::motion::environment::ignite_contact(
-            m.fire_ticks,
-            false,
-            &mut m.random,
-            multiplier,
-        );
-        m.damage(fire, Damage::of(DamageKind::InFire));
-    }
     // Fire: water or rain (Entity.isInRain) extinguishes, lava ignites,
     // burning hurts every second.
     if m.fire_ticks > 0 && (m.fluids.in_water || in_rain(m, w)) {
@@ -956,10 +969,6 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             0.7,
             1.6 + (m.random.next_float() - m.random.next_float()) * 0.4,
         ));
-    }
-    if m.fluids.in_lava && !m.kind.flags.fire_immune {
-        m.ignite_for_ticks(300);
-        m.damage(4.0, Damage::of(DamageKind::Lava));
     }
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
@@ -1023,7 +1032,6 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         }
         freeze_tick(m, w);
     }
-    tick_effects(m, w.mod_effects);
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
     }
@@ -1036,6 +1044,13 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.invulnerable > 0 {
         m.invulnerable -= 1;
     }
+    // LivingEntity.baseTick runs tickEffects after the timers count down.
+    tick_effects(m, w.mod_effects);
+    // Entity.applyEffectsFromBlocks runs in LivingEntity.aiStep, after
+    // baseTick has counted the fire and the hurt timers down: a fire block or
+    // lava ignites to the full 160 / 300 ticks and its hit lands after the
+    // invulnerable time of that tick has already dropped.
+    block_contact_damage(m, w, fire);
     if !m.alive() {
         m.death_time += 1;
     }
@@ -2452,7 +2467,7 @@ pub fn custom_travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<Mo
 /// are those the mob's box touches where it started the tick and where it
 /// ended.
 fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
-    if !m.alive() || w.difficulty.effective == 0.0 {
+    if !m.alive() {
         return;
     }
     let half = f64::from(m.width()) / 2.0 - 1.0e-5;
@@ -2469,10 +2484,12 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
                     }
                     match w.block_name(x, y, z) {
                         "minecraft:wither_rose" => {
-                            // isInvulnerableTo(wither): the invulnerable time
-                            // after a hit; WitherBoss and WitherSkeleton
-                            // refuse the effect (`canBeAffected`).
-                            if m.invulnerable <= 0
+                            // World difficulty, not the regional one, and
+                            // isInvulnerableTo(wither) (the invulnerable
+                            // flag, not the hit timer); WitherBoss and
+                            // WitherSkeleton refuse the effect
+                            // (`canBeAffected`).
+                            if w.difficulty.base != 0
                                 && !m.invulnerable_flag
                                 && !matches!(m.species(), Species::Wither | Species::WitherSkeleton)
                             {
@@ -3285,5 +3302,86 @@ mod in_wall_tests {
         assert!(!in_wall(1.3965, [-3.0, 64.5, 0.5], wall));
         // A box edge exactly on the wall face only touches it.
         assert!(!in_wall(1.0, [-0.4, 64.5, 0.5], wall));
+    }
+}
+
+#[cfg(test)]
+mod burn_and_rose_tests {
+    use super::*;
+    use horizon_world::registry::BlockRegistry;
+    use std::sync::Arc;
+
+    fn build_with(block: &'static str) -> impl FnOnce(&mut crate::world::World, &BlockRegistry) {
+        move |world, registry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let state = registry.default_state(block).unwrap();
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+            }
+            for x in -4..4 {
+                for z in -4..4 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            world.set(0, 64, 0, state).unwrap();
+        }
+    }
+
+    fn golem(types: &crate::mobs::MobTypes) -> Mob {
+        let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        register(&mut m);
+        m
+    }
+
+    /// `WitherRoseBlock.entityInside` tests the world difficulty and
+    /// `isInvulnerableTo(wither)`, not the regional difficulty of a fresh
+    /// chunk and not the hit timer: a golem that was just hurt still gets it.
+    #[test]
+    fn wither_rose_applies_wither_whatever_the_hit_timer_and_local_difficulty() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:wither_rose"),
+            |w, types| {
+                let mut m = golem(types);
+                m.invulnerable = 15;
+                assert_eq!(w.difficulty.base, 2);
+                flower_contact_effects(&mut m, w);
+                assert!(m.has_effect("minecraft:wither"), "normal difficulty");
+
+                let mut peaceful = w.clone();
+                peaceful.difficulty = crate::mobs::spawning::LocalDifficulty::new(0, 18000, 0, 0.0);
+                let mut m = golem(types);
+                flower_contact_effects(&mut m, &peaceful);
+                assert!(!m.has_effect("minecraft:wither"), "peaceful");
+            },
+        );
+        let _ = ran;
+    }
+
+    /// `applyEffectsFromBlocks` runs after `baseTick` counted the fire and
+    /// the invulnerable time down: standing in lava a golem reads Fire 300
+    /// (not 299) after its first tick, and the hit that tick starts has its
+    /// full invulnerable time.
+    #[test]
+    fn lava_ignites_to_the_full_time_and_hits_after_the_timers_count_down() {
+        crate::mobs::world::with_built_test_world(&[], build_with("minecraft:lava"), |w, types| {
+            let mut m = golem(types);
+            let mut events = Vec::new();
+            let start = m.health;
+            base_tick(&mut m, w, &mut events);
+            assert_eq!(m.health, start - 4.0, "one lava hit");
+            assert_eq!(m.fire_ticks, 300, "fire after the first tick");
+            assert_eq!(m.invulnerable, 20, "the hit's own invulnerable time");
+            for _ in 0..10 {
+                base_tick(&mut m, w, &mut events);
+            }
+            assert_eq!(m.health, start - 8.0, "second hit on tick 11");
+            assert_eq!(m.fire_ticks, 300);
+        });
     }
 }
