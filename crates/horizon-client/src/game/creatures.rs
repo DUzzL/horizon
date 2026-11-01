@@ -6444,28 +6444,6 @@ impl Game<'_> {
                     0,
                     out,
                 );
-                // The trident texture's OptiFine emissive overlay, full bright.
-                let glow = self
-                    .res
-                    .mob_data()
-                    .emissive
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .overlay("entity/trident/trident")
-                    .and_then(|e| atlas.sprites.get(e))
-                    .copied();
-                if let Some(g) = glow {
-                    horizon_client::mobs::render::draw(
-                        model,
-                        m,
-                        &poses,
-                        [g.u0, g.v0, g.u1, g.v1],
-                        0xFFFF_FFFF,
-                        horizon_client::mobs::render::FULL_BRIGHT,
-                        0,
-                        out,
-                    );
-                }
                 continue;
             }
             // WindChargeRenderer.
