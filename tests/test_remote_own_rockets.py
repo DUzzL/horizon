@@ -65,7 +65,10 @@ impl Particles {
     fn add(&mut self, _: &ParticleOptions, at: [f64; 3], v: [f64; 3]) { self.added.push((at, v)); }
 }
 struct Clock { runs: bool }
-impl Clock { fn runs_normally(&self) -> bool { self.runs } }
+impl Clock {
+    fn runs_normally(&self) -> bool { self.runs }
+    fn world_runs(&mut self) -> bool { panic!("TickRateManager.tick a second time in one client tick") }
+}
 struct Settings { main_hand_left: bool }
 struct Player { position: Vec3, velocity: Vec3, fall_flying: bool }
 #[derive(Default)]
@@ -98,7 +101,7 @@ fn game(runs: bool) -> Game {
             Rocket { attached_to: None, position: Vec3::new(4.0, 5.0, 6.0), ..Rocket::default() },
         ],
         yaw: 90.0, pitch: 0.0,
-        world: World { random: horizon_core::random::LegacyRandom(vec![1.0, -2.0, 1.0, -2.0]) },
+        world: World { random: horizon_core::random::LegacyRandom(vec![3.0, -2.0, 3.0, -2.0]) },
         particles: Particles::default(),
     }
 }
@@ -128,7 +131,7 @@ fn main() {
     // with a gaussian spread of 0.05 across it.
     let sparks = &g.particles.added;
     assert_eq!(sparks.len(), 1);
-    assert!(near(sparks[0].0, right) && near(sparks[0].1, [0.05, 0.05, -0.1]), "{:?}", sparks);
+    assert!(near(sparks[0].0, right) && near(sparks[0].1, [0.15, 0.05, -0.1]), "{:?}", sparks);
     // Rockets of another entity, or free ones, tick with the other entities.
     assert_eq!(g.rockets[1].position, Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(g.rockets[2].position, Vec3::new(4.0, 5.0, 6.0));
