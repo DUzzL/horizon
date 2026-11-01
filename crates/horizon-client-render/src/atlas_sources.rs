@@ -208,8 +208,12 @@ pub fn list_textures(root: &Path) -> Vec<String> {
     out.sort();
     out
 }
-/// The file of a texture identifier.
+/// The file of a texture identifier. A Custom Item Textures id (`cit_assets`) names its
+/// resource path, wherever the folder: `directory` is not used for it.
 pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
+    if let Some(rest) = crate::cit_assets::resource(texture, "png") {
+        return root.join(rest);
+    }
     let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
     root.join(format!("assets/{namespace}/{directory}/{path}.png"))
 }
