@@ -2721,9 +2721,8 @@ impl Game<'_> {
                 .copied();
             let at = [d.position.x, d.position.y, d.position.z];
             if d.hurt_time > old.map_or(0, |o| o.0) && !dead {
-                let (kind, cause, direct) = d
-                    .last_source
-                    .unwrap_or(("minecraft:generic", None, None));
+                let (kind, cause, direct) =
+                    d.last_source.unwrap_or(("minecraft:generic", None, None));
                 host.hub.damage_event(id as i32, kind, cause, direct, at);
             }
             seen.insert(id, (d.hurt_time, dead, None));
