@@ -582,7 +582,7 @@ impl Game<'_> {
         let _ = horizon_client::entities::update_entity_fluids(
             b.bounds(),
             b.position,
-            b.position.y + f64::from(HEIGHT),
+            b.position.y + HEIGHT,
             &mut b.velocity,
             &self.world,
             &self.res.motion().fluids,
