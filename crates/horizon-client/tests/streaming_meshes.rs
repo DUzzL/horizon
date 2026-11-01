@@ -4,6 +4,7 @@
 //! came closer, so they stayed invisible until a block in them changed.
 //! Relit columns remesh only where their light changed (#270), and every
 //! mesh still matches the world.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     assets::Assets,
     biome::Biomes,

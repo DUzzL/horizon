@@ -131,6 +131,29 @@ class ReachTests(unittest.TestCase):
         self.assertIn("crates/b/src/used.rs", kept)
         self.assertNotIn("crates/c/src/lib.rs", kept)
 
+    def test_external_library_and_probe_roots_follow_the_manifest(self):
+        workspace(self.root, {
+            "crates/b/Cargo.toml": '[package]\nname = "b"\nautobins = false\nautoexamples = false\n'
+            '[lib]\npath = "../a/src/shared.rs"\n'
+            '[[example]]\nname = "client_probe"\npath = "../a/examples/probe/main.rs"\n',
+            "crates/a/src/shared.rs": "pub mod used;\n",
+            "crates/a/src/lib.rs": "pub fn game_only() {}\n",
+            "crates/a/examples/probe/main.rs": "extern crate b as legacy;\nfn main() { legacy::used::helper(); }\n",
+            "crates/b/src/main.rs": "compile_error!(\"disabled auto-bin\");\n",
+            "crates/b/examples/ignored.rs": "compile_error!(\"disabled auto-example\");\n",
+        })
+        graph = parity_reach.SourceGraph(self.root, parity.rust_code)
+        roots = parity_reach.crate_roots(self.root / "crates/b")
+        self.assertIn((self.root / "crates/a/src/shared.rs").resolve(), roots)
+        self.assertIn((self.root / "crates/a/examples/probe/main.rs").resolve(), roots)
+        self.assertNotIn((self.root / "crates/b/src/main.rs").resolve(), roots)
+        self.assertTrue(graph.is_library("crates/a/src/shared.rs"))
+        reached = graph.reachable({"crates/a/examples/probe/main.rs"},
+                                  {"crates/a/examples/probe/main.rs", "crates/a/src/shared.rs", "crates/a/src/used.rs"})
+        self.assertIn("crates/a/src/used.rs", reached)
+        self.assertEqual(graph.targets(self.root / "crates/b"),
+                         {"client_probe": ("example", "crates/a/examples/probe/main.rs")})
+
     def test_unknown_probes_keep_everything(self):
         self.assertEqual(set(self.narrowed(artifacts=[])), set(self.dependencies))
         self.assertEqual(set(self.narrowed(artifacts=[["example", "missing", "release", ["-p", "a"], True]])),

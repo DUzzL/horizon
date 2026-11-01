@@ -1,4 +1,4 @@
-//! The game's entry point, shared by the thin executable and future native-mod link modes.
+//! Startup shared by the gameplay library and its executable.
 use crate::{crash, game, logging};
 
 /// Start the game. The executable supplies the allocator and retains the mod API marker.

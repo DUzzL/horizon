@@ -9,11 +9,6 @@ static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
 /// reads it, so the linker keeps it.
 static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 
-// The game's unit tests, in this test build only (lib.rs); nothing here runs the game.
-#[cfg(test)]
-#[allow(dead_code, unused_imports)]
-mod game;
-
 fn main() {
     std::hint::black_box(&MOD_API_LEVEL);
     horizon_client::entry::main();

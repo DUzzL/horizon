@@ -31,6 +31,17 @@ class PrReadyTests(unittest.TestCase):
         # The workspace manifest and lock touch every crate.
         self.assertIsNone(pr_ready.touched_crates({"Cargo.lock", "crates/horizon-core/src/lib.rs"}, PACKAGES))
 
+    def test_shared_client_sources_select_the_library_without_gameplay(self):
+        packages = {**PACKAGES, "horizon-client-lib": "crates/horizon-client-lib"}
+        for path in ["src/client_lib.rs", "src/health.rs", "src/lan/hub.rs", "src/bin/horizon-ctl/main.rs",
+                     "examples/probe/main.rs", "tests/lan_bot.rs"]:
+            self.assertEqual(pr_ready.touched_crates({f"crates/horizon-client/{path}"}, packages),
+                             ["horizon-client-lib"])
+        for path in ["src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "src/game/combat.rs",
+                     "tests/launch_api.rs", "Cargo.toml", "build.rs"]:
+            self.assertEqual(pr_ready.touched_crates({f"crates/horizon-client/{path}"}, packages),
+                             ["horizon-client"])
+
     def test_which_workspace_builds_a_path(self):
         self.assertTrue(pr_ready.workspace_rust("crates/horizon-theme/fonts/x.ttf"))
         self.assertTrue(pr_ready.workspace_rust("Cargo.toml"))

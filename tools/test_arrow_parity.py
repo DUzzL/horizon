@@ -241,7 +241,7 @@ def main():
     expected = 3 * operations + len(fixtures)
     (build / 'inputs.txt').write_text(''.join(json.dumps(f, separators=(',', ':')) + '\n' for f in fixtures))
     input_hash = lab.digest(build / 'inputs.txt', 'sha256')
-    run(['cargo', 'build', '--locked', '-p', 'horizon-client', '--example', 'client_probe'], 'compile-rust')
+    run(['cargo', 'build', '--locked', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'], cwd=lab.ROOT))
     binary = Path(metadata['target_directory']) / 'debug/examples' / ('client_probe.exe' if os.name=='nt' else 'client_probe')
     run([binary, 'arrow_probe',resources, build, '--describe'], 'describe')
