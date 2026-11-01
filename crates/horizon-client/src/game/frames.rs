@@ -300,19 +300,33 @@ impl Game<'_> {
         let s = f.step().map(f64::from);
         let c = center(f);
         let at = [c[0] + s[0] * 0.15, c[1], c[2] + s[2] * 0.15];
+        let mut drops = Vec::new();
         if with_frame {
-            let frame = ItemStack {
+            drops.push(ItemStack {
                 item: Arc::from(f.kind()),
                 count: 1,
                 damage: 0,
                 extra: None,
-            };
-            self.spawn_item(frame, at, [0.0; 3], 10);
+            });
         }
         if let Some(item) = f.item.clone()
             && self.world.random.next_float() < f.drop_chance
         {
-            self.spawn_item(item, at, [0.0; 3], 10);
+            drops.push(item);
+        }
+        if by_player && !drops.is_empty() {
+            let tool = self.held().cloned();
+            self.native_use_drops(
+                "",
+                c,
+                None,
+                Some((f.id, f.kind())),
+                tool.as_ref(),
+                &mut drops,
+            );
+        }
+        for stack in drops {
+            self.spawn_item(stack, at, [0.0; 3], 10);
         }
     }
     /// `ServerExplosion.hurtEntities` for item frames: a frame within the blast

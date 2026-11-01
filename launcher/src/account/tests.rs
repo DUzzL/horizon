@@ -421,6 +421,9 @@ impl SecretStore for Refusing {
     fn persistent(&self) -> bool {
         true
     }
+    fn operations(&self) -> &Mutex<()> {
+        self.0.operations()
+    }
 }
 
 #[test]
@@ -860,6 +863,9 @@ impl SecretStore for Reading<'_> {
     }
     fn persistent(&self) -> bool {
         false
+    }
+    fn operations(&self) -> &Mutex<()> {
+        self.0.operations()
     }
 }
 
@@ -1455,6 +1461,9 @@ fn a_status_read_gives_up_behind_a_long_operation() {
     let busy = session::lock_within(&store, Some(std::time::Duration::from_millis(150)));
     assert!(busy.is_err(), "a held lock must not be taken twice");
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    // Another memory store (another test running beside this one) has its own lock.
+    let other = MemoryStore::default();
+    assert!(session::lock_within(&other, Some(std::time::Duration::ZERO)).is_ok());
     drop(held);
     assert!(session::lock_within(&store, Some(std::time::Duration::from_secs(5))).is_ok());
 }

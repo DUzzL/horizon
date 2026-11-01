@@ -2,7 +2,9 @@
 //! power 4, `TntRenderer` swell and white flash, and `TntBlock.useItemOn`
 //! (flint and steel / fire charge).
 use super::Game;
-use horizon_client::{Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex};
+use horizon_client::{
+    Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who,
+};
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
@@ -19,6 +21,8 @@ pub(super) struct PrimedTnt {
     pub velocity: Vec3,
     pub fuse: i32,
     pub on_ground: bool,
+    pub owner: Option<Who>,
+    pub guest: Option<u32>,
 }
 impl PrimedTnt {
     const SIZE: f64 = 0.98;
@@ -110,7 +114,13 @@ impl PrimedTnt {
 impl Game<'_> {
     /// `new PrimedTnt(level, x + 0.5, y, z + 0.5, owner)`; `short` applies
     /// `wasExploded`'s random short fuse. Plays `entity.tnt.primed` for primes.
-    pub(super) fn spawn_primed_tnt(&mut self, pos: BlockPos, short: bool) {
+    pub(super) fn spawn_primed_tnt(
+        &mut self,
+        pos: BlockPos,
+        short: bool,
+        owner: Option<Who>,
+        guest: Option<u32>,
+    ) {
         // PrimedTnt: the fuse is lit.
         let who = self.sculk_actor();
         self.post_block_game_event("minecraft:prime_fuse", [pos.x, pos.y, pos.z], who, None);
@@ -132,10 +142,17 @@ impl Game<'_> {
             );
             80
         };
-        self.add_primed_tnt(pos, rot, fuse);
+        self.add_primed_tnt(pos, rot, fuse, owner, guest);
     }
     /// Adds primed TNT at the block's bottom centre, pushed along `rot`.
-    pub(super) fn add_primed_tnt(&mut self, pos: BlockPos, rot: f64, fuse: i32) {
+    pub(super) fn add_primed_tnt(
+        &mut self,
+        pos: BlockPos,
+        rot: f64,
+        fuse: i32,
+        owner: Option<Who>,
+        guest: Option<u32>,
+    ) {
         let position = Vec3::new(
             f64::from(pos.x) + 0.5,
             f64::from(pos.y),
@@ -148,6 +165,8 @@ impl Game<'_> {
             velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
             fuse,
             on_ground: false,
+            owner,
+            guest,
         });
     }
     /// `PrimedTnt.tick` for every primed TNT, in order; an expired fuse
@@ -177,15 +196,28 @@ impl Game<'_> {
                     t.position.z,
                 ];
                 let bounds = t.bounds();
+                let (owner, guest) = (t.owner, t.guest);
                 let in_water = self.bounds_in_water(bounds);
                 self.tnts.remove(i);
                 count -= 1;
                 // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
                 let interaction = self.destroy_type("tnt_explosion_drop_decay");
                 self.combat.explosion_in_water = in_water;
+                // `Explosion.getIndirectSourceEntity`: a player-lit TNT names
+                // its igniter, which `blast_attacker` and the damage type read.
+                self.combat.blast_guest = guest;
+                self.combat.blast_owner = match owner {
+                    Some(Who::Player) => self
+                        .lan
+                        .as_ref()
+                        .and_then(|host| self.player_attacker(host, guest)),
+                    Some(Who::Mob(_)) | None => None,
+                };
                 let result = self.with_hive_emptying_blast(|g| {
                     g.server_explode(center, 4.0, interaction, false)
                 });
+                self.combat.blast_owner = None;
+                self.combat.blast_guest = None;
                 self.combat.explosion_in_water = false;
                 result?;
             } else {
@@ -208,7 +240,8 @@ impl Game<'_> {
             return Ok(false);
         }
         let pos = BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
-        self.spawn_primed_tnt(pos, false);
+        let guest = self.lan_acting;
+        self.spawn_primed_tnt(pos, false, Some(Who::Player), guest);
         let air = self.world.air;
         self.with_level(|b, level, ticks| {
             b.set_block(level, ticks, pos, air, level_flags::UPDATE_ALL_IMMEDIATE)
@@ -507,6 +540,8 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: true,
+            owner: None,
+            guest: None,
         };
         tnt.velocity = bounce_velocity(Direction::Up, tnt.velocity);
         tnt.on_ground = false;
@@ -547,6 +582,8 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            owner: None,
+            guest: None,
         };
         tnt.tick(&world, &collision, &assets, &facts).unwrap();
         assert_eq!(
