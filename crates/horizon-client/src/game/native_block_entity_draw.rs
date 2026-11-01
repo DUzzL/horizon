@@ -12,7 +12,7 @@ use horizon_assets::{
 };
 use horizon_client::{
     block_entity_render::{diffuse, diffuse_lights, vertex_light},
-    containers::{BlockEntity, ModBlockEntity},
+    containers::{BlockEntity, ModRevision},
     fast_hash::FxHashMap,
     gfx::Cull,
     hud::Rect,
@@ -201,7 +201,8 @@ struct KeptKey {
 
 struct KeptEntry {
     key: KeptKey,
-    entity: ModBlockEntity,
+    /// Of the block entity it was drawn from: equal, nothing changed it.
+    revision: ModRevision,
     bounds: [f32; 6],
     /// Game time it was last drawn.
     used: i64,
@@ -228,19 +229,19 @@ impl KeptGeometry {
                 .retain(|_, e| (now - KEPT_FOR..=now).contains(&e.used));
         }
     }
-    /// What is kept at `pos` when it was drawn with `key` and `entity`,
-    /// marked drawn at `now`.
+    /// What is kept at `pos` when it was drawn with `key` and its block
+    /// entity at `revision`, marked drawn at `now`.
     fn get(
         &mut self,
         pos: [i32; 3],
         key: KeptKey,
-        entity: &ModBlockEntity,
+        revision: ModRevision,
         now: i64,
     ) -> Option<&KeptEntry> {
         let entry = self
             .entries
             .get_mut(&pos)
-            .filter(|e| e.key == key && e.entity == *entity)?;
+            .filter(|e| e.key == key && e.revision == revision)?;
         entry.used = now;
         Some(entry)
     }
@@ -248,7 +249,7 @@ impl KeptGeometry {
         &mut self,
         pos: [i32; 3],
         key: KeptKey,
-        entity: &ModBlockEntity,
+        revision: ModRevision,
         bounds: [f32; 6],
         vertices: &[Vertex],
         now: i64,
@@ -263,7 +264,7 @@ impl KeptGeometry {
             pos,
             KeptEntry {
                 key,
-                entity: entity.clone(),
+                revision,
                 bounds,
                 used: now,
                 vertices: kept,
@@ -336,7 +337,7 @@ impl Game<'_> {
                 state,
                 light,
             };
-            if let Some(entry) = kept.get(pos, key, entity, now) {
+            if let Some(entry) = kept.get(pos, key, entity.revision(), now) {
                 if in_frustum(self.view_frustum.as_ref(), origin, entry.bounds) {
                     let start = draw.vertices.len();
                     self.mark_block_entity(start, state);
@@ -366,7 +367,14 @@ impl Game<'_> {
             draw.kept = false;
             self.native_block_entity_submit(pos, block, id, entity, &mut draw);
             if draw.kept {
-                kept.keep(pos, key, entity, bounds, &draw.vertices[start..], now);
+                kept.keep(
+                    pos,
+                    key,
+                    entity.revision(),
+                    bounds,
+                    &draw.vertices[start..],
+                    now,
+                );
             } else {
                 kept.forget(pos);
             }
@@ -556,6 +564,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_client::containers::{ModBlockEntity, ModBlockEntityFields};
 
     fn draw() -> BlockEntityDraw {
         BlockEntityDraw {
@@ -652,12 +661,12 @@ mod tests {
         assert_eq!(shaded(0x10_20_30, 1.0), 0xFF_30_20_10);
     }
 
-    fn machine(progress: i32) -> ModBlockEntity {
-        ModBlockEntity {
+    fn machine() -> ModRevision {
+        ModBlockEntity::new(ModBlockEntityFields {
             id: "mymod:machine".into(),
-            data: vec![progress],
             ..Default::default()
-        }
+        })
+        .revision()
     }
 
     fn vertex(x: f32) -> Vertex {
@@ -677,14 +686,21 @@ mod tests {
     fn kept_geometry_is_drawn_again_until_what_it_was_drawn_with_changes() {
         let mut kept = KeptGeometry::default();
         let pos = [1, 2, 3];
-        kept.keep(pos, KEY, &machine(0), DEFAULT_BOUNDS, &[vertex(0.5)], 0);
-        let entry = kept.get(pos, KEY, &machine(0), 1).expect("kept");
+        let mut entity = ModBlockEntity::new(ModBlockEntityFields {
+            id: "mymod:machine".into(),
+            data: vec![0],
+            ..Default::default()
+        });
+        let drawn = entity.revision();
+        kept.keep(pos, KEY, drawn, DEFAULT_BOUNDS, &[vertex(0.5)], 0);
+        let entry = kept.get(pos, KEY, entity.revision(), 1).expect("kept");
         assert_eq!(entry.vertices.len(), 1);
         assert_eq!(entry.vertices[0].pos, [0.5, 0.0, 0.0]);
         assert_eq!(entry.bounds, DEFAULT_BOUNDS);
         // New data from the server, another state, light or dimension, or
         // another position: none of them is the kept geometry.
-        assert!(kept.get(pos, KEY, &machine(1), 1).is_none());
+        entity.data[0] = 1;
+        assert!(kept.get(pos, KEY, entity.revision(), 1).is_none());
         for changed in [
             KeptKey { state: 8, ..KEY },
             KeptKey {
@@ -696,36 +712,53 @@ mod tests {
                 ..KEY
             },
         ] {
-            assert!(kept.get(pos, changed, &machine(0), 1).is_none());
+            assert!(kept.get(pos, changed, drawn, 1).is_none());
         }
-        assert!(kept.get([1, 2, 4], KEY, &machine(0), 1).is_none());
+        assert!(kept.get([1, 2, 4], KEY, drawn, 1).is_none());
+        // Another block entity in its place, as the old one was: not it.
+        let replaced = ModBlockEntity::new(ModBlockEntityFields {
+            id: "mymod:machine".into(),
+            data: vec![0],
+            ..Default::default()
+        });
+        assert!(kept.get(pos, KEY, replaced.revision(), 1).is_none());
         // Drawn again and kept with the new data, it replaces the old.
-        kept.keep(pos, KEY, &machine(1), DEFAULT_BOUNDS, &[vertex(0.25)], 2);
-        assert!(kept.get(pos, KEY, &machine(0), 2).is_none());
-        let entry = kept.get(pos, KEY, &machine(1), 2).expect("kept again");
+        kept.keep(
+            pos,
+            KEY,
+            entity.revision(),
+            DEFAULT_BOUNDS,
+            &[vertex(0.25)],
+            2,
+        );
+        assert!(kept.get(pos, KEY, drawn, 2).is_none());
+        let entry = kept
+            .get(pos, KEY, entity.revision(), 2)
+            .expect("kept again");
         assert_eq!(entry.vertices[0].pos, [0.25, 0.0, 0.0]);
         // Drawn without keeping: forgotten.
         kept.forget(pos);
-        assert!(kept.get(pos, KEY, &machine(1), 3).is_none());
+        assert!(kept.get(pos, KEY, entity.revision(), 3).is_none());
     }
 
     #[test]
     fn kept_geometry_out_of_view_for_its_ticks_is_swept() {
         let mut kept = KeptGeometry::default();
         let (seen, gone) = ([0, 0, 0], [5, 0, 0]);
-        kept.keep(seen, KEY, &machine(0), DEFAULT_BOUNDS, &[vertex(0.0)], 0);
-        kept.keep(gone, KEY, &machine(0), DEFAULT_BOUNDS, &[vertex(0.0)], 0);
-        kept.get(gone, KEY, &machine(0), 50);
+        let m = machine();
+        kept.keep(seen, KEY, m, DEFAULT_BOUNDS, &[vertex(0.0)], 0);
+        kept.keep(gone, KEY, m, DEFAULT_BOUNDS, &[vertex(0.0)], 0);
+        kept.get(gone, KEY, m, 50);
         // A sweep at 100 keeps both: each was drawn in the last 100 ticks.
         kept.sweep(100);
         assert!(kept.entries.contains_key(&gone));
         assert!(kept.entries.contains_key(&seen));
-        kept.get(seen, KEY, &machine(0), 150);
+        kept.get(seen, KEY, m, 150);
         // At 199 no sweep is due yet; at 200 the one last drawn at 50 goes.
         kept.sweep(199);
         assert!(kept.entries.contains_key(&gone));
         kept.sweep(200);
         assert!(!kept.entries.contains_key(&gone));
-        assert!(kept.get(seen, KEY, &machine(0), 200).is_some());
+        assert!(kept.get(seen, KEY, m, 200).is_some());
     }
 }
