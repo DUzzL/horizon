@@ -2969,12 +2969,12 @@ impl Game<'_> {
     pub(super) fn send_admin_feedback(&mut self, host: &mut LanHost, source: Option<u32>) {
         // PlayerList.isOp for the host of a world open to LAN: the owner when
         // the world allows commands, everyone when the LAN does.
-        let host_op = source.is_some()
-            && !host.hub.config.dedicated
-            && (self.allow_commands() || host.hub.config.guest_commands);
+        let host_ops =
+            !host.hub.config.dedicated && (self.allow_commands() || host.hub.config.guest_commands);
+        let host_op = source.is_some() && host_ops;
         // server.toml's `admin_feedback_to_ops` off: the console's log only.
         let to_ops = host.hub.admin_feedback_to_ops;
-        for (line, ops, console) in std::mem::take(&mut self.admin_feedback) {
+        for (line, ops, console, no_player) in std::mem::take(&mut self.admin_feedback) {
             if ops && to_ops {
                 let content = horizon_client::lan::data::component_nbt(&line.component());
                 for g in host
@@ -2988,7 +2988,8 @@ impl Game<'_> {
                         overlay: false,
                     }));
                 }
-                if host_op {
+                // A line no player's command made (a command block's) reaches the host too.
+                if host_op || (no_player && host_ops) {
                     self.system_message(line.clone());
                 }
             }
