@@ -144,9 +144,8 @@ pub struct TickCtx<'a> {
     /// TickRateManager: the tick rate and whether the game is frozen.
     pub tick_rate: f32,
     pub tick_frozen: bool,
-    /// `/tick step`: a count that changes with each step started or
-    /// stopped, and the ticks the frozen game still runs (`FixedStep::step_state`).
-    pub tick_steps: (u32, i32),
+    /// The last step command's broadcast and the remaining ticks for joins.
+    pub tick_steps: crate::clock::StepState,
     /// Block collisions, for ServerGamePacketListenerImpl's moved-wrongly
     /// check (none: moves are not checked against blocks).
     pub collision: Option<&'a BlockCollisionRegistry<'a>>,
@@ -593,6 +592,7 @@ impl Hub {
         stack_to_network(item_id, |registry, name| sync.id(registry, name), s)
     }
 
+    /// `PlayerList.broadcastAll`: send a packet to every placed player.
     pub fn broadcast(&self, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed) {
@@ -1288,7 +1288,7 @@ impl Hub {
         // TickRateManager.updateJoiningPlayer.
         g.send(&ticking_state(ctx.tick_rate, ctx.tick_frozen));
         g.send(&C::TickingStep(play::TickingStep {
-            steps: ctx.tick_steps.1,
+            steps: ctx.tick_steps.remaining,
         }));
     }
 
@@ -1480,7 +1480,7 @@ impl Hub {
             // (`updateJoiningPlayer`).
             if !self.guests.iter().any(|g| g.placed) {
                 self.ticking = (ctx.tick_rate, ctx.tick_frozen);
-                self.stepping = ctx.tick_steps.0;
+                self.stepping = ctx.tick_steps.revision;
             }
             if !self
                 .guests
@@ -1585,6 +1585,22 @@ impl Hub {
         g
     }
 
+    /// `ServerTickRateManager.updateStepTicks` / `updateStateToClients`:
+    /// send clock changes before the block events caused by their ticks.
+    pub fn sync_ticking(&mut self, rate: f32, frozen: bool, steps: crate::clock::StepState) {
+        if (rate, frozen) != self.ticking {
+            self.ticking = (rate, frozen);
+            self.broadcast(&ticking_state(rate, frozen));
+        }
+        // ServerTickRateManager.updateStepTicks: a step started or stopped.
+        if steps.revision != self.stepping {
+            self.stepping = steps.revision;
+            self.broadcast(&C::TickingStep(play::TickingStep {
+                steps: steps.requested,
+            }));
+        }
+    }
+
     /// Time and weather (ServerLevel.tickTime / advanceWeatherCycle broadcasts).
     fn sync_world(&mut self, ctx: &TickCtx) {
         let world = &*ctx.world;
@@ -1619,17 +1635,7 @@ impl Hub {
         }
         self.last_clock = day;
         self.last_rate = rate;
-        if (ctx.tick_rate, ctx.tick_frozen) != self.ticking {
-            self.ticking = (ctx.tick_rate, ctx.tick_frozen);
-            self.broadcast(&ticking_state(ctx.tick_rate, ctx.tick_frozen));
-        }
-        // ServerTickRateManager.updateStepTicks: a step started or stopped.
-        if ctx.tick_steps.0 != self.stepping {
-            self.stepping = ctx.tick_steps.0;
-            self.broadcast(&C::TickingStep(play::TickingStep {
-                steps: ctx.tick_steps.1,
-            }));
-        }
+        self.sync_ticking(ctx.tick_rate, ctx.tick_frozen, ctx.tick_steps);
         let w = &world.weather;
         let (raining, rain, thunder) = self.weather;
         if w.raining != raining {
