@@ -2760,7 +2760,7 @@ impl Game<'_> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .overlay("entity/enderdragon/dragon")
-            .and_then(&sprite);
+            .and_then(sprite);
         if let Some(glow) = glow.filter(|_| mask.is_none()) {
             let full = horizon_client::mobs::render::FULL_BRIGHT;
             horizon_client::mobs::render::draw(model, base, &poses, glow, color, full, 0, out);
