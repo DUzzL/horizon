@@ -548,12 +548,33 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
+        Self::load_tables(root, library, true)
+    }
+    /// What a dedicated server reads: the item prototypes (the stacks'
+    /// default components) and ids, without the client item definitions,
+    /// the special renderers' entity models and the grass colormap, which
+    /// only drawing reads (1.4 MB and ~1,500 files).
+    pub fn load_for_server(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+    ) -> crate::Result<Self> {
+        Self::load_tables(root, library, false)
+    }
+    fn load_tables(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+        drawn: bool,
+    ) -> crate::Result<Self> {
         let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
             .into_iter()
             .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
             .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
-            definitions: load_definitions(root),
+            definitions: if drawn {
+                load_definitions(root)
+            } else {
+                BTreeMap::new()
+            },
             prototypes,
         };
         let library = library?;
@@ -561,10 +582,18 @@ impl ItemRenderer {
             &fs::read_to_string(root.join("assets/minecraft/atlases/items.json"))
                 .unwrap_or_default(),
         );
-        let parts = special::load_parts(root);
-        let grass = crate::hud::decode(&root.join("assets/minecraft/textures/colormap/grass.png"))
-            .map(|(_, _, rgba)| argb_pixels(&rgba).into_iter().map(|p| p as i32).collect())
-            .unwrap_or_default();
+        let parts = if drawn {
+            special::load_parts(root)
+        } else {
+            HashMap::new()
+        };
+        let grass = if drawn {
+            crate::hud::decode(&root.join("assets/minecraft/textures/colormap/grass.png"))
+                .map(|(_, _, rgba)| argb_pixels(&rgba).into_iter().map(|p| p as i32).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let item_ids = horizon_protocol::registry::Builtin::find(root)
             .and_then(|p| horizon_protocol::registry::Builtin::load(&p).ok())
             .and_then(|b| {
@@ -990,6 +1019,31 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert!(loaded.contains_key("horizon:top"));
         assert!(loaded.contains_key("horizon:postman/head"));
+        Ok(())
+    }
+
+    /// A dedicated server keeps the stacks' default components but reads
+    /// none of the client item definitions.
+    #[test]
+    fn a_server_keeps_prototypes_without_definitions() -> crate::Result<()> {
+        let root = std::env::temp_dir().join(format!("horizon-item-server-{}", std::process::id()));
+        let definitions = root.join("assets/horizon/items");
+        fs::create_dir_all(&definitions)?;
+        fs::write(
+            definitions.join("top.json"),
+            r#"{"model":{"type":"minecraft:empty"}}"#,
+        )?;
+        fs::write(
+            root.join("items.json"),
+            r#"{"horizon:top":{"minecraft:max_stack_size":16}}"#,
+        )?;
+        let library = crate::model_library::ParsedModels::load(&root).into_item_library();
+        let client = ItemRenderer::load_with_library(&root, library.clone())?;
+        let server = ItemRenderer::load_for_server(&root, library)?;
+        let _ = fs::remove_dir_all(&root);
+        assert!(client.models.definitions.contains_key("horizon:top"));
+        assert!(server.models.definitions.is_empty());
+        assert_eq!(server.models.prototypes, client.models.prototypes);
         Ok(())
     }
 
