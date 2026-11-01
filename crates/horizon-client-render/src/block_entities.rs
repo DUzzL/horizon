@@ -545,10 +545,13 @@ mod tests {
         entities.insert(p, hopper());
         assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(4));
         let machine = |id: &str| {
-            BlockEntity::Mod(Box::new(crate::chunk::block_entity::ModBlockEntity {
-                id: id.into(),
-                ..Default::default()
-            }))
+            BlockEntity::Mod(Box::new(
+                crate::chunk::block_entity::ModBlockEntityFields {
+                    id: id.into(),
+                    ..Default::default()
+                }
+                .into(),
+            ))
         };
         entities.insert(p, machine("test:a"));
         assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(0));
