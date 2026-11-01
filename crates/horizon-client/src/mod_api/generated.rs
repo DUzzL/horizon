@@ -305,9 +305,12 @@ pub trait Hooks: Send + Sync {
     }
     /// Block `block` (`mymod:machine`) gets a block entity
     /// (`EntityBlock.newBlockEntity`): set `entity` to its id and saved
-    /// compound when the block is yours and `entity` is none yet. The block's
-    /// template must have a block entity (a chest, a furnace...), so that
-    /// breaking the block removes it; on another template it gets none. API 15.
+    /// compound when the block is yours and `entity` is none yet. It works on
+    /// any template: the engine removes the block entity when its block is
+    /// broken or replaced, no piston moves it, and a mod that draws it
+    /// (`native_block_entity_submit`) is asked for it. API 15; before
+    /// @API:mod_block_entity_any_template@ the block's template had to have a
+    /// block entity of its own (a chest, a furnace...), or the block got none.
     ///
     /// Return `Some` to set `entity`; the first mod returning `Some` wins.
     fn block_entity(&self, host: &mut dyn Host, block: &str) -> Option<(String, Compound)> {

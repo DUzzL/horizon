@@ -2219,6 +2219,13 @@ impl Game<'_> {
             for d in &mut self.dropped {
                 d.needs_sync = false;
             }
+            // The step command reaches clients before the events its tick
+            // generated, as ServerTickRateManager.updateStepTicks does.
+            host.hub.sync_ticking(
+                self.clock.rate(),
+                self.clock.frozen(),
+                self.clock.step_state(),
+            );
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
             // guest re-runs a piston's `triggerEvent` while its level still

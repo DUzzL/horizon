@@ -135,6 +135,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - eat-on-block: sweet berries clicked on a block they can't be planted on: the guest's own screen
              plays the eating and the server eats one, a click released early eats nothing, and on
              dirt they are planted and not eaten (BlockItem.useOn).
+- cauldron:  a water bucket (creative), a lava bucket and an empty bucket (survival) used on a
+             cauldron's side fill or empty the cauldron only: nothing is poured beside it, not even
+             for the moment before the server answers (#5294).
 - consume-release: the host and the guest each cancel eating a golden apple and drinking milk from
               either hand: use ends on client and server, the item and effects stay, and holding
               use to completion still consumes the item (#1293).
@@ -197,6 +200,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
              "moved wrongly" lines, not an endless loop of them.
 - minecarts: the host and the guest each get into a minecart on rails, sneak out beside it, and break
              it (#1222).
+- cart_mob_rider: a minecart with a pig in it runs about 3.3 blocks farther than an empty one in 40 ticks
+             (AbstractMinecart.getSlowdownFactor 0.997 when isVehicle, not only for a player).
 - frames:    the host and the guest each put a diamond in an item frame and turn it, and put a
              helmet on an armor stand and take it back (#1222).
 - hands:     the host and the guest each, at a cow that cares for none of it: draw a bow and shoot, and
@@ -371,9 +376,9 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
-          'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
+          'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
-          'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
+          'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
           'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
 
@@ -4023,6 +4028,55 @@ def check_eat_on_block(host, guest, out):
     return detail
 
 
+def check_cauldron(host, guest, out):
+    """A bucket used on a cauldron's side fills or empties the cauldron only: the guest's
+    client ends the click at the block (CauldronInteractions answers SUCCESS there too), so
+    no UseItem follows that would pour the bucket again beside it."""
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    cauldron, beside = (x + 2, y, z), (x + 1, y, z)
+    guest('command', command=f'fill {x - 1} {y - 1} {z - 1} {x + 3} {y - 1} {z + 1} minecraft:stone')
+    guest('command', command=f'fill {x - 1} {y} {z - 1} {x + 3} {y + 2} {z + 1} minecraft:air')
+    block = lambda p: guest.raw('block', *p).get('block')
+
+    def use(item, gamemode, start):
+        guest('command', command=f'gamemode {gamemode}')
+        guest('command', command='clear @s')
+        guest('command', command=f'give @s {item}')
+        guest('command', command=f'setblock {beside[0]} {beside[1]} {beside[2]} minecraft:air')
+        guest('command', command=f'setblock {cauldron[0]} {cauldron[1]} {cauldron[2]} {start}')
+        for _ in range(20):
+            guest.wait(5)
+            if guest.raw('block', *cauldron)['state'].startswith(start.partition('[')[0]):
+                break
+        guest.raw('select', item)
+        guest.raw('look-at-block', *cauldron, 'west')
+        guest.wait(2)
+        # A pour the client predicts beside it lasts only until the server's ack.
+        replies = guest.script(['mouse right click'] + [f'block {beside[0]} {beside[1]} {beside[2]}'] * 12,
+                               every=True)
+        seen = {r['block'] for r in replies if 'block' in r}
+        guest.wait(20)
+        seen.add(block(beside))
+        return {'cauldron': guest.raw('block', *cauldron)['state'], 'beside': sorted(seen),
+                'counts': guest('inventory')['counts']}
+
+    detail = {
+        'creative': use('minecraft:water_bucket', 'creative', 'minecraft:cauldron'),
+        'survival': use('minecraft:lava_bucket', 'survival', 'minecraft:cauldron'),
+        'fill': use('minecraft:bucket', 'survival', 'minecraft:water_cauldron[level=3]'),
+    }
+    guest('command', command='gamemode creative')
+    creative, survival, fill = detail['creative'], detail['survival'], detail['fill']
+    assert 'water_cauldron' in creative['cauldron'] and creative['beside'] == ['minecraft:air'], \
+        f'the water bucket was poured beside the cauldron too: {detail}'
+    assert 'lava_cauldron' in survival['cauldron'] and survival['beside'] == ['minecraft:air'] \
+        and survival['counts'].get('minecraft:bucket') == 1, f'the lava bucket was not emptied into the cauldron: {detail}'
+    assert fill['cauldron'].startswith('minecraft:cauldron') and fill['beside'] == ['minecraft:air'] \
+        and fill['counts'].get('minecraft:water_bucket') == 1 and 'minecraft:bucket' not in fill['counts'], \
+        f'the bucket was not filled from the cauldron alone: {detail}'
+    return detail
+
+
 def watch_mining(miner, pos, seen):
     """Mine the block at `pos` (by hand, for seconds) and sample `seen()` meanwhile."""
     dig = threading.Thread(target=miner.raw, args=('break', *pos))
@@ -5603,6 +5657,73 @@ def check_boats(host, guest, out):
     return result
 
 
+
+def check_boat_ice_reboard(host, guest, out):
+    """A boat's cached spin belongs to its controlling client only (AbstractBoat.tick)."""
+    hx, _, hz = pos_of(host)
+    x, y, z = int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8
+    tag = 'ice_reboard'
+    seen = {}
+    host('command', command=f'fill {x-30} {y} {z-30} {x+30} {y+5} {z+30} minecraft:air')
+    host('command', command=f'fill {x-30} {y-1} {z-30} {x+30} {y-1} {z+30} minecraft:ice')
+    try:
+        for player in (host, guest):
+            other = guest if player is host else host
+            other('command', command=f'tp @s {x+25.5} {y} {z+25.5}')
+            for kind in ('oak_boat', 'bamboo_raft'):
+                label = f'{player.name}-{kind}'
+                host('command', command=f'kill @e[tag={tag}]')
+                player('command', command='gamemode survival')
+                player('command', command=f'tp @s {x+0.5} {y} {z-0.5}')
+                player('command', command=f'summon minecraft:{kind} {x+0.5} {y} {z+2.5} {{Tags:["{tag}"]}}')
+                player.wait(10)
+                boat = board(player, kind, (x+0.5, y, z+2.5))
+                player.script(['key w down', 'key d down', 'wait 30',
+                               'key shift down', 'wait 2', 'key w up', 'key d up', 'key shift up', 'wait 10'])
+                assert player('status').get('riding') is None, f'{label}: did not dismount while steering'
+                current = next(o for o in player('status')['objects'] if o['id'] == boat['id'])
+                bx, by, bz = current['position']
+                player('command', command=f'tp @s {bx-2} {by} {bz}')
+                player.wait(5)
+                current = next(o for o in player('status')['objects'] if o['id'] == boat['id'])
+                board(player, kind, current['position'])
+                player.wait(5)
+                replies = player.script(['status', 'state'] + ['wait 2', 'status', 'state'] * 15, every=True)
+                boat_yaws = [next(o for o in r['objects'] if o['id'] == boat['id'])['yaw']
+                             for r in replies if 'objects' in r]
+                camera_yaws = [r['player']['yaw'] for r in replies if r.get('player') and 'yaw' in r['player']]
+                assert len(boat_yaws) == len(camera_yaws) == 16, f'{label}: missing rotation samples'
+                turn = lambda angles: sum(abs((b-a+180) % 360-180) for a, b in zip(angles, angles[1:]))
+                seen[label] = dict(boat_turn=turn(boat_yaws), camera_turn=turn(camera_yaws),
+                                   boat_yaws=boat_yaws, camera_yaws=camera_yaws,
+                                   ticks=[r['ticks'] for r in replies if 'objects' in r])
+                lab.write_json(out / 'boat-ice-reboard.json', seen)
+                player.shot(out, 'boat-ice-reboard-' + label)
+                # One previously latched steering input can still add one
+                # degree of turn momentum; ice then damps it by 0.98 per tick.
+                limit = sum(0.98 ** tick for tick in range(30)) + 2
+                assert seen[label]['boat_turn'] < limit, f'{label}: reboarded boat keeps spinning: {seen[label]}'
+                assert seen[label]['camera_turn'] < limit, f'{label}: camera keeps spinning: {seen[label]}'
+                player.wait(50)
+                late = player.script(['status', 'state'] + ['wait 2', 'status', 'state'] * 15, every=True)
+                boat_late = [next(o for o in r['objects'] if o['id'] == boat['id'])['yaw']
+                             for r in late if 'objects' in r]
+                camera_late = [r['player']['yaw'] for r in late if r.get('player') and 'yaw' in r['player']]
+                assert len(boat_late) == len(camera_late) == 16, f'{label}: missing settled rotation samples'
+                seen[label].update(settled_boat_turn=turn(boat_late), settled_camera_turn=turn(camera_late),
+                                   settled_boat_yaws=boat_late, settled_camera_yaws=camera_late,
+                                   settled_ticks=[r['ticks'] for r in late if 'objects' in r])
+                lab.write_json(out / 'boat-ice-reboard.json', seen)
+                assert seen[label]['settled_boat_turn'] < 5, f'{label}: boat never settles: {seen[label]}'
+                assert seen[label]['settled_camera_turn'] < 5, f'{label}: camera never settles: {seen[label]}'
+                leave_vehicle(player, 'boat')
+        return seen
+    finally:
+        for player in (host, guest):
+            player.raw('release')
+        host('command', command=f'kill @e[tag={tag}]')
+
+
 def check_boat_shoved(host, guest, out):
     """A piston shoves the boat its rider drives, then `/tp` moves it. The server moved it, so its
     last good position is where it is now (`ServerGamePacketListenerImpl.tick` resets it every
@@ -6547,7 +6668,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
-             'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
+             'eat': check_eat, 'eat-on-block': check_eat_on_block, 'cauldron': check_cauldron, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'blast-projectiles': check_blast_projectiles,
              'light': check_light, 'plates': check_plates, 'plate-projectiles': check_plate_projectiles, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
@@ -6555,7 +6676,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'barter': check_barter, 'piglin_offspring': check_piglin_offspring,
              'worn': check_worn, 'kills': check_kills, 'looting': check_looting, 'leave': check_leave,
              'arrows': check_arrows, 'predict': check_predict, 'ladder': check_ladder,
-             'boats': check_boats, 'boat_shoved': check_boat_shoved, 'minecarts': check_minecarts, 'frames': check_frames, 'hands': check_hands,
+             'boats': check_boats, 'boat_ice_reboard': check_boat_ice_reboard, 'boat_shoved': check_boat_shoved, 'minecarts': check_minecarts, 'frames': check_frames, 'hands': check_hands,
              'lightning': check_lightning, 'riding': check_riding, 'occupied_horse': check_occupied_horse, 'mounts': check_mounts,
              'worldspawn': check_world_spawn, 'beds': check_beds, 'shield': check_shield, 'deathmining': check_death_mining,
              'contacts': check_contacts, 'absorption': check_absorption, 'breath': check_breath,
@@ -6970,6 +7091,42 @@ def server_using(host, game):
 def flying(game, kind):
     """How many of the projectiles this side draws are of `kind` (a trident, an arrow)."""
     return sum(kind in q['kind'].lower() for q in game('status')['projectiles'])
+
+
+CHECKS += ['cart_mob_rider']
+
+
+def check_cart_mob_rider(host, guest, out):
+    """A minecart with a mob in it slows like a ridden one (AbstractMinecart.getSlowdownFactor: 0.997
+    when isVehicle, else 0.96), so with the same push it runs far past an empty one. 40 ticks on a
+    straight rail from Motion 0.4: the empty cart ends 2.7 to 3.3 blocks short of the occupied one."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    z += 8
+    host('command', command=f'fill {x - 2} {y - 1} {z - 1} {x + 40} {y - 1} {z + 4} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 1} {x + 40} {y + 3} {z + 4} minecraft:air')
+    host('command', command=f'fill {x} {y} {z} {x + 40} {y} {z} minecraft:rail[shape=east_west]')
+    host('command', command=f'fill {x} {y} {z + 3} {x + 40} {y} {z + 3} minecraft:rail[shape=east_west]')
+    host('command', command='tick freeze')
+    try:
+        host('command', command=f'summon minecraft:minecart {x + 0.5} {y + 0.1} {z + 0.5} {{Motion:[0.4d,0.0d,0.0d],Tags:["cmr_empty"]}}')
+        host('command', command=f'summon minecraft:minecart {x + 0.5} {y + 0.1} {z + 3.5} {{Motion:[0.4d,0.0d,0.0d],'
+             'Tags:["cmr_pig"],Passengers:[{id:"minecraft:pig",NoAI:1b}]}')
+        host('command', command='tick step 40')
+        host.wait(40)
+        carts = [o for o in host('status')['objects'] if o['kind'].endswith('minecart')]
+        empty = [o for o in carts if abs(o['position'][2] - (z + 0.5)) < 1][0]['position'][0] - (x + 0.5)
+        laden = [o for o in carts if abs(o['position'][2] - (z + 3.5)) < 1][0]['position'][0] - (x + 0.5)
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=minecraft:minecart,tag=cmr_empty]')
+        host('command', command='kill @e[type=minecraft:minecart,tag=cmr_pig]')
+        host('command', command='kill @e[type=minecraft:pig,distance=..60]')
+    detail = {'empty': round(empty, 3), 'with_pig': round(laden, 3)}
+    assert laden - empty > 2.0, f'a cart with a pig should outrun the empty one by more than 2 blocks: {detail}'
+    return detail
+
+
+CHECK_FNS.update(cart_mob_rider=check_cart_mob_rider)
 
 
 def check_held_use(host, guest, out):
@@ -11156,6 +11313,141 @@ CHECKS += ['attack_over_slab']
 CHECK_FNS['attack_over_slab'] = check_attack_over_slab
 
 
+def check_wind_bystanders(host, guest, out):
+    """A wind charge bursting on the floor pushes the other entities it reaches (ServerExplosion.hurtEntities
+    -> Entity.pushFromExplosion): an experience orb, a falling block, a boat and a minecart, but never a dropped
+    item (ItemEntity.ignoreExplosion unless the burst affects block-like entities, which a wind charge's never
+    does). The scene was run on the real 26.3 server (`tick freeze`, `tick step 3` after the burst): the orb
+    moved (+1.45, +0.19, 0), the falling block (-1.23, +0.82, 0), the boat (0, +0.30, +0.76), the minecart
+    (0, +0.14, -0.39), the item not at all."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    x, y, z = hx + 6, hy, hz
+    for g in (host, guest):
+        g('command', command='gamemode spectator')  # orbs home in on survival players
+    steps = [f'fill {x - 8} {y - 1} {z - 8} {x + 8} {y - 1} {z + 8} minecraft:bedrock',
+             f'fill {x - 8} {y} {z - 8} {x + 8} {y + 5} {z + 8} minecraft:air',
+             'kill @e[type=!player]', 'tick freeze',
+             f'summon minecraft:experience_orb {x + 1.4} {y} {z + 0.5} {{Value:1s}}',
+             f'summon minecraft:falling_block {x - 0.4} {y + 0.02} {z + 0.5} {{BlockState:{{Name:"minecraft:sand"}},Time:1,NoGravity:1b}}',
+             f'summon minecraft:oak_boat {x + 0.5} {y} {z + 1.5}',
+             f'summon minecraft:minecart {x + 0.5} {y} {z - 0.5}',
+             f'summon minecraft:item {x + 1.1} {y} {z - 0.1} {{Item:{{id:"minecraft:stone",count:1}}}}',
+             'tick step 20']
+
+    def scene():
+        near = lambda p: abs(p[0] - x) < 4 and abs(p[2] - z) < 4
+        found = {}
+        for e in host.raw('entities', 8, 'minecraft:experience_orb')['entities']:
+            found['orb'] = e['pos']
+            found['orb_velocity'] = e.get('velocity')
+        for e in host.raw('entities', 8, 'minecraft:item')['entities']:
+            if near(e['pos']):
+                found['item'] = e['pos']
+        for p in host.raw('simulation')['projectiles']:
+            kind = {'minecraft:falling_block': 'fall', 'minecraft:boat': 'boat', 'minecraft:minecart': 'cart'}.get(p['kind'])
+            if kind and near(p['position']):
+                found[kind] = p['position']
+        return found
+    try:
+        host('command', command='tick unfreeze')
+        for c in steps:
+            host('command', command=c)
+        host.wait(10)
+        before = scene()
+        host('command', command=f'summon minecraft:wind_charge {x + 0.5} {y + 0.6} {z + 0.5} {{Motion:[0.0,-1.0,0.0]}}')
+        ticks = []
+        for _ in range(4):
+            host('command', command='tick step 1')
+            host.wait(4)
+            ticks.append(scene())
+        after = ticks[2]
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=!player]')
+        for g in (host, guest):
+            g('command', command='gamemode creative')
+    moved = {k: [round(a - b, 3) for a, b in zip(after[k], before[k])] for k in ('orb', 'fall', 'boat', 'cart', 'item') if k in before and k in after}
+    assert set(moved) == {'orb', 'fall', 'boat', 'cart', 'item'}, f'missing entities: {before} {after}'
+    assert moved['item'] == [0, 0, 0], f'a dropped item was pushed: {moved}'
+    # An orb's position follows its tracker, which a frozen tick does not refresh: its velocity shows the push.
+    orb = after.get('orb_velocity') or [0, 0, 0]
+    assert orb[0] > 0.3 and orb[1] > 0.02, f'the orb was not pushed away: {orb}'
+    for kind, axis, sign in (('fall', 0, -1), ('boat', 2, 1), ('cart', 2, -1)):
+        assert moved[kind][axis] * sign > 0.2 and moved[kind][1] > 0.05, f'{kind} was not pushed away: {moved}'
+    return {'before': before, 'moved': moved, 'orb_velocity': orb, 'ticks': ticks}
+
+
+CHECKS += ['wind-bystanders']
+CHECK_FNS['wind-bystanders'] = check_wind_bystanders
+
+
+def check_lightning_box(host, guest, out):
+    """A lightning bolt tests the box of every entity against its strike box (3 around, 9 above),
+    not their feet, and destroys boats, minecarts and experience orbs (LightningBolt.tick ->
+    Entity.thunderHit -> VehicleEntity.hurtServer 5 x 10 > 40; ExperienceOrb health 5). Real
+    vanilla 26.3 (same scene): boat, cart, orb and a boat whose feet stand 3.5 out are gone, a cow
+    whose feet stand 3.2 out drops from 10 to 5, a boat 6 out is untouched."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    ox, oy, oz = x + 12, y, z
+    tag = 'dg_bolt'
+    spots = {'boat': ('minecraft:oak_boat', 1.5, 0), 'cart': ('minecraft:minecart', -1.5, 0),
+             'orb': ('minecraft:experience_orb', 0, -1.5), 'edgeboat': ('minecraft:oak_boat', 0, 3.5),
+             'edgecow': ('minecraft:cow', 3.2, 0), 'farboat': ('minecraft:oak_boat', 6.0, 0)}
+    markers = {name: (ox - 8 + i, oy, oz + 12) for i, name in enumerate(spots)}
+
+    def alive(name):
+        if name == 'orb':  # @e does not list experience orbs; the state counts them by kind
+            return remote(host).get('entities', {}).get('minecraft:experience_orb', 0) > 0
+        # Marker blocks: a command the game runs, a block the control reads back.
+        mx, my, mz = markers[name]
+        host('command', command=f'setblock {mx} {my} {mz} minecraft:air')
+        host('command', command=f'execute if entity @e[tag={tag}_{name}] run setblock {mx} {my} {mz} minecraft:gold_block')
+        host.wait(2)
+        return host.raw('block', mx, my, mz).get('block') == 'minecraft:gold_block'
+
+    seen = {}
+    try:
+        host('command', command='gamemode creative')
+        host('command', command='difficulty normal')
+        host('command', command=f'fill {ox - 9} {oy - 1} {oz - 9} {ox + 9} {oy - 1} {oz + 14} minecraft:stone')
+        host('command', command=f'fill {ox - 9} {oy} {oz - 9} {ox + 9} {oy + 6} {oz + 14} minecraft:air')
+        host('command', command=f'kill @e[tag={tag}]')
+        for name, (kind, dx, dz) in spots.items():
+            extra = ',NoAI:1b,PersistenceRequired:1b' if kind == 'minecraft:cow' else ''
+            host('command', command=f'summon {kind} {ox + 0.5 + dx} {oy} {oz + 0.5 + dz} '
+                                    f'{{Tags:["{tag}","{tag}_{name}"]{extra}}}')
+        host.wait(10)
+        seen['before'] = {name: alive(name) for name in spots}
+        assert all(seen['before'].values()), f'the command cannot see every entity before the bolt: {seen}'
+        def cow():
+            near = [m for m in host.raw('entities', 20, 'cow')['entities']
+                    if math.dist(m['pos'], (ox + 3.7, oy, oz + 0.5)) < 1.0]
+            return near[0]['health'] if near else 0.0
+        seen['cow_before'] = cow()
+        host('command', command=f'summon minecraft:lightning_bolt {ox + 0.5} {oy} {oz + 0.5}')
+        seen['cow_series'] = []
+        for _ in range(8):
+            host.wait(1)
+            seen['cow_series'].append(cow())
+        host.wait(2)
+        seen['after'] = {name: alive(name) for name in spots}
+        seen['cow_after'] = min(seen['cow_series'])
+        host.shot(out, 'lightning-box')
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+    # Vanilla: everything but the far boat is gone; the cow is hurt.
+    # (The cow burns on after the strike, so only its health at the strike is compared.)
+    gone = {k: v for k, v in seen['after'].items() if k != 'edgecow'}
+    assert gone == {'boat': False, 'cart': False, 'orb': False, 'edgeboat': False, 'farboat': True}, \
+        f'who survived the bolt: {seen}'
+    assert seen['cow_series'][0] == 5.0, f'the cow with its feet 3.2 out was not struck for 5: {seen}'
+    return seen
+
+
+CHECKS += ['lightning-box']
+CHECK_FNS['lightning-box'] = check_lightning_box
+
+
 def check_boat_submerged(host, guest, out):
     """AbstractBoat.tick ejects players after 60 consecutive underwater ticks on the server."""
     hx, _, hz = pos_of(host)
@@ -11254,6 +11546,64 @@ def check_shulker_lift(host, guest, out):
 
 CHECKS += ['shulker_lift']
 CHECK_FNS['shulker_lift'] = check_shulker_lift
+
+
+def check_blast_bystanders(host, guest, out):
+    """Primed TNT pushes a falling block and a boat, and breaks a boat in reach
+    (ServerExplosion.hurtEntities -> VehicleEntity.hurtServer, Entity.pushFromExplosion). Run on the real
+    26.3 server (`tick freeze`, `tick step 8` after the fuse): the falling block moved (+1.795, +1.235, 0),
+    the far boat (+0.071, 0, 0, tracker-lagged here); the near boat broke and dropped one item."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    x, y, z = hx + 6, hy, hz
+    for g in (host, guest):
+        g('command', command='gamemode spectator')
+    tx = x - 4.5
+    steps = [f'fill {x - 8} {y - 1} {z - 8} {x + 8} {y - 1} {z + 8} minecraft:bedrock',
+             f'fill {x - 8} {y} {z - 8} {x + 8} {y + 5} {z + 8} minecraft:air',
+             'kill @e[type=!player]', 'tick freeze',
+             f'summon minecraft:falling_block {x - 2.5} {y + 1.02} {z + 0.5} {{BlockState:{{Name:"minecraft:sand"}},Time:1,NoGravity:1b}}',
+             f'summon minecraft:oak_boat {tx} {y} {z + 3.5}',
+             f'summon minecraft:oak_boat {x + 3.0} {y} {z + 0.5}']
+
+    def scene():
+        found = {}
+        status = host('status')
+        # `simulation` has the server's own positions; `status` follows the trackers, which lag.
+        for p in host.raw('simulation')['projectiles'] + status['projectiles'] + status['objects']:
+            k = p['kind']
+            kind = {'minecraft:falling_block': 'fall', }.get(k, 'boat' if k.endswith('_boat') else None)
+            if kind and abs(p['position'][0] - x) < 8 and abs(p['position'][2] - z) < 8:
+                found.setdefault(kind, []).append(p['position'])
+        return found
+    try:
+        host('command', command='tick unfreeze')
+        for c in steps:
+            host('command', command=c)
+        host.wait(10)
+        before = scene()
+        host('command', command=f'summon minecraft:tnt {tx} {y + 1} {z + 0.5} {{fuse:5s}}')
+        host('command', command='tick step 8')
+        host.wait(10)
+        after = scene()
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=!player]')
+        for g in (host, guest):
+            g('command', command='gamemode creative')
+    assert len(before.get('boat', [])) == 2 and len(after.get('boat', [])) == 1, f'the near boat was not broken: {before} {after}'
+    moved = {k: [round(a - b, 3) for a, b in zip(after[k][0], before[k][0])] for k in ('fall',) if k in before and k in after}
+    assert set(moved) == {'fall'}, f'missing entities: {before} {after}'
+    far = [round(a - b, 3) for a, b in zip(after['boat'][0], next(p for p in before['boat'] if p[0] > x))]
+    for kind, want in (('fall', [1.795, 1.235, 0.0]),):
+        assert all(abs(a - b) < 0.05 for a, b in zip(moved[kind], want)), f'{kind} moved {moved[kind]}, vanilla {want}'
+    # A boat's position here follows its tracker, so only the direction is asserted (sbs.py blast_bystanders
+    # matches the vanilla boat to 1e-9: Pos x 3.0712677).
+    assert far[0] > 0.01 and abs(far[2]) < 0.02, f'the far boat was not pushed east: {far}'
+    return {'moved': moved, 'far_boat': far}
+
+
+CHECKS += ['blast-bystanders']
+CHECK_FNS['blast-bystanders'] = check_blast_bystanders
 
 
 if __name__ == '__main__':

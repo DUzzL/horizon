@@ -363,8 +363,19 @@ impl Game<'_> {
             .map_or("0".into(), |mhz| {
                 debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
             });
+        // Horizon: with frame generation running, the frames reaching the screen too.
+        let generated = self
+            .renderer
+            .as_ref()
+            .and_then(|r| r.frame_generation_share())
+            .map_or(String::new(), |share| {
+                format!(
+                    " ({} fps FSR 3.1)",
+                    (self.fps * (1.0 + share)).round() as i32
+                )
+            });
         d.priority(format!(
-            "{} fps T: {}{present} @{refresh}Hz",
+            "{} fps{generated} T: {}{present} @{refresh}Hz",
             self.fps.round() as i32,
             if limit == 260 {
                 "inf".into()

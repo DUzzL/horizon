@@ -121,6 +121,39 @@ pub(super) fn send_soul_particle(host: &super::lan::LanHost, at: [f64; 3], veloc
     }
 }
 
+/// `PowderSnowBlock.entityInside`'s `ServerLevel.sendParticles` of one
+/// snowflake (`count` 1, no spread, `RandomizationType.ALTERNATIVE`).
+pub(super) fn send_snowflake_particle(
+    host: &super::lan::LanHost,
+    at: [f64; 3],
+    velocity: [f64; 3],
+) {
+    let Some(id) = host
+        .hub
+        .registry_id("minecraft:particle_type", "minecraft:snowflake")
+    else {
+        return;
+    };
+    let packet = C::LevelParticles(play::LevelParticles {
+        particle: Particle { id, data: None },
+        override_limiter: false,
+        always_show: false,
+        pos: at,
+        dist: [0.0; 3],
+        max_speed: velocity.map(|v| v as f32),
+        count: 1,
+        randomization: 1,
+    });
+    for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+        let distance: f64 = (0..3)
+            .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
+            .sum();
+        if distance < 32.0 * 32.0 {
+            g.send(&packet);
+        }
+    }
+}
+
 impl Game<'_> {
     /// `SonicBoom.tick` uses `ServerLevel.sendParticles` for each ray point.
     /// Keep the local event's rendering; connected players receive one at rest.

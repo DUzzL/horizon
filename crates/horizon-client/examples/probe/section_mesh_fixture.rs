@@ -138,6 +138,7 @@ fn scene(
         blend_radius,
         smooth_lighting,
         cutout_leaves,
+        translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
     };
     let section_y = int(&row["section_y"])?;

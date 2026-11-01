@@ -77,6 +77,26 @@ pub struct BlockEntities {
     /// The fluid tanks of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_fluids: FxHashMap<u32, Arc<ModFluidTanks>>,
+    /// The positions of the mod block entities (`BlockEntity::Mod`) by chunk,
+    /// for the renderer: the mesher lists block entities by their template,
+    /// which leaves out a mod block whose template has none. One taken out
+    /// (`take`) stays listed until `put` or `remove`.
+    mods: FxHashMap<(i32, i32), FxHashSet<Pos>>,
+}
+
+fn chunk_of((x, _, z): Pos) -> (i32, i32) {
+    (x >> 4, z >> 4)
+}
+
+/// Takes `pos` out of its chunk's mod block entity set.
+fn forget_mod(mods: &mut FxHashMap<(i32, i32), FxHashSet<Pos>>, pos: Pos) {
+    let chunk = chunk_of(pos);
+    if let Some(set) = mods.get_mut(&chunk) {
+        set.remove(&pos);
+        if set.is_empty() {
+            mods.remove(&chunk);
+        }
+    }
 }
 
 impl std::ops::Deref for BlockEntities {
@@ -219,6 +239,23 @@ impl BlockEntities {
             self.attachments.insert(pos, data);
         }
     }
+    /// Whether any mod block entity is in the map: until one is, a block change
+    /// never looks one up (`LevelAccess::has_mod_block_entity`).
+    pub fn has_mods(&self) -> bool {
+        !self.mods.is_empty()
+    }
+    /// The mod block entities within `radius` blocks of `x`, `z` (by chunk, so
+    /// far ones are skipped whole; the caller checks each distance).
+    pub fn mods_near(&self, x: f64, z: f64, radius: f64) -> impl Iterator<Item = &Pos> {
+        let far = move |c: i32, at: f64| {
+            let (lo, hi) = (f64::from(c * 16), f64::from(c * 16 + 16));
+            at < lo - radius || at > hi + radius
+        };
+        self.mods
+            .iter()
+            .filter(move |((cx, cz), _)| !far(*cx, x) && !far(*cz, z))
+            .flat_map(|(_, set)| set)
+    }
     pub fn get_mut(&mut self, pos: &Pos) -> Option<&mut BlockEntity> {
         self.map.get_mut(pos)
     }
@@ -232,9 +269,15 @@ impl BlockEntities {
     /// block entity may get a slot; one replacing another keeps its slot.
     pub fn insert(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
         self.attachments.remove(&pos);
+        let new_is_mod = matches!(entity, BlockEntity::Mod(_));
         let old = self.map.insert(pos, entity);
         if old.is_none() {
             self.add(pos);
+        }
+        if new_is_mod {
+            self.mods.entry(chunk_of(pos)).or_default().insert(pos);
+        } else if matches!(old, Some(BlockEntity::Mod(_))) {
+            forget_mod(&mut self.mods, pos);
         }
         old
     }
@@ -244,16 +287,25 @@ impl BlockEntities {
         pos: Pos,
         make: impl FnOnce() -> BlockEntity,
     ) -> &mut BlockEntity {
-        if !self.map.contains_key(&pos) {
+        let absent = !self.map.contains_key(&pos);
+        if absent {
             self.add(pos);
         }
-        self.map.entry(pos).or_insert_with(make)
+        let entity = self.map.entry(pos).or_insert_with(make);
+        if absent && matches!(entity, BlockEntity::Mod(_)) {
+            self.mods.entry(chunk_of(pos)).or_default().insert(pos);
+        }
+        entity
     }
     /// `LevelChunk.removeBlockEntity`: the block entity and its slot.
     pub fn remove(&mut self, pos: &Pos) -> Option<BlockEntity> {
         self.attachments.remove(pos);
         self.cancel(pos);
-        self.map.remove(pos)
+        let removed = self.map.remove(pos);
+        if matches!(removed, Some(BlockEntity::Mod(_))) {
+            forget_mod(&mut self.mods, *pos);
+        }
+        removed
     }
     /// The block entity at `pos`, out of the map for a while: its slot stays
     /// for `put` to bring it back (a tick working on it).
@@ -267,6 +319,9 @@ impl BlockEntities {
     /// Brings back what `take` took, in its slot.
     pub fn put(&mut self, pos: Pos, entity: BlockEntity) {
         self.out.remove(&pos);
+        if matches!(entity, BlockEntity::Mod(_)) {
+            self.mods.entry(chunk_of(pos)).or_default().insert(pos);
+        }
         if self.map.insert(pos, entity).is_none()
             && !self.live.contains_key(&pos)
             && !self.pending.contains_key(&pos)
@@ -283,12 +338,14 @@ impl BlockEntities {
             &mut self.freed,
             &mut self.attachments,
         );
+        let mods = &mut self.mods;
         self.map.retain(|p, e| {
             let kept = keep(p, e);
             if !kept {
                 attachments.remove(p);
                 *freed |= live.remove(p).is_some();
                 pending.remove(p);
+                forget_mod(mods, *p);
             }
             kept
         });
@@ -296,6 +353,7 @@ impl BlockEntities {
     pub fn clear(&mut self) {
         self.attachments.clear();
         self.map.clear();
+        self.mods.clear();
         self.tickers = Arc::default();
         self.live.clear();
         self.added.clear();
@@ -313,8 +371,15 @@ impl BlockEntities {
         let order = chunk_map_order(entities.iter().map(|(p, _)| *p));
         for (p, e) in entities {
             self.attachments.remove(&p);
-            if self.map.insert(p, e).is_some() {
+            let new_is_mod = matches!(e, BlockEntity::Mod(_));
+            let old = self.map.insert(p, e);
+            if old.is_some() {
                 self.replaced.insert(p);
+            }
+            if new_is_mod {
+                self.mods.entry(chunk_of(p)).or_default().insert(p);
+            } else if matches!(old, Some(BlockEntity::Mod(_))) {
+                forget_mod(&mut self.mods, p);
             }
         }
         for p in order {
@@ -408,6 +473,38 @@ mod tests {
             .collect()
     }
 
+    fn near(b: &BlockEntities, x: f64, z: f64, radius: f64) -> Vec<Pos> {
+        let mut found: Vec<Pos> = b.mods_near(x, z, radius).copied().collect();
+        found.sort();
+        found
+    }
+    #[test]
+    fn mod_block_entities_are_listed_by_chunk_until_they_go() {
+        let mut b = level();
+        let modded = || BlockEntity::Mod(Box::default());
+        b.insert((1, 64, 1), modded());
+        b.insert((200, 64, 1), modded());
+        b.insert((2, 64, 2), hopper());
+        b.get_or_insert_with((3, 64, 3), modded);
+        b.load_chunk(vec![((4, 64, 4), modded()), ((5, 64, 5), hopper())]);
+        // Only mods, and only chunks within reach.
+        assert_eq!(
+            near(&b, 0.0, 0.0, 64.0),
+            [(1, 64, 1), (3, 64, 3), (4, 64, 4)]
+        );
+        assert_eq!(near(&b, 200.0, 0.0, 8.0), [(200, 64, 1)]);
+        // Taken out for a tick, still listed; removed or replaced, gone.
+        let taken = b.take(&(1, 64, 1)).unwrap();
+        assert_eq!(near(&b, 0.0, 0.0, 64.0).len(), 3);
+        b.put((1, 64, 1), taken);
+        b.remove(&(3, 64, 3));
+        b.insert((4, 64, 4), hopper());
+        assert_eq!(near(&b, 0.0, 0.0, 64.0), [(1, 64, 1)]);
+        b.retain(|p, _| p.0 != 1);
+        assert!(near(&b, 0.0, 0.0, 64.0).is_empty());
+        b.clear();
+        assert!(near(&b, 200.0, 0.0, 8.0).is_empty());
+    }
     #[test]
     fn attachments_follow_block_entity_lifetime() {
         use horizon_world::attachments::AttachmentType;

@@ -242,6 +242,17 @@ p50/p95/p99/max frame times), plus CPU and GPU time per frame; [the graphics
 benchmark](graphics.md#benchmark) is built on it. Frame times include waits for
 presentation, so `bench` reports what is on screen.
 
+### RAM limit
+
+`HORIZON_MEMORY_LIMIT_MB` (the launcher sets it) and `/ramlimit`, `/ramlimit <MB>`, `/ramlimit off` limit
+the RAM the game holds; the command lasts until the game closes and works on any server, as the window
+answers it. On Windows the system enforces the limit with a hard working set limit, so memory the game
+uses least moves out of RAM and a low limit costs speed. If the game is also slow and faulting hard, far
+terrain goes off and the render distance in use drops, never the saved option, and both come back when
+there is room. Linux and macOS have no such limit: there the game steps down before it reaches the limit.
+The game ends with a crash report only when it can't run under the limit: on Windows no frame for a minute
+while faulting hard, elsewhere 20 seconds over the limit with nothing left to give up.
+
 ### Discord Rich Presence
 
 While Discord runs on the same computer, the player's Discord profile shows

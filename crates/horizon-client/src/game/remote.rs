@@ -794,7 +794,7 @@ impl Game<'_> {
         // sent again when one of those options changes.
         let info = self
             .settings
-            .client_information(client_view_distance(self.settings.render_distance));
+            .client_information(client_view_distance(self.render_distance_in_use()));
         if local.is_none() && !self.options.split_guest {
             horizon_client::crash::set_detail(
                 "Server",
@@ -855,7 +855,7 @@ impl Game<'_> {
             self.res.threads(),
         );
         streaming.remote = true;
-        streaming.radius = self.settings.render_distance;
+        streaming.radius = self.render_distance_in_use();
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
         self.save = Arc::new(SaveDir::new(
@@ -2912,7 +2912,7 @@ impl Game<'_> {
                     r.show_death_screen = p.show_death_screen;
                 }
                 self.streaming.radius =
-                    self.settings.render_distance.min(p.chunk_radius + 1).max(2);
+                    self.render_distance_in_use().min(p.chunk_radius + 1).max(2);
                 // handleLogin: startWaitingForNewLevel(.., Reason.OTHER).
                 self.enter_remote_dimension(
                     &p.spawn,
@@ -2921,7 +2921,7 @@ impl Game<'_> {
                 );
                 let info = self
                     .settings
-                    .client_information(client_view_distance(self.settings.render_distance));
+                    .client_information(client_view_distance(self.render_distance_in_use()));
                 if let Some(r) = self.remote.as_mut() {
                     r.sent_info = info.clone();
                 }
@@ -3484,6 +3484,7 @@ impl Game<'_> {
                                     && let Some(stack) = self.stack_in(slot).cloned()
                                 {
                                     self.use_duration = self.use_duration(&stack);
+                                    self.use_ticks_set = false;
                                 }
                             }
                             _ => {}
@@ -4544,7 +4545,7 @@ impl Game<'_> {
                 }
             }
             C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
+                self.streaming.radius = self.render_distance_in_use().min(p.distance + 1).max(2);
                 if let Some(r) = self.remote.as_mut() {
                     r.view_distance = p.distance;
                 }
@@ -5431,9 +5432,10 @@ impl Game<'_> {
         self.tick_bundle_hover();
         // Options.broadcastOptions: a changed render distance or Chat option
         // is sent again.
+        self.tick_ram_limit();
         let info = self
             .settings
-            .client_information(client_view_distance(self.settings.render_distance));
+            .client_information(client_view_distance(self.render_distance_in_use()));
         if let Some(r) = self.remote.as_mut()
             && r.joined
             && r.sent_info != info
@@ -5483,19 +5485,21 @@ impl Game<'_> {
             self.tick_breeze_effects();
         }
         self.tick_remote_guardian_eyes(running);
-        // ClientLevel.tickBlockEntities: chest lids, shulker boxes, bells,
-        // and the moving pistons a block event's client-side moveBlocks made
-        // (their progress advances between the server's block updates).
-        self.tick_block_entity_anims();
-        self.tick_remote_spawners();
-        self.client_tick_beacons();
-        self.tick_remote_potent_sulfur();
-        self.with_level(|b, level, ticks| {
-            b.client_tick_block_entities(level, ticks);
-        });
-        let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
-        self.push_piston_entities(pushes);
-        self.sync_moving_pistons();
+        // Level.tickBlockEntities: a frozen level ticks no block entities.
+        // A step advances the moving pistons created by the block event once,
+        // rather than finishing them during the frozen ticks between steps.
+        if running {
+            self.tick_block_entity_anims();
+            self.tick_remote_spawners();
+            self.client_tick_beacons();
+            self.tick_remote_potent_sulfur();
+            self.with_level(|b, level, ticks| {
+                b.client_tick_block_entities(level, ticks);
+            });
+            let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
+            self.push_piston_entities(pushes);
+            self.sync_moving_pistons();
+        }
         self.tick_hand();
         if running {
             self.tick_particles();
@@ -7028,6 +7032,18 @@ impl Game<'_> {
             } else {
                 (result, changes)
             };
+            // AbstractCauldronBlock.useItemOn, either hand: CauldronInteractions
+            // answers on the client as on the server and only the server acts,
+            // so a bucket the cauldron takes is not used again (UseItem).
+            let result = if result.consumes_action() || spectator {
+                result
+            } else {
+                match self.cauldron_outcome(hit.pos, held.as_ref()) {
+                    horizon_client::cauldron::Outcome::Success => InteractionResult::Success,
+                    horizon_client::cauldron::Outcome::Consume => InteractionResult::Consume,
+                    horizon_client::cauldron::Outcome::Pass => result,
+                }
+            };
             let reacts = result.consumes_action();
             // useItemOn on this client, unless a sneak with something in hand
             // skips it: RedStoneOreBlock's dust, and the wick smoke of a lit
@@ -7791,6 +7807,13 @@ impl Game<'_> {
         if self.mod_use_tick(slot, ticks, !self.right || !in_hand) {
             return;
         }
+        // updatingUsingItem runs here too: a use a mod's tick ran out stays
+        // frozen until let go (RELEASE_USE_ITEM) or the server finishes it.
+        if let Some(s) = stack.as_ref().filter(|_| in_hand)
+            && !self.use_item_ticked(s, ticks)
+        {
+            return;
+        }
         // BrushItem.onUseTick: with no block aimed the use ends (the server
         // ends it too); a stroke shows its dust. Its sounds are the server's.
         if stack
@@ -7825,7 +7848,10 @@ impl Game<'_> {
         }
         // A drawn bow, a charging crossbow, a raised shield...: held until
         // the button lets go.
-        if stack.as_ref().is_some_and(|s| self.held_until_released(s)) {
+        if let Some(s) = stack.as_ref().filter(|s| self.held_until_released(s)) {
+            if in_hand && (self.mod_use(s) || self.blocks_attacks(s).is_some()) {
+                self.item_on_use_tick(s, ticks);
+            }
             self.using = in_hand.then_some((slot, ticks + 1));
             return;
         }
@@ -7870,6 +7896,7 @@ impl Game<'_> {
             // player's own server.
             self.emit_consume(&consumable, &stack, 5);
         }
+        self.item_on_use_tick(&stack, ticks);
         self.using = Some((slot, ticks + 1));
     }
     /// `Player.handleEntityEvent(9)`: `completeUsingItem` on the client. A consumable's last crumbs, and FoodProperties.onConsume,
@@ -8282,14 +8309,21 @@ impl Game<'_> {
             direction: 0,
             sequence: 0,
         }));
+        // a mod's Stop may skip the item's release, and a mod's own release follows.
         let hand = self.used_hand();
         if let Some((slot, ticks)) = self.using.take()
             && let Some(hand) = hand
-            && self
-                .stack_in(slot)
-                .is_some_and(|s| &*s.item == "minecraft:trident")
+            && let Some(stack) = self.stack_in(slot).cloned()
         {
-            self.with_hand(hand, |g| g.release_trident(ticks));
+            self.with_hand(hand, |g| {
+                if !g.use_item_stopped(&stack, ticks) {
+                    return;
+                }
+                if &*stack.item == "minecraft:trident" {
+                    g.release_trident(g.ticks_held(&stack, ticks));
+                }
+                g.mod_release_using(&stack, ticks);
+            });
         }
     }
     /// ClientPacketListener.sendChat / sendCommand, signed with a chat
@@ -8301,7 +8335,10 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
-            self.send_command(command);
+            // The player's own RAM limit, which no server has a say in.
+            if !self.ram_limit_command(command) {
+                self.send_command(command);
+            }
         } else {
             self.send_signed_chat(message);
         }

@@ -63,6 +63,8 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
+        // The window answers this one itself, as it does a client mod's.
+        names.push(horizon_client::ram_limit::COMMAND);
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
@@ -1073,8 +1075,7 @@ impl Game<'_> {
     /// `Screen.clickCommandAction`: run a clicked command as the player
     /// without adding it to the chat history. A client mod's command goes
     /// first, as `ClientPacketListener.sendUnattendedCommand` lets client
-    /// commands take it. (Vanilla asks first when the command fails to
-    /// parse; here the server answers it.)
+    /// commands take it.
     pub(super) fn click_command(&mut self, command: &str) {
         let command = command.strip_prefix('/').unwrap_or(command);
         if self.client_mod_command(command) {
@@ -1556,6 +1557,17 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &command_export(&dir).unwrap()));
         assert!(command_export(&dir.join("missing")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ram_limit_command_is_known_to_the_chat_box() {
+        let reg = Registries::default();
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        assert!(vanilla.find(horizon_client::ram_limit::COMMAND).is_none());
+        let tree = with_native_commands(vanilla, &[horizon_client::ram_limit::COMMAND]);
+        for typed in ["ramlimit", "ramlimit 2048", "ramlimit off"] {
+            assert!(tree.parse(typed, &reg).executable().is_ok(), "{typed}");
+        }
     }
 
     /// A native mod's command is in the tree the chat box uses (#456): known

@@ -102,6 +102,9 @@ pub struct World {
     /// for `ServerLevel.sendBlockUpdated`'s path recomputing; kept only while
     /// the mobs of this world tick (`game/creatures.rs`).
     pub path_writes: Option<Vec<((i32, i32, i32), u32, u32)>>,
+    /// The chunks changed in bulk (`edit_runs`) since the log was last
+    /// drained, kept while `block_log` is: sent to the players whole.
+    pub bulk_log: FxHashSet<(i32, i32)>,
     /// The sections whose light changed since the log was last drained, as
     /// a bit per section of each column, kept while `block_log` is
     /// (`ChunkHolder.sectionLightChanged`).
@@ -211,6 +214,7 @@ impl World {
             weather: Weather::default(),
             block_log: None,
             path_writes: None,
+            bulk_log: Default::default(),
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),

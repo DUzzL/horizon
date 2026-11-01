@@ -88,6 +88,9 @@ pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> boo
 /// then to the file level.dat names, which it loads ([`load_owner`]), and to
 /// its own file, so that the one it loads is never the older of the two.
 pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
+    // `MinecraftServer.saveAllChunks`: `singleplayer_uuid` is the integrated server's own profile,
+    // never another player's file the world happened to hold.
+    level.player_uuid.get_or_insert(uuid_ints(guest.uuid));
     store(guest, level, None);
     let _ = level.write_player(world);
     save(guest, world);
@@ -638,5 +641,36 @@ mod tests {
         apply(&mut other, &level);
         assert_eq!(other.flying_speed, 0.05);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_world_without_singleplayer_uuid_gives_the_owner_a_new_player_not_anothers() {
+        // A world from a vanilla server: no `singleplayer_uuid`, and the players' files are other
+        // people's. The owner has none: vanilla starts them new (PlayerList.loadPlayerData).
+        let owner = horizon_protocol::crypto::offline_uuid("Owner");
+        let friend = horizon_protocol::crypto::offline_uuid("Friend");
+        let dir = world("server-world");
+        save(&holding(friend, "minecraft:netherite_ingot", 9), &dir);
+        let mut level = Level::default();
+        level.write(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("level.dat_old"));
+        let mut tag = read_dat(&dir.join("level.dat")).unwrap();
+        if let Some(Tag::Compound(data)) = tag.get_mut("Data") {
+            data.remove(&"singleplayer_uuid".into());
+        }
+        write_dat(&dir.join("level.dat"), tag).unwrap();
+        let read = Level::read(&dir).unwrap();
+        let mut g = holding(owner, "minecraft:dirt", 1);
+        g.inventory[0] = None;
+        let known = load_owner(&mut g, &dir, Some(&read));
+        assert!(!known, "the owner has not been here before");
+        assert_eq!(first_item(&g), None, "no inventory of the friend's");
+        // The owner's save names the owner, and leaves the friend's file alone.
+        let before = std::fs::read(path(&dir, friend)).unwrap();
+        let mut level = read;
+        save_owner(&g, &mut level, &dir);
+        assert_eq!(level.player_uuid, Some(uuid_ints(owner)));
+        assert_eq!(std::fs::read(path(&dir, friend)).unwrap(), before);
+        assert!(exists(&dir, owner));
     }
 }
