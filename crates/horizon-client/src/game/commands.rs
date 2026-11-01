@@ -1419,6 +1419,7 @@ impl Game<'_> {
             Target::Stand(id) => {
                 if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.position = v;
+                    a.previous = v;
                     if let Some([yaw, _]) = rotation {
                         a.yaw = yaw;
                     }
