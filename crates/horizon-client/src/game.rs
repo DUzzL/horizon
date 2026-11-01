@@ -2240,6 +2240,11 @@ struct Game<'a> {
     /// The cursor icon the window shows (`widgets::take_cursor` each frame).
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
+    /// The window held the pointer when it lost focus: the system lets a
+    /// grabbed pointer go with the focus, and a window that comes back still
+    /// wanting it takes it again (`MouseHandler.grabMouse`, whose grab
+    /// outlives the window's focus).
+    regrab_on_refocus: bool,
     /// Only the local player owning keyboard and mouse changes the native pointer.
     keyboard_mouse: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
@@ -7891,6 +7896,17 @@ impl Game<'_> {
     fn capture_loaded_world(&mut self) {
         // Loading may finish after focus was lost or another screen opened.
         if self.title.is_none() && self.screen == Screen::Playing {
+            self.capture(true);
+        }
+    }
+    /// The window came back into focus after holding the pointer: the system
+    /// dropped the grab with the focus, and vanilla's grab outlives it
+    /// (`MouseHandler.mouseGrabbed` stays true while GLFW keeps the cursor
+    /// mode), so the game takes the pointer again without waiting for a
+    /// click. A screen that is open keeps it free, as releasing the pointer
+    /// for that screen did: it is the screen, not the focus, that shows it.
+    fn regrab_on_refocus(&mut self) {
+        if std::mem::take(&mut self.regrab_on_refocus) && self.screen == Screen::Playing {
             self.capture(true);
         }
     }
@@ -16745,31 +16761,40 @@ impl Game<'_> {
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
                     self.focus_lost = (!focused).then(Instant::now);
-                    if !focused && self.control.is_none() {
-                        self.keys.clear();
-                        // Latched sneak/sprint live in `toggles`, not in the
-                        // physical keys: put them back so a short alt-tab
-                        // (no pause screen) does not drop them. Only a mapping
-                        // whose toggle option is on is latched; a held one has
-                        // no state to keep, and an unfocused window never gets
-                        // its key release, so leaving it down would keep the
-                        // player sneaking or sprinting until the key is tapped.
-                        for (slot, needs_toggle) in [
-                            self.settings.toggle_crouch,
-                            self.settings.toggle_sprint,
-                            self.settings.toggle_attack,
-                            self.settings.toggle_use,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            self.toggles.0[slot].set_down(false, needs_toggle);
+                    if focused {
+                        self.regrab_on_refocus();
+                    } else {
+                        // A held pointer goes with the focus, wherever the
+                        // system keeps the grab: the window asks for it back
+                        // when the focus returns (`regrab_on_refocus`).
+                        let held = self.captured;
+                        if self.control.is_none() {
+                            self.keys.clear();
+                            // Latched sneak/sprint live in `toggles`, not in the
+                            // physical keys: put them back so a short alt-tab
+                            // (no pause screen) does not drop them. Only a mapping
+                            // whose toggle option is on is latched; a held one has
+                            // no state to keep, and an unfocused window never gets
+                            // its key release, so leaving it down would keep the
+                            // player sneaking or sprinting until the key is tapped.
+                            for (slot, needs_toggle) in [
+                                self.settings.toggle_crouch,
+                                self.settings.toggle_sprint,
+                                self.settings.toggle_attack,
+                                self.settings.toggle_use,
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                self.toggles.0[slot].set_down(false, needs_toggle);
+                            }
+                            self.sync_toggle(0);
+                            self.sync_toggle(1);
+                            self.left = false;
+                            self.right = false;
+                            self.capture(false);
                         }
-                        self.sync_toggle(0);
-                        self.sync_toggle(1);
-                        self.left = false;
-                        self.right = false;
-                        self.capture(false);
+                        self.regrab_on_refocus = held;
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
@@ -17945,6 +17970,7 @@ impl<'a> Game<'a> {
             cursor: (0.0, 0.0),
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
+            regrab_on_refocus: false,
             keyboard_mouse: true,
             view_at: [0, 0],
             split_hud: Default::default(),
