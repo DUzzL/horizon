@@ -252,6 +252,18 @@ impl Arena {
     pub fn page_vertices(&self) -> u64 {
         self.page_limit
     }
+    /// `page`'s buffer up to the end of its last range in use, as draws bind it:
+    /// wgpu clears what a binding covers and nothing wrote yet when the frame is
+    /// submitted, most of a page just made or grown.
+    pub fn binding(&self, page: u32) -> wgpu::BufferSlice<'_> {
+        let p = self.pages[page as usize].as_ref().expect("live arena page");
+        let end = match p.free.0.last_key_value() {
+            Some((&start, &len)) if start + len == p.capacity => start,
+            _ => p.capacity,
+        };
+        // A page a draw names holds a range; wgpu refuses an empty slice.
+        p.buffer.slice(..end.max(GRAIN) * self.stride)
+    }
     pub fn has_page(&self, page: u32) -> bool {
         self.pages.get(page as usize).is_some_and(Option::is_some)
     }
@@ -782,6 +794,32 @@ mod tests {
             assert!(arena.alloc_existing(GRAIN).is_some(), "split {split}");
             assert_eq!(arena.alloc_existing(GRAIN), None, "split {split}");
         }
+    }
+
+    /// Draws bind a large page up to the end of its last range in use, a grain at
+    /// least: wgpu clears what a binding covers and nothing wrote when the frame is
+    /// submitted, so a grown page bound whole had its new tail cleared on the GPU.
+    #[test]
+    fn large_pages_are_bound_up_to_their_last_range_in_use() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = Arena::translucent(&device, 24, GRAIN);
+        let ranges: Vec<_> = (0..3)
+            .map(|_| alloc(&mut arena, &device, &queue, GRAIN).unwrap())
+            .collect();
+        // The third grain grew the page to four.
+        assert_eq!(arena.buffer(0).size(), 4 * GRAIN * 24);
+        assert_eq!(arena.binding(0).size(), 3 * GRAIN * 24);
+        // A free range before the last in use stays bound, none after it; an empty
+        // page binds a grain (wgpu refuses an empty slice).
+        arena.release(0, ranges[1].1, GRAIN);
+        assert_eq!(arena.binding(0).size(), 3 * GRAIN * 24);
+        arena.release(0, ranges[2].1, GRAIN);
+        assert_eq!(arena.binding(0).size(), GRAIN * 24);
+        arena.release(0, ranges[0].1, GRAIN);
+        assert_eq!(arena.binding(0).size(), GRAIN * 24);
     }
 
     #[test]

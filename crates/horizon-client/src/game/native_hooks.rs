@@ -1146,6 +1146,24 @@ impl Game<'_> {
     /// Atlas, models, renderer and client caches already refer to the new resources.
     /// Selection/F3+T and server-pack reloads share this point; initial startup does not.
     pub(super) fn native_client_resources_reloaded(&mut self) {}
+    /// The client made a new level for `dimension` (NeoForge's
+    /// `LevelEvent.Load` from the `ClientLevel` constructor): on joining a
+    /// server, single player's own included, and on changing dimension.
+    /// Its chunks come after. When the dimension changes, the old level's
+    /// `native_client_level_unload` follows this, as `Minecraft.setLevel`
+    /// tells it after the new level is made. Client-side, on the window; the
+    /// server's levels have `native_level_load`. API @API:client_level_events@.
+    pub(super) fn native_client_level_load(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
+    /// The client dropped its level for `dimension` (`LevelEvent.Unload`
+    /// from `Minecraft.setLevel` and `disconnect`): replaced by another
+    /// dimension's, or on leaving the server. Once for each
+    /// `native_client_level_load`. Not told when the game itself quits.
+    /// Client-side. API @API:client_level_events@.
+    pub(super) fn native_client_level_unload(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
     /// Once a tick, in every `Game`: the window's (in single player, on LAN
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
@@ -2173,7 +2191,9 @@ impl Game<'_> {
     /// without its slash, for a command a mod registered and the player's
     /// level allows: set `ran` when it is yours. The player's state is
     /// swapped in for the call, so `native_player` and the other helpers
-    /// read that player; `native_feedback` answers them. API 8.
+    /// read that player; `native_feedback` answers them. A single player's
+    /// owner console (`horizon-ctl command`) reaches it too, as the owner at
+    /// level 4. API 8.
     pub(super) fn native_perform_command(
         &mut self,
         player: &NativeServerPlayer,
@@ -2582,6 +2602,28 @@ impl Game<'_> {
     /// is the sender's own bytes. The window's game only. API 40.
     pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
         let _ = (channel, data);
+    }
+    /// `dimension`'s level opened on the server (NeoForge's `LevelEvent.Load`,
+    /// posted in `MinecraftServer.createLevels`): before any of its chunks
+    /// (`native_chunk_load`), so a mod sets up what it keeps for the level
+    /// here. The level the world opens in comes before `WorldOpenReady`; the
+    /// others open when someone first goes there (a player, a portal, an
+    /// `execute in` command), with the level in place. Once for each open:
+    /// `native_level_unload` follows. Server-side. API @API:level_events@.
+    pub(super) fn native_level_load(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
+    /// `dimension`'s level closed (NeoForge's `LevelEvent.Unload`, posted after
+    /// `level.close()` in `MinecraftServer.stopServer`), after its last save:
+    /// drop what the mod kept for it. A level other than the Overworld closes
+    /// once nobody has been in it for 300 ticks, after its chunks' unloads;
+    /// every level still open closes when the server stops, before
+    /// `WorldCloseFinal`, and when its open or its loop fails, before
+    /// `WorldOpenFailed` or `WorldCloseFailed`. Once for each
+    /// `native_level_load`. Don't read its blocks. Server-side. API
+    /// @API:level_events@.
+    pub(super) fn native_level_unload(&mut self, dimension: &str) {
+        let _ = dimension;
     }
     /// Chunk `chunk` (`[x, z]`, in chunks) of `dimension` came into the world
     /// (NeoForge's `ChunkEvent.Load`): `new` when it was just generated, false
@@ -5430,8 +5472,29 @@ mod tests {
     }
 
     #[test]
-    fn loot_table_load_stays_hookable() {
+    fn native_loot_kinds_stay_hookable() {
         let source = include_str!("../../../horizon-world/src/loot.rs");
+        for hook in [
+            "pub fn native_loot_function(",
+            "pub fn native_loot_condition(",
+        ] {
+            let at = source
+                .find(hook)
+                .unwrap_or_else(|| panic!("{hook} not found"));
+            let start = source[..at].rfind("///").unwrap();
+            let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+            for line in body.lines() {
+                assert!(!line.contains("cfg"), "a cfg in a loot hook point: {line}");
+                for mac in ["!(", "![", "! {", "!{"] {
+                    assert!(!line.contains(mac), "a macro in a loot hook point: {line}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loot_table_load_stays_hookable() {
+        let source = include_str!("../../../horizon-world/src/loot.rs").replace("\r\n", "\n");
         // From its doc comment's last line, so an attribute above it counts.
         let hook = source.find("pub fn native_loot_table_load(").unwrap();
         let start = source[..hook].rfind("///").unwrap();

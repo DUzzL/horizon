@@ -3177,8 +3177,7 @@ impl Hub {
     /// move after joining, before the spawn chunks are generated) is not
     /// known to be air, so it never makes the player float.
     fn no_blocks_around(&self, i: usize, at: [f64; 3], world: &World) -> bool {
-        let g = &self.guests[i];
-        let d = g.dimensions();
+        let d = self.guests[i].dimensions();
         let half = f64::from(d.width) / 2.0 + 0.0625;
         let lo = [at[0] - half, at[1] - 0.0625 - 0.55, at[2] - half];
         let hi = [
@@ -3186,13 +3185,7 @@ impl Hub {
             at[1] + f64::from(d.height) + 0.0625,
             at[2] + half,
         ];
-        let cell = |v: f64| v.floor() as i32;
-        (cell(lo[0])..=cell(hi[0])).all(|x| {
-            (cell(lo[2])..=cell(hi[2])).all(|z| {
-                world.loaded(x, z)
-                    && (cell(lo[1])..=cell(hi[1])).all(|y| world.is_air(world.block(x, y, z)))
-            })
-        })
+        no_blocks_in(world, lo, hi)
     }
 
     /// `ServerGamePacketListenerImpl.tickPlayer`'s flying check: a player the
@@ -3211,6 +3204,20 @@ impl Hub {
         } else {
             g.client_is_floating = false;
             g.above_ground_ticks = 0;
+        }
+        // The vehicle the player drives, by its own gravity: a boat may hover 160 ticks, a horse 80.
+        let g = &mut self.guests[i];
+        if g.vehicle_floating && g.vehicle.is_some() {
+            g.above_ground_vehicle_ticks += 1;
+            if g.above_ground_vehicle_ticks > maximum_flying_ticks(g.vehicle_gravity) {
+                let line = format!("{} was kicked for floating a vehicle too long!", g.name);
+                let conn = g.conn;
+                events.push(HostEvent::Warn(line));
+                self.kick(conn, translatable("multiplayer.disconnect.flying", &[]));
+            }
+        } else {
+            g.vehicle_floating = false;
+            g.above_ground_vehicle_ticks = 0;
         }
     }
 
@@ -3703,6 +3710,18 @@ const PLAYER_GRAVITY: f64 = 0.08;
 
 /// `ServerGamePacketListenerImpl.getMaximumFlyingTicks`: 80 ticks, more where
 /// gravity is weaker, none at all (never kicked) without gravity.
+/// `ServerGamePacketListenerImpl.noBlocksAround` over a box: every block from `lo` to `hi` is air, in
+/// loaded chunks (a chunk not loaded yet is not known to be air: nothing floats there).
+pub fn no_blocks_in(world: &World, lo: [f64; 3], hi: [f64; 3]) -> bool {
+    let cell = |v: f64| v.floor() as i32;
+    (cell(lo[0])..=cell(hi[0])).all(|x| {
+        (cell(lo[2])..=cell(hi[2])).all(|z| {
+            world.loaded(x, z)
+                && (cell(lo[1])..=cell(hi[1])).all(|y| world.is_air(world.block(x, y, z)))
+        })
+    })
+}
+
 fn maximum_flying_ticks(gravity: f64) -> i32 {
     if gravity < f64::from(1.0E-5_f32) {
         return i32::MAX;
