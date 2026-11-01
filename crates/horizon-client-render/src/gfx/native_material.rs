@@ -139,17 +139,32 @@ fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32
     // Water draws translucent and lava solid, so the pass resolves the fluid kind.
     let fluid = select(0u, select(2u, 1u, translucent), in.fluid_quad != 0u);
     let normal = horizon_material_normal(in.position);
+    horizon_material_face_normal = normal;
+    horizon_surface = vec4<f32>(0.0);
     let tangent = horizon_material_tangent(in.position, in.uv, normal);
     return material(MaterialInput(albedo, in.tint, in.light, in.lightmap, in.position, in.uv,
         translucent, horizon_sprite_tags(in.layer & 0x7fffu),
         horizon_sprite_material(in.layer & 0x7fffu), in.clip.xy / frame.resolution,
         in.face, fluid, in.emission, normal, tangent)).color;
 }
-@fragment fn horizon_material_fs_solid(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
+var<private> horizon_material_face_normal: vec3<f32>;
+struct HorizonMaterialSolid {
+    @location(0) color: vec4<f32>,
+    // The surface target's data: `set_surface`'s, then the fragment's depth, which the post
+    // stage's `surface_at` compares with the final depth.
+    @location(1) surface: vec4<f32>,
+}
+@fragment fn horizon_material_fs_solid(in: HorizonMaterialOut) -> HorizonMaterialSolid {
     let color = horizon_material_color(in, false);
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
-    return horizon_material_fogged(vec4(color.rgb, 1.0), in.spherical, in.cylindrical);
+    if horizon_surface.w == 0.0 {
+        set_surface(horizon_material_face_normal, 0.0, 0.0);
+    }
+    var out: HorizonMaterialSolid;
+    out.color = horizon_material_fogged(vec4(color.rgb, 1.0), in.spherical, in.cylindrical);
+    out.surface = vec4(horizon_surface.xyz, in.clip.z);
+    return out;
 }
 @fragment fn horizon_material_fs_translucent(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
     let color = horizon_material_color(in, true);
@@ -189,6 +204,8 @@ pub struct NativeMaterial {
     pub solid: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     pub flat: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    /// The stage calls `set_surface`: its solid pipelines also write the surface target.
+    pub writes_surface: bool,
 }
 
 /// terrain.wgsl's terrain section (its globals, bindings, sampling, lighting and fog), with
@@ -220,6 +237,10 @@ fn layer_table(name: &str, table: &[(u32, u32)]) -> String {
 
 /// The terrain shader for the pack's material stage `source`, with its sprite `tags` and
 /// `materials`.
+/// The surface target (the post stage's `scene_surface`): x the normal (two snorm16 in its
+/// bits), y smoothness, z the pack's data, w the fragment's depth.
+pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
 fn shader_source(source: &str, tags: &[(u32, u32)], materials: &[(u32, u32)]) -> String {
     format!(
         "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{ENTRIES}",
@@ -250,6 +271,7 @@ impl NativeMaterial {
         constants: &[(String, f64)],
         fog: bool,
     ) -> Result<Self, String> {
+        let writes_surface = horizon_shader_api::stages::calls_set_surface(&stage.source);
         let module = module(stage, shape.sprite_tags, shape.sprite_materials)?;
         let mut constants = present_constants(&module, constants);
         let sprite_names = [
@@ -296,6 +318,18 @@ impl NativeMaterial {
                 constants: &constants,
                 ..Default::default()
             };
+            let solid_targets = [
+                Some(wgpu::ColorTargetState {
+                    format: shape.format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: SURFACE_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(&stage.label),
                 layout: Some(layout),
@@ -321,11 +355,11 @@ impl NativeMaterial {
                     module: &module,
                     entry_point: Some(fragment),
                     compilation_options: options,
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: shape.format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: if fragment == "horizon_material_fs_solid" && writes_surface {
+                        &solid_targets
+                    } else {
+                        &solid_targets[..1]
+                    },
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -370,6 +404,7 @@ impl NativeMaterial {
             solid,
             translucent,
             flat,
+            writes_surface,
         })
     }
 }

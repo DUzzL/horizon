@@ -765,6 +765,20 @@ fn effects_from_blocks(
                                 m.damage(1.0, Damage::of(DamageKind::SweetBerryBush));
                             }
                         }
+                        // PowderSnowBlock.entityInside: a living entity is stuck
+                        // (and forgets its fall) only while the block at its
+                        // own feet is powder snow.
+                        "minecraft:powder_snow"
+                            if w.block_name(
+                                m.position.x.floor() as i32,
+                                m.position.y.floor() as i32,
+                                m.position.z.floor() as i32,
+                            ) == "minecraft:powder_snow" =>
+                        {
+                            m.fall_distance = 0.0;
+                            m.stuck_multiplier =
+                                Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+                        }
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
                     }

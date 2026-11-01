@@ -374,7 +374,7 @@ pub struct Items {
     /// Item tags in vanilla's order (`TagLoader`: file order, nested tags in
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
-    loot: Arc<HashMap<String, Value>>,
+    loot: Arc<horizon_world::loot::LootTables>,
     /// The `jukebox_song` registry.
     pub songs: HashMap<String, Song>,
     /// The `instrument` registry (goat horns).

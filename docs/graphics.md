@@ -5,7 +5,7 @@
 Horizon's graphics settings are two screens built from vanilla's widgets, opened from the top of **Video Settings** (**Horizon Graphics...** and **Advanced Graphics...**) or from **Options → Horizon Settings...**:
 
 - **Graphics** (Simple): a preset (Performance, Balanced, Quality, Ultra or Custom) and LOD distance.
-- **Advanced Graphics**: every Horizon setting, grouped under Rendering, Quality, Display, Preferences, Performance and Overlay.
+- **Advanced Graphics**: every Horizon setting, grouped under Rendering, Quality, Display, Preferences, Performance and Overlay. Cave Culling, Entity Culling and Leaf Culling share the Culling group under Rendering.
 
 Vanilla's own settings (render distance, FOV, framerate, VSync, GUI scale, smooth lighting...) stay where vanilla has them, in Video Settings; both screens leave them out.
 
@@ -17,7 +17,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Group | Setting | Stored in |
 | --- | --- | --- |
 | Rendering | render distance, simulation distance, entity distance | `options.txt` (vanilla keys) |
-| | LOD distance, cave culling, chunk updates per frame | `horizon-graphics.txt` |
+| | LOD distance, cave culling, entity culling, leaf culling, chunk updates per frame | `horizon-graphics.txt` |
 | Quality | smooth lighting, mipmap levels, biome blend, clouds, cloud distance, weather radius, particles, entity shadows, cutout leaves | `options.txt` |
 | | sky, fog, weather, animated textures | `horizon-graphics.txt` |
 | | distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up) | `horizon-graphics.txt` |
@@ -27,7 +27,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Performance | battery mode, worker threads, upload budget per frame | `horizon-graphics.txt` |
 | Overlay | performance overlay: FPS, frame/CPU/GPU times, frame-time graph | `horizon-graphics.txt` |
 
-`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
+`options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
 
 **Battery mode** (Performance, off by default) is for laptops and handhelds: at most 60 frames per second in a world, 30 in menus without a world or while another window has focus, and half the automatic worker threads (chunks load slower). It changes only when frames are drawn: what they show and the game's 20 ticks per second stay as they are.
 
@@ -39,6 +39,17 @@ HDR's light sources shine by the kind of light rather than its level (`mesher::h
 
 Which settings each screen shows, their descriptions and costs are in `crates/horizon-client-render/src/graphics_ui.rs` (`rows`); `graphics_style.rs` draws them.
 
+## Leaf culling
+
+**Leaf Culling** (Advanced Graphics → Culling, off by default) changes only terrain section meshes: entities, particles and block entities are untouched, and the work happens on the mesh workers with the section's padded block snapshot, never on the render thread or per frame. Changing the mode remeshes loaded sections, like `cutoutLeaves`. It is stored as `leafCulling` in `horizon-graphics.txt` with the stable values `off`, `solid`, `solid_aggressive` and `hollow`; presets keep the player's choice.
+
+- **Off** draws every leaf face as vanilla's fancy leaves do. The section-mesh parity gate runs with Off and compares it byte for byte with the pinned client.
+- **Solid** marks a leaf that has leaves or full opaque cubes on all six sides as interior and puts all its quads in the opaque layer, so their cutouts no longer show the layers behind. Every quad stays, so the silhouette is unchanged; the inside seen through a canopy's holes looks more solid.
+- **Solid Aggressive** also marks a leaf with exactly one open side, thinning the cutout shell by one layer. Concave edges and one-block holes look chunkier; this is the largest change to a canopy's visible surface of the two solid modes.
+- **Hollow** removes a quad only when the block on the other side is a known leaf. Faces toward air, cavities, partial models, missing chunks, a section boundary and the end of a column stay. This saves the most geometry but gaps can see straight through a canopy.
+
+A full opaque cube means `RenderShape::Model`, `can_occlude`, `solid_render` and a full collision shape. Glass, water, slabs, stairs, chests and unknown or partial models are not opaque neighbours, so they always expose a leaf. Missing chunks, missing sections, the column's Y limits, section boundaries and the mask's outer shell are unknown rather than assumed to continue, so nothing is hidden at an edge the worker cannot see (or that the neighbouring section may not have meshed yet). A resource pack that may replace block models (anything besides `vanilla`) turns leaf culling off, as it does for entity culling.
+
 ## Distant terrain
 
 **LOD Distance** is off by default. Enable it in Simple or Advanced graphics settings with the slider, from 64 chunks up to 4194304, which covers the whole world. With LODs enabled, **Full Detail Distance** controls the nearby normal chunks; LOD Distance controls the outer view. Keep the nearby range modest, for example 12 chunks with a 256-chunk LOD distance. Increasing the distant range does not increase simulation distance. The world is planned in up to 22 levels, and from level 6 up (cells of 64 blocks or more) a tile is a heightmap of its surface and water instead of full strata. Past 1024 chunks the cells are also larger, about 1/48 of their distance. On a 2 GiB GPU the whole world costs about twice the 1024-chunk quads (5.5 M against 2.8 M at reduced far detail), so keep the slider lower on weak GPUs. `lod-distance` over the control socket takes the same range.
@@ -48,6 +59,8 @@ Distant terrain uses progressively coarser voxel columns. Columns retain separat
 Unknown areas are sampled directly from the dimension's seed-bound density and surface rules, with shared per-tile scratch and material evaluation. A small pool samples tiles independently of meshing. Refinement prioritizes visible screen error; high aerial views use the distance to the world height range to avoid unnecessary close detail below the camera. Initial vegetation uses the world's configured tree types, placement densities and biome assignments at every distance level, and chorus plants on the End's end stone in the same way. The End's small islands are estimated above the void from the `end_island_decorated` feature. Tree, chorus and island positions, shapes and large-cell coverage are visual approximations, not a replay of native feature placement; chorus is drawn only while its cells stay small enough to read as a plant.
 
 A separate bounded worker refines the nearest LOD levels with disposable ordinary chunk generation, including supported carvers, structures and decoration. Groups of 4×4 chunks share their generation halos, and each chunk is published once every neighbouring feature center has completed. Farther tiles use direct sampling rather than waiting for every intervening ordinary chunk. Saved and visited blocks take precedence over both paths. These temporary chunks never enter gameplay, simulation or normal save queues. Generated-column caches and request queues are bounded; far data is regenerated after reopening a world.
+
+On a dedicated server, the client has no generator of the world: the server samples the far tiles for it over Horizon's own `horizon:lod` channel, out to the distance its owner allows (`horizon-lod-distance`, off unless the owner sets it: see [hosting](hosting.md)), and the client's LOD Distance stops there. Those tiles are sampled from the generator, without the decoration refinement above; the chunks the server sent are summarized into far terrain as in single player. A friend's open-to-LAN world doesn't offer far terrain yet: it has no setting for that distance.
 
 Coverage and detail improve progressively; a large selected radius does not mean all its target detail is already resident. Far sampling runs behind the game's frame and tick threads; on machines with 12 or more threads it uses up to 6 sampling threads once the nearby chunks have loaded (a quarter of the threads, at most 3, elsewhere). The control status reports target and sampled target tile counts separately. Direct far sampling approximates vertical noise interpolation, fluid boundaries and lighting; surface slopes and column extensions, small features and partial block shapes can differ. Unexplored distant structures are not synthesized by the direct path, and native decoration order can differ from subsequent gameplay generation. Horizon-supported data-driven noise and tree configurations can be reused; this does not execute arbitrary Fabric/NeoForge worldgen or structure mods.
 
