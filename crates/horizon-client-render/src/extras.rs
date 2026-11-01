@@ -96,6 +96,9 @@ pub struct Extras {
     pub minimap_rotate: bool,
     /// Retry lost multiplayer connections (`reconnect`).
     pub auto_reconnect: bool,
+    /// Positional sounds leave a few static sound channels free for UI sounds
+    /// and others played to the listener (`sound_engine::HEARD_RESERVE`).
+    pub ui_sound_reserve: bool,
     /// The player's own name tag over its model in third person.
     pub own_name_tag: bool,
     /// Mouse Tweaks-style drags in the inventory and storage containers.
@@ -113,6 +116,8 @@ pub struct Extras {
     pub agent_control: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// Another controller can join P1's world (`splitscreen`, off by default).
+    pub splitscreen: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -138,6 +143,7 @@ impl Default for Extras {
             minimap_zoom: 1.0,
             minimap_rotate: false,
             auto_reconnect: false,
+            ui_sound_reserve: false,
             own_name_tag: false,
             mouse_tweaks: false,
             mouse_tweaks_wheel: true,
@@ -146,6 +152,7 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             discord_presence: true,
+            splitscreen: false,
         }
     }
 }
@@ -213,6 +220,7 @@ impl Extras {
                 }
                 "minimapRotate" => e.minimap_rotate = flag(e.minimap_rotate),
                 "autoReconnect" => e.auto_reconnect = flag(e.auto_reconnect),
+                "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
                 "mouseTweaks" => e.mouse_tweaks = flag(e.mouse_tweaks),
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
@@ -221,6 +229,7 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
+                "splitscreen" => e.splitscreen = flag(e.splitscreen),
                 _ => {}
             }
         }
@@ -228,7 +237,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -254,6 +263,7 @@ impl Extras {
             self.minimap_zoom,
             bool_text(self.minimap_rotate),
             bool_text(self.auto_reconnect),
+            bool_text(self.ui_sound_reserve),
             bool_text(self.own_name_tag),
             bool_text(self.mouse_tweaks),
             bool_text(self.mouse_tweaks_wheel),
@@ -263,6 +273,7 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
+            bool_text(self.splitscreen),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -384,6 +395,7 @@ pub enum Item {
     DynamicLights,
     OwnNameTag,
     AutoReconnect,
+    UiSoundReserve,
     MouseTweaks,
     MouseTweaksWheel,
     Sort,
@@ -393,6 +405,8 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    /// On the Splitscreen settings page.
+    Splitscreen,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -410,6 +424,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
+        Err("Sound"),
+        Ok(UiSoundReserve),
     ]
 }
 impl Item {
@@ -419,6 +435,7 @@ impl Item {
             Item::DynamicLights => "Dynamic lights",
             Item::OwnNameTag => "Own name tag",
             Item::AutoReconnect => "Auto-reconnect",
+            Item::UiSoundReserve => "Keep channels for UI sounds",
             Item::MouseTweaks => "Mouse Tweaks controls",
             Item::MouseTweaksWheel => "Scroll wheel moves items",
             Item::Sort => "Sort buttons",
@@ -426,16 +443,18 @@ impl Item {
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
+            Item::Splitscreen => "Splitscreen",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
     pub fn parent(self) -> Option<Item> {
         use Item::*;
         Some(match self {
+            UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            | AgentControl | DiscordPresence | Splitscreen => {
                 return None;
             }
         })
@@ -452,6 +471,9 @@ impl Item {
             }
             Item::AutoReconnect => {
                 "Rejoins a server after a lost connection or a restart, never after a kick or ban."
+            }
+            Item::UiSoundReserve => {
+                "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks."
             }
             Item::MouseTweaks => {
                 "Right-drag places one per slot, left-drag gathers the held item, Shift + left-drag moves every slot."
@@ -471,6 +493,9 @@ impl Item {
             Item::DiscordPresence => {
                 "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
             }
+            Item::Splitscreen => {
+                "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
+            }
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
@@ -481,10 +506,13 @@ impl Item {
         use crate::graphics_style::Cost;
         match self {
             Item::Fullbright => Some(Cost::None),
+            Item::UiSoundReserve => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
-            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
-                Some(Cost::None)
-            }
+            Item::OwnNameTag
+            | Item::AutoReconnect
+            | Item::MouseTweaks
+            | Item::Sort
+            | Item::Splitscreen => Some(Cost::None),
             _ => None,
         }
     }
@@ -495,12 +523,14 @@ impl Item {
             Item::DynamicLights => e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag,
             Item::AutoReconnect => e.auto_reconnect,
+            Item::UiSoundReserve => e.ui_sound_reserve,
             Item::MouseTweaks => e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
             Item::Sort => e.sort,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::DiscordPresence => e.discord_presence,
+            Item::Splitscreen => e.splitscreen,
             _ => return None,
         })
     }
@@ -522,12 +552,14 @@ impl Item {
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
             Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
+            Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
             Item::Sort => e.sort = !e.sort,
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+            Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::SortKey => {}
         }
     }
@@ -549,7 +581,7 @@ mod tests {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
-        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
+        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
         assert!(d.discord_presence);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
@@ -580,6 +612,9 @@ mod tests {
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
         e.discord_presence = false;
+        assert!(!e.splitscreen);
+        Item::Splitscreen.cycle(&mut e, false);
+        assert_eq!(Item::Splitscreen.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 

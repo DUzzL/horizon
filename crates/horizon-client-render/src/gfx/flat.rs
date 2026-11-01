@@ -490,6 +490,7 @@ impl Flat {
         phase2: Option<&wgpu::Buffer>,
         origins: impl Iterator<Item = (u32, [f32; 4])>,
         sorted_page: impl Fn(u32) -> wgpu::Buffer,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> bool {
         self.phase2_group = None;
         let phase1_draws = if phase2.is_some() {
@@ -668,7 +669,7 @@ impl Flat {
             .collect();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flatten section draws"),
-            timestamp_writes: None,
+            timestamp_writes: timing.and_then(|t| t.compute_writes("Flatten")),
         });
         pass.set_pipeline(&self.flatten);
         for (group, count) in &groups {
@@ -700,13 +701,17 @@ impl Flat {
         true
     }
     /// After occlusion culling's test: copies the phase 2 draws it saw.
-    pub fn flatten_phase2(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn flatten_phase2(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let Some((group, count)) = &self.phase2_group else {
             return;
         };
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Flatten phase 2 section draws"),
-            timestamp_writes: None,
+            timestamp_writes: timing.and_then(|t| t.compute_writes("Flatten phase 2")),
         });
         pass.set_pipeline(&self.flatten_seen);
         pass.set_bind_group(0, group, &[]);

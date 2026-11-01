@@ -1554,6 +1554,30 @@ def check_deaths(host, guest, out):
             guest.wait(10)
         said['thorns'] = host.raw('messages', 10)['chat']
         host.shot(out, 'deaths-thorns')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        ready()
+        gx, gy, gz = pos_of(guest)
+        host('command', command=f'tp @s {gx - 4:.2f} {gy:.2f} {gz:.2f}')
+        bx, by, bz = int(gx) - 1, int(gy), int(gz)
+        host('command', command=f'setblock {bx} {by} {bz} minecraft:tnt')
+        host.raw('look-at', f'{bx + 0.5:.2f}', f'{by + 0.5:.2f}', f'{bz + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        guest.wait(100)
+        said['tnt'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-tnt')
+        ready()
+        hx, hy, hz = pos_of(host)
+        host('command', command='effect give @s minecraft:resistance 10 5')
+        host('command', command=f'summon minecraft:pig {hx + 3:.2f} {hy:.2f} {hz:.2f} {{NoAI:1b}}')
+        host('command', command=f'setblock {int(hx) + 2} {int(hy)} {int(hz)} minecraft:tnt')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        host.raw('look-at', f'{int(hx) + 2.5:.2f}', f'{int(hy) + 0.5:.2f}', f'{int(hz) + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        host.wait(100)
+        said['blast_pig'] = host.raw('entities', 6, 'pig')['entities']
+        host.shot(out, 'deaths-blast-pig')
     finally:
         host('command', command='gamerule natural_health_regeneration true')
         for g in (host, guest):
@@ -1565,9 +1589,11 @@ def check_deaths(host, guest, out):
             'host_death_behind_guest': f'{name} was slain by {GUEST_NAME}',
             'arrow': f'{GUEST_NAME} was shot by {name}',
             'arrow_behind_guest': f'{name} was shot by {GUEST_NAME}',
-            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}'}
+            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}',
+            'tnt': f'{GUEST_NAME} was blown up by {name}'}
     for case, line in want.items():
         assert line in said[case], f'no "{line}" in the {case} chat: {said[case]}'
+    assert not said['blast_pig'], f'the blast left the pig standing: {said["blast_pig"]}'
     for case, lines in said.items():
         assert not any('%1$s' in line or '%2$s' in line for line in lines), \
             f'a raw template in the {case} chat: {lines}'
@@ -10610,6 +10636,44 @@ def check_arrow_pickup(host, guest, out):
 
 CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
+
+
+def check_trident_pickup(host, guest, out):
+    """#5577: a thrown trident a player picks up (AbstractArrow.playerTouch, then Player.take) flies
+    into them on every client as an ItemPickupParticle, like an arrow, instead of vanishing. A
+    server's client keeps tridents apart from the other projectiles."""
+    face_each_other(host, guest)
+    seen = {}
+    try:
+        for game in (host, guest):
+            game('command', command='gamemode survival')
+            game('command', command='clear @s')
+            game('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+            # Straight down: it sticks at the player's feet, inside their pickup box.
+            game('command', command='tp @s ~ ~ ~ ~ 90')
+            game.wait(5)
+            before = {g.name: g('status')['pickups'].get('trident', 0) for g in (host, guest)}
+            game.raw('use-item', '--hold', 1.2)
+            game.wait(40)
+            game.shot(out, 'trident-pickup')
+            seen[game.name] = {'flown': {g.name: g('status')['pickups'].get('trident', 0) - before[g.name]
+                                         for g in (host, guest)},
+                               'tridents': game('inventory')['counts'].get('minecraft:trident', 0)}
+    finally:
+        for game in (host, guest):
+            game.raw('mouse', 'right', 'up')
+            game('command', command='clear @s')
+        host('command', command='kill @e[type=minecraft:trident]')
+        face_each_other(host, guest)
+    for name, case in seen.items():
+        assert case['tridents'] == 1, f'{name} did not pick the trident up: {seen}'
+        if SERVER_THREAD:
+            assert all(n == 1 for n in case['flown'].values()), f"{name}'s trident did not fly to them: {seen}"
+    return seen
+
+
+CHECKS += ['trident_pickup']
+CHECK_FNS['trident_pickup'] = check_trident_pickup
 
 
 # Mounts for mount_other_level: (kind, summon NBT, blocks in front of the player). A camel is

@@ -35,6 +35,16 @@ pub struct PackInputs {
     /// `heldItemId`, `heldItemId2` (item.properties, 5.3) and `heldBlockLightValue(2)`.
     pub held_items: [i32; 2],
     pub held_light: [i32; 2],
+    /// `isRightHanded` (the Main Hand option) and `is_on_ground`.
+    pub right_handed: bool,
+    pub on_ground: bool,
+    /// The dimension type's lowest block (`bedrockLevel`), build height (`heightLimit`),
+    /// logical height, sky light and ceiling.
+    pub min_y: i32,
+    pub height: i32,
+    pub logical_height: i32,
+    pub has_skylight: bool,
+    pub has_ceiling: bool,
     /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
     pub mod_params: [[f32; 4]; 8],
 }
@@ -173,6 +183,13 @@ pub const NAMES: &[&str] = &[
     "playerLookVector",
     "playerBodyVector",
     "firstPersonCamera",
+    "isRightHanded",
+    "is_on_ground",
+    "bedrockLevel",
+    "heightLimit",
+    "logicalHeightLimit",
+    "hasSkylight",
+    "hasCeiling",
 ];
 
 /// Values carried from frame to frame.
@@ -380,6 +397,13 @@ impl FrameUniforms {
                 "relativeEyePosition" => v3((frame.camera - frame.eye).as_vec3()),
                 "playerLookVector" | "playerBodyVector" => v3(look),
                 "firstPersonCamera" => Value::i(&[i32::from(frame.first_person)]),
+                "isRightHanded" => Value::i(&[i32::from(inputs.right_handed)]),
+                "is_on_ground" => Value::i(&[i32::from(inputs.on_ground)]),
+                "bedrockLevel" => Value::i(&[inputs.min_y]),
+                "heightLimit" => Value::i(&[inputs.height]),
+                "logicalHeightLimit" => Value::i(&[inputs.logical_height]),
+                "hasSkylight" => Value::i(&[i32::from(inputs.has_skylight)]),
+                "hasCeiling" => Value::i(&[i32::from(inputs.has_ceiling)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),

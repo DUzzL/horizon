@@ -528,7 +528,11 @@ impl Cull {
 
     /// Between the phases (`InShader`): draw the tested boxes in a pass of
     /// their own that reads phase 1's depth, bound by `bind_depth`.
-    pub fn test_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn test_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let (Some(Group { group, .. }), Some(DepthGroup { view, group: depth })) =
             (&self.group, &self.depth_group)
         else {
@@ -539,6 +543,7 @@ impl Cull {
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Section culling"),
+            timestamp_writes: timing.and_then(|t| t.writes("Occlusion test")),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view,
