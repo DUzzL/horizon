@@ -143,7 +143,8 @@ impl ModBlockEntity {
     pub fn revision(&self) -> ModRevision {
         self.revision
     }
-    /// `BlockEntity.handleUpdateTag` of a client's copy: `tag`'s fields
+    /// A client's copy loads the tag the server sent (`loadWithComponents`
+    /// in `ClientPacketListener.handleBlockEntityData`): `tag`'s fields
     /// replace its own of the same names. One it already has as sent is
     /// left alone, so a tag sent again unchanged keeps its revision.
     pub fn merge_update_tag(&mut self, tag: &Compound) {
