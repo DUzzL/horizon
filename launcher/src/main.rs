@@ -58,9 +58,9 @@ mod worlds_page;
 
 use gpui::{
     actions, div, ease_out_quint, prelude::*, px, relative, size, Animation, AnimationExt,
-    AnyElement, App, Application, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle,
-    FontWeight, Hsla, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseDownEvent, PathPromptOptions,
-    Pixels, Point, SharedString, Stateful, Subscription, Window, WindowBounds, WindowOptions,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle, FontWeight, Hsla,
+    KeyBinding, KeyDownEvent, Menu, MenuItem, MouseDownEvent, PathPromptOptions, Pixels, Point,
+    SharedString, Stateful, Subscription, Window, WindowBounds, WindowOptions,
 };
 use horizon_launcher::account::{self, Accounts, SignIn, SignInState};
 use horizon_launcher::backend::{self, Job, Msg, Release, Running, Settings, Updates};
@@ -353,6 +353,8 @@ struct Launcher {
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
     launch: Option<launch_page::LaunchPanel>,
+    /// The memory row on Home.
+    memory_slider: launch_page::MemorySlider,
     importing: import_page::Importing,
     console: console_page::Console,
     /// What the window did when the game started (`while_playing.rs`).
@@ -447,7 +449,7 @@ impl Launcher {
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
                 let focus = cx.focus_handle();
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 Opening {
                     started: None,
                     reveal: None,
@@ -568,6 +570,7 @@ impl Launcher {
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
             launch: None,
+            memory_slider: Default::default(),
             importing: Default::default(),
             console: Default::default(),
             aside: while_playing::Aside::new(window.window_handle()),
@@ -969,6 +972,7 @@ impl Launcher {
                             .unwrap_or_default();
                         cmd.envs(self.client_vars.iter().map(|(k, v)| (k, v)));
                         let launch = instance.map(|i| i.launch).unwrap_or_default();
+                        horizon_launcher::launch::limit_memory(&mut cmd, &launch);
                         let cmd = horizon_launcher::launch::wrap(cmd, &launch);
                         self.client_home = cmd.get_current_dir().map(|d| d.to_path_buf());
                         match backend::spawn(Job::Client, cmd, self.tx.clone()) {
@@ -1740,6 +1744,7 @@ fn keyboard(el: Stateful<Div>, t: &Theme) -> Stateful<Div> {
         offset: gpui::point(px(0.), px(0.)),
         blur_radius: px(0.5),
         spread_radius: px(spread),
+        inset: false,
     };
     el.tab_index(0).focus(move |s| {
         if KEYBOARD.load(Ordering::Relaxed) {
@@ -2721,6 +2726,7 @@ impl Launcher {
             .or_else(|| java.is_some().then(String::new))
         else {
             // No hero without a version: the page starts below the top bar like the others.
+            let memory = self.memory_row(cx);
             return div()
                 .flex()
                 .flex_col()
@@ -2738,7 +2744,8 @@ impl Launcher {
                             cx.notify();
                         }),
                     ),
-                ));
+                ))
+                .children(memory);
         };
         let prepared = backend::is_prepared(&tag);
         // Prepared without sounds (#1035): Prepare again is the fix, so it stands out.
@@ -2869,7 +2876,8 @@ impl Launcher {
             .flex_col()
             .children(self.instance_row(1, cx))
             .children(self.export_panel(cx))
-            .children(self.launch_panel(cx));
+            .children(self.launch_panel(cx))
+            .children(self.memory_row(cx));
         rows = match &java {
             Some(java) => rows.child(index_row(
                 2,
@@ -3526,13 +3534,13 @@ impl Launcher {
                 tr("For example --server-thread"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.args_focus);
+                window.focus(&this.args_focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.args_input, ev, cx) {
                     line_edit::Key::Pass => return,
-                    line_edit::Key::Escape => window.blur(),
+                    line_edit::Key::Escape => window.blur(cx),
                     line_edit::Key::Edited => {
                         this.settings.game_args = this.args_input.text().to_string();
                         this.settings.save();
@@ -3585,13 +3593,13 @@ impl Launcher {
                 tr("For example http://127.0.0.1:7890"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.proxy_focus);
+                window.focus(&this.proxy_focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.proxy_input, ev, cx) {
                     line_edit::Key::Pass => return,
-                    line_edit::Key::Escape => window.blur(),
+                    line_edit::Key::Escape => window.blur(cx),
                     line_edit::Key::Edited => this.save_proxy(),
                     _ => {}
                 }
@@ -3920,6 +3928,124 @@ impl Launcher {
         }
     }
 
+    /// Use and Remove for an installed version; Remove asks once more before it deletes.
+    fn version_actions(&self, tag: &str, selected: bool, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let confirming = self.confirm_remove.as_deref() == Some(tag);
+        let (t1, t2) = (tag.to_string(), tag.to_string());
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .when(!selected && !confirming, |d| {
+                d.child(
+                    button(format!("use-{tag}"), "Use", Kind::Ghost, &t).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.settings.selected = Some(t1.clone());
+                            this.settings.save();
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .child(
+                button(
+                    format!("remove-{tag}"),
+                    if confirming {
+                        "Remove for good"
+                    } else {
+                        "Remove"
+                    },
+                    if confirming {
+                        Kind::Secondary
+                    } else {
+                        Kind::Ghost
+                    },
+                    &t,
+                )
+                .when(confirming, |b| b.text_color(t.danger))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if this.confirm_remove.as_ref() == Some(&t2) {
+                        this.remove(&t2);
+                    } else {
+                        this.confirm_remove = Some(t2.clone());
+                    }
+                    cx.notify();
+                })),
+            )
+    }
+
+    /// One installed native build on the Versions page: what it was built on, and Use and Remove.
+    fn native_build_row(
+        &self,
+        tag: &str,
+        on_disk: &dyn Fn(&String) -> Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = self.theme;
+        let selected = self.selected().map(String::as_str) == Some(tag);
+        let mut meta = Vec::new();
+        if let Some(about) = native_mods::about(tag) {
+            meta.push(trf("Built on {base}", &[("base", &about.base)]));
+        }
+        if let Some(n) = on_disk(&tag.to_string()) {
+            meta.push(trf("{size} on disk", &[("size", &megabytes(n))]));
+        }
+        let right = if self.removing.iter().any(|r| r == tag) {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .w(px(180.))
+                .child(progress_bar(None, &t))
+                .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
+        } else {
+            self.version_actions(tag, selected, cx)
+        };
+        let error = self
+            .install_error
+            .as_ref()
+            .filter(|(e, _)| e == tag)
+            .map(|(_, e)| e.clone());
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(14.))
+            .px(px(16.))
+            .bg(t.panel)
+            .border_2()
+            .border_color(t.outline)
+            .children(blocks::edges(t.bevel, t.lip, theme::BEVEL))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(4.))
+                            .child(version_tag(tag).text_color(t.ink))
+                            .child(caps(meta.join("  ·  ")).text_color(t.muted)),
+                    )
+                    .children(selected.then(|| caps(tr("In use")).text_color(t.accent)))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .w(px(190.))
+                            .flex_none()
+                            .child(right),
+                    ),
+            )
+            .children(error.map(|e| notice(e, &t)))
+    }
+
     fn versions_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let header = page_header(
@@ -3957,6 +4083,28 @@ impl Launcher {
                     &[("size", &megabytes(used))],
                 ))
             }));
+        // Native-mods builds are made here, not downloaded: they are listed apart from the releases.
+        let native: Vec<String> = self
+            .installed
+            .iter()
+            .chain(&self.removing)
+            .filter(|v| native_mods::is_native(v))
+            .cloned()
+            .collect();
+        let page = page.when(!native.is_empty(), |page| {
+            page.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(caps(tr("Native mod builds")).text_color(t.muted))
+                    .children(
+                        native
+                            .iter()
+                            .map(|tag| self.native_build_row(tag, &on_disk, cx)),
+                    ),
+            )
+        });
         let releases = match &self.releases {
             Load::Loading => return page.child(centered(tr("Loading releases…"), &t)),
             Load::Failed(e) => {
@@ -4032,51 +4180,7 @@ impl Launcher {
                         .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
                         .into_any_element()
                 } else if installed {
-                    let confirming = self.confirm_remove.as_ref() == Some(&tag);
-                    let (t1, t2) = (tag.clone(), tag.clone());
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .when(!selected && !confirming, |d| {
-                            d.child(
-                                button(format!("use-{tag}"), "Use", Kind::Ghost, &t).on_click(
-                                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                        this.settings.selected = Some(t1.clone());
-                                        this.settings.save();
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                        })
-                        .child(
-                            button(
-                                format!("remove-{tag}"),
-                                if confirming {
-                                    "Remove for good"
-                                } else {
-                                    "Remove"
-                                },
-                                if confirming {
-                                    Kind::Secondary
-                                } else {
-                                    Kind::Ghost
-                                },
-                                &t,
-                            )
-                            .when(confirming, |b| b.text_color(t.danger))
-                            .on_click(cx.listener(
-                                move |this, _: &ClickEvent, _, cx| {
-                                    if this.confirm_remove.as_ref() == Some(&t2) {
-                                        this.remove(&t2);
-                                    } else {
-                                        this.confirm_remove = Some(t2.clone());
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                        .into_any_element()
+                    self.version_actions(&tag, selected, cx).into_any_element()
                 } else if release.asset.is_none() {
                     text(theme::CAPTION)
                         .text_color(t.muted)
@@ -4344,7 +4448,7 @@ impl Render for Launcher {
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {
             self.bench_scroll(window);
         }
-        self.servers.note_focus(window);
+        self.servers.note_focus(window, cx);
         self.friend_focused = self.friend_focus.is_focused(window);
         self.mods.note_focus(window);
         self.github.note_focus(window);
@@ -4375,7 +4479,7 @@ impl Render for Launcher {
         let (reveal, held) = self.opening_phase(window);
         let ui = ease_out_cubic((reveal - 0.3) / 0.7);
         if self.opening.is_none() && window.focused(cx).is_none() {
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
         }
         let (sky, next) = self.sky.render(
             &t.night,
@@ -4398,9 +4502,9 @@ impl Render for Launcher {
                     "tab" => {
                         KEYBOARD.store(true, Ordering::Relaxed);
                         if k.modifiers.shift {
-                            window.focus_prev();
+                            window.focus_prev(cx);
                         } else {
-                            window.focus_next();
+                            window.focus_next(cx);
                         }
                     }
                     "escape" if this.servers_escape() => {}
@@ -4583,7 +4687,7 @@ impl Launcher {
         let handle = &self.content_scroll.handle;
         let mut offset = handle.offset();
         offset.y -= px(24.);
-        if -offset.y > handle.max_offset().height {
+        if -offset.y > handle.max_offset().y {
             offset.y = px(0.);
         }
         handle.set_offset(offset);
@@ -4643,10 +4747,12 @@ fn menus() -> Vec<Menu> {
         Menu {
             name: "Horizon Launcher".into(),
             items: vec![MenuItem::action("Quit Horizon Launcher", Quit)],
+            disabled: false,
         },
         Menu {
             name: "Window".into(),
             items: vec![MenuItem::action("Close Window", CloseWindow)],
+            disabled: false,
         },
     ]
 }
@@ -4660,13 +4766,14 @@ fn main() {
     backend::exe_path();
     #[cfg(windows)]
     backend::remove_replaced_binaries();
+    backend::cleanup_launcher_updates();
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
     // that build their own agents (`horizon-port-pack`) are told before anything starts.
     horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
     if let Some(code) = cli::run() {
         std::process::exit(code);
     }
-    Application::new()
+    gpui_platform::application()
         .with_assets(blocks::Assets)
         .run(|cx: &mut App| {
             cx.text_system()
@@ -4700,12 +4807,20 @@ fn main() {
                     #[cfg(target_os = "linux")]
                     window_decorations: Some(gpui::WindowDecorations::Client),
                     app_id: Some("horizon-launcher".into()),
+                    // GPUI draws a window without focus at most every 33 ms to save energy. A
+                    // benchmark's window often starts without it (KDE keeps focus from windows
+                    // a background process opens), and it measures drawing, not that limit.
+                    inactive_frame_interval: if perf::Bench::wanted() {
+                        None
+                    } else {
+                        WindowOptions::default().inactive_frame_interval
+                    },
                     ..Default::default()
                 },
                 |window, cx| cx.new(|cx| Launcher::new(window, cx)),
             )
             .expect("window");
-            cx.on_window_closed(shut_down).detach();
+            cx.on_window_closed(|cx, _| shut_down(cx)).detach();
             cx.activate(true);
         });
 }
@@ -4747,7 +4862,7 @@ mod tests {
         use super::{key_bindings, CloseWindow, Quit};
         use gpui::{Keymap, Keystroke};
         let keymap = Keymap::new(key_bindings());
-        let key = |s: &str| [Keystroke::parse(s).unwrap()];
+        let key = |s: &'static str| [Keystroke::parse(s).unwrap()];
         let (hit, _) = keymap.bindings_for_input(&key("cmd-q"), &[]);
         assert!(hit.iter().any(|b| b.action().partial_eq(&Quit)));
         let (hit, _) = keymap.bindings_for_input(&key("cmd-w"), &[]);

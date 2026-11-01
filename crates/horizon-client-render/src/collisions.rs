@@ -199,8 +199,9 @@ where
 }
 impl SceneCollisions<'_, '_> {
     /// Position contexts permit geometric movement probes without inventing a
-    /// player, inventory, effects or fluid-standing behavior; a lava walker
-    /// collides as the living entity it is, empty-handed.
+    /// player, inventory, effects or fluid-standing behavior; a lava walker or
+    /// a living entity in leather boots collides as the living entity it is,
+    /// empty-handed.
     pub fn resolve(
         &mut self,
         bounds: Aabb,
@@ -236,7 +237,10 @@ impl SceneCollisions<'_, '_> {
     }
     fn context(&self, bounds: Aabb) -> CollisionContext<'static> {
         let y = bounds.min_position().y;
-        if !self.subject.is_some_and(|s| s.lava_walker) {
+        if !self
+            .subject
+            .is_some_and(|s| s.lava_walker || s.leather_boots)
+        {
             return CollisionContext::position(y);
         }
         CollisionContext::for_entity(
