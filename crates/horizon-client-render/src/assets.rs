@@ -247,7 +247,6 @@ impl RenderAssets {
         let mut emissive = Vec::new();
         let connected = if draws {
             crate::native_emissive::load(root, &mut sprites);
-            emissive = crate::native_emissive::load_optifine(root, &mut sprites);
             // A side's sprite, for rules that connect by tile: the first quad facing it.
             let catalog = &models.catalog;
             let mut found = Vec::new();
@@ -274,6 +273,11 @@ impl RenderAssets {
         } else {
             Default::default()
         };
+        // After the connected tiles: a tile identical to a block shares its layer, and the
+        // overlays skip shared layers.
+        if draws {
+            emissive = crate::native_emissive::load_optifine(root, &mut sprites);
+        }
         sprites.save_disk_cache();
         if draws {
             sprites.finish();

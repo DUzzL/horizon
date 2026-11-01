@@ -31,7 +31,8 @@ pub fn load(root: &Path, sprites: &mut Sprites) {
 /// OptiFine's emissive overlays of the block sprites already loaded (what the terrain draws;
 /// items draw from the HUD atlas): for each
 /// `<ns>:block/<name>` whose `<name><suffix>.png` sits beside it, the overlay is loaded too and
-/// paired with it, first by name, at most [`MAX`]. A pack without such files adds nothing.
+/// paired with it, first by name, at most [`MAX`] - [`NATIVE`] (native mods keep their share of
+/// the table). A pack without such files adds nothing.
 pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)> {
     let suffix = horizon_optifine::emissive::suffix(root);
     // Blocks with identical pixels share a layer (and the shader pairs by layer): a shared
@@ -58,7 +59,7 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
         if !std::fs::metadata(&file).is_ok_and(|m| m.is_file()) {
             continue;
         }
-        if pairs.len() == MAX {
+        if pairs.len() == MAX - NATIVE {
             log::warn!(
                 "Horizon: more than {MAX} emissive block overlays: {overlay} and later skipped"
             );
@@ -82,8 +83,8 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
 pub const CUTOUT: u32 = 1 << 31;
 
 /// The frame's overlay table: native mods' pairs (at most [`NATIVE`] requested), then the packs'
-/// OptiFine pairs flagged [`CUTOUT`], one per base layer (native first), sorted by base layer
-/// for the shader's early exit, at most [`MAX`].
+/// OptiFine pairs flagged [`CUTOUT`] (at most [`MAX`] - [`NATIVE`], as [`load_optifine`] loads),
+/// one per base layer with native mods' first, sorted by base layer for the shader's early exit.
 pub fn table<'a>(
     layers: &BTreeMap<String, u32>,
     native: impl IntoIterator<Item = (&'a str, &'a str)>,
@@ -97,7 +98,7 @@ pub fn table<'a>(
     for [b, o, z, w] in mappings(layers, optifine) {
         by_base.entry(b).or_insert([b, o | CUTOUT, z, w]);
     }
-    by_base.into_values().take(MAX).collect()
+    by_base.into_values().collect()
 }
 
 /// Only loaded base/overlay pairs are sent to the GPU; sorted for vertex lookup.
@@ -218,9 +219,18 @@ mod tests {
             [[2, 3 | CUTOUT, 0, 0], [5, 9, 0, 0]],
             "sorted by base layer"
         );
-        // Native mods keep their 32.
-        let many: Vec<(&str, &str)> = (0..40).map(|_| ("b", "native")).collect();
-        assert_eq!(table(&layers, many, &[]), [[2, 9, 0, 0]]);
+        // Native mods keep their 32: of 40 requests on 40 bases, the first 32.
+        let layers: BTreeMap<String, u32> =
+            (0..41u32).map(|i| (format!("s{i}"), 100 + i)).collect();
+        let names: Vec<String> = (1..41).map(|i| format!("s{i}")).collect();
+        let many = names.iter().map(|n| (n.as_str(), "s0"));
+        let t = table(&layers, many, &[]);
+        assert_eq!(t.len(), 32);
+        assert_eq!(
+            t.last(),
+            Some(&[132, 100, 0, 0]),
+            "s32 last; s33 to s40 cut"
+        );
     }
     #[test]
     fn only_existing_pairs_are_mapped() {
