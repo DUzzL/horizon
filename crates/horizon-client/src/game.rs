@@ -2411,6 +2411,8 @@ struct Game<'a> {
     /// `getUseDuration` when that use started, as a mod left it
     /// (`game/item_use.rs`): consumables and mod items count to it.
     use_duration: i32,
+    /// A mod's `Start` or `Tick` set that use's ticks left (`game/item_use.rs`).
+    use_ticks_set: bool,
     /// Camera.oldFovModifier / fovModifier.
     /// `Camera` (eye height and field-of-view easing, view placement).
     view: horizon_client::camera::Camera,
@@ -6391,8 +6393,17 @@ impl Game<'_> {
             self.using = None;
             return;
         };
+        // a mod's tick ran the use out: finished now, or frozen until let go
+        // for an item used on release (CrossbowItem.useOnRelease).
+        if !self.use_item_ticked(&stack, ticks) {
+            if &*stack.item != "minecraft:crossbow" {
+                self.complete_using_item(slot, &stack, &info);
+            }
+            return;
+        }
         if self.blocks_attacks(&stack).is_some() {
             // ShieldItem: used for 72000 ticks, i.e. until released.
+            self.item_on_use_tick(&stack, ticks);
             self.using = Some((slot, ticks + 1));
             return;
         }
@@ -6423,13 +6434,11 @@ impl Game<'_> {
             return;
         }
         if &*stack.item == "minecraft:spyglass" {
-            // SpyglassItem.USE_DURATION, then finishUsingItem.
-            if ticks + 1 >= 1200 {
-                self.send_use_item_complete();
-                self.stop_spyglass();
-                self.using = None;
-            } else {
-                self.using = Some((slot, ticks + 1));
+            // SpyglassItem.getUseDuration (1200, as a mod left it), then
+            // completeUsingItem: finishUsingItem lowers it, and the finish hook.
+            match item_use::count_down(ticks, self.use_duration) {
+                Some(ticks) => self.using = Some((slot, ticks)),
+                None => self.complete_using_item(slot, &stack, &info),
             }
             return;
         }
@@ -6461,22 +6470,16 @@ impl Game<'_> {
         };
         // ItemStack.onUseTick: Consumable.shouldEmitParticlesAndSounds with
         // the remaining ticks before this tick counts them down.
-        // the duration is getUseDuration's when the use started.
+        // the duration is getUseDuration's when the use started, as a mod's
+        // Start and Tick left it.
         let remaining = self.use_duration - ticks as i32;
-        let done = item_use::count_down(ticks, self.use_duration).is_none();
-        let ticks = ticks + 1;
         if consumable.should_emit(remaining) {
             self.emit_consume(consumable, &stack, 5);
         }
-        if done {
-            self.using = None;
-            self.send_use_item_complete();
-            // ItemStack.finishUsingItem's applyAfterUseComponentSideEffects.
-            self.apply_use_cooldown(&stack);
-            self.finish_consuming(&info, consumable, &stack);
-            self.use_item_finished(&stack);
-        } else {
-            self.using = Some((slot, ticks));
+        self.item_on_use_tick(&stack, ticks);
+        match item_use::count_down(ticks, self.use_duration) {
+            Some(ticks) => self.using = Some((slot, ticks)),
+            None => self.complete_using_item(slot, &stack, &info),
         }
     }
     /// `BundleItem.onUseTick` and `getUseDuration` (200): the first tick and
@@ -6528,13 +6531,19 @@ impl Game<'_> {
     }
     /// `LivingEntity.releaseUsingItem` (`Item.releaseUsing`) for `stack`,
     /// used for `ticks`, its hand acting: a bow or a trident lets go (not
-    /// when its hand changed), a spyglass stops scoping.
+    /// when its hand changed), a spyglass stops scoping, and a mod's own
+    /// release follows. A mod's `Stop` may skip the release.
     pub(super) fn release_used_item(&mut self, stack: &ItemStack, ticks: u32, hand_changed: bool) {
+        let canceled = !hand_changed && !self.use_item_stopped(stack, ticks);
+        let (release, spyglass) = item_use::release_parts(canceled, hand_changed);
         match &*stack.item {
-            "minecraft:bow" if !hand_changed => self.release_bow(ticks),
-            "minecraft:trident" if !hand_changed => self.release_trident(ticks),
-            "minecraft:spyglass" => self.stop_spyglass(),
+            "minecraft:bow" if release => self.release_bow(self.ticks_held(stack, ticks)),
+            "minecraft:trident" if release => self.release_trident(self.ticks_held(stack, ticks)),
+            "minecraft:spyglass" if spyglass => self.stop_spyglass(),
             _ => {}
+        }
+        if release {
+            self.mod_release_using(stack, ticks);
         }
     }
     /// `ServerPlayerGameMode.tick` while a player digs: level event 2020 every
@@ -17936,6 +17945,7 @@ impl<'a> Game<'a> {
             },
             using: None,
             use_duration: 0,
+            use_ticks_set: false,
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             frame_clock: Default::default(),
