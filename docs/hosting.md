@@ -278,6 +278,15 @@ playhorizon.dev", and the console says which client it was. The check reads the 
 by (`minecraft:brand`), which any client can fake: it keeps out players who didn't install Horizon, not
 cheaters. The server's own checks (reach, movement) are what protect it.
 
+Horizon clients can get their far terrain (Video Settings → LOD Distance) from the server: set
+`horizon-lod-distance` under `[properties]` to how far, in chunks (1024 at most), and the server samples the
+tiles each player's client asks for out to there. It is off (0) by default: far tiles show the world's terrain
+far past the view distance, which helps players find the seed. A player's own LOD Distance applies when it is
+shorter. Each player may have 8 tiles waiting and ask for 64 a second on average, and one background thread
+samples them for everyone in turn, behind the ticks, so far terrain never slows the server down; a tile past the
+distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
+Tiles are sampled again for each player who asks (there is no cache yet). Vanilla clients never hear of it.
+
 `horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600),
 then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
 the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it

@@ -142,6 +142,7 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod stars;
+pub mod submit;
 mod sunrise_fan;
 mod timing;
 pub mod translucency;
@@ -164,6 +165,50 @@ fn sky_visible(frame: &Frame) -> bool {
     !frame.title && frame.skybox && sky_open(frame)
 }
 
+/// The world pass's part that draws a shader pack's solid terrain: the world's colour and
+/// depth loaded, and its `surface` target, cleared on the first of these passes.
+fn surface_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    surface: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    clear: bool,
+) -> wgpu::RenderPass<'e> {
+    let keep = |load| wgpu::Operations {
+        load,
+        store: wgpu::StoreOp::Store,
+    };
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Horizon world, pack terrain"),
+        color_attachments: &[
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: keep(wgpu::LoadOp::Load),
+            }),
+            Some(wgpu::RenderPassColorAttachment {
+                view: surface,
+                resolve_target: None,
+                depth_slice: None,
+                ops: keep(if clear {
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                } else {
+                    wgpu::LoadOp::Load
+                }),
+            }),
+        ],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        ..Default::default()
+    })
+}
 fn world_pass_after_culling<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
@@ -618,7 +663,11 @@ pub struct Renderer {
     display_fresh: bool,
     window: Arc<Window>,
     pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    /// Frames are finished and submitted on its submit thread ([`submit`]).
+    pub queue: submit::Queue,
+    /// The last frame went to the submit thread; whether it had no window surface.
+    /// The next frame takes it in ([`Self::land_frame`]).
+    deferred: Option<bool>,
     /// Set by the device's lost callback. wgpu reports nothing else when an
     /// operation fails on a lost device (no error scope sees it).
     device_lost: Arc<std::sync::atomic::AtomicBool>,
@@ -640,6 +689,9 @@ pub struct Renderer {
     sides_on: bool,
     sky: wgpu::RenderPipeline,
     dark_disc: wgpu::RenderPipeline,
+    /// Clears the world pass's depth to the far plane so the first-person hand draws in the
+    /// same pass (`hand_in_world`), as the hand's own pass would clear it.
+    depth_reset: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     lines_secondary: wgpu::RenderPipeline,
     /// Gizmo lines (`RenderTypes.linesTranslucentNoDepthWrite`) and the
@@ -2039,6 +2091,40 @@ impl Renderer {
             false,
             Some(alpha_blend),
         );
+        let depth_reset = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Hand depth reset"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_depth_reset"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &sprite_constants,
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format.remove_srgb_suffix(),
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::empty(),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let lines = pipeline(
             "Block outline",
             "vs_line",
@@ -3358,7 +3444,8 @@ impl Renderer {
             last_encode: std::time::Duration::ZERO,
             window,
             device,
-            queue,
+            queue: submit::Queue::new(queue, submit::wanted()),
+            deferred: None,
             device_lost,
             config,
             solid,
@@ -3372,6 +3459,7 @@ impl Renderer {
             flat,
             sky,
             dark_disc,
+            depth_reset,
             lines,
             lines_secondary,
             debug_lines,
@@ -3531,6 +3619,14 @@ impl Renderer {
             present_modes,
         })
     }
+    /// The first-person hand's quads, which follow `first` quads of the entity buffer.
+    fn draw_hand(&self, pass: &mut wgpu::RenderPass<'_>, quads: u32, first: u32) {
+        pass.set_pipeline(&self.entity_pipeline);
+        pass.set_bind_group(0, &self.hand_group, &[]);
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+        pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+    }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
     fn draw_outline(&self, pass: &mut wgpu::RenderPass<'_>, edges: u32, high_contrast: bool) {
@@ -3578,6 +3674,7 @@ impl Renderer {
     /// Hand the window surface over to the renderer that replaces this one on
     /// the same device (it takes `spare_surface`).
     pub fn release_surface(&mut self) {
+        self.queue.wait();
         *self
             .spare_surface
             .get_mut()
@@ -3585,6 +3682,7 @@ impl Renderer {
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
+        self.queue.wait();
         if self.offscreen.is_some() {
             return Ok(());
         }
@@ -4305,6 +4403,8 @@ impl Renderer {
     /// Configures the window surface again. One that fails is still the one
     /// wgpu configured before, which acquisition reports as a validation error.
     fn configure_surface(&self) {
+        // The submit thread may still present to the old swapchain.
+        self.queue.wait();
         if let Some(surface) = &self.surface
             && let Err(e) = Self::configure(
                 &self.device,
@@ -4944,6 +5044,7 @@ impl Renderer {
     }
     /// `checks`: the error scopes of a scaled screenshot's frame, checked before its PNG is written.
     fn draw_frame(&mut self, frame: &Frame, checks: Option<GpuChecks>) -> Result<bool> {
+        self.land_frame();
         // World frames alone follow the shader pack: the game loads the picked one
         // before it draws one. Title frames draw no terrain and keep the layout
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
@@ -6191,6 +6292,14 @@ impl Renderer {
         if culling && let Some(cull) = &mut self.cull {
             cull.bind_depth(&self.device, world_depth);
         }
+        // The hand draws at the end of the world pass, after a depth reset, when nothing runs
+        // between them (a scaled world's post pass, HDR's world copy, a native mod's
+        // `native_world_drawn`): one render pass fewer, ~10 µs of wgpu's encoding a frame.
+        let hand_in_world = (frame.hand.len() / 4) > 0
+            && !pack_draws_hand
+            && scaled.is_none()
+            && self.hdr.is_none()
+            && !native_render::world_drawn_hooked();
         if oit_on {
             let size = self
                 .world_post
@@ -6519,6 +6628,16 @@ impl Renderer {
                 .frame
                 .fit_opaque(&self.device, world_depth.texture(), color);
         }
+        if let Some(native) = self.native.as_mut().filter(|_| !frame.title) {
+            let writes = native.material.as_ref().is_some_and(|m| m.writes_surface);
+            let depth = world_depth.texture();
+            let size = if writes {
+                [depth.width(), depth.height()]
+            } else {
+                [1, 1]
+            };
+            native.frame.fit_surface(&self.device, size);
+        }
         // One of Horizon's own packs with a material stage: terrain draws with its pipelines,
         // which read the pack's frame at group 3.
         let material = self
@@ -6541,6 +6660,17 @@ impl Renderer {
                 pass.set_bind_group(horizon_shader_api::stages::GROUP, group, &[]);
             }
         };
+        // A pack's solid terrain that calls `set_surface` also writes the surface target, in
+        // passes of its own between the sky and everything else.
+        let surface = self
+            .native
+            .as_ref()
+            .filter(|n| {
+                !frame.title
+                    && !pack_draws_terrain
+                    && n.material.as_ref().is_some_and(|m| m.writes_surface)
+            })
+            .map(|n| n.frame.surface_view.clone());
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: world_view,
@@ -6626,6 +6756,28 @@ impl Renderer {
                     pass.draw(0..3, 0..1);
                 }
             }
+            let terrain_pass =
+                |encoder: &mut wgpu::CommandEncoder, surface: &wgpu::TextureView, clear: bool| {
+                    // Its lifetime forgotten: a closure cannot tie it to `encoder`'s.
+                    let mut pass = surface_pass(encoder, world_view, surface, world_depth, clear)
+                        .forget_lifetime();
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
+                    pass
+                };
+            // The occlusion test's pipeline draws into the world's colour alone.
+            let plain_pass = |encoder: &mut wgpu::CommandEncoder| {
+                let mut pass =
+                    world_pass_after_culling(encoder, world_view, world_depth, true, None, "")
+                        .forget_lifetime();
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                pass
+            };
+            if let Some(surface) = &surface {
+                drop(pass);
+                pass = terrain_pass(&mut encoder, surface, true);
+            }
             match self
                 .flat
                 .as_ref()
@@ -6654,18 +6806,25 @@ impl Renderer {
                         // that the test saw, copied after it.
                         Some(cull) => {
                             draw(&mut pass, &flat.calls[..flat.phase1_calls]);
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
                             flat.flatten_phase2(&mut encoder, self.own_timing.as_mut());
-                            pass = world_pass_after_culling(
-                                &mut encoder,
-                                world_view,
-                                world_depth,
-                                keep_depth,
-                                self.own_timing.as_mut(),
-                                "World after culling",
-                            );
+                            pass = match &surface {
+                                Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                None => world_pass_after_culling(
+                                    &mut encoder,
+                                    world_view,
+                                    world_depth,
+                                    keep_depth,
+                                    self.own_timing.as_mut(),
+                                    "World after culling",
+                                ),
+                            };
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
                             for &pipeline in passes {
@@ -6697,17 +6856,24 @@ impl Renderer {
                                 pass.set_pipeline(pipeline);
                                 self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
                             }
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
-                            pass = world_pass_after_culling(
-                                &mut encoder,
-                                world_view,
-                                world_depth,
-                                keep_depth,
-                                self.own_timing.as_mut(),
-                                "World after culling",
-                            );
+                            pass = match &surface {
+                                Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                None => world_pass_after_culling(
+                                    &mut encoder,
+                                    world_view,
+                                    world_depth,
+                                    keep_depth,
+                                    self.own_timing.as_mut(),
+                                    "World after culling",
+                                ),
+                            };
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
                             pass.set_index_buffer(
@@ -6734,6 +6900,11 @@ impl Renderer {
                         }
                     }
                 }
+            }
+            if surface.is_some() {
+                drop(pass);
+                pass = plain_pass(&mut encoder);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             if entity_quads > 0 {
                 pass.set_pipeline(&self.entity_pipeline);
@@ -7197,6 +7368,12 @@ impl Renderer {
                     0..1,
                 );
             }
+            if hand_in_world {
+                pass.set_pipeline(&self.depth_reset);
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.draw(0..3, 0..1);
+                self.draw_hand(&mut pass, hand_quads, world_quads + additive_quads);
+            }
         }
         if let Some((color, depth)) = &scaled
             && pack_post
@@ -7317,7 +7494,7 @@ impl Renderer {
             post.run(
                 &self.device,
                 &mut encoder,
-                (color, depth),
+                (color, depth, &native.frame.surface_view),
                 &view_target,
                 size,
                 history_reset,
@@ -7358,7 +7535,7 @@ impl Renderer {
         if let Some(hdr) = &self.hdr {
             hdr.keep_world(&mut encoder, self.own_timing.as_mut());
         }
-        if hand_quads > 0 && !pack_draws_hand {
+        if hand_quads > 0 && !pack_draws_hand && !hand_in_world {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: &view_target,
                 resolve_target: None,
@@ -7382,15 +7559,7 @@ impl Renderer {
                 }),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.entity_pipeline);
-            pass.set_bind_group(0, &self.hand_group, &[]);
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-            pass.draw_indexed(
-                0..hand_quads * 6,
-                ((world_quads + additive_quads) * 4) as i32,
-                0..1,
-            );
+            self.draw_hand(&mut pass, hand_quads, world_quads + additive_quads);
             drop(pass);
             if let Some(hdr) = &self.hdr {
                 hdr.mark_hand(&mut encoder, self.own_timing.as_mut());
@@ -7578,15 +7747,54 @@ impl Renderer {
                 let size = [self.config.width, self.config.height];
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
-        let commands = crate::spans::time("encode", || encoder.finish());
         let first_frame = self.first_frame == FirstFrame::Submit;
+        // Finished, submitted and presented on the submit thread when nothing after the
+        // submission needs this one: screenshots' readbacks, the error scopes (one per
+        // thread), the first frame's startup log, VSync's frame callback, a reconfigure.
+        let (encoder, surface_frame, after) = if readback.is_none()
+            && hdr_readback.is_none()
+            && checks.is_none()
+            && !first_frame
+            && !reconfigure
+            && self.hdr_marker.is_none()
+            && (surface_frame.is_none() || self.config.present_mode != wgpu::PresentMode::Fifo)
+        {
+            let offscreen = surface_frame.is_none();
+            // Culling reads its results back as soon as the frame is submitted, as here.
+            let after = self
+                .cull
+                .as_mut()
+                .and_then(|c| c.submitted())
+                .map(|f| Box::new(f) as submit::AfterSubmit);
+            let job = submit::Job {
+                encoder,
+                surface: surface_frame,
+                after,
+            };
+            match self.queue.submit_later(job) {
+                Ok(()) => {
+                    self.deferred = Some(offscreen);
+                    self.last_encode = started.elapsed().saturating_sub(self.last_wait);
+                    self.visible = visible;
+                    self.visible_lods = visible_lods;
+                    self.shadow_visible = shadow_visible;
+                    return Ok(true);
+                }
+                Err(back) => (back.encoder, back.surface, back.after),
+            }
+        } else {
+            (encoder, surface_frame, None)
+        };
+        let commands = crate::spans::time("encode", || encoder.finish());
         if first_frame {
             startup_step(format_args!("submitting the first frame"));
             self.first_frame = FirstFrame::Drawn;
         }
         let submission = crate::spans::time("submit", || self.queue.submit([commands]));
-        if let Some(cull) = &mut self.cull {
-            cull.submitted();
+        if let Some(read) = after {
+            read();
+        } else if let Some(read) = self.cull.as_mut().and_then(|c| c.submitted()) {
+            read();
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
@@ -7734,8 +7942,33 @@ pub(crate) fn copy_frame(
     buffer
 }
 impl Renderer {
+    /// Take in the frame the submit thread submitted: start its readbacks and, offscreen,
+    /// keep at most two frames ahead of the GPU, as a frame submitted in place does.
+    fn land_frame(&mut self) {
+        let Some(offscreen) = self.deferred.take() else {
+            return;
+        };
+        let submission = self.queue.landed();
+        if let Some(timer) = &mut self.gpu_timer {
+            timer.submitted(&self.queue);
+            timer.collect(&self.device, &mut self.gpu_times);
+        }
+        if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
+            timer.submitted(&self.queue);
+        }
+        if offscreen && let Some(submission) = submission {
+            self.in_flight.push_back(submission);
+            if !self.paced_elsewhere {
+                self.wait_frames();
+            }
+        }
+    }
     /// No swapchain paces offscreen frames: keep two on the GPU at most.
     pub fn wait_in_flight(&mut self) {
+        self.land_frame();
+        self.wait_frames();
+    }
+    fn wait_frames(&mut self) {
         while self.in_flight.len() > 2 {
             let index = self.in_flight.pop_front();
             let _ = self.device.poll(wgpu::PollType::Wait {

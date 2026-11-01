@@ -83,6 +83,8 @@ pub struct HudAtlas {
     /// A resource pack's own `core/text` shader for the GUI's text, translated;
     /// none draws the text natively.
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// The packs' OptiFine random entity textures, whose variants this atlas packs.
+    pub random_textures: horizon_optifine::random_textures::RandomTextures,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -479,6 +481,7 @@ impl HudAtlas {
             glint_armor: (vec![0; 4], 1, 1),
             white,
             text_shader: None,
+            random_textures: Default::default(),
         }
     }
     /// Shelf placements of `images` (tallest first) in the narrowest atlas
@@ -567,15 +570,41 @@ impl HudAtlas {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
         });
+        // OptiFine random entity variants, under the names their scan gives them (those
+        // outside `textures/` are `<ns>:optifine/random/...`).
+        let random_textures = if folders.contains(&"entity") {
+            horizon_optifine::random_textures::RandomTextures::scan(root)
+        } else {
+            Default::default()
+        };
+        let mut named: HashMap<PathBuf, String> = HashMap::new();
+        for (file, name) in random_textures.files() {
+            named.insert(root.join(file), name.to_owned());
+        }
+        if !named.is_empty() {
+            // Those beside their texture are walked already.
+            let walked: HashSet<&PathBuf> = files.iter().collect();
+            let mut extra: Vec<PathBuf> = named
+                .keys()
+                .filter(|p| !walked.contains(p))
+                .cloned()
+                .collect();
+            extra.sort();
+            files.extend(extra);
+        }
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = match path.strip_prefix(&textures) {
-                Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
-                Err(_) => {
-                    let rel = path.strip_prefix(&assets).ok()?.with_extension("");
-                    let rel = rel.to_string_lossy().replace('\\', "/");
-                    let (namespace, rest) = rel.split_once("/textures/")?;
-                    format!("{namespace}:{rest}")
+            let name = if let Some(name) = named.get(path) {
+                name.clone()
+            } else {
+                match path.strip_prefix(&textures) {
+                    Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
+                    Err(_) => {
+                        let rel = path.strip_prefix(&assets).ok()?.with_extension("");
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        let (namespace, rest) = rel.split_once("/textures/")?;
+                        format!("{namespace}:{rest}")
+                    }
                 }
             };
             // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
@@ -777,6 +806,7 @@ impl HudAtlas {
             glint,
             glint_armor,
             text_shader: None,
+            random_textures,
             font,
             white,
         })

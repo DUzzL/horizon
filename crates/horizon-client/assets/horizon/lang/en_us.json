@@ -219,6 +219,7 @@
   "horizon.extras.header.third_person": "Third person",
   "horizon.extras.header.particles": "Particles",
   "horizon.extras.header.inventory": "Inventory",
+  "horizon.extras.header.chat": "Chat",
   "horizon.extras.header.multiplayer": "Multiplayer",
   "horizon.extras.header.sound": "Sound",
   "horizon.extras.fullbright": "Fullbright",
@@ -235,6 +236,8 @@
   "horizon.extras.agent_control": "Agent Control",
   "horizon.extras.discord_presence": "Discord Rich Presence",
   "horizon.extras.splitscreen": "Splitscreen",
+  "horizon.extras.chat_animation": "Smooth chat",
+  "horizon.extras.chat_indicator": "Message indicator",
   "horizon.extras.fullbright.tooltip": "Show blocks and entities at full light, even in dark areas.",
   "horizon.extras.dynamic_lights.tooltip": "Torches and other light sources held, dropped or on fire light the blocks around them.",
   "horizon.extras.own_name_tag.tooltip": "Shows your name above your head in third person, as other players see it. Hidden when the server hides your team's names or you're invisible.",
@@ -301,5 +304,7 @@
   "horizon.osk.type": "Type",
   "horizon.osk.symbols": "Symbols",
   "horizon.osk.close": "Close",
+  "horizon.extras.chat_animation.tooltip": "A new chat line slides in from the left while it fades in, instead of appearing whole.",
+  "horizon.extras.chat_indicator.tooltip": "The coloured bar at the left of a chat line.",
   "horizon.extras.splitscreen.tooltip": "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
 }

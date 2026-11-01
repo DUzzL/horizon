@@ -284,6 +284,7 @@ impl<'a> Split<'a> {
                 for button in std::mem::take(&mut game.physical_buttons) {
                     game.extras_mouse(button, false);
                 }
+                game.drag_button = None;
                 game.modifiers = Default::default();
                 game.left = false;
                 game.right = false;
