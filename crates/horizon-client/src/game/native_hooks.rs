@@ -279,7 +279,7 @@ use super::{
     execution_role::ExecutionRole,
     maps::{NativeMapDecoration, NativeMapInfo},
     native_block_entity_draw::BlockEntityDraw,
-    native_mob_draw::NativeMobRender,
+    native_mob_draw::{NativeMobRender, NativePlayerRender},
     native_panel_recipes::RecipePage,
     native_server::{NativeCommand, NativeServerPlayer},
 };
@@ -1863,6 +1863,47 @@ impl Game<'_> {
         drawn: &mut bool,
     ) {
         let _ = (mob, draw, drawn);
+    }
+    /// Whether a mod listens to `native_player_submit` or `native_mob_layer`: a
+    /// mod that hooks either hooks this one too and sets `listened` (HEAD,
+    /// `*listened = true`). Without it the game poses no player or mob for
+    /// them, each frame. Client-side. API @API:player_render@.
+    pub(super) fn native_player_render_listened(&self, listened: &mut bool) {
+        let _ = listened;
+    }
+    /// Draw the player `player` (`who`: its profile name, and whether it is
+    /// this window's own player) with a model of your own, once a frame while
+    /// it is in view (`RenderPlayerEvent.Pre`), and set `drawn` to leave out its
+    /// vanilla model, armour, held items, cape and the other layers. This
+    /// window's player is drawn only in third person (and F5 front view); an
+    /// invisible player is not asked. `draw` is the frame of `native_mob_submit`:
+    /// at the player's feet, turned with the body. The name tag, shadow,
+    /// flames and glowing outline draw as before. API @API:player_render@.
+    pub(super) fn native_player_submit(
+        &self,
+        player: &NativeMobRender<'_>,
+        who: &NativePlayerRender<'_>,
+        draw: &mut BlockEntityDraw,
+        drawn: &mut bool,
+    ) {
+        let _ = (player, who, draw, drawn);
+    }
+    /// A layer on every mob and player in view, once a frame after its
+    /// vanilla model and layers (`EntityRenderersEvent.AddLayers`, with
+    /// `RenderLivingEvent.Post` and `RenderPlayerEvent.Post`): add geometry
+    /// in the entity's frame, which starts at its feet turned with the body
+    /// (`mob.head_yaw`, `mob.pitch` and the walk cycle place a part, the eyes
+    /// being at the entity type's eye height). `who` is set for a player.
+    /// Not asked for what a mod drew itself (`native_mob_submit`,
+    /// `native_player_submit`) nor for a mob that isn't drawn at all.
+    /// API @API:player_render@.
+    pub(super) fn native_mob_layer(
+        &self,
+        mob: &NativeMobRender<'_>,
+        who: Option<&NativePlayerRender<'_>>,
+        draw: &mut BlockEntityDraw,
+    ) {
+        let _ = (mob, who, draw);
     }
     /// Icons a mod puts on map `map` each time it is drawn: held, in an
     /// item frame or on the cartography table's screen (a map's pixels are

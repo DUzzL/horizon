@@ -1126,6 +1126,13 @@ items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag
 - A mod's own creature is an ordinary mob (`native_spawn_mob`, API 37) drawn this way: a quiet villager, an allay or a bat
   gives it movement, sounds and saving, and the mod gives it a model and animations of its own. Tell yours apart by the
   ids the server half sends with mod messages (API 40), or by its custom name.
+- Players have their own hook, `native_player_submit(player, who, draw, drawn)` (`RenderPlayerEvent.Pre`): once a frame for
+  each other player in view and for this window's player in third person, with the same frame and `who` (the profile name,
+  and `local`). `drawn` leaves out the vanilla model, armour, held items, cape and other layers.
+- `native_mob_layer(mob, who, draw)` (`EntityRenderersEvent.AddLayers`, `RenderLivingEvent.Post`) adds to every mob and player
+  after its vanilla model and layers, in the same frame (not for one a mod drew itself); `who` is set for a player. The
+  geometry hangs from the entity's frame, not from a model bone: place a hat from `head_yaw`, `pitch` and the entity type's
+  eye height.
 
 ### Advancement triggers
 

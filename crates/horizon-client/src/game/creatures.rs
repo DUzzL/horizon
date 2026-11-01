@@ -2,7 +2,10 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, InteractTarget, dispenser, native_projectiles::Impact, view_vector};
+use super::{
+    Dim, Game, InteractTarget, dispenser, native_mob_draw::NativePlayerRender,
+    native_projectiles::Impact, view_vector,
+};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -6200,10 +6203,20 @@ impl Game<'_> {
             // A native mod's own model in place of the vanilla one
             // (`native_mob_submit`), before any of the vanilla model's parts
             // (a sulfur cube's swallowed block) are drawn.
-            if !is_player
-                && !layers_only
-                && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
-            {
+            // A player's own hook (`native_player_submit`) is asked for the
+            // other players in view.
+            let who = is_player
+                .then(|| self.remote_player_name(mob.id))
+                .flatten()
+                .map(|name| NativePlayerRender { name, local: false });
+            let modded = if layers_only {
+                false
+            } else if let Some(who) = who {
+                self.mod_player_geometry(mob, who, alpha as f32, camera, packed, out)
+            } else {
+                !is_player && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
+            };
+            if modded {
                 if let Some(rgb) = outline {
                     self.mark_outline(&out[entity_start..], rgb);
                     if mob.invisible {
@@ -6282,6 +6295,8 @@ impl Game<'_> {
             }
             // CustomHeadLayer (a pumpkin, skull or head item) included.
             self.mob_block_geometry(mob, camera, alpha, packed, out);
+            // `native_mob_layer`: a native mod's layer, over the vanilla ones.
+            self.mod_mob_layer_geometry(mob, who, alpha as f32, camera, packed, out);
             if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if mob.invisible {

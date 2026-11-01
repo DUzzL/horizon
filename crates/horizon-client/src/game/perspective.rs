@@ -2,7 +2,7 @@
 //! in front, cycled by F5), the detached camera (`Camera.setup` with
 //! `getMaxZoom`), and the local player drawn as a model: in third person
 //! and in the inventory (`InventoryScreen.extractEntityInInventoryFollowsMouse`).
-use super::{Game, Screen, shoulders::shoulder_variants};
+use super::{Game, Screen, native_mob_draw::NativePlayerRender, shoulders::shoulder_variants};
 use horizon_client::{
     blocks::BlockFacts,
     camera::{CameraEntity, LivingCamera},
@@ -625,6 +625,17 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
         let body = self.own_body_visible();
+        // `native_player_submit`: a native mod's own model for this player,
+        // in place of the vanilla one and its layers (an invisible player is
+        // not asked, as for the others).
+        let name = self.own_profile_name();
+        let who = NativePlayerRender {
+            name: &name,
+            local: true,
+        };
+        if body && self.mod_player_geometry(m, who, alpha as f32, camera, packed, out) {
+            return;
+        }
         // A spectator still draws its own model in third person: the poses'
         // visibility (set by player_model_visibility) hides body parts, and
         // translucent_body marks the body OIT for the ghostly look. Only first
@@ -664,6 +675,8 @@ impl Game<'_> {
         self.held_item_geometry(m, camera, alpha, packed, true, out);
         // CustomHeadLayer: a pumpkin, skull or other head item.
         self.head_item_geometry(m, camera, alpha, packed, true, out);
+        // `native_mob_layer`: a native mod's layer, over the vanilla ones.
+        self.mod_mob_layer_geometry(m, Some(who), alpha as f32, camera, packed, out);
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         if self.potions.effects.get("glowing").is_some() {
             let color = super::glowing::team_color(self.own_team());
