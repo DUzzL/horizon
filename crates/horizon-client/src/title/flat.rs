@@ -293,7 +293,7 @@ impl State {
         if index < self.settings.layers.len() {
             self.settings.layers.remove(index);
         }
-        self.selected = None;
+        self.selected = selection_after_removal(row, self.settings.layers.len());
     }
     /// PresetFlatWorldScreen's Select: parse the share text into the settings
     /// the Create New World screen keeps.
@@ -1025,11 +1025,29 @@ fn pretty(name: &str) -> String {
         .join(" ")
 }
 
+/// `CreateFlatWorldScreen.DetailsList.deleteLayer`: after a row is removed the
+/// same row stays selected, or the last one when the removed row was the last
+/// of the list. An empty list selects nothing.
+pub(super) fn selection_after_removal(row: usize, remaining: usize) -> Option<usize> {
+    (remaining > 0).then(|| row.min(remaining - 1))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::layer_item;
+    use super::{layer_item, selection_after_removal};
     use crate::item_render::ItemRenderer;
     use std::path::Path;
+
+    /// Vanilla keeps the deleted row's position selected: the layer that slid
+    /// into it, or the new last row when the last one was deleted, and nothing
+    /// when the list is empty.
+    #[test]
+    fn deleting_a_layer_keeps_the_selection_in_place() {
+        assert_eq!(selection_after_removal(0, 3), Some(0));
+        assert_eq!(selection_after_removal(2, 3), Some(2));
+        assert_eq!(selection_after_removal(3, 3), Some(2), "the last row");
+        assert_eq!(selection_after_removal(0, 0), None, "nothing left");
+    }
 
     /// The grass block icon of a Superflat layer is tinted by the grass
     /// colormap (`minecraft:grass` tint source), not the missing-tint magenta.
