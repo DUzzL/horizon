@@ -11135,7 +11135,7 @@ impl Game<'_> {
         if landed {
             if knockback > 0.0 {
                 let (xd, zd) = self.extra_knockback_direction();
-                self.mobs[index].knockback(f64::from(knockback), xd, zd, &source);
+                self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
