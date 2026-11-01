@@ -224,33 +224,54 @@ fn cit_sprites(
     packed: &[PackedImage],
 ) -> Vec<(PackedImage, Option<TextureFlags>, bool)> {
     let have: HashSet<&str> = packed.iter().map(|i| i.0.as_str()).collect();
-    let mut out = Vec::new();
-    for id in crate::cit_assets::item_sprites(&crate::cit::load_rules(root)) {
+    let ids: Vec<String> = crate::cit_assets::item_sprites(&crate::cit::load_rules(root))
+        .into_iter()
         // Vanilla's sprites are packed without their namespace, as `sprite_name` looks them up.
-        let name = id.strip_prefix("minecraft:").unwrap_or(&id);
-        if have.contains(name) {
-            continue;
-        }
-        let path = crate::atlas_sources::texture_path(root, &id, "textures");
-        let image = match decode(&path) {
-            Ok(image) => image,
-            Err(e) => {
-                log::warn!("skipped custom item texture {}: {e}", path.display());
-                continue;
-            }
-        };
-        let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
-        let animation = animation_of(mcmeta.as_deref());
-        let (w, h, pixels) = first_frame(image, animation.as_ref());
-        // The limit `pack` keeps every other texture to.
-        if w > 1024 || h > 512 {
-            log::warn!("skipped custom item texture {}: {w}x{h}", path.display());
-            continue;
-        }
-        let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
-        out.push(((name.to_owned(), w, h, pixels), flags, animation.is_some()));
+        .filter(|id| !have.contains(id.strip_prefix("minecraft:").unwrap_or(id)))
+        .collect();
+    // Decoded on the threads `pack` decodes the rest on: a big pack names thousands.
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = ids.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = ids
+            .chunks(chunk)
+            .map(|ids| scope.spawn(|| ids.iter().filter_map(|id| cit_sprite(root, id)).collect()))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|_| Vec::new()))
+            .collect()
+    })
+}
+/// One of `cit_sprites`, or `None` (with a warning) when it does not load or is too big.
+fn cit_sprite(root: &Path, id: &str) -> Option<(PackedImage, Option<TextureFlags>, bool)> {
+    let name = id.strip_prefix("minecraft:").unwrap_or(id);
+    let path = crate::atlas_sources::texture_path(root, id, "textures");
+    // The limit `pack` keeps every other texture to, for a frame of a strip up to 64 frames
+    // long; read from the header first, so a huge image is never decoded.
+    let fits = |w: u32, h: u32| w <= 1024 && h <= 512;
+    if let Some((w, h)) = png_size(&path)
+        && (w > 1024 || h > 512 * 64)
+    {
+        log::warn!("skipped custom item texture {}: {w}x{h}", path.display());
+        return None;
     }
-    out
+    let image = match decode(&path) {
+        Ok(image) => image,
+        Err(e) => {
+            log::warn!("skipped custom item texture {}: {e}", path.display());
+            return None;
+        }
+    };
+    let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
+    let animation = animation_of(mcmeta.as_deref());
+    let (w, h, pixels) = first_frame(image, animation.as_ref());
+    if !fits(w, h) {
+        log::warn!("skipped custom item texture {}: {w}x{h}", path.display());
+        return None;
+    }
+    let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
+    Some(((name.to_owned(), w, h, pixels), flags, animation.is_some()))
 }
 /// Folders of `assets/minecraft/textures/` that [`HudAtlas::pack`] walks for
 /// the full atlas. A pack may add others through `atlases/blocks.json`.
@@ -2576,6 +2597,48 @@ mod tests {
         let atlas = HudAtlas::build(&root).unwrap();
         let _ = fs::remove_dir_all(&root);
         assert!(!atlas.sprites.keys().any(|k| k.starts_with("horizon_cit:")));
+    }
+    #[test]
+    fn named_cit_textures_pack_once_and_bad_ones_are_skipped() {
+        let root = cit_root(
+            "mixed",
+            &[
+                // Vanilla's own texture: already packed, under its usual name.
+                (
+                    "v.properties",
+                    "items=stick
+texture=item/stick",
+                ),
+                (
+                    "sub.properties",
+                    "items=bow
+texture.bow_pulling_0=b",
+                ),
+                (
+                    "broken.properties",
+                    "items=apple
+texture=broken",
+                ),
+                (
+                    "wide.properties",
+                    "items=egg
+texture=wide",
+                ),
+            ],
+        );
+        let cit = root.join("assets/minecraft/optifine/cit");
+        write_strip(&cit.join("b.png"), 2, 2, &[[5, 6, 7, 255]], None);
+        fs::write(cit.join("broken.png"), b"not a png").unwrap();
+        write_strip(&cit.join("wide.png"), 1040, 16, &[[1, 1, 1, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let cit_keys: Vec<_> = atlas
+            .sprites
+            .keys()
+            .filter(|k| k.starts_with("horizon_cit:") || k.starts_with("minecraft:"))
+            .collect();
+        assert_eq!(cit_keys, ["horizon_cit:minecraft/optifine/cit/b"]);
+        assert!(atlas.sprites.contains_key("item/stick"));
     }
     #[test]
     fn a_root_without_cit_rules_packs_the_same_sprites() {

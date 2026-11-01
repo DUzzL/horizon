@@ -11,15 +11,13 @@ use std::collections::BTreeSet;
 /// The namespace of CIT files outside `textures/` and `models/`.
 pub const NAMESPACE: &str = "horizon_cit";
 
-/// `<namespace>:<path>`, if both keep to the model library's identifier rules (lower-case
-/// letters, digits, `_.-`, and `/` in the path). CIT Resewn refuses the other paths too.
+/// `<namespace>:<path>`, if both keep to the identifier rules (lower-case letters, digits,
+/// `_.-`, and `/` in the path). CIT Resewn refuses the other paths too.
 fn identifier(namespace: &str, path: &str) -> Option<String> {
-    let valid = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c);
-    (!namespace.is_empty()
-        && !path.is_empty()
-        && namespace.bytes().all(valid)
-        && path.bytes().all(|c| valid(c) || c == b'/'))
-    .then(|| format!("{namespace}:{path}"))
+    if path.is_empty() {
+        return None;
+    }
+    horizon_client_core::identifier::parse_identifier(&format!("{namespace}:{path}"))
 }
 
 /// The id of a resource path ending in `.<ext>`: `assets/<ns>/<folder>/<p>` is `<ns>:<p>`, any
@@ -32,7 +30,10 @@ fn id(resource: &str, folder: &str, ext: &str) -> Option<String> {
     if let Some((namespace, path)) = rest.split_once('/')
         && let Some(path) = path.strip_prefix(folder).and_then(|p| p.strip_prefix('/'))
     {
-        return identifier(namespace, path);
+        // A pack's own `assets/horizon_cit/` would name another file than its id maps back to.
+        return (namespace != NAMESPACE)
+            .then(|| identifier(namespace, path))
+            .flatten();
     }
     identifier(NAMESPACE, rest)
 }
@@ -47,10 +48,11 @@ pub fn model_id(resource: &str) -> Option<String> {
     id(resource, "models", "json")
 }
 
-/// The resource path of a `horizon_cit` id, with the extension `ext`; `None` for other ids.
+/// The resource path of a `horizon_cit` id, with the extension `ext`; `None` for other ids,
+/// and for one that would leave the resource root (a pack model may write any id).
 pub fn resource(id: &str, ext: &str) -> Option<String> {
     let rest = id.strip_prefix(NAMESPACE)?.strip_prefix(':')?;
-    Some(format!("assets/{rest}.{ext}"))
+    horizon_optifine::paths::valid(rest).then(|| format!("assets/{rest}.{ext}"))
 }
 
 /// Sprite ids the item rules draw: `Kind::Item` rules' `texture` and `texture.<name>` values.
@@ -121,6 +123,20 @@ mod tests {
             assert_eq!(sprite_id(path), None, "{path}");
         }
         assert_eq!(model_id("assets/minecraft/optifine/cit/A.json"), None);
+    }
+
+    #[test]
+    fn the_reserved_namespace_names_only_files_inside_the_root() {
+        // A pack's own `horizon_cit` namespace would map back to another file.
+        assert_eq!(sprite_id("assets/horizon_cit/textures/item/x.png"), None);
+        // A model may write any id: only ones inside the root name a file.
+        for id in [
+            "horizon_cit:../../etc/x",
+            "horizon_cit:a/../../x",
+            "horizon_cit:a\\..\\x",
+        ] {
+            assert_eq!(resource(id, "png"), None, "{id}");
+        }
     }
 
     #[test]
