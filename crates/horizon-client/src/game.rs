@@ -20321,6 +20321,7 @@ pub fn run_with() -> Result<()> {
         }
     }
     mods::register_components(&vanilla_root)?;
+    mods::register_standalone_models();
     let early_settings = Settings::load(&Game::options_path());
     // Minecraft's constructor opens the narrator; a server has none.
     if options.execution_role.is_client() {

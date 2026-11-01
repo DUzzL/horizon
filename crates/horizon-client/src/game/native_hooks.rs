@@ -296,7 +296,8 @@ use horizon_client::{
     block_entities::Pos,
     chat::ChatSource,
     containers::{
-        BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModEnergyBuffer, ModFluidTanks,
+        BlockEntity, MOD_MENUS, ModBlockEntity, ModBlockEntityFields, ModContainer,
+        ModEnergyBuffer, ModFluidTanks,
     },
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
@@ -1581,6 +1582,19 @@ impl Game<'_> {
     pub(super) fn native_items(items: &mut Vec<horizon_mods::content::Item>) {
         let _ = items;
     }
+    /// Models no blockstate names that this client bakes beside the block
+    /// models (NeoForge's `ModelEvent.RegisterStandalone`): push their ids
+    /// (`mymod:block/shaft_half`, the model at
+    /// `assets/mymod/models/block/shaft_half.json`). Parts a block entity or
+    /// a mob draws, with `native_draw_model`, so that no block is registered
+    /// only to bake its model. Asked once at start, before the resources
+    /// load; every resource load, a pack reload included, bakes them again
+    /// from that pack's files. A model that doesn't read is logged and left
+    /// out; an id without a namespace is dropped. Every side asks it, but
+    /// only a window bakes models. API @API:standalone_models@.
+    pub(super) fn native_standalone_models(models: &mut Vec<String>) {
+        let _ = models;
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         mod_api::dispatch_mods(self, mod_api::mods(), mods);
@@ -2362,6 +2376,34 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_perform_command(self, mod_api::mods(), player, command, ran);
     }
+    /// A player finished editing a sign: `ServerGamePacketListenerImpl.updateSignText`
+    /// has taken their update packet and every check has passed (they were
+    /// editing that sign, within reach, the sign is not waxed, the chat filter
+    /// let the text through), right before the lines go on the sign. `pos` in
+    /// `dimension`, the `front` or back side, and the four `lines` as written,
+    /// plain text with the formatting codes still in (vanilla strips them
+    /// afterwards). Rewrite `lines` (made four lines again) and that is what
+    /// the sign gets, without a second look from the chat filter, or set
+    /// `cancel` and the sign keeps its old text. With the player's state
+    /// swapped in, so `native_tell` and the helpers that act on the player
+    /// reach them. Once for each update a player sends on a server. Not told:
+    /// the host's own editing of a sign on a LAN or single-player world
+    /// (the editor writes into their world directly), and the sign changes
+    /// that are no edit of the text (dyeing, glow ink, waxing, `/data`,
+    /// `/setblock`, mods' `native_with_mod_block_entity`).
+    /// @API:native_sign_changed@.
+    pub(super) fn native_sign_changed(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        pos: [i32; 3],
+        front: bool,
+        lines: &mut Vec<String>,
+        cancel: &mut bool,
+    ) {
+        let _ = (player, name, dimension, pos, front, lines, cancel);
+    }
     /// A command a player typed (NeoForge's `CommandEvent`, before
     /// `Commands.performCommand` runs it), without its slash: any command,
     /// vanilla's and the mods' own, also one the player may not run. Set
@@ -2858,6 +2900,48 @@ impl Game<'_> {
         previous: u32,
     ) {
         let _ = (dimension, pos, viewers, previous);
+    }
+    /// `player` (`name`) opened a menu (NeoForge's `PlayerContainerEvent.Open`,
+    /// posted when `ServerPlayer.openMenu` sets the new `containerMenu`): any
+    /// menu, vanilla or a mod's. `menu` is the menu type's name
+    /// (`minecraft:generic_9x3`, `minecraft:furnace`, `minecraft:merchant`,
+    /// `minecraft:crafting`, `minecraft:lectern`, a mod's own), `pos` the
+    /// block it is of in `dimension` (none for a trade, a vehicle's, a mod's
+    /// native menu or a mount's inventory, which has no menu type in vanilla
+    /// and is told as `horizon:mount_inventory`). The player's own inventory
+    /// is not one. Heard once a tick, so a menu opened and closed again
+    /// inside one tick is not; one that replaces another comes after that
+    /// one's close. The player's state is swapped in. `native_player_container_close`
+    /// follows. Server-side. API @API:player_container_events@.
+    pub(super) fn native_player_container_open(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        menu: &str,
+        pos: Option<[i32; 3]>,
+    ) {
+        let _ = (player, name, dimension, menu, pos);
+    }
+    /// `player` (`name`) closed the menu `native_player_container_open` told
+    /// of (NeoForge's `PlayerContainerEvent.Close`, posted in
+    /// `ServerPlayer.doCloseContainer` after the menu's `removed`): they
+    /// closed it, walked out of reach, died, changed level, or another menu
+    /// opened. A player who leaves closes it before `native_player_logged_out`
+    /// (vanilla posts nothing for a disconnect; Horizon does, so each open has
+    /// its close). Once for each open; not told when the server stops. The
+    /// menu's items are where it left them: the block's, and the cursor stack
+    /// back in the inventory. State swapped in, when the player has a body.
+    /// Server-side. API @API:player_container_events@.
+    pub(super) fn native_player_container_close(
+        &mut self,
+        player: u128,
+        name: &str,
+        dimension: &str,
+        menu: &str,
+        pos: Option<[i32; 3]>,
+    ) {
+        let _ = (player, name, dimension, menu, pos);
     }
     /// A client started tracking an entity (NeoForge's
     /// `PlayerEvent.StartTracking`, posted at the end of
@@ -4903,11 +4987,14 @@ impl Game<'_> {
         let mut entity = None;
         self.native_block_entity(name, &mut entity);
         let (id, nbt) = entity?;
-        Some(BlockEntity::Mod(Box::new(ModBlockEntity {
-            id,
-            nbt,
-            ..ModBlockEntity::default()
-        })))
+        Some(BlockEntity::Mod(Box::new(
+            ModBlockEntityFields {
+                id,
+                nbt,
+                ..Default::default()
+            }
+            .into(),
+        )))
     }
     /// The containers of the mod blocks' block entities, by block state
     /// (`native_block_entity_container`), checked.

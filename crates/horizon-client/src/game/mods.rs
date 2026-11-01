@@ -55,6 +55,13 @@ fn native_declared() -> &'static (
         (blocks, items)
     })
 }
+/// The native mods' standalone models (`native_standalone_models`), set once
+/// before the resources first load.
+pub(super) fn register_standalone_models() {
+    let mut names = Vec::new();
+    Game::native_standalone_models(&mut names);
+    horizon_client::models::register_standalone(names);
+}
 
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at

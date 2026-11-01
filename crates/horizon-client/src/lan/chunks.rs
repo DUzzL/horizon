@@ -1479,10 +1479,10 @@ mod tests {
         let mut chunk = Chunk::empty(0, 0);
         chunk.set(1, MIN_Y + 2, 3, 1);
         chunk.set(5, MIN_Y + 2, 5, 2);
-        let mut machine = ModBlockEntity {
+        let mut machine = ModBlockEntity::new(crate::containers::ModBlockEntityFields {
             id: "test:machine".into(),
-            ..ModBlockEntity::default()
-        };
+            ..Default::default()
+        });
         machine.nbt.insert("active".into(), Tag::Byte(1));
         machine.nbt.insert("recipe".into(), Tag::Int(7));
         let block_entities =

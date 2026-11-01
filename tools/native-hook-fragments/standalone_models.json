@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "standalone_models",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_standalone_models",
+      "neoforge": "ModelEvent.RegisterStandalone",
+      "side": "client"
+    }
+  ],
+  "rust_summary": "models no blockstate names, baked for drawing (`native_standalone_models`,\n`native_draw_model`).",
+  "doc_summary": "models no blockstate names, as NeoForge's `ModelEvent.RegisterStandalone`: `native_standalone_models(models)`, asked once at start, takes the ids of models a block entity or a mob draws as parts (`mymod:block/shaft_half`, from `assets/mymod/models/block/shaft_half.json`), and every resource load, a pack reload included, bakes them beside the block models. `native_draw_model(draw, model, tint)` draws one under `draw`'s pose in `native_block_entity_submit` or `native_mob_submit`, as `native_draw_block` draws a block's model, with `tint` (0xRRGGBB) on its tinted faces. A model that doesn't read is logged and left out, and drawing it gives false; no block has to be registered just to bake a part's model. Bundles that use them need `\"hooks\": @API:standalone_models@`.",
+  "comments": [
+    "crates/horizon-client/src/game/native_block_entity_draw.rs"
+  ]
+}
