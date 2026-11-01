@@ -1251,9 +1251,12 @@ impl Game<'_> {
         if self.potions.effects.get("conduit_power").is_some()
             && let Some(eye) = self.eye_position()
         {
-            let in_water =
-                horizon_client::fog::fog_type(&self.world, self.res.facts(), eye, self.forward())
-                    == FogType::Water;
+            let in_water = horizon_client::fog::fog_type(
+                &self.world,
+                self.res.facts(),
+                eye,
+                &self.near_plane(),
+            ) == FogType::Water;
             return self.fog.water_vision(in_water);
         }
         0.0
