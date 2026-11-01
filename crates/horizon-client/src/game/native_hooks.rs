@@ -286,7 +286,9 @@ use horizon_client::{
     biome::BiomeColors,
     block_entities::Pos,
     chat::ChatSource,
-    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
+    containers::{
+        BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModEnergyBuffer, ModFluidTanks,
+    },
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
     extras_hud::Corners,
@@ -1619,6 +1621,22 @@ impl Game<'_> {
         fluids: &mut Option<ModFluidTanks>,
     ) {
         let _ = (block, fluids);
+    }
+    /// Block `block`'s block entity has an energy buffer
+    /// (`Capabilities.Energy.BLOCK`): set `energy` when the block is yours,
+    /// as `SimpleEnergyHandler` is built: its capacity, the most one insert
+    /// and one extract moves, and the faces a fill may come through and a
+    /// drain may leave by. Asked once for each mod block when the ticking
+    /// table is built; a capacity under 1 leaves the buffer out, and the
+    /// limits are clamped to 0..=capacity. The amount is kept in the entity's
+    /// saved compound, as the int `energy`, and the energy helpers below read
+    /// and write it. API @API:block_entity_energy@.
+    pub(super) fn native_block_entity_energy(
+        &self,
+        block: &str,
+        energy: &mut Option<ModEnergyBuffer>,
+    ) {
+        let _ = (block, energy);
     }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
@@ -4500,6 +4518,34 @@ impl Game<'_> {
             });
             if let Some(t) = tanks {
                 out.insert(i, Arc::clone(t));
+            }
+        }
+        out
+    }
+    /// The energy buffers of the mod blocks' block entities, by block state
+    /// (`native_block_entity_energy`), checked as the containers are.
+    pub(super) fn native_energy_tables(&self) -> FxHashMap<u32, Arc<ModEnergyBuffer>> {
+        let registry = self.pack.assets.registry;
+        let mut by_block: FxHashMap<String, Option<Arc<ModEnergyBuffer>>> = FxHashMap::default();
+        let mut out = FxHashMap::default();
+        for i in 0..registry.len() as u32 {
+            let Some(state) = registry.state(horizon_world::registry::BlockStateId(i)) else {
+                continue;
+            };
+            if state.name.starts_with("minecraft:") {
+                continue;
+            }
+            let buffer = by_block.entry(state.name.clone()).or_insert_with(|| {
+                let mut energy = None;
+                self.native_block_entity_energy(&state.name, &mut energy);
+                energy.filter(|e| e.capacity >= 1).map(|mut e| {
+                    e.max_insert = e.max_insert.clamp(0, e.capacity);
+                    e.max_extract = e.max_extract.clamp(0, e.capacity);
+                    Arc::new(e)
+                })
+            });
+            if let Some(b) = buffer {
+                out.insert(i, Arc::clone(b));
             }
         }
         out
