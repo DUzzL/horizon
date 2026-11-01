@@ -132,6 +132,13 @@ impl Stage<'_> {
             {
                 out.push_str(close);
                 statement_close = None;
+                // This `;` may end the single-statement body of a `for`.
+                if calls.is_empty() && unbraced_for.last() == Some(&depth) {
+                    while unbraced_for.last() == Some(&depth) {
+                        unbraced_for.pop();
+                    }
+                    hidden.retain(|&(_, _, d)| d <= depth);
+                }
                 continue;
             }
             if let Some(text) = self.replaced.get(&i) {

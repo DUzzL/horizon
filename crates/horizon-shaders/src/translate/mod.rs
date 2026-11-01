@@ -2317,6 +2317,17 @@ mod tests {
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         assert!(reads_bool_uniform(&p));
+        // The body is a `return`, which the translator rewrites on its own.
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   float f(float t) {\n    \
+                   for (bool hideGUI = false; t < 2.0; t += 1.0) return hideGUI ? 1.0 : t;\n    \
+                   return hideGUI ? 1.0 : 0.0;\n}\n\
+                   void main() { c = vec4(f(0.0)); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
     }
 
     /// A sampler parameter's name reused as a local of an inner block, then read again.
