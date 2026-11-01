@@ -2095,6 +2095,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         bob_offset,
         ticks: 0,
         needs_sync: false,
+        stuck: Vec3::ZERO,
     })
 }
 
@@ -3178,6 +3179,7 @@ mod tests {
             ticks: 0,
             bob_offset: 0.0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));

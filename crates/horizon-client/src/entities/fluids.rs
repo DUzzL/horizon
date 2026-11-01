@@ -244,6 +244,7 @@ mod tests {
             bob_offset: 0.0,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let mut still = item.clone();
         assert!(still.tick(

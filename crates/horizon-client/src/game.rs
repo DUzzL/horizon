@@ -3660,6 +3660,7 @@ impl Game<'_> {
             bob_offset: bob,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         });
         // ServerLevel.addFreshEntity.
         if !self.native_entity_joins(self.next_entity, "minecraft:item", position, false) {
