@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "name": "projectile_impact",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_projectile_impact",
+      "neoforge": "ProjectileImpactEvent",
+      "side": "server",
+      "cancellable": true
+    }
+  ],
+  "rust_summary": "a projectile's impact a mod can cancel (`native_projectile_impact`).",
+  "doc_summary": "a projectile's impact, which a mod can cancel, through `native_projectile_impact` (NeoForge's `ProjectileImpactEvent`): it fires when a projectile has found what it meets, before the hit acts, with the projectile's id, type (`minecraft:arrow`) and owner, the level, and what it hit: an entity (its id and type) or a block (its position and the face's normal) and the point. Set `canceled` and the impact does not happen: no damage, knockback, sound or block reaction, an arrow does not stick, a pearl does not teleport, a potion or a fireball does not burst. The projectile flies on and is not discarded, so a mod that cancels decides what becomes of it. It covers arrows, tridents, thrown items, fireballs, wither skulls, wind charges, llama spit and shulker bullets, on the single player server thread and on a dedicated server. It does not fire for a breeze's deflection, a hit on a wind charge, fireworks or fishing bobbers. Bundles that use it need \"hooks\": @API:projectile_impact@."
+}
