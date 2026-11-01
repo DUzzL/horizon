@@ -4,6 +4,14 @@ The 40 areas changed most often in the 30 days to 2026-10-23 (commits on main to
 counted only for the game loop because nearly every gameplay change touches it). The crate map, how `Game` is
 organised and how to build and test are in [AGENTS.md](../AGENTS.md).
 
+Gameplay lives in the `horizon-client` library; `main.rs` is a thin executable calling
+`entry::main`. The reusable modules, control tool and probes belong to `horizon-client-lib`,
+whose library root is `crates/horizon-client/src/client_lib.rs`. Source paths stay in place.
+The gameplay library re-exports the reusable API, keeping existing mod targets unchanged.
+Gameplay tests run in its library test target, separately from the reusable library's tests.
+There is no copy of gameplay in the executable's test target. Tools and probes depend only
+on the reusable library, so gameplay edits do not invalidate their builds.
+
 Paths: `L/` = `crates/horizon-client/src/`, `G/` = `crates/horizon-client/src/game/`, `W/` =
 `crates/horizon-world/src/`, `K/` = `crates/horizon-client-core/src/`, `C/` = `crates/horizon-command/src/`,
 `I/` = `crates/horizon-items/src/`, `R/` = `crates/horizon-client-render/src/`, `N/` = `crates/horizon-client-input/src/`.
@@ -12,8 +20,10 @@ Checks: a bare name is a harness (`python3 tools/parity.py <name>`, script `tool
 
 For the full set of harnesses a file can affect, ask the runner:
 `printf '%s\n' <paths> > /tmp/p.txt && python3 tools/parity.py --changed-files /tmp/p.txt --list`.
-Any file of the game binary (`game.rs`, `game/`) selects the ~25 harnesses that run the binary; a client lib
-file selects ~103.
+Client probes are built with `-p horizon-client-lib`; the game with `-p horizon-client`.
+Because the probe library does not compile gameplay, its dep-info does not include `game.rs`
+or `game/`. Exact harness counts still depend on refreshed records and reachability; use the
+command above to inspect the selection rather than relying on historical counts.
 
 | # | Area (commits) | Files | Checks |
 |---|---|---|---|
@@ -22,7 +32,7 @@ file selects ~103.
 | 3 | World save and load (163) | `L/save.rs`, `G/saving.rs`, `G/persist.rs` (entities), `L/entity_nbt.rs`, `K/block_entity_nbt.rs`, `W/region.rs`, `W/nbt.rs` | save_roundtrip, world_reopen, world, datafix |
 | 4 | World generation (153) | `W/worldgen.rs`, `W/worldgen/` (`generator*.rs`, `feature_graph.rs`, `structure/`, `placement/`), `L/vanillagen.rs` | chunk_generation, worldgen, server_world_gen, world_spawn, feature_graph, feature_placement, decoration and the other worldgen harnesses |
 | 5 | Multiplayer client, packets in (145) | `G/remote.rs` (`fn handle_packet`, `fn tick_remote`), `G/remote_*.rs`, `L/net.rs` | dedicated_server, server_entities, lan_e2e (all) |
-| 6 | Agent control, horizon-ctl (145) | `L/control.rs`, `L/bin/horizon-ctl/`, `G/control.rs`, `G/agent.rs`, `G/events.rs`, `G/ui_control.rs` | `python3 tools/agent_control_e2e.py`; `cargo test -p horizon-client --bin horizon-ctl` |
+| 6 | Agent control, horizon-ctl (145) | `L/control.rs`, `L/bin/horizon-ctl/`, `G/control.rs`, `G/agent.rs`, `G/events.rs`, `G/ui_control.rs` | `python3 tools/agent_control_e2e.py`; `cargo test -p horizon-client-lib --bin horizon-ctl` |
 | 7 | CI and release (134) | `.github/workflows/` (`ci.yml`, `parity.yml`, `release.yml`, `launcher.yml`), `tools/ci/`, `tools/parity.py`, `tools/pr_ready.py` | `python3 -m unittest discover -s tests`; actionlint (`.github/actionlint.yaml`) |
 | 8 | LAN host: connections, play state, tracking (133) | `L/lan/` (`conn.rs`, `hub.rs` + `hub/`, `chunks.rs`, `entity.rs`, `tracking.rs`, `guest.rs`, `playerdata.rs`), `G/lan.rs` | lan, lan_e2e (all), `cargo test -p horizon-client --test lan_bot` |
 | 9 | Renderer core (132) | `R/gfx.rs` (`Renderer::new`, `Renderer::render`), `R/gfx/` (cull, occlusion, translucency, upload, timing, lod) | client_graphics, culling_rays, translucency; `horizon-client --benchmark standard` |

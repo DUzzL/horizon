@@ -429,9 +429,12 @@ Play, with the token renewal; with no network the last answer stands, and a "doe
 at once. The account also plays online-mode servers under your own name and skin; offline names
 play LAN and offline-mode servers beside it. The game binary started directly (`horizon-client`,
 `horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
-Credential Manager, or the Secret Service on Linux), never in a file, a log or the command line;
-`accounts.json` in the data folder keeps only names and UUIDs. Without a keychain you stay signed
-in until the launcher closes. When the game starts, it gets the session in a private file it
+Credential Manager, or the Secret Service on Linux), never in a log or the command line;
+`accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
+to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it
+answers; on macOS and Windows without one you stay signed in until the launcher closes. The
+Tailscale access token never goes to that file: without a keychain it lasts until the launcher
+closes. When the game starts, it gets the session in a private file it
 deletes as soon as it has read it. Sign out removes the tokens.
 
 Sign-in needs Horizon's own Azure app registration: its client ID is built in from

@@ -421,6 +421,7 @@ impl Game<'_> {
         });
         for (item, at, partial, entity) in live.chain(taken) {
             let entity_start = out.len();
+            self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
             if pos.length_squared() > 64.0 * 64.0 {

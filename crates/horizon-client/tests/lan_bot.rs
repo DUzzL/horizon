@@ -2,6 +2,7 @@
 //! handshake, status, offline login, configuration (registries and tags),
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{

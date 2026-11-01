@@ -489,6 +489,13 @@ impl Guest {
                     .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
                 Change::Attributes { sprint }
             }
+            // Entity.DATA_SHARED_FLAGS_ID: its sprinting bit (0x08).
+            C::SetEntityData(p) if own(p.id) => match p.values.iter().find(|v| v.0 == 0) {
+                Some(&(_, _, horizon_protocol::entity_data::Value::Byte(flags))) => {
+                    Change::Sprinting(flags & 0x08 != 0)
+                }
+                _ => return,
+            },
             C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
             C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
             C::PlayerAbilities(_) => Change::Abilities,

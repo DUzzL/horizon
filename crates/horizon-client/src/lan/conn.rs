@@ -464,8 +464,15 @@ pub fn serve(
     {
         return serve_legacy(stream, &shared);
     }
+    // A peer that stops reading (a frozen game, a dropped network) would otherwise hold
+    // its writer in a full send buffer for good, or until TCP gives up minutes later, and
+    // its thread and its place among the server's connections with it.
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
     serve_connection(Connection::from_stream(stream).map_err(e)?, address, shared)
 }
+
+/// How long one write may wait on a peer that reads nothing: as long as a read may wait.
+const WRITE_TIMEOUT: Duration = READ_TIMEOUT;
 
 /// The address a memory connection logs in from: no network peer has port 0.
 pub const MEMORY_ADDRESS: std::net::SocketAddr = std::net::SocketAddr::V4(
@@ -986,6 +993,16 @@ fn login_and_configure(
             }),
         )?;
     }
+    // And how far it samples far terrain for it (crate::lod_net).
+    if brand == "horizon" && shared.config.lod_distance > 0 {
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: crate::lod_net::CHANNEL.into(),
+                data: crate::lod_net::Offer::new(shared.config.lod_distance).encode(),
+            }),
+        )?;
+    }
     if brand == "horizon"
         && let Some(hash) = sync.content_identity
     {
@@ -1265,9 +1282,11 @@ fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::So
     };
     let _ = tx.send(Out::Close);
     let _ = events.send(NetEvent::Left(conn_id, reason));
+    shared.closing.fetch_add(1, Ordering::AcqRel);
     if let Some(t) = writer_thread {
         let _ = t.join();
     }
+    shared.closing.fetch_sub(1, Ordering::AcqRel);
     shared.release(parts.uuid);
 }
 

@@ -4,7 +4,7 @@
 //! merged drops and TNT chain priming, and optional fire.
 use super::Game;
 use horizon_client::{
-    Result, blocks::Fluid, collisions::SceneCollisions, items::ItemStack, text::Text,
+    Result, blocks::Fluid, collisions::SceneCollisions, items::ItemStack, mobs::Who, text::Text,
 };
 use horizon_core::{
     geometry::{Vec3, VoxelShape},
@@ -175,12 +175,17 @@ pub(super) fn client_float() -> f32 {
 impl Game<'_> {
     /// `blast_cause` for the blast going off now.
     pub(super) fn blast_attacker(&self) -> Option<(u32, Text)> {
-        blast_cause(
-            self.combat.explosion_owner,
-            self.combat.explosion_source,
-            |id| self.mob_display_name(id),
-            &self.combat.exploded,
-        )
+        // `Explosion.getIndirectSourceEntity`: a primed TNT's owner names the
+        // blast before any mob does, which makes the damage type
+        // `minecraft:player_explosion` (`server_explode` asks this).
+        self.combat.blast_owner.clone().or_else(|| {
+            blast_cause(
+                self.combat.explosion_owner,
+                self.combat.explosion_source,
+                |id| self.mob_display_name(id),
+                &self.combat.exploded,
+            )
+        })
     }
     /// `ServerExplosion.getSeenPercent` for an entity box.
     pub(super) fn seen_percent(&self, center: [f64; 3], min: [f64; 3], max: [f64; 3]) -> f32 {
@@ -976,7 +981,19 @@ impl Game<'_> {
             let r = &mut self.world.random;
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
-            self.add_primed_tnt(BlockPos::new(pos[0], pos[1], pos[2]), rot, fuse);
+            // TntBlock.wasExploded hands the new TNT the blast's indirect
+            // source, so a chain reaction keeps the player who started it.
+            let (owner, guest) = match &self.combat.blast_owner {
+                Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                None => (None, None),
+            };
+            self.add_primed_tnt(
+                BlockPos::new(pos[0], pos[1], pos[2]),
+                rot,
+                fuse,
+                owner,
+                guest,
+            );
         }
         Ok(())
     }

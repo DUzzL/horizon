@@ -89,6 +89,9 @@ pub fn update_recipes(
     let mut all = BTreeMap::new();
     recipes(&resources.join("data/minecraft/recipe"), "", &mut all);
     overlay_recipes(overlay, &mut all);
+    // The data's recipe filters, as the server's own tables apply them.
+    let filters = horizon_items::recipe_filters::RecipeFilters::load(resources, overlay);
+    all.retain(|id, v| filters.apply(id, v));
     let tags: BTreeMap<&str, &[i32]> = sync
         .tags
         .registries

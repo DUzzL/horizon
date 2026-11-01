@@ -644,6 +644,15 @@ def prebuild_commands(artifacts, packages=None):
         if len(artifact) < 5:
             continue
         kind, name, profile, selection, examples = artifact
+        owner = (packages or {}).get((kind, name))
+        selected = [value for flag, value in zip(selection, selection[1:]) if flag == "-p"]
+        if not name and kind in ("bins", "examples") and "horizon-client" in selected \
+                and "horizon-client-lib" in (packages or {}).values():
+            # Broad records predate the client package split too.
+            owner = "horizon-client-lib"
+        if owner and selected and owner not in selected:
+            # A recorded target may have moved packages; retain its feature flags and old selections.
+            selection = [*selection, "-p", owner]
         targets = groups.setdefault((profile, tuple(selection), examples), [])
         target = [f"--{kind}", name] if name else [f"--{kind}"]
         if target not in targets:
@@ -914,15 +923,25 @@ class RemoteExecutor:
         ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", self.config["ssh"]]
         started = time.monotonic()
         shared = f"{self.config['root']}/shared-local"
-        mkdir = subprocess.run([*ssh, f"mkdir -p {shlex.quote(self.mirror)}"], capture_output=True, text=True)
+        try:
+            mkdir = subprocess.run([*ssh, f"mkdir -p {shlex.quote(self.mirror)}"], capture_output=True, text=True)
+        except OSError as error:
+            self._log(f"unreachable, running everything here: {error}")
+            self.dead = True
+            return
         if mkdir.returncode:
             self._log(f"unreachable, running everything here: {mkdir.stderr.strip()[-300:]}")
             self.dead = True
             return
-        sync = subprocess.run(
-            ["rsync", "-a", "--delete", "--filter=:- .gitignore", "--exclude=/.git", "--exclude=/.local", "--exclude=/target",
-             "--exclude=__pycache__", "-e", " ".join(ssh[:-1]), f"--rsync-path={self.config.get('rsync', 'rsync')}",
-             f"{ROOT}/", f"{self.config['ssh']}:{self.mirror}/"], capture_output=True, text=True)
+        try:
+            sync = subprocess.run(
+                ["rsync", "-a", "--delete", "--filter=:- .gitignore", "--exclude=/.git", "--exclude=/.local", "--exclude=/target",
+                 "--exclude=__pycache__", "-e", " ".join(ssh[:-1]), f"--rsync-path={self.config.get('rsync', 'rsync')}",
+                 f"{ROOT}/", f"{self.config['ssh']}:{self.mirror}/"], capture_output=True, text=True)
+        except OSError as error:
+            self._log(f"sync failed, running everything here: {error}")
+            self.dead = True
+            return
         if sync.returncode:
             self._log(f"sync failed, running everything here: {sync.stderr.strip()[-300:]}")
             self.dead = True
@@ -931,8 +950,13 @@ class RemoteExecutor:
         command = (f"{self.config.get('setup', 'true')} && cd {shlex.quote(self.mirror)} && "
                    f"exec nice -n {int(self.config.get('nice', 0))} env PARITY_MACHINE_JOBS={self.config.get('jobs', 8)} "
                    f"{environment} {self.config.get('python', 'python3')} tools/parity.py --worker {shlex.quote(shared)}")
-        self.process = subprocess.Popen([*ssh, f"{self.config.get('shell', 'sh -c')} {shlex.quote(command)}"],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        try:
+            self.process = subprocess.Popen([*ssh, f"{self.config.get('shell', 'sh -c')} {shlex.quote(command)}"],
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        except OSError as error:
+            self._log(f"worker failed to start, running everything here: {error}")
+            self.dead = True
+            return
         self._send({"prebuild": artifacts, "timeout": self.timeout})
         self._log(f"synced in {time.monotonic() - started:.0f}s, building probes...")
         for line in self.process.stdout:
@@ -1350,6 +1374,9 @@ def feature_sources_changed(crate, feature, changed):
         if re.search(r'^\[package\][^\[]*?^name\s*=\s*"' + re.escape(crate) + '"', text, re.M | re.S):
             break
     else:
+        return False
+    if any(not root.is_relative_to(manifest.parent.resolve()) for root in parity_reach.crate_roots(manifest.parent)):
+        # A directory-only scan cannot prove that shared external sources changed too.
         return False
     table = re.search(r"^\[features\]\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
     implies = {name: re.findall(r'"([^"]+)"', value) for name, value in

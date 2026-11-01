@@ -124,7 +124,14 @@ impl Game<'_> {
             self.camera_fluid(camera),
             false,
         );
-        self.zoomed_fov_degrees(fov)
+        let vanilla = self.zoomed_fov_degrees(fov);
+        let mut degrees = vanilla;
+        self.native_compute_fov(partial, camera, &mut degrees);
+        if degrees.is_finite() && (1.0..=179.0).contains(&degrees) {
+            degrees
+        } else {
+            vanilla
+        }
     }
     /// `Camera.calculateHudFov`: the first-person hand's field of view.
     pub(super) fn hud_fov_degrees(&self, partial: f32, camera: [f64; 3]) -> f32 {

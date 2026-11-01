@@ -192,3 +192,21 @@ fn a_stages_files_are_its_own() {
     assert!(pack.manifest.files().contains(&"only_post.wgsl"));
     check(&pack).unwrap();
 }
+
+#[test]
+fn a_material_reads_its_block_texture() {
+    let mut files = sample().files;
+    let pack = Pack::from_files(files.clone()).unwrap();
+    let file = pack.manifest.material.as_ref().unwrap().file.clone();
+    files.insert(
+        file,
+        b"override reflections: bool = true;
+fn material(input: MaterialInput) -> Surface {
+    let lod = block_texture_lod() + block_texture_size().x;
+    return Surface(block_texture(input.uv) + block_texture_level(input.uv, lod));
+}
+"
+        .to_vec(),
+    );
+    check(&Pack::from_files(files).unwrap()).unwrap();
+}
