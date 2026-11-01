@@ -84,7 +84,7 @@ struct World { random: Random }
 struct Enchantments;
 impl Enchantments { fn modify_value(&self, _: Option<&ItemStack>, _: &str, ctx: &EffectContext,
                                     _: &mut Random, amount: f32) -> f32 {
-    let _ = ctx.items; amount * 2.0
+    let _ = ctx.items; if amount == 7.0 { 0.0 } else { amount * 2.0 }
 } }
 struct Stations { enchantments: Enchantments }
 macro_rules! world_items { ($s:expr) => { () } }
@@ -103,6 +103,8 @@ impl Game {
             1 => { *repair = 0; }
             2 => { assert_eq!(self.mending(3), 0); *repair = 6; }
             3 => { self.off = Some(ItemStack { id: 9, damage: 10 }); }
+            4 => { self.off = None; }
+            5 => {}
             _ => { *repair = 4; }
         }
     }
@@ -132,6 +134,14 @@ fn single(action: u8) -> Game {
 #[test] fn replacement_is_not_repaired() {
     let mut g = single(3); assert_eq!(g.mending(3), 3);
     let item = g.off.unwrap(); assert_eq!((item.id, item.damage), (9, 10));
+}
+#[test] fn vanilla_zero_revalidates_slot_before_consuming_xp() {
+    let mut replaced = single(3); assert_eq!(replaced.mending(7), 7);
+    assert_eq!(replaced.off.unwrap().id, 9);
+    let mut removed = single(4); assert_eq!(removed.mending(7), 7);
+    assert!(removed.off.is_none());
+    let mut unchanged = single(5); assert_eq!(unchanged.mending(7), 0);
+    assert_eq!(unchanged.off.unwrap().damage, 5);
 }
 '''.replace("METHOD", actual)
         with tempfile.TemporaryDirectory() as folder:

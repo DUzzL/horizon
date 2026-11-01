@@ -552,10 +552,6 @@ impl Game<'_> {
                 let player = self.native_acting_id();
                 self.native_mending_repair(player, &stack, amount, &mut to_repair_xp);
             }
-            if to_repair_xp == 0 {
-                // Vanilla consumes the XP when its own repair effect returns zero.
-                return if vanilla_repair == 0 { 0 } else { amount };
-            }
             // A hook can re-enter experience granting or replace the slot. Only
             // repair the same eligible stack, using its current damage.
             let Some(current) = self.mend_slot_mut(slot).as_mut() else {
@@ -568,6 +564,10 @@ impl Game<'_> {
                 || current.enchantment_level("minecraft:mending") == 0
             {
                 return amount;
+            }
+            if to_repair_xp == 0 {
+                // Vanilla consumes the XP when its own repair effect returns zero.
+                return if vanilla_repair == 0 { 0 } else { amount };
             }
             let repaired = to_repair_xp.min(current.damage);
             if repaired == 0 {
