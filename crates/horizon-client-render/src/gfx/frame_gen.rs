@@ -298,7 +298,7 @@ impl FrameGen {
         camera: &Camera,
     ) -> bool {
         let gpu = self.gpu.as_mut().expect("world() ran this frame");
-        post.finish_with(encoder, screen, &gpu.world_group);
+        post.finish_with(encoder, screen, &gpu.world_group, None);
         let reset = gpu.reset || camera.reproject.is_none();
         let reproject = camera.reproject.unwrap_or(Mat4::IDENTITY);
         let object_motion = self
@@ -337,13 +337,13 @@ impl FrameGen {
         );
         gpu.reset = false;
         if debug() == Some("motion") {
-            post.finish_with(encoder, generated, &post.bind(device, &object_motion));
+            post.finish_with(encoder, generated, &post.bind(device, &object_motion), None);
             return true;
         }
         if reset {
-            post.finish_with(encoder, generated, &gpu.world_group);
+            post.finish_with(encoder, generated, &gpu.world_group, None);
         } else {
-            post.finish_with(encoder, generated, &gpu.output_group);
+            post.finish_with(encoder, generated, &gpu.output_group, None);
         }
         !reset
     }
