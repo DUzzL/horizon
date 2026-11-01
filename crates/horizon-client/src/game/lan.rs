@@ -171,7 +171,8 @@ pub(super) struct LanHost {
     /// see; the players' hurt time by entity id.
     mob_state: HashMap<super::Dim, HashMap<u32, (i32, bool, Option<i32>)>>,
     /// The guest each mob sees as its player, when not the host (game/lan_mobs.rs).
-    pub mob_players: HashMap<u32, u32>,
+    /// Looked up per mob each tick: a fast hasher (never iterated).
+    pub mob_players: horizon_client::fast_hash::FxHashMap<u32, u32>,
     /// An integrated server's owner (game/integrated.rs).
     pub owner: Option<Owner>,
     /// The players' locator bars, one waypoint manager per level by
@@ -186,6 +187,9 @@ pub(super) struct LanHost {
     pub commands: Vec<super::lan_actions::GuestCommand>,
     /// Mods' quiet commands waiting to run a few a tick (game/lan_quiet.rs).
     pub quiet: std::collections::VecDeque<super::lan_quiet::QuietBatch>,
+    /// Far terrain sampled for Horizon clients (game/lan_far.rs); None when
+    /// `horizon-lod-distance` is 0.
+    pub far: Option<horizon_client::lod_net::Service>,
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
@@ -1394,6 +1398,8 @@ impl Game<'_> {
             Game::native_block_entity_update_tag(pos, entity, &mut tag);
             tag
         });
+        let far = (net.lod_distance > 0)
+            .then(|| horizon_client::lod_net::Service::new(net.lod_distance, biome_names.clone()));
         let lan = Lan::start_with(sync.clone(), net)?;
         if let Some(uuid) = host {
             lan.reserve(uuid);
@@ -1421,13 +1427,14 @@ impl Game<'_> {
             play: HashMap::new(),
             broken: Vec::new(),
             mob_state: HashMap::new(),
-            mob_players: HashMap::new(),
+            mob_players: Default::default(),
             owner: None,
             waypoints: Default::default(),
             waypoint_dead: Default::default(),
             border_sent: None,
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
+            far,
             native_commands: None,
             sleep_ignored: Default::default(),
             states: Default::default(),
@@ -1833,7 +1840,7 @@ impl Game<'_> {
     fn lan_entities(
         &self,
         host_entity: Option<i32>,
-        mob_players: &HashMap<u32, u32>,
+        mob_players: &horizon_client::fast_hash::FxHashMap<u32, u32>,
         hub: &mut Hub,
         out: &mut States,
     ) {
@@ -2212,6 +2219,13 @@ impl Game<'_> {
             for d in &mut self.dropped {
                 d.needs_sync = false;
             }
+            // The step command reaches clients before the events its tick
+            // generated, as ServerTickRateManager.updateStepTicks does.
+            host.hub.sync_ticking(
+                self.clock.rate(),
+                self.clock.frozen(),
+                self.clock.step_state(),
+            );
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
             // guest re-runs a piston's `triggerEvent` while its level still
@@ -2350,6 +2364,7 @@ impl Game<'_> {
         host.hub.anticheat_ping();
         drop(holding);
         self.flush_native_net(&mut host);
+        self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
         self.flush_native_sounds();
@@ -2709,6 +2724,22 @@ impl Game<'_> {
                 host.hub.swing(m.id as i32, 0, at, None);
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
+        }
+        if let Some(d) = self.dragon.as_ref().filter(|d| d.id != 0) {
+            let id = d.id;
+            let dead = !d.alive();
+            let old = host
+                .mob_state
+                .get(&self.dim)
+                .and_then(|s| s.get(&id))
+                .copied();
+            let at = [d.position.x, d.position.y, d.position.z];
+            if d.hurt_time > old.map_or(0, |o| o.0) && !dead {
+                let (kind, cause, direct) =
+                    d.last_source.unwrap_or(("minecraft:generic", None, None));
+                host.hub.damage_event(id as i32, kind, cause, direct, at);
+            }
+            seen.insert(id, (d.hurt_time, dead, None));
         }
         // LivingEntity.hurtServer for the in-frame LAN host's player (guests
         // broadcast directly from HealthEvent::DamageBroadcast): a hit that

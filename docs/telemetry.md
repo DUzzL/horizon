@@ -39,7 +39,7 @@ Every item has `day` (days since 1970, UTC: no finer time), `source` (`launcher`
 | Field | What | Example |
 |---|---|---|
 | `os`, `os_version`, `arch` | the OS, its version, the CPU architecture | `linux`, `Fedora Linux 43`, `x86_64` |
-| `cpu`, `threads`, `cores` | the CPU model, its threads and physical cores | `13th Gen Intel(R) Core(TM) i7-13700KF`, 24, 16 |
+| `cpu`, `threads`, `cores` | the CPU's brand name (on Windows the registry's; its family and model, `PROCESSOR_IDENTIFIER`, only where the registry has none), its threads and physical cores | `13th Gen Intel(R) Core(TM) i7-13700KF`, 24, 16 |
 | `cpu_base_mhz`, `cpu_boost_mhz` | base and boost clock, where the OS gives them (not on Apple silicon) | 3400, 5400 |
 | `ram_gb` | installed memory, rounded to the GiB | 32 |
 | `gpu`, `gpu_vendor`, `gpu_kind` | the GPU the game draws with, its maker, `integrated` or `discrete` | `NVIDIA GeForce RTX 4080`, `nvidia`, `discrete` |

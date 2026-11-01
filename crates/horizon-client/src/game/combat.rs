@@ -94,6 +94,12 @@ pub(super) struct CombatTracker {
     /// known (`AbstractArrow.onHitEntity` makes an ownerless arrow its own
     /// cause).
     pub(super) projectile_direct: Option<Text>,
+    /// The player whose primed TNT is going off now (`PrimedTnt.getOwner`):
+    /// its entity id and display name, the blast's causing entity.
+    pub(super) blast_owner: Option<(u32, Text)>,
+    /// The guest behind `blast_owner`, when that player is a LAN guest; the
+    /// host's own blast leaves it None.
+    pub(super) blast_guest: Option<u32>,
     pub(super) projectile_attacker: Option<(u32, Text)>,
     /// The projectile hitting the player now is another player's that
     /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).

@@ -3117,8 +3117,7 @@ impl PackPost {
 
     /// What the shadow camera draws of the terrain this frame, when the pack draws it.
     pub fn shadow_view(&self, frame: &super::Frame) -> Option<ShadowView> {
-        self.shadow_targets.as_ref()?;
-        if self.shadow_terrain.is_none() && self.shadow_water.is_none() {
+        if !self.has_shadow() {
             return None;
         }
         let shadow = &self.uniforms.shadow;
@@ -3137,6 +3136,12 @@ impl PackPost {
     /// Whether the pack draws terrain itself.
     pub fn has_terrain(&self) -> bool {
         self.terrain.is_some()
+    }
+
+    /// Whether the pack's shadow pass draws terrain (`shadow_view`).
+    pub fn has_shadow(&self) -> bool {
+        self.shadow_targets.is_some()
+            && (self.shadow_terrain.is_some() || self.shadow_water.is_some())
     }
 
     /// Whether the pack draws the sky (disc, sunset, stars, void) itself.

@@ -275,20 +275,13 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// A system line in that player's chat; false when they aren't on.
-    pub(super) fn native_tell(&self, uuid: u128, line: Text) -> bool {
-        let Some(host) = &self.lan else {
-            return false;
-        };
-        let Some(g) = host.hub.guests.iter().find(|g| g.placed && g.uuid == uuid) else {
-            return false;
-        };
-        host.hub.send_to(g.conn, &system_chat(&line));
-        true
+    /// A system line in that player's chat, also inside a player's hook for
+    /// the acting player; false when they aren't on.
+    pub(super) fn native_tell(&mut self, uuid: u128, line: Text) -> bool {
+        self.native_send(uuid, system_chat(&line))
     }
     /// A line over that player's hotbar (the action bar), also inside a
-    /// player's hook for the acting player (`native_tell` reaches nobody
-    /// there); false when they aren't on. API 21.
+    /// player's hook for the acting player; false when they aren't on. API 21.
     pub(super) fn native_action_bar(&mut self, uuid: u128, line: Text) -> bool {
         let packet = C::SystemChat(play::SystemChat {
             content: component_nbt(&line.component()),
@@ -298,7 +291,7 @@ impl Game<'_> {
     }
     /// Sends `packet` to that player, also when they are the acting player
     /// (their packets then go after the hook); false when they aren't on.
-    fn native_send(&mut self, uuid: u128, packet: C) -> bool {
+    pub(super) fn native_send(&mut self, uuid: u128, packet: C) -> bool {
         self.native_send_all(uuid, vec![packet])
     }
     fn native_send_all(&mut self, uuid: u128, packets: Vec<C>) -> bool {
@@ -635,7 +628,8 @@ fn add_to(
 /// screen as any change to their inventory does.
 #[allow(dead_code)]
 impl Game<'_> {
-    /// The main hand's stack: its item, count, and whether it is plain.
+    /// The main hand's stack: its item, count, and whether it is plain. On a
+    /// client, the player's own.
     pub(super) fn native_held(&self) -> Option<(String, u32, bool)> {
         let s = self.inventory.get(self.selected)?.as_ref()?;
         Some((s.item.to_string(), s.count, plain(s)))
@@ -702,6 +696,216 @@ impl Game<'_> {
             count,
         )
     }
+    /// Gives `stack` whole (its damage, name, enchantments... kept) to the
+    /// player `uuid`, as `Inventory.add` places it: onto equal stacks first,
+    /// then into empty inventory slots, never the armour or an empty off
+    /// hand. What did not fit comes back (nothing is dropped): all of it for
+    /// a player who isn't here, is dead, or whose state is swapped out by
+    /// another player's (inside that player's hook, only they are reached).
+    /// The player's screen follows as for any change to their inventory.
+    /// What an auto-pickup or a machine's output to a player needs, from any
+    /// server hook. API @API:give_stack@.
+    pub(super) fn native_give_stack(
+        &mut self,
+        uuid: u128,
+        mut stack: ItemStack,
+    ) -> Option<ItemStack> {
+        if stack.count == 0 {
+            return None;
+        }
+        if uuid == self.native_acting_id() {
+            // Their state is in place: the host's, or a guest's swapped in.
+            if self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.health() <= 0.0)
+            {
+                return Some(stack);
+            }
+            return self.give(stack);
+        }
+        // Inside a player's hook their state is in place and the records of
+        // the others may hold swapped state (turns nest): only they are
+        // reached, as the doc says.
+        if self.lan_acting.is_some() {
+            return Some(stack);
+        }
+        let max = self
+            .res
+            .items()
+            .get(&stack.item)
+            .map_or(64, |i| i.max_stack);
+        let Some(host) = self.lan.as_mut() else {
+            return Some(stack);
+        };
+        let Some(g) = host
+            .hub
+            .guests
+            .iter_mut()
+            .find(|g| g.placed && !g.dead && g.uuid == uuid)
+        else {
+            return Some(stack);
+        };
+        // inventory_add indexes the 36 main slots.
+        if g.inventory.len() < 36 {
+            g.inventory.resize(36, None);
+        }
+        let left = super::inventory_add(
+            &mut g.inventory,
+            &mut g.offhand,
+            g.selected,
+            max,
+            &mut stack,
+        );
+        left.then_some(stack)
+    }
+}
+
+/// An experience orb as a server mod reads it (`native_experience_orbs`).
+/// Read by mods only.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(super) struct NativeExperienceOrb {
+    /// The entity's ID, as `native_entity_join_level` names it.
+    pub id: u32,
+    pub position: [f64; 3],
+    /// `ExperienceOrb.value`: the points one pickup gives.
+    pub value: u32,
+    /// `ExperienceOrb.count`: orbs merged into this one, each worth `value`.
+    pub count: u32,
+}
+
+/// Whether an orb at `position` (its box: 0.5 wide and high, standing on
+/// it) meets the box `min`..`max`, touching faces excluded (`AABB.intersects`).
+fn orb_meets(position: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
+    position[0] - 0.25 < max[0]
+        && position[0] + 0.25 > min[0]
+        && position[1] < max[1]
+        && position[1] + 0.5 > min[1]
+        && position[2] - 0.25 < max[2]
+        && position[2] + 0.25 > min[2]
+}
+
+/// Experience for server mods. API @API:give_experience@.
+#[allow(dead_code)]
+impl Game<'_> {
+    /// The experience orbs of the server level `dimension` whose box meets
+    /// the box `min`..`max`, in the level's order: what a mod reads before it
+    /// cancels an orb in `native_entity_join_level`, to give its points with
+    /// `native_give_experience`. Empty for a level not in place and on a
+    /// client of a server.
+    pub(super) fn native_experience_orbs(
+        &self,
+        dimension: &str,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Vec<NativeExperienceOrb> {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return Vec::new();
+        }
+        self.orbs
+            .iter()
+            .filter(|o| o.count > 0)
+            .map(|o| NativeExperienceOrb {
+                id: o.id,
+                position: [o.position.x, o.position.y, o.position.z],
+                value: o.value,
+                count: o.count,
+            })
+            .filter(|o| orb_meets(o.position, min, max))
+            .collect()
+    }
+    /// Writes the experience orb `id`'s `value` (the points a pickup gives), `count`
+    /// (orbs merged into it, each worth `value`) and `age` (ticks lived; an orb
+    /// despawns at 6000); a `None` is left as it is. API @API:experience_orb_merge@.
+    /// False, and nothing written, for an orb not in the server level `dimension`, a
+    /// `value` or `count` of 0, and on a client of a server.
+    pub(super) fn native_set_experience_orb(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        value: Option<u32>,
+        count: Option<u32>,
+        age: Option<u32>,
+    ) -> bool {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+            || value == Some(0)
+            || count == Some(0)
+        {
+            return false;
+        }
+        let Some(orb) = self.orbs.iter_mut().find(|o| o.id == id) else {
+            return false;
+        };
+        orb.value = value.unwrap_or(orb.value);
+        orb.count = count.unwrap_or(orb.count);
+        orb.age = age.unwrap_or(orb.age);
+        true
+    }
+    /// Gives `points` of experience to the player `uuid` as an orb they touch
+    /// does (`ExperienceOrb.playerTouch`): Mending repairs their damaged items
+    /// with it first (`repairPlayerItems`), then the rest goes to their
+    /// experience (`Player.giveExperiencePoints`), with the level-up sound
+    /// every fifth level. No orb pickup sound. False, and nothing given, for
+    /// a player who isn't here or is dead, and for another player than the one
+    /// whose state is swapped in (inside that player's hook, only they are
+    /// reached), and while the server's player list is busy elsewhere in the
+    /// tick: give first, and cancel an orb only when this returned true.
+    /// Their bar follows as for any change to their experience.
+    pub(super) fn native_give_experience(&mut self, uuid: u128, points: u32) -> bool {
+        self.native_as_player(uuid, |game| {
+            let rest = if points > 0 { game.mending(points) } else { 0 };
+            if rest > 0 {
+                game.give_orb_points(rest);
+            }
+        })
+    }
+    /// Adds `levels` to the player `uuid`'s level, or takes them off when
+    /// negative (`Player.giveExperienceLevels`): what the anvil and the
+    /// enchanting table charge with, and a mod can charge or reward with.
+    /// Below level 0 the level and the points are 0. The progress toward the
+    /// next level is kept. False, and nothing changed, as for
+    /// `native_give_experience`.
+    pub(super) fn native_give_levels(&mut self, uuid: u128, levels: i32) -> bool {
+        self.native_as_player(uuid, |game| game.give_levels(levels))
+    }
+    /// Runs `f` with the player `uuid`'s state in place: theirs already when
+    /// they are the acting player (the host, or a guest swapped in), else a
+    /// guest's through `as_guest`, only where no other player is swapped in.
+    /// False when it didn't run: no such player here, or dead.
+    fn native_as_player(&mut self, uuid: u128, f: impl FnOnce(&mut Self)) -> bool {
+        if uuid == self.native_acting_id() {
+            if self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.health() <= 0.0)
+            {
+                return false;
+            }
+            f(self);
+            return true;
+        }
+        if self.lan_acting.is_some() {
+            return false;
+        }
+        let Some(mut host) = self.lan.take() else {
+            return false;
+        };
+        let conn = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && !g.dead && g.uuid == uuid)
+            .map(|g| g.conn);
+        let ran = conn
+            .and_then(|conn| self.as_guest(&mut host, conn, f))
+            .is_some();
+        self.lan = Some(host);
+        ran
+    }
 }
 
 fn system_chat(line: &Text) -> C {
@@ -764,6 +968,30 @@ impl Game<'_> {
         self.native_perform_command(&player, line, &mut ran);
         if !ran {
             // Registered, but no mod took it: vanilla's unknown command.
+            self.native_feedback(
+                Text::translate("command.unknown.command", &[])
+                    .with_color(horizon_client::text::RED),
+            );
+        }
+        true
+    }
+}
+
+impl Game<'_> {
+    /// A console line for the mods: true when a mod registered its command
+    /// (`native_register_commands`). The console is level 4, so a registered
+    /// usage is always allowed; a command no mod takes answers as vanilla's
+    /// unknown command.
+    pub(super) fn perform_native_console_command(&mut self, line: &str) -> bool {
+        let Some(host) = &self.lan else {
+            return false;
+        };
+        if Self::native_command_level(host, line).is_none() {
+            return false;
+        }
+        let mut ran = false;
+        self.native_perform_console_command(line, &mut ran);
+        if !ran {
             self.native_feedback(
                 Text::translate("command.unknown.command", &[])
                     .with_color(horizon_client::text::RED),
@@ -841,6 +1069,59 @@ mod tests {
             add_to(slots(&mut inv, &mut off), 0, "minecraft:diamond", 64, 1),
             0
         );
+    }
+
+    #[test]
+    fn orbs_are_found_by_their_half_block_box() {
+        // A block's cell, as a mod asks for a broken block's drops.
+        let (min, max) = ([10.0, 64.0, -3.0], [11.0, 65.0, -2.0]);
+        assert!(orb_meets([10.5, 64.2, -2.5], min, max), "inside");
+        assert!(
+            orb_meets([11.2, 64.0, -2.5], min, max),
+            "its box reaches in"
+        );
+        assert!(
+            orb_meets([10.5, 63.6, -2.5], min, max),
+            "standing just below"
+        );
+        assert!(!orb_meets([11.25, 64.0, -2.5], min, max), "a face touching");
+        assert!(!orb_meets([10.5, 63.5, -2.5], min, max), "its top touching");
+        assert!(!orb_meets([10.5, 65.0, -2.5], min, max), "standing on top");
+    }
+
+    #[test]
+    fn whole_stacks_are_given_onto_equal_stacks_only() {
+        use super::super::inventory_add;
+        let mut inv = vec![stack("minecraft:dirt", 64); 36];
+        inv[2] = stack("minecraft:iron_sword", 1);
+        inv[2].as_mut().unwrap().damage = 5;
+        inv[5] = stack("minecraft:arrow", 60);
+        inv[7] = None;
+        inv[20] = None;
+        let mut off = stack("minecraft:arrow", 62);
+
+        // A damaged sword never joins another stack: the first free slot.
+        let mut sword = stack("minecraft:iron_sword", 1).unwrap();
+        sword.damage = 40;
+        assert!(!inventory_add(&mut inv, &mut off, 5, 1, &mut sword));
+        assert_eq!(inv[7].as_ref().unwrap().damage, 40, "its damage is kept");
+        assert_eq!(inv[2].as_ref().unwrap().damage, 5);
+
+        // Arrows: the selected slot, then the off hand, then a free slot,
+        // and what is left over comes back.
+        let mut arrows = stack("minecraft:arrow", 80).unwrap();
+        assert!(inventory_add(&mut inv, &mut off, 5, 64, &mut arrows));
+        assert_eq!(inv[5].as_ref().unwrap().count, 64);
+        assert_eq!(off.as_ref().unwrap().count, 64);
+        assert_eq!(inv[20].as_ref().unwrap().count, 64);
+        assert_eq!(arrows.count, 80 - 4 - 2 - 64);
+
+        // A full inventory with an empty off hand takes nothing.
+        let mut off = None;
+        let mut apple = stack("minecraft:apple", 3).unwrap();
+        assert!(inventory_add(&mut inv, &mut off, 0, 64, &mut apple));
+        assert!(off.is_none(), "never into an empty off hand (getFreeSlot)");
+        assert_eq!(apple.count, 3);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use horizon_shader_api::{OptionKind, PackOption};
+use horizon_shader_api::{OptionKind, OptionPage, PackOption};
 
 pub const DIR: &str = "shaderpacks";
 
@@ -26,6 +26,8 @@ pub struct Entry {
     /// A Horizon pack's `[[options]]`, and the value of each the player set (`values_path`).
     pub options: Vec<PackOption>,
     pub values: Vec<f64>,
+    /// Its options page's `[[pages]]`; empty for one page of every option.
+    pub pages: Vec<OptionPage>,
 }
 
 impl Entry {
@@ -88,8 +90,10 @@ fn entry(path: &Path) -> Option<Entry> {
                 .ok()
                 .map(|p| p.manifest)
         };
-        let (title, options) =
-            manifest.map_or_else(|| (file.clone(), Vec::new()), |m| (m.name, m.options));
+        let (title, options, pages) = manifest.map_or_else(
+            || (file.clone(), Vec::new(), Vec::new()),
+            |m| (m.name, m.options, m.pages),
+        );
         let values = load_values(path, &options);
         return Some(Entry {
             file,
@@ -97,6 +101,7 @@ fn entry(path: &Path) -> Option<Entry> {
             kind: Kind::Horizon,
             options,
             values,
+            pages,
         });
     }
     let zip = path.is_file()
@@ -109,6 +114,7 @@ fn entry(path: &Path) -> Option<Entry> {
         kind: Kind::Classic,
         options: Vec::new(),
         values: Vec::new(),
+        pages: Vec::new(),
     })
 }
 

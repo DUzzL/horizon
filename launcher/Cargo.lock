@@ -2671,6 +2671,7 @@ name = "horizon-launcher"
 version = "0.2.0"
 dependencies = [
  "base64",
+ "chacha20poly1305",
  "chrono",
  "clap",
  "clap_complete",
@@ -2710,6 +2711,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "trash",
  "ureq",
+ "windows-sys 0.61.2",
  "winresource",
  "zip",
 ]
@@ -2782,6 +2784,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "sha2",

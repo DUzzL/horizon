@@ -268,10 +268,13 @@ impl Game<'_> {
             && self.stack_in(slot) == Some(stack)
         {
             let view = item_render::stack_view(stack);
-            let duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            let mut duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            self.native_use_duration(stack, &mut duration);
             owner.using_this_item = true;
             owner.use_duration = duration;
-            owner.use_item_remaining_ticks = duration - ticks as i32;
+            // getUseItemRemainingTicks: the duration the use started with,
+            // as LivingEntityUseItemEvent.Start and .Tick left it (`game/item_use.rs`).
+            owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
             owner.crossbow_charge_duration = Self::charge_ticks(stack).max(1) as i32;
         }
         owner.fishing_cast_with_this_item = stack
@@ -418,6 +421,7 @@ impl Game<'_> {
         });
         for (item, at, partial, entity) in live.chain(taken) {
             let entity_start = out.len();
+            self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
             if pos.length_squared() > 64.0 * 64.0 {

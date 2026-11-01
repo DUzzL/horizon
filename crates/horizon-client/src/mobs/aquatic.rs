@@ -169,6 +169,8 @@ pub fn register(m: &mut Mob) {
             g.add(5, LookAtPlayer::new(6.0));
             g.add(5, super::dolphin::Jump::new(10));
             g.add(6, MeleeAttack::new(1.2, true));
+            g.add(7, super::dolphin::MoveToItem::default());
+            g.add(8, super::dolphin::PlayWithItems);
             g.add(8, super::dolphin::FollowPlayerRidden::new(false));
             g.add(8, super::dolphin::FollowPlayerRidden::new(true));
             // `Dolphin.registerGoals`: AvoidEntityGoal(Guardian.class, 8, 1, 1).
