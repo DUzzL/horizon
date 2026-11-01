@@ -115,12 +115,7 @@ fn load(root: &Path) -> Vec<Biome> {
                 .collect()
         })
         .unwrap_or_default();
-    biomes.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    biomes.sort_by_cached_key(|biome| (biome.name.to_lowercase(), biome.id.clone()));
     biomes
 }
 /// `Identifier.toLanguageKey("biome")`: `biome.<namespace>.<path>` with the
@@ -158,10 +153,11 @@ pub(super) fn search_box(w: f32) -> [f32; 4] {
 fn row_at(state: &State, cursor: (f32, f32), size: (f32, f32)) -> Option<usize> {
     let rows = state.rows();
     let (top, bottom, left, _) = list_area(size, rows.len());
-    (cursor.0 >= left && cursor.0 < left + ROW_WIDTH && cursor.1 >= top && cursor.1 < bottom)
-        .then(|| ((cursor.1 - top + state.scroll.amount.trunc()) / ROW_HEIGHT) as usize)
-        .filter(|row| *row < rows.len())
-        .map(|row| rows[row])
+    if cursor.0 < left || cursor.0 >= left + ROW_WIDTH || cursor.1 < top || cursor.1 >= bottom {
+        return None;
+    }
+    let row = ((cursor.1 - top + state.scroll.amount.trunc()) / ROW_HEIGHT) as usize;
+    rows.get(row).copied()
 }
 /// A press on the screen: the search box, the list, or the scrollbar.
 pub(super) fn click(state: &mut State, cursor: (f32, f32), size: (f32, f32)) {
