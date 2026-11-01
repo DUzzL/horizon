@@ -1220,6 +1220,9 @@ impl Game<'_> {
         let player = killer
             .filter(|_| m.ai.last_hurt_by_player > 0)
             .and_then(|conn| self.killer_uuid(conn));
+        if let Some(player) = player.filter(|_| m.extra.leash.is_some()) {
+            self.lead_killers.insert(m.id, (player, self.dim));
+        }
         self.drop_death_loot(&mut dying, player, by_player, killer_entity, consumed, pos);
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {

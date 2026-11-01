@@ -693,8 +693,12 @@ pub(crate) struct NativeLootDrops<'a> {
     /// A player's use dropped them rather than a break or a death: shears on a
     /// sheep, a mooshroom, a snow golem or a bogged, a brush on an armadillo or
     /// a suspicious block, shears carving a pumpkin, picking sweet berries or
-    /// cave vines, or a hit taking an item frame or its item. `player` names
-    /// them; `block` or `entity` says what dropped them. API @API:use_drops@.
+    /// cave vines, a hit taking an item frame or its item, or untying a lead
+    /// or cutting it with shears. `player` names them; `block` or `entity` says
+    /// what dropped them. API @API:use_drops@. A mob that a player killed while
+    /// leashed drops its lead on its next tick as a call of its own (`entity`
+    /// the mob, `player` its killer, `table` empty, `used` false). API
+    /// @API:lead_drops@.
     pub(crate) used: bool,
 }
 
@@ -812,11 +816,12 @@ pub struct NativeScreen {
     pub own_labels: bool,
 }
 
-/// The open screen, for the screen hooks (`native_screen_render_post`,
-/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`,
-/// `native_screen_mouse_scrolled_pre`): what it is, its menu and title, where
-/// its container panel is, how many slots its menu has, and where the mouse
-/// and the frame's partial tick are.
+/// The open screen, for the screen hooks (`native_screen_render_post`, the
+/// mouse ones `native_screen_mouse_button_pressed_pre`, `..._released_pre` and
+/// `native_screen_mouse_scrolled_pre`, and the key ones
+/// `native_screen_key_pressed_pre` and `native_screen_char_typed_pre`): what
+/// it is, its menu and title, where its container panel is, how many slots its
+/// menu has, and where the mouse and the frame's partial tick are.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativeScreenView<'a> {
@@ -1096,6 +1101,36 @@ const MAPPINGS: [(&str, Option<KeyCode>); 9] = [
     ("key.use", None),
 ];
 
+/// What a `ScreenEvent.CharacterTyped.Pre` leaves of `text`, given `canceled`
+/// (whether a hook cancelled character `c`): the cancelled printable
+/// characters are gone and every other character stays, control characters
+/// included — a text box reads Backspace, Delete or Escape as keys and vanilla
+/// fires no `charTyped` for them, so they are never offered to the hook.
+/// `None` when nothing is left to type.
+fn screen_text_hooked(text: &str, mut canceled: impl FnMut(char) -> bool) -> Option<String> {
+    let mut left = String::with_capacity(text.len());
+    for c in text.chars() {
+        if !c.is_control() && canceled(c) {
+            continue;
+        }
+        left.push(c);
+    }
+    if left.is_empty() && !text.is_empty() {
+        return None;
+    }
+    Some(left)
+}
+
+/// What a key press's characters leave for a text box after the
+/// `ScreenEvent.CharacterTyped.Pre` hook: the characters no mod cancelled,
+/// control ones gone (the key's own handling takes those, and vanilla fires
+/// no `charTyped` for them). `None` when nothing is left to type.
+fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<String> {
+    let left = screen_text_hooked(text, canceled)?;
+    let text: String = left.chars().filter(|c| !c.is_control()).collect();
+    (!text.is_empty()).then_some(text)
+}
+
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
     /// Once a frame, in a world or not, after Horizon's extras.
@@ -1147,6 +1182,22 @@ impl Game<'_> {
         error_text: &str,
     ) {
         let _ = (context, phase, error_text);
+    }
+    /// The server is assembling its data tables from the world's data packs
+    /// (`ReloadableServerResources`): a world is opening, or `/reload` was
+    /// run, and the recipes, tags, loot and advancements are built after
+    /// this. Push `(path, bytes)` pack files and they join this load. `path`
+    /// is the overlay's key, `<kind>/<namespace>:<path>` without `.json`, over
+    /// the kinds the tables read: `recipe/mymod:thing`,
+    /// `tags/mymod:block/thing`, `loot_table/…`, `advancement/…`,
+    /// `trade_set/…`, `villager_trade/…`, `dialog/…`. A file that isn't JSON
+    /// is skipped with a warning. Asked once per load on both paths, so this
+    /// is where a mod recomputes them.
+    /// Contributed files sit below the world's own data packs: a pack's file
+    /// for the same path still overrides a mod's. Server-side (the single
+    /// player's integrated server included). API @API:data_pack_files@.
+    pub(super) fn native_data_pack_files(&self, files: &mut Vec<(String, Vec<u8>)>) {
+        let _ = files;
     }
     /// The server is about to open its worlds: nothing of the world is
     /// loaded yet (NeoForge's `ServerAboutToStartEvent`, "called before the
@@ -1583,15 +1634,17 @@ impl Game<'_> {
     /// vanilla's `Screen.mouseScrolled`): `screen` is the screen it is,
     /// `screen.mouse` where the pointer is (so there is no position of its
     /// own), `scroll` the wheel's movement in x and y as the game's own scroll
-    /// handler scales it (a notch is ±1 — its sign only — times the wheel
-    /// sensitivity, and a touchpad's pixels are divided by 30), and
+    /// handler scales it (a line times the wheel sensitivity: with Discrete
+    /// Scrolling on, a notch is ±1, its sign only; a touchpad's pixels are
+    /// divided by 30), and
     /// `modifiers` GLFW's bits (shift 1, control 2, alt 4, super 8). Set
     /// `canceled` and nothing the screen would scroll moves: not the bundle
     /// under the pointer, nor a list, slider, scrollbar or map. Nothing else
     /// reads the wheel while a screen of the game's is open, so no hotbar slot
     /// changes either.
     ///
-    /// It fires before the screen scrolls anything, on the window only, and
+    /// It fires before the screen scrolls anything, for the window's wheel
+    /// (horizon-ctl's `scroll-at` sends it through the window too), and
     /// only while a screen of the game's is open (Options and the pack list
     /// opened from the title screen count, with no player and no `menu`). It
     /// does not fire on the title screen itself, the connect and loading
@@ -1609,6 +1662,72 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (screen, scroll, modifiers, canceled);
+    }
+    /// A key went down over the open screen (`ScreenEvent.KeyPressed.Pre`,
+    /// vanilla's `Screen.keyPressed`): `screen` is the screen it is, `key`
+    /// vanilla's name for the key (`key.keyboard.e`, the name `native_key`
+    /// hands over) — a key with no name fires nothing — `repeat` whether it is
+    /// the keyboard's auto-repeat of a held press (Horizon's extra; NeoForge
+    /// folds repeats into the event), and `modifiers` GLFW's bits (shift 1,
+    /// control 2, alt 4, super 8). Set `canceled` and the press goes no
+    /// further: no focus move, no Escape-close, no inventory or hotbar key, no
+    /// typing by the key itself, no `native_key`.
+    ///
+    /// It fires for the window's presses and their repeats, and for the
+    /// control socket's `key` (a release fires nothing), after the window's
+    /// own shortcuts have run — the fullscreen and screenshot keys, the debug
+    /// keys and the narrator — and only while a screen of the game's is open
+    /// (Options and the pack list opened from the title screen count, with no
+    /// player and no `menu`). It does not fire on the title screen itself, the
+    /// connect and loading screens, nor for a server dialog, the server pack,
+    /// link and code-of-conduct prompts, a book or a sign editor drawn over
+    /// gameplay, nor while a world loads or saves: the key there stays the
+    /// game's own. A cancelled press's release still runs, so a `native_key`
+    /// listener sees that release without its press, and its characters are
+    /// GLFW's separate char callback and still come; see
+    /// `native_screen_char_typed_pre`.
+    /// API @API:screen_key_input@.
+    pub(super) fn native_screen_key_pressed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        key: &str,
+        repeat: bool,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, key, repeat, modifiers, canceled);
+    }
+    /// A character was typed at the open screen
+    /// (`ScreenEvent.CharacterTyped.Pre`, vanilla's `Screen.charTyped`):
+    /// `screen` is the screen it is, `c` the character, and `modifiers` GLFW's
+    /// bits (shift 1, control 2, alt 4, super 8). Set `canceled` and that one
+    /// character never reaches a text box.
+    ///
+    /// It fires once per printable character of a key press's text and once
+    /// per character of the input method's committed text, never for a control
+    /// character (Enter, Backspace, Tab, Delete, Escape, a Control letter):
+    /// those are keys, and the game reads them as keys, not as text. A key's
+    /// characters fire after the key has acted, as GLFW's char callback comes
+    /// after its key callback (`KeyboardHandler.charTyped`): `screen` is the
+    /// screen open then, so a key that closes the screen (the inventory key)
+    /// leaves none to hear its character, where vanilla's closed screen hears
+    /// nothing, and one that moves the focus types into the box it moved to.
+    /// They fire even when `native_screen_key_pressed_pre` cancelled the press
+    /// that carried the text, as NeoForge delivers `CharacterTyped.Pre` for a
+    /// cancelled `KeyPressed.Pre`: the characters left reach the text box
+    /// without the key's own effects. Cancelling one character drops only that
+    /// one. The control socket's `type` fires it too, but not for its `\b`
+    /// backspace. Same screens as the key press, and it fires with no text box
+    /// focused (there is nothing to take the character then).
+    /// API @API:screen_key_input@.
+    pub(super) fn native_screen_char_typed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        c: char,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, c, modifiers, canceled);
     }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
@@ -1667,6 +1786,74 @@ impl Game<'_> {
         let renderer = self.renderer.as_ref()?;
         let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
         Some(self.screen_view(&batch, self.screen))
+    }
+    /// Whether the key press `key` over the open screen went no further
+    /// (`native_screen_key_pressed_pre`): what `handle_window_event` and the
+    /// control socket's `key` command both ask before a screen acts on a key.
+    /// False when no screen of the hooks' is open, and for a key with no
+    /// vanilla name.
+    pub(super) fn screen_key_pressed(&self, key: KeyCode, repeat: bool) -> bool {
+        let Some(name) = keybinds::key_name(key) else {
+            return false;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return false;
+        };
+        let mut canceled = false;
+        self.native_screen_key_pressed_pre(
+            &screen,
+            name,
+            repeat,
+            super::glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
+    }
+    /// Text on its way to a text box after the open screen's character hooks
+    /// (`native_screen_char_typed_pre` per printable character): the cancelled
+    /// characters are gone and every other one stays, control characters
+    /// included (a text box reads Backspace, Delete and the like as keys).
+    /// `None` when none of them is left to type.
+    pub(super) fn screen_text_typed(&self, text: &str) -> Option<String> {
+        let Some(screen) = self.screen_view_now() else {
+            return Some(text.to_owned());
+        };
+        let modifiers = super::glfw_modifiers(self.modifiers);
+        screen_text_hooked(text, |c| {
+            let mut canceled = false;
+            self.native_screen_char_typed_pre(&screen, c, modifiers, &mut canceled);
+            canceled
+        })
+    }
+    /// A key press's characters (`ScreenEvent.CharacterTyped.Pre`, vanilla's
+    /// `KeyboardHandler.charTyped`), dispatched once the screen has acted on
+    /// the key: GLFW's char callback comes after its key callback, so the
+    /// characters go to the screen that is open now — a key that closed the
+    /// screen leaves none to hear them, as vanilla's closed screen hears
+    /// nothing, and one that moved the focus types into the box it moved to.
+    /// Each printable one is offered to `native_screen_char_typed_pre`; the
+    /// survivors go to the focused text box, control characters (keys) gone.
+    pub(super) fn screen_chars_typed(&mut self, text: Option<&str>) {
+        let Some(text) = text else {
+            return;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return;
+        };
+        let modifiers = super::glfw_modifiers(self.modifiers);
+        let Some(text) = chars_to_type(text, |c| {
+            let mut canceled = false;
+            self.native_screen_char_typed_pre(&screen, c, modifiers, &mut canceled);
+            canceled
+        }) else {
+            return;
+        };
+        // A held edit modifier makes a shortcut of the key, not text.
+        if !self.types_text() {
+            return;
+        }
+        // `Err` only says no text box of the screen takes the characters.
+        let _ = self.type_chars_into_screen(&text);
     }
     /// A left or right (`right`) press at `at` (GUI pixels from the screen's
     /// top left, so outside it too) on block `block`'s screen, a mod's, over
@@ -2497,6 +2684,10 @@ impl GameLevel<'_> {
     /// directional particle. The return value means accepted, not delivered.
     /// Block particle types require their block state; item, trail and
     /// vibration particles are not supported by the current network dispatch.
+    /// `ParticleOptions::named("mymod:spark")` sends a mod's own type
+    /// (API @API:mod_particle_types@): Horizon clients draw it from the sprite
+    /// set in the mod's `assets/<namespace>/particles/<path>.json`, a client
+    /// without that file draws nothing, and vanilla clients aren't sent it.
     pub(super) fn native_send_particles(
         &mut self,
         options: &ParticleOptions,
@@ -2507,6 +2698,16 @@ impl GameLevel<'_> {
         count: i32,
     ) -> bool {
         use ParticleType as T;
+        // A native mod's own type: the name has to be namespaced, and a client
+        // draws it only when its pack has the sprite set.
+        if let Some(name) = &options.mod_particle {
+            let namespaced = name
+                .split_once(':')
+                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
+            if !self.native_authoritative || !namespaced {
+                return false;
+            }
+        }
         let supported = match options.ty {
             T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
                 state.is_some_and(|id| self.registry.state(id).is_some())
@@ -4309,6 +4510,54 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
+    /// printable ones of a text: a cancelled one leaves that text and a
+    /// control character (a key, not text) is never offered a hook.
+    #[test]
+    fn typed_text_keeps_control_characters_and_drops_cancelled_ones() {
+        let mut offered = Vec::new();
+        let left = super::screen_text_hooked("a\u{7f}b\u{1b}c", |c| {
+            offered.push(c);
+            c == 'b'
+        });
+        assert_eq!(offered, ['a', 'b', 'c']);
+        assert_eq!(left.as_deref(), Some("a\u{7f}\u{1b}c"));
+        // Every printable character cancelled: no text is left to type.
+        assert_eq!(super::screen_text_hooked("ab", |_| true), None);
+        // Nothing to offer: an empty text stays empty and keys alone stay whole.
+        assert_eq!(super::screen_text_hooked("", |_| true).as_deref(), Some(""));
+        assert_eq!(
+            super::screen_text_hooked("\u{7f}\t", |_| true).as_deref(),
+            Some("\u{7f}\t")
+        );
+        // What no hook cancels is handed back as it came in.
+        assert_eq!(
+            super::screen_text_hooked("hello", |_| false).as_deref(),
+            Some("hello")
+        );
+    }
+
+    /// The window's key path: a key whose press a mod cancelled still types
+    /// the characters no mod cancelled (vanilla's separate `charTyped`), while
+    /// the key characters never reach the text box.
+    #[test]
+    fn a_cancelled_key_still_types_the_characters_left() {
+        // `axb` with 'x' cancelled: the key went no further, `ab` still types.
+        assert_eq!(
+            super::chars_to_type("axb", |c| c == 'x').as_deref(),
+            Some("ab")
+        );
+        // Backspace, Escape and the like are keys, not text.
+        assert_eq!(
+            super::chars_to_type("a\u{7f}\u{1b}b", |_| false).as_deref(),
+            Some("ab")
+        );
+        // Every character cancelled: the box takes none of them.
+        assert_eq!(super::chars_to_type("ab", |_| true), None);
+        // Nothing typed: nothing to hand over.
+        assert_eq!(super::chars_to_type("", |_| false), None);
+    }
 
     /// A shake is scaled by Distortion Effects, bounded on each axis, and a
     /// value that isn't finite is none.

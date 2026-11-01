@@ -127,6 +127,14 @@ impl Game<'_> {
     }
     /// `Leashable.dropLeash` / `removeLeash`: the lead falls as an item.
     pub(super) fn break_leash(&mut self, id: u32, drop: bool, sound: bool) {
+        self.drop_leash(id, drop, sound, false);
+    }
+    /// `break_leash` by the acting player's use (untying it, shears).
+    fn break_leash_used(&mut self, id: u32, drop: bool) {
+        self.drop_leash(id, drop, false, true);
+    }
+    fn drop_leash(&mut self, id: u32, drop: bool, sound: bool, used: bool) {
+        let killer = self.lead_killers.remove(&id).map(|(killer, _)| killer);
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
@@ -136,16 +144,54 @@ impl Game<'_> {
         // Leashable.tickLeash gates a dying entity's lead drop on entity_drops.
         let drop = drop && (m.alive() || self.ui.rules.bool("entity_drops"));
         let at = [m.position.x, m.position.y, m.position.z];
+        let kind = super::native_hooks::mob_kind(m);
         if sound {
             self.lead_sound("break", at);
         }
-        if drop {
+        if !drop {
+            return;
+        }
+        // The mods' say when a player is behind it: the user, else the
+        // killer of a mob that died leashed.
+        let player = if used {
+            Some(self.native_acting_id())
+        } else {
+            killer
+        };
+        let Some(player) = player else {
             self.drop_lead_item(at);
+            return;
+        };
+        let mut drops = vec![ItemStack::new("minecraft:lead", 1)];
+        let context = super::native_hooks::NativeLootDrops {
+            table: "",
+            dimension: self.dim.id(),
+            origin: at,
+            block: None,
+            entity: Some((id, &kind)),
+            player: Some(player),
+            tool: None,
+            explosion: None,
+            used,
+        };
+        self.native_loot_drops(&context, &mut drops);
+        for stack in drops {
+            if stack.count > 0 && &*stack.item != "minecraft:air" {
+                let v = super::dispenser::new_item_motion();
+                self.spawn_item(stack, at, v, 10);
+            }
         }
     }
     /// Holders read from a save become real once the entity is found; a
     /// holder that never shows up drops the lead after 100 ticks.
     pub(super) fn tick_leads(&mut self) {
+        // A corpse gone without dropping its lead takes its killer along.
+        // Only this level's: the others' mobs aren't in place.
+        if !self.lead_killers.is_empty() {
+            let (mobs, dim) = (&self.mobs, self.dim);
+            self.lead_killers
+                .retain(|id, (_, at)| *at != dim || mobs.iter().any(|m| m.id == *id && !m.removed));
+        }
         let player_uuid = self.level.player_uuid.unwrap_or([0, 0, 0, 1]);
         for i in 0..self.mobs.len() {
             let Some(pending) = self.mobs[i].extra.leash_pending else {
@@ -222,7 +268,7 @@ impl Game<'_> {
         if item == "minecraft:shears" {
             let mut dropped = false;
             if self.mobs[index].extra.leash.is_some() {
-                self.break_leash(id, true, false);
+                self.break_leash_used(id, true);
                 dropped = true;
             }
             let others: Vec<u32> = self
@@ -232,7 +278,7 @@ impl Game<'_> {
                 .map(|m| m.id)
                 .collect();
             for o in others {
-                self.break_leash(o, true, false);
+                self.break_leash_used(o, true);
                 dropped = true;
             }
             let boats = self.boats_on(Holder::Mob(id));
@@ -255,7 +301,7 @@ impl Game<'_> {
                 .is_none_or(|p| p == self.acting_player_uuid())
         {
             let creative = self.creative;
-            self.break_leash(id, !creative, false);
+            self.break_leash_used(id, !creative);
             self.lead_game_event("minecraft:entity_interact", at);
             self.lead_sound("untied", at);
             return true;
@@ -264,7 +310,7 @@ impl Game<'_> {
             let center = self.player_center();
             if self.can_attach_lead(index, center) {
                 if self.mobs[index].extra.leash.is_some() {
-                    self.break_leash(id, true, false);
+                    self.break_leash_used(id, true);
                 }
                 let holder = self.acting_player_uuid();
                 self.mobs[index].extra.leash = Some(Holder::Player);
@@ -335,7 +381,7 @@ impl Game<'_> {
         if knot_hit && held_item.as_deref() == Some("minecraft:shears") {
             for i in existing {
                 let id = self.mobs[i].id;
-                self.break_leash(id, true, false);
+                self.break_leash_used(id, true);
             }
             self.drop_boat_leashes(&existing_boats);
             self.audio

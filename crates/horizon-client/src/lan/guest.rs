@@ -278,6 +278,9 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
+    /// another (`native_set_flying_speed`). Saved with the player.
+    pub flying_speed: f32,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -427,6 +430,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -443,6 +447,14 @@ impl Guest {
             scoreboard: Default::default(),
             recipes_unlocked: Vec::new(),
         }
+    }
+    /// `ServerPlayer.onUpdateAbilities`: the guest's abilities, flying speed included.
+    pub fn abilities(&self) -> play::Clientbound {
+        play::Clientbound::PlayerAbilities(play::PlayerAbilities {
+            flags: self.ability_flags(),
+            flying_speed: self.flying_speed,
+            walking_speed: 0.1,
+        })
     }
     pub fn send(&self, packet: &play::Clientbound) {
         if self.anticheat.record.is_some() {
@@ -477,6 +489,13 @@ impl Guest {
                     .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
                 Change::Attributes { sprint }
             }
+            // Entity.DATA_SHARED_FLAGS_ID: its sprinting bit (0x08).
+            C::SetEntityData(p) if own(p.id) => match p.values.iter().find(|v| v.0 == 0) {
+                Some(&(_, _, horizon_protocol::entity_data::Value::Byte(flags))) => {
+                    Change::Sprinting(flags & 0x08 != 0)
+                }
+                _ => return,
+            },
             C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
             C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
             C::PlayerAbilities(_) => Change::Abilities,
@@ -741,6 +760,14 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // Unbreakable is a unit component; clients need its presence for the
+        // durability bar, tooltip and item model, including in single player.
+        if d.other("minecraft:unbreakable").is_some() {
+            stack.added.push((
+                horizon_protocol::item::component::UNBREAKABLE,
+                horizon_protocol::item::Component::Unit,
+            ));
+        }
         for (name, value) in &d.other {
             let (removed, kind) = match name.strip_prefix('!') {
                 Some(kind) => (true, kind),

@@ -1018,7 +1018,9 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   through it too, with `used` set and that player named: shears on a sheep, a mooshroom, a snow golem or a bogged (its shearing
   table), a brush on an armadillo (`minecraft:brush/armadillo`) or a suspicious block (its item, no table), shears carving a
   pumpkin, picking sweet berries or cave vines (their harvest table), and a player's hit taking an item frame or its item (the
-  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told.
+  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told. Leads: untying one or cutting it with
+  shears is a use (the leashed mob, no table), and a mob a player killed while leashed drops its lead on its next tick as a call
+  of its own, naming the killer (`used` false, no table). A lead that snaps or loses its holder names no player and isn't told.
 
 ### A block's items
 
@@ -1104,6 +1106,23 @@ mods' shakes add up. Horizon reads it only while playing, scales the sum by Dist
 that to 0% sees no shake), bounds it to 10 degrees and half a block on each axis, and multiplies it into the view
 after the hurt tilt and view bobbing. A mod keeps its own shake's time and decay, from `partial` and its tick hooks;
 it moves only what the player sees, not where they are or aim.
+
+### A player's motion
+
+`crates/horizon-client/src/game/native_motion.rs`: a push on a client, a flying speed on a server.
+
+- `native_push_player([x, y, z])` (client) adds a push to the player's own velocity, in blocks a tick, as an
+  explosion's knockback does: the player's own game moves them. The server didn't send it, so on a LAN or dedicated
+  server the anticheat's movement check sees a move it can't explain (logged only unless the server sets it to send
+  players back); for a push the server should stand behind, have the server send it. Each component is
+  cut to 4 either way; an upward push lifts the player off the ground. A spectator, no player, or a value that isn't
+  a number is left alone. A server mod that wants a client pushed sends its client half a message (API 40).
+- `native_set_flying_speed(player, speed)` (server) sets `player`'s creative flying speed: vanilla's is 0.05, `None`
+  puts it back, and it is cut to 0 to 50 (1000 times vanilla's). The player's client is told at once, a respawn and
+  a game mode change keep it, and it is saved with the player as vanilla's `abilities.flySpeed` is. Past about 0.45
+  (sprinting) a player flies more than 10 blocks a tick: anyone but the single-player owner then meets the server's
+  moved-too-quickly check, which can send them back, as vanilla's does. It answers false for a player not on this server,
+  on a client, and inside a player's hook (call it from a tick hook).
 
 ### Values for a mod's shader pack
 
