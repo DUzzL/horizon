@@ -816,6 +816,12 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
+        let emissive = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for a in &self.armor_stands {
             let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
@@ -990,6 +996,19 @@ impl Game<'_> {
                     if i == 0 { overlay } else { 0 },
                     out,
                 );
+                // The layer's OptiFine emissive overlay, full bright without the glint.
+                if let Some(glow) = emissive.overlay(texture).and_then(|e| uv_of(e)) {
+                    horizon_client::mobs::render::draw(
+                        part,
+                        base,
+                        &layer_poses,
+                        glow,
+                        color,
+                        horizon_client::mobs::render::FULL_BRIGHT,
+                        0,
+                        out,
+                    );
+                }
             }
             // EquipmentLayerRenderer: the trim layer over the armour.
             if let Some(trim) = assets

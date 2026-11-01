@@ -8,8 +8,8 @@
 //! `zombie3`, never over `zombie`.
 //!
 //! This pairs entity textures, those under `textures/entity/` (mobs' and block entities'), by
-//! the entity atlas's names ([`crate::random_textures`]); blocks and items have their own
-//! atlas.
+//! the entity atlas's names ([`crate::random_textures`]); the game draws mobs' overlays.
+//! Blocks and items have their own atlas.
 //!
 //! Written from OptiFine's `emissive.properties` and ETF's `EMISSIVE_GUIDE.md` and
 //! `emissive.properties`; no mod's source was read.
@@ -240,19 +240,11 @@ mod tests {
         );
         // Nothing that could leave the texture's folder.
         for bad in [
-            &b"suffix.emissive=\\\\..\\\\x"[..],
+            &b"suffix.emissive=_a\\\\b"[..],
             b"suffix.emissive=/x",
             b"suffix.emissive=..",
         ] {
-            assert_eq!(
-                suffix(&[
-                    (PROPERTIES[0], bad),
-                    (PROPERTIES[1], b""),
-                    (PROPERTIES[2], b""),
-                    (PROPERTIES[2], b"")
-                ]),
-                "_e"
-            );
+            assert_eq!(suffix(&[(PROPERTIES[0], bad)]), "_e");
         }
     }
 
