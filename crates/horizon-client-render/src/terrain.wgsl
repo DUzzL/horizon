@@ -26,7 +26,7 @@ struct Globals {
     dynamic_lights: array<vec4<f32>, 16>,
     colored_lights: array<array<vec4<f32>, 2>, 16>,
     colored_count: vec4<u32>,
-    emissive_layers: array<vec4<u32>, 32>,
+    emissive_layers: array<vec4<u32>, 128>,
     emissive_count: vec4<u32>,
     // The sunrise fan's 16 triangles (gfx/sunrise_fan.rs): xyz the apex weight's normal, w the
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
@@ -370,7 +370,7 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     out.uv = uv;
     out.layer = layer;
     out.emissive_layer = 0xffffffffu;
-    for (var i = 0u; i < min(globals.emissive_count.x, 32u); i++) {
+    for (var i = 0u; i < min(globals.emissive_count.x, 128u); i++) {
         if globals.emissive_layers[i].x == (layer & 0x7fffu) {
             out.emissive_layer = globals.emissive_layers[i].y;
             break;

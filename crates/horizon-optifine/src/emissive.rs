@@ -41,22 +41,7 @@ const PROPERTIES: [&str; 3] = [
 
 impl Emissive {
     pub fn scan(root: &Path, random: &RandomTextures) -> Self {
-        // The first file that sets it (read as Java reads properties: Latin-1 when not UTF-8).
-        // A suffix is a name's end: no path separators or `..`, so it can't leave the folder.
-        let suffix = PROPERTIES
-            .iter()
-            .find_map(|p| {
-                let path = root.join(p);
-                if fs::metadata(&path).ok()?.len() > MAX_PROPERTIES {
-                    return None;
-                }
-                let text = decode(fs::read(path).ok()?);
-                Properties::parse(&text)
-                    .get("suffix.emissive")
-                    .map(str::to_owned)
-            })
-            .filter(|s| !s.is_empty() && !s.contains(['/', '\\']) && !s.contains(".."))
-            .unwrap_or_else(|| "_e".to_owned());
+        let suffix = suffix(root);
         let mut out = Self {
             suffix,
             ..Self::default()
@@ -130,6 +115,27 @@ impl Emissive {
     pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
         self.files.iter().map(|(f, n)| (f.as_str(), n.as_str()))
     }
+}
+
+/// The pack's emissive suffix: `suffix.emissive` from the first of [`PROPERTIES`] that sets it,
+/// `_e` without one.
+pub fn suffix(root: &Path) -> String {
+    // The first file that sets it (read as Java reads properties: Latin-1 when not UTF-8).
+    // A suffix is a name's end: no path separators or `..`, so it can't leave the folder.
+    PROPERTIES
+        .iter()
+        .find_map(|p| {
+            let path = root.join(p);
+            if fs::metadata(&path).ok()?.len() > MAX_PROPERTIES {
+                return None;
+            }
+            let text = decode(fs::read(path).ok()?);
+            Properties::parse(&text)
+                .get("suffix.emissive")
+                .map(str::to_owned)
+        })
+        .filter(|s| !s.is_empty() && !s.contains(['/', '\\']) && !s.contains(".."))
+        .unwrap_or_else(|| "_e".to_owned())
 }
 
 #[cfg(test)]

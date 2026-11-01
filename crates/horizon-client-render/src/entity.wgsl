@@ -24,7 +24,7 @@ struct Globals {
     dynamic_lights: array<vec4<f32>, 16>,
     colored_lights: array<array<vec4<f32>, 2>, 16>,
     colored_count: vec4<u32>,
-    emissive_layers: array<vec4<u32>, 32>,
+    emissive_layers: array<vec4<u32>, 128>,
     emissive_count: vec4<u32>,
     sunrise_fan: array<vec4<f32>, 32>,
     filtering: vec4<f32>,
