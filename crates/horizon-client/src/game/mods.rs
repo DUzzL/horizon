@@ -92,7 +92,14 @@ pub(super) fn content_root(
         {
             continue;
         }
-        let content = match Content::read(path, m) {
+        // The items this mod's native code declares may be a file item's crafting remainder.
+        let declared: Vec<String> = native_declared()
+            .1
+            .iter()
+            .filter(|i| i.id.split_once(':').is_some_and(|(ns, _)| ns == m.id))
+            .map(|i| i.id.clone())
+            .collect();
+        let content = match Content::read_declaring(path, m, &declared) {
             Ok(content) => content,
             Err(e) => {
                 log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
