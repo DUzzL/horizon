@@ -6,8 +6,6 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
-//! API 154 adds cancellable experience orb pickup and mutable Mending repair.
-//!
 //! API 153 adds a player starting or stopping flight, cancellable (`native_player_toggle_flight`).
 //!
 //! API 152 adds a player opening and closing a menu (`native_player_container_open`, `native_player_container_close`).
@@ -518,7 +516,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 154;
+pub(crate) const NATIVE_HOOKS_API: u32 = 153;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -3443,10 +3441,18 @@ impl Game<'_> {
     ) {
         let _ = (player, item, count, canceled);
     }
+    /// Whether a mod hears `native_experience_orb_pickup`: set `listened`
+    /// (a HEAD injection), or the server skips swapping the player in for it,
+    /// and with this empty the pickup costs nothing more without mods.
+    /// Server-side. @API:experience_orb_pickup@.
+    pub(super) fn native_experience_orb_pickup_listened(&self, listened: &mut bool) {
+        let _ = listened;
+    }
     /// Before `player` picks up orb `orb` in `dimension`. Mutations to `value`
     /// and `count` take effect only when not canceled; value is clamped to
     /// 1..=i32::MAX and count to at least one.
-    /// Canceling leaves the orb and pickup delay unchanged. Server-side. API 81.
+    /// Canceling leaves the orb and pickup delay unchanged. Server-side.
+    /// @API:experience_orb_pickup@.
     pub(super) fn native_experience_orb_pickup(
         &mut self,
         player: u128,
@@ -3462,7 +3468,8 @@ impl Game<'_> {
     /// for `experience` points. The amount is clamped to the stack's current damage. Zero leaves the
     /// experience unspent when it overrides a positive proposal. If the selected
     /// stack changes, the repair is skipped.
-    /// Server-side, including `native_give_experience`. API 81.
+    /// Server-side, including `native_give_experience`.
+    /// @API:experience_orb_pickup@.
     pub(super) fn native_mending_repair(
         &mut self,
         player: u128,

@@ -4482,7 +4482,12 @@ impl Game<'_> {
         let index = touching[pick];
         let mut orb = self.orbs[index].clone();
         let mut canceled = false;
+        // Swapping the guest in costs: only when a mod hears the pickup.
+        let mut listened = false;
         if self.serving.is_some() || self.options.dedicated.is_some() {
+            self.native_experience_orb_pickup_listened(&mut listened);
+        }
+        if listened {
             let dimension = self.dim.id();
             let called = self.as_guest(host, conn, |game| {
                 let player = game.native_acting_id();
