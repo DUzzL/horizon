@@ -21,7 +21,11 @@ impl Game<'_> {
             return true;
         }
         match self.screen {
-            Screen::Chat | Screen::CommandBlock => true,
+            Screen::Chat | Screen::CommandBlock | Screen::Social => true,
+            Screen::DebugOptions => self
+                .debug_options
+                .as_ref()
+                .is_some_and(|s| s.search_focused()),
             Screen::WorldOptions => self.world_options_typing(),
             Screen::Creative => self.creative_screen.tab().search,
             Screen::Inventory => {
@@ -90,6 +94,13 @@ impl Game<'_> {
     pub(super) fn ime_commit(&mut self, text: &str) {
         preedit::set_preedit(None);
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        // ScreenEvent.CharacterTyped.Pre: the input method's committed text
+        // reaches a text box by characters, as a key's own text does, so the
+        // open screen hears of each of them first and a cancelled one never
+        // reaches the box.
+        let Some(text) = self.screen_text_typed(&text) else {
+            return;
+        };
         if text.is_empty() || !self.text_field_focused() {
             return;
         }
@@ -106,6 +117,8 @@ impl Game<'_> {
             match self.screen {
                 Screen::Chat => self.chat_type(&text),
                 Screen::CommandBlock => self.command_block_type(&text),
+                Screen::Social => self.social_type(&text),
+                Screen::DebugOptions => self.debug_options_type(&text),
                 Screen::WorldOptions => self.world_options_text(Some(&text)),
                 Screen::Creative => self.creative_search_edit(Some(&text)),
                 Screen::Inventory if self.mod_browser_typing() => {

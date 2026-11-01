@@ -124,7 +124,14 @@ impl Game<'_> {
             self.camera_fluid(camera),
             false,
         );
-        self.zoomed_fov_degrees(fov)
+        let vanilla = self.zoomed_fov_degrees(fov);
+        let mut degrees = vanilla;
+        self.native_compute_fov(partial, camera, &mut degrees);
+        if degrees.is_finite() && (1.0..=179.0).contains(&degrees) {
+            degrees
+        } else {
+            vanilla
+        }
     }
     /// `Camera.calculateHudFov`: the first-person hand's field of view.
     pub(super) fn hud_fov_degrees(&self, partial: f32, camera: [f64; 3]) -> f32 {
@@ -156,6 +163,7 @@ impl Game<'_> {
         };
         let tilt = self.settings.file.double("damageTiltStrength");
         glam::Mat4::from_cols_array(&bob_matrix(&state, tilt, self.settings.view_bobbing).m)
+            * self.native_shake_matrix(partial)
     }
     /// `AbstractClientPlayer.tick` and `aiStep` (`ClientAvatarState.tick`,
     /// `updateBob`), `rideTick`'s `resetBob` and `LocalPlayer.move`'s walked
@@ -183,8 +191,7 @@ impl Game<'_> {
     }
     /// `SpyglassItem.use`: start scoping.
     pub(super) fn use_spyglass(&mut self) {
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
+        if self.start_using_item() {
             let at = self.eye_position();
             self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
         }

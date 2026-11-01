@@ -6,7 +6,7 @@ use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
     Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner, panda,
-    sniffer, sync, tame, zombie_villager,
+    phantom, sniffer, sync, tame, zombie_villager,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -56,8 +56,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Entity.DATA_POSE: the pose the species animates by.
             (6, Value::Id(pose)) => sync::set_pose(m, (*pose).clamp(0, 17) as u8),
             // LivingEntity.DATA_LIVING_ENTITY_FLAGS: using an item 1, in the
-            // off hand 2. The flag starts and stops the use; the client ticks
-            // the count itself (a bow's pull follows it).
+            // off hand 2. Bit 0 starts and stops the use; the client ticks the
+            // count itself (a bow's pull follows it). stopUsingItem clears
+            // only bit 0, so a stopped off-hand use arrives as 2.
             (8, Value::Byte(flags)) => {
                 m.extra.using_off_hand = flags & 2 != 0;
                 if flags & 1 == 0 {
@@ -146,6 +147,8 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Cat.IS_LYING and RELAX_STATE_ONE.
             (Species::Cat, 21, Value::Bool(lying)) => m.extra.flag = *lying,
             (Species::Cat, 22, Value::Bool(relaxing)) => m.extra.relax_one = *relaxing,
+            // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+            (Species::Ocelot, 18, Value::Bool(trusting)) => m.extra.trusting = *trusting,
             // Wolf.DATA_INTERESTED_ID: begging, which tilts the head.
             (Species::Wolf, 20, Value::Bool(begging)) => m.extra.flag = *begging,
             // Wolf.DATA_COLLAR_COLOR and Cat's.
@@ -164,6 +167,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             (Species::SulfurCube, 19, Value::Bool(from_bucket)) => {
                 m.extra.scratch[3] = i32::from(*from_bucket);
             }
+            // Phantom.ID_SIZE: `updatePhantomSizeInfo` grows its box and bite,
+            // and `PhantomRenderer.scale` its model.
+            (Species::Phantom, 16, Value::Int(size)) => phantom::set_size(m, *size),
             // Enderman.DATA_CREEPY (after DATA_CARRY_STATE): the open mouth
             // and raised head of an angry enderman.
             (Species::Enderman, 17, Value::Bool(creepy)) => m.extra.flag = *creepy,
@@ -327,6 +333,13 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // wears; update_remote_skins resolves it like a tab player's.
             (Species::Mannequin, 17, Value::Profile(profile)) => {
                 m.profile = Some(profile.clone());
+            }
+            // Mannequin.DATA_IMMOVABLE and DATA_DESCRIPTION (an empty one is hidden).
+            (Species::Mannequin, 18, Value::Bool(immovable)) => m.extra.immovable = *immovable,
+            (Species::Mannequin, 19, Value::OptText(description)) => {
+                m.extra.description = horizon_client::mobs::MannequinDescription::from_component(
+                    description.as_ref(),
+                );
             }
             _ => {}
         }
@@ -831,8 +844,14 @@ mod tests {
         apply(&mut m, &[(8, s::BYTE, Value::Byte(1))]);
         assert_eq!(m.extra.using_item, 1);
         assert!(!m.extra.using_off_hand);
-        // Using in the off hand.
+        // Using in the off hand: bit 0 for the use, bit 1 for the hand.
         apply(&mut m, &[(8, s::BYTE, Value::Byte(3))]);
+        assert_eq!(m.extra.using_item, 1);
+        assert!(m.extra.using_off_hand);
+        // LivingEntity.stopUsingItem clears bit 0 only, so the stop of an
+        // off-hand use arrives as 2.
+        apply(&mut m, &[(8, s::BYTE, Value::Byte(2))]);
+        assert_eq!(m.extra.using_item, 0);
         assert!(m.extra.using_off_hand);
         apply(&mut m, &[(8, s::BYTE, Value::Byte(0))]);
         assert_eq!(m.extra.using_item, 0);
@@ -880,6 +899,76 @@ mod tests {
             &[(17, s::RESOLVABLE_PROFILE, Value::Profile(profile.clone()))],
         );
         assert_eq!(m.profile, Some(profile));
+    }
+
+    /// `Ocelot.DATA_TRUSTING` (after AgeableMob's two).
+    #[test]
+    fn an_ocelot_takes_its_trusting_flag() {
+        let Some(mut m) = mob("minecraft:ocelot") else {
+            return;
+        };
+        assert!(!m.extra.trusting);
+        apply(&mut m, &[(18, s::BOOLEAN, Value::Bool(true))]);
+        assert!(m.extra.trusting);
+        apply(&mut m, &[(18, s::BOOLEAN, Value::Bool(false))]);
+        assert!(!m.extra.trusting);
+    }
+
+    /// `Mannequin.DATA_IMMOVABLE` and `DATA_DESCRIPTION`: the default component is the default
+    /// description, an empty one hides it, any other is the server's own.
+    #[test]
+    fn a_mannequin_takes_its_immovable_flag_and_description() {
+        use horizon_client::mobs::MannequinDescription as D;
+        let Some(mut m) = mob("minecraft:mannequin") else {
+            return;
+        };
+        assert_eq!(
+            (m.extra.immovable, m.extra.description.clone()),
+            (false, D::Default)
+        );
+        let own = horizon_protocol::text::literal("Guard");
+        apply(
+            &mut m,
+            &[
+                (18, s::BOOLEAN, Value::Bool(true)),
+                (19, s::OPTIONAL_COMPONENT, Value::OptText(Some(own.clone()))),
+            ],
+        );
+        assert_eq!(
+            (m.extra.immovable, m.extra.description.clone()),
+            (true, D::Custom(own))
+        );
+        apply(&mut m, &[(19, s::OPTIONAL_COMPONENT, Value::OptText(None))]);
+        assert_eq!(m.extra.description, D::Hidden);
+        let default = D::Default.component();
+        apply(
+            &mut m,
+            &[(19, s::OPTIONAL_COMPONENT, Value::OptText(default))],
+        );
+        assert_eq!(m.extra.description, D::Default);
+    }
+
+    /// `LivingEntity.getDimensions`: the pose's box times `minecraft:scale` —
+    /// a lobby's giant fake player is clickable on its visible body, not only
+    /// on the unscaled box at its feet.
+    #[test]
+    fn a_scaled_fake_player_gets_a_scaled_box() {
+        for kind in ["minecraft:player", "minecraft:mannequin"] {
+            let Some(mut m) = mob(kind) else {
+                continue;
+            };
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 0.6).abs() < 1e-6 && (h - 1.8).abs() < 1e-6 && (e - 1.62).abs() < 1e-5,
+                "{kind}: {w}x{h}x{e}"
+            );
+            m.extra.model_scale = 4.0;
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 2.4).abs() < 1e-6 && (h - 7.2).abs() < 1e-6 && (e - 6.48).abs() < 1e-5,
+                "{kind} scaled: {w}x{h}x{e}"
+            );
+        }
     }
 
     /// #4548: SulfurCube.MAX_FUSE copies into the fuse the client ticks for swell.

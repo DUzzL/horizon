@@ -8,12 +8,14 @@
 //! maps are kept as found (structure search is not run); conditions that
 //! need an entity, tool or damage source fail when the context has none, as
 //! they do for containers.
+use crate::lazy_json::LazyJson;
 use horizon_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs, io,
     path::Path,
+    sync::{Arc, Mutex, Weak},
 };
 
 /// Raw files a world's data packs add over the game's own data, by
@@ -37,6 +39,19 @@ impl PackOverlay<'_> {
         self.files
             .iter()
             .filter_map(move |(key, files)| Some((key.strip_prefix(&prefix)?, files)))
+    }
+    /// The overlay's tag files of one registry, over every namespace: the
+    /// keys are `tags/<ns>:<registry>/<path>`, and the yielded id is the
+    /// tag id `<ns>:<path>` the game's own tags are keyed by
+    /// (`TagLoader`'s ids).
+    pub fn tag_kind(&self, registry: &str) -> impl Iterator<Item = (String, &Vec<Vec<u8>>)> {
+        let prefix = format!("{registry}/");
+        self.files.iter().filter_map(move |(key, files)| {
+            let rest = key.strip_prefix("tags/")?;
+            let (ns, path) = rest.split_once(':')?;
+            let path = path.strip_prefix(&prefix)?;
+            Some((format!("{ns}:{path}"), files))
+        })
     }
     /// The last pack's file for an id, which is the one
     /// `ResourceManager.listMatchingResources` hands out.
@@ -157,7 +172,7 @@ impl Enchantment {
 
 /// Loot tables, items, enchantments and the tags they reference.
 pub struct LootData {
-    tables: HashMap<String, Value>,
+    tables: Arc<LootTables>,
     modifiers: HashMap<String, Value>,
     predicates: HashMap<String, Value>,
     items: HashMap<String, ItemFacts>,
@@ -246,6 +261,18 @@ fn slot_in_group(slot: &str, group: &str) -> bool {
         _ => slot == group,
     }
 }
+/// The item a recipe's `result` names. `ItemStackTemplate.CODEC` and `TransmuteResult.CODEC`
+/// read a stack's fields (`id`, `count`, `components`) or, as their alternative, a bare item id
+/// (`Item.CODEC`): `"result": {"id": "mod:item"}` and `"result": "mod:item"` are the same item.
+/// None for a stack without an `id` and for anything else, such as the `item` key of older
+/// versions.
+pub fn recipe_result_id(result: &Value) -> Option<&str> {
+    match result {
+        Value::String(id) => Some(id),
+        Value::Object(fields) => fields.get("id")?.as_str(),
+        _ => None,
+    }
+}
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
     match v {
@@ -318,6 +345,122 @@ fn overlay_map(overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Valu
     }
 }
 
+/// Loot tables by id. Each is kept as its JSON text and read into a [`Value`]
+/// the first time it is rolled: of vanilla's ~1,450 tables a game rolls a
+/// few, and as `Value`s they took ~7 MB for 0.6 MB of JSON. Every table was
+/// read whole when it loaded, so reading it again cannot fail.
+#[derive(Debug, Default)]
+pub struct LootTables(HashMap<String, LazyJson>);
+impl LootTables {
+    /// The table `id`.
+    pub fn get(&self, id: &str) -> Option<&Value> {
+        self.0.get(id).map(LazyJson::get)
+    }
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+/// Each table kept as its JSON, the last of an id winning as in a map.
+impl FromIterator<(String, Value)> for LootTables {
+    fn from_iter<I: IntoIterator<Item = (String, Value)>>(tables: I) -> Self {
+        Self(
+            tables
+                .into_iter()
+                .map(|(id, table)| (id, LazyJson::new(&table)))
+                .collect(),
+        )
+    }
+}
+impl std::ops::Index<&str> for LootTables {
+    type Output = Value;
+    /// As a map indexes: panics on a missing table.
+    fn index(&self, id: &str) -> &Value {
+        self.get(id).unwrap_or_else(|| panic!("no loot table {id}"))
+    }
+}
+
+/// The loot tables of every namespace in `root`'s `data/`, with `overlay`'s
+/// over them. Shared while one is alive: `Items` and [`LootData`] of the
+/// same root and packs hold one map, not a copy each (7 MB). The key holds
+/// the packs' bytes and each root file's size and modification time, so a
+/// table changed on disk is read again rather than taken from a held map.
+pub fn shared_tables(root: &Path, overlay: &PackOverlay) -> io::Result<Arc<LootTables>> {
+    static LOADED: Mutex<Vec<(u64, Weak<LootTables>)>> = Mutex::new(Vec::new());
+    let key = {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        root.hash(&mut hasher);
+        let data = root.join("data");
+        let mut namespaces: Vec<_> = fs::read_dir(&data)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        namespaces.sort();
+        for namespace in namespaces {
+            hash_files(&namespace.join("loot_table"), &mut hasher);
+        }
+        overlay
+            .kind("loot_table")
+            .for_each(|file| file.hash(&mut hasher));
+        hasher.finish()
+    };
+    let held = |loaded: &mut Vec<(u64, Weak<LootTables>)>| {
+        loaded.retain(|(_, tables)| tables.strong_count() > 0);
+        loaded
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, tables)| tables.upgrade())
+    };
+    if let Some(tables) = held(&mut LOADED.lock().unwrap_or_else(|e| e.into_inner())) {
+        return Ok(tables);
+    }
+    let mut tables = HashMap::new();
+    load_kind(&root.join("data"), "loot_table", &mut tables)?;
+    overlay_map(overlay, "loot_table", &mut tables);
+    // The mods' hooks run outside the lock.
+    let mut each: Vec<_> = tables.into_iter().collect();
+    each.sort_by(|a, b| a.0.cmp(&b.0));
+    let tables: LootTables = each
+        .into_iter()
+        .map(|(id, mut table)| {
+            native_loot_table_load(&id, &mut table);
+            (id, table)
+        })
+        .collect();
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread may have loaded the same tables meanwhile: keep one.
+    if let Some(tables) = held(&mut loaded) {
+        return Ok(tables);
+    }
+    let tables = Arc::new(tables);
+    loaded.push((key, Arc::downgrade(&tables)));
+    Ok(tables)
+}
+
+/// A native mod's hook point (docs/native-mods.md), listed in `native-hooks.json` with the game's:
+/// the loot table `id` (`minecraft:chests/simple_dungeon`, `minecraft:blocks/stone`,
+/// `minecraft:entities/zombie`) as it loads, its JSON after the data packs', before anything
+/// rolls it (NeoForge's `LootTableLoadEvent`, Fabric's `LootTableEvents.MODIFY`). Add pools to
+/// `table["pools"]` or entries to a pool's `entries`, change or replace it (no pools: it drops
+/// nothing; keep its `random_sequence` when replacing it, as a mob's table without one drops
+/// nothing). Called once per table and load, in id order, wherever the tables load: the server,
+/// and a client too, so make the same change each time, and don't load loot tables from here.
+/// Two loads may run at once on two threads. A `/reload` or a world opened with other packs
+/// may load them again, or keep the tables already loaded from the same files. API
+/// 75.
+#[inline(never)]
+pub fn native_loot_table_load(id: &str, table: &mut Value) {
+    let _ = (id, table);
+}
+
 fn load_kind(data: &Path, kind: &str, out: &mut HashMap<String, Value>) -> io::Result<()> {
     let Ok(entries) = fs::read_dir(data) else {
         return Ok(());
@@ -332,6 +475,29 @@ fn load_kind(data: &Path, kind: &str, out: &mut HashMap<String, Value>) -> io::R
         load_dir(&data.join(&ns).join(kind), &ns, "", out)?;
     }
     Ok(())
+}
+
+/// Every file's path, size and modification time under `dir`, in name order.
+fn hash_files(dir: &Path, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            hash_files(&path, hasher);
+        } else {
+            path.hash(hasher);
+            meta.len().hash(hasher);
+            meta.modified().ok().hash(hasher);
+        }
+    }
 }
 
 fn load_dir(
@@ -372,17 +538,14 @@ impl LootData {
     pub fn load(root: &Path, overlay: &PackOverlay) -> io::Result<Self> {
         let all = root.join("data");
         let data = all.join("minecraft");
-        let mut tables = HashMap::new();
-        load_kind(&all, "loot_table", &mut tables)?;
-        overlay_map(overlay, "loot_table", &mut tables);
+        let tables = shared_tables(root, overlay)?;
         let mut modifiers = HashMap::new();
         load_kind(&all, "item_modifier", &mut modifiers)?;
         overlay_map(overlay, "item_modifier", &mut modifiers);
         let mut predicates = HashMap::new();
         load_kind(&all, "predicate", &mut predicates)?;
         overlay_map(overlay, "predicate", &mut predicates);
-        let raw: BTreeMap<String, Value> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let raw = crate::item_defaults::read(root)?;
         let items = raw
             .iter()
             .map(|(name, c)| {
@@ -448,7 +611,7 @@ impl LootData {
             // The packs' entries join the game's own, in pack order; a
             // `replace` file drops what the lower sources put in
             // (`TagLoader.load` walks the resource stack the same way).
-            for (id, files) in overlay.kind(&format!("tags/{registry}")) {
+            for (id, files) in overlay.tag_kind(registry) {
                 let slot = tags
                     .entry((registry.to_owned(), id.to_owned()))
                     .or_default();
@@ -473,7 +636,7 @@ impl LootData {
             .map(|id| &recipes[id])
             .filter(|r| r["type"] == "minecraft:smelting")
             .filter_map(|r| {
-                let result = r["result"]["id"].as_str()?.to_owned();
+                let result = recipe_result_id(&r["result"])?.to_owned();
                 let count = r["result"]["count"].as_i64().unwrap_or(1) as i32;
                 Some((r["ingredient"].clone(), result, count))
             })
@@ -1597,6 +1760,73 @@ fn enchant(stack: &mut LootStack, name: &str, level: i32) {
 mod namespace_tests {
     use super::*;
 
+    /// The same root and packs share one map while it is held; other packs
+    /// get their own.
+    #[test]
+    fn loot_tables_are_shared_per_root_and_packs() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-share-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/loot_table/chests")).unwrap();
+        fs::write(
+            root.join("data/minecraft/loot_table/chests/a.json"),
+            r#"{"pools": []}"#,
+        )
+        .unwrap();
+        let first = shared_tables(&root, &PackOverlay::NONE).unwrap();
+        let again = shared_tables(&root, &PackOverlay::NONE).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(first.contains_key("minecraft:chests/a"));
+        let files = [(
+            "loot_table/minecraft:chests/b".to_owned(),
+            vec![br#"{"pools": []}"#.to_vec()],
+        )];
+        let packs = shared_tables(&root, &PackOverlay { files: &files }).unwrap();
+        assert!(!Arc::ptr_eq(&first, &packs));
+        assert!(packs.contains_key("minecraft:chests/b"));
+        // A table changed at the same path while `first` is still held: the
+        // new file is read, not the held map.
+        fs::write(
+            root.join("data/minecraft/loot_table/chests/a.json"),
+            r#"{"pools": [], "random_sequence": "minecraft:chests/a"}"#,
+        )
+        .unwrap();
+        let changed = shared_tables(&root, &PackOverlay::NONE).unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert!(
+            changed["minecraft:chests/a"]
+                .get("random_sequence")
+                .is_some()
+        );
+        assert!(first["minecraft:chests/a"].get("random_sequence").is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A table kept as its text reads back as the file's JSON (floats, big
+    /// integers, nesting, key order); a file that is not JSON still fails
+    /// the load.
+    #[test]
+    fn loot_tables_read_back_as_loaded() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-text-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("data/minecraft/loot_table/blocks");
+        fs::create_dir_all(&dir).unwrap();
+        let table = r#"{"type": "minecraft:block", "pools": [{"rolls": 1.5,
+            "bonus_rolls": 0.1, "entries": [{"type": "minecraft:item", "name": "minecraft:stone",
+            "weight": 9007199254740993, "functions": [{"function": "minecraft:set_count",
+            "count": {"type": "minecraft:uniform", "min": -2.25e-7, "max": 1e300}}]}]}],
+            "z": null, "a": [true, false, "\u00e9\n"]}"#;
+        fs::write(dir.join("stone.json"), table).unwrap();
+        let tables = shared_tables(&root, &PackOverlay::NONE).unwrap();
+        let expected: Value = serde_json::from_str(table).unwrap();
+        assert_eq!(tables.get("minecraft:blocks/stone"), Some(&expected));
+        assert_eq!(tables.len(), 1);
+        assert!(tables.get("minecraft:blocks/dirt").is_none());
+        drop(tables);
+        fs::write(dir.join("dirt.json"), r#"{"pools": [}"#).unwrap();
+        assert!(shared_tables(&root, &PackOverlay::NONE).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// A content mods' root: the mods' loot tables and tags load beside
     /// vanilla's, under their own namespaces.
     #[test]
@@ -1677,5 +1907,84 @@ mod namespace_tests {
             ["minecraft:ponder_goat_horn", "minecraft:sing_goat_horn"]
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // `content_id`'s tag key shape (`tags/<ns>:<registry>/<path>`) through
+    // `tag_kind`: the id loses the registry segment, keeps the namespace.
+    #[test]
+    fn tag_kind_yields_tag_loader_ids_for_content_id_keys() {
+        let overlay = PackOverlay {
+            files: &[
+                (
+                    "tags/minecraft:item/food".to_owned(),
+                    vec![br#"{"values": ["minecraft:bread"]}"#.to_vec()],
+                ),
+                (
+                    "tags/minecraft:enchantment/trades/desert_common".to_owned(),
+                    vec![br#"{"values": ["minecraft:infinity"]}"#.to_vec()],
+                ),
+            ],
+        };
+        let item: Vec<_> = overlay.tag_kind("item").map(|(id, _)| id).collect();
+        assert_eq!(item, ["minecraft:food"]);
+        let enchantment: Vec<_> = overlay.tag_kind("enchantment").map(|(id, _)| id).collect();
+        assert_eq!(enchantment, ["minecraft:trades/desert_common"]);
+        // Another registry's files stay out.
+        assert_eq!(overlay.tag_kind("instrument").count(), 0);
+    }
+
+    /// A pack's tag file joins the game's own in `TagLoader` order, and its
+    /// `replace` drops what the lower sources put in.
+    #[test]
+    fn pack_tags_join_and_replace_the_game_own() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-tag-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/tags/item")).unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        fs::write(
+            root.join("data/minecraft/tags/item/food.json"),
+            r#"{"values": ["minecraft:bread", "minecraft:cookie"]}"#,
+        )
+        .unwrap();
+        let overlay = PackOverlay {
+            files: &[(
+                "tags/minecraft:item/food".to_owned(),
+                vec![
+                    br#"{"values": ["minecraft:kelp"]}"#.to_vec(),
+                    br#"{"replace": true, "values": ["minecraft:apple"]}"#.to_vec(),
+                ],
+            )],
+        };
+        let data = LootData::load(&root, &overlay).unwrap();
+        assert!(data.in_tag("item", "minecraft:food", "minecraft:apple"));
+        assert!(!data.in_tag("item", "minecraft:food", "minecraft:bread"));
+        assert!(!data.in_tag("item", "minecraft:food", "minecraft:kelp"));
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod recipe_result_tests {
+    use super::*;
+
+    /// `ItemStackTemplate.CODEC` reads a stack's fields or a bare item id.
+    #[test]
+    fn a_result_is_an_object_with_an_id_or_a_bare_item_id() {
+        let id = |json: &str| {
+            let v: Value = serde_json::from_str(json).unwrap();
+            recipe_result_id(&v).map(str::to_owned)
+        };
+        assert_eq!(
+            id(r#"{"id": "ruby:ruby", "count": 3}"#).as_deref(),
+            Some("ruby:ruby")
+        );
+        assert_eq!(id(r#""ruby:ruby""#).as_deref(), Some("ruby:ruby"));
+        // No `id` (a transmuting recipe keeps its input's item), the `item` key of older
+        // versions and anything that is neither an object nor a string name no item.
+        assert_eq!(id(r#"{"count": 2}"#), None);
+        assert_eq!(id(r#"{"item": "minecraft:stick"}"#), None);
+        assert_eq!(id(r#"{"id": 7}"#), None);
+        assert_eq!(id("null"), None);
+        assert_eq!(id("[]"), None);
     }
 }

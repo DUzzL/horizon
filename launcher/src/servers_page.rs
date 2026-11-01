@@ -50,13 +50,15 @@ pub(super) enum Field {
     Wrapper,
     LaunchEnv,
     PostExit,
+    /// Home's memory row (`launch_page.rs`).
+    MemoryLimit,
     /// Settings' new offline name (`switch_page.rs`).
     OfflineName,
     DeleteServer,
 }
 
 impl Field {
-    const ALL: [Field; 22] = [
+    const ALL: [Field; 23] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -77,6 +79,7 @@ impl Field {
         Field::Wrapper,
         Field::LaunchEnv,
         Field::PostExit,
+        Field::MemoryLimit,
         Field::OfflineName,
         Field::DeleteServer,
     ];
@@ -267,10 +270,15 @@ impl Servers {
         self.texts.get(&f).map_or("", LineEdit::text)
     }
 
+    /// Whether this field has the keyboard, as of this frame.
+    pub(super) fn has_focus(&self, f: Field) -> bool {
+        self.focused == Some(f)
+    }
+
     /// Which field has the keyboard, read every frame.
-    pub(super) fn note_focus(&mut self, window: &mut Window) {
+    pub(super) fn note_focus(&mut self, window: &mut Window, cx: &mut App) {
         if let Some(h) = self.focus_soon.take().and_then(|f| self.focus.get(&f)) {
-            window.focus(h);
+            window.focus(h, cx);
         }
         self.focused = Field::ALL
             .into_iter()
@@ -925,7 +933,7 @@ impl Launcher {
                     this.servers.selected = None;
                 }
                 if let Some(h) = this.servers.focus.get(&f) {
-                    window.focus(h);
+                    window.focus(h, cx);
                 }
                 cx.notify();
             }))
@@ -950,7 +958,7 @@ impl Launcher {
                             this.servers.create = None;
                         }
                         this.instance_escape();
-                        window.blur();
+                        window.blur(cx);
                     }
                     // Tab and the rest go on to the window: Tab moves the focus.
                     Key::Pass => return,
@@ -1008,6 +1016,7 @@ impl Launcher {
             Field::PreLaunch | Field::Wrapper | Field::LaunchEnv | Field::PostExit => {
                 self.save_launch()
             }
+            Field::MemoryLimit => self.memory_enter(),
             Field::OfflineName => self.offline_name_enter(),
             Field::ServerName | Field::ServerAddress => self.add_server(),
         }
@@ -1160,15 +1169,34 @@ impl Launcher {
         {
             page = page.child(self.problem_notice(p, cx));
         }
-        let partner = super::partner::banner("partner-servers", 600., &t);
+        // The banner, with a "Hide" once it has been on screen a while: hiding it hides the
+        // sidebar's card too, for good. Nothing at all once hidden.
+        let partner = (!self.settings.partner_hidden).then(|| {
+            let mut slot = div().relative().w(px(600.)).child(super::partner::banner(
+                "partner-servers",
+                600.,
+                &t,
+            ));
+            if self.settings.partner_seen_secs >= super::partner::SEEN_BEFORE_HIDE {
+                slot = slot.child(
+                    super::partner::hide_button("partner-servers-hide", &t).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.settings.partner_hidden = true;
+                            this.settings.save();
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+            slot
+        });
         if self.servers.list.is_empty() {
             return page
                 .child(centered(
-                    "No server yet. Create one: it takes a few seconds, and with the defaults \
-                     (tick the EULA, press Create) you get a friends-only survival world.",
+                    tr("No server yet. Create one: it takes a few seconds, and with the defaults (tick the EULA, press Create) you get a friends-only survival world."),
                     &t,
                 ))
-                .child(partner);
+                .children(partner);
         }
         let mut list = div().flex().flex_col().border_t_1().border_color(t.rule);
         for (i, e) in self.servers.list.clone().into_iter().enumerate() {
@@ -1180,10 +1208,15 @@ impl Launcher {
                 .unwrap_or_else(Status::stopped);
             let detail = if status.running() {
                 format!(
-                    "{} · {} of {} players",
+                    "{} · {}",
                     phase_label(&status),
-                    status.players.len(),
-                    status.max_players.unwrap_or(0)
+                    trf(
+                        "{online} of {max} players",
+                        &[
+                            ("online", &status.players.len().to_string()),
+                            ("max", &status.max_players.unwrap_or(0).to_string()),
+                        ]
+                    )
                 )
             } else {
                 format!("{} · {}", phase_label(&status), short(&e.dir))
@@ -1209,7 +1242,7 @@ impl Launcher {
                 &t,
             ));
         }
-        page.child(list).child(partner)
+        page.child(list).children(partner)
     }
 
     fn add_server_folder(&mut self, cx: &mut Context<Self>) {
@@ -1306,7 +1339,7 @@ impl Launcher {
         if self.servers.list.len() > 1 || self.servers.create.is_none() {
             top = top.child(
                 div().flex().child(
-                    caps("← All servers")
+                    caps(tr("← All servers"))
                         .id("servers-back")
                         .text_color(t.muted)
                         .cursor_pointer()
@@ -1465,11 +1498,11 @@ impl Launcher {
             );
         }
         if running && !self.servers.restart_needed.is_empty() {
-            let names: Vec<&str> = self
+            let names: Vec<String> = self
                 .servers
                 .restart_needed
                 .iter()
-                .map(|k| setting_name(k))
+                .map(|k| tr(setting_name(k)).to_string())
                 .collect();
             page = page.child(
                 plate(&t)
@@ -1483,7 +1516,10 @@ impl Launcher {
                             .flex_1()
                             .text_size(px(theme::UI.px))
                             .text_color(t.ink)
-                            .child(format!("Saved. Restart to apply: {}.", names.join(", "))),
+                            .child(trf(
+                                "Saved. Restart to apply: {settings}.",
+                                &[("settings", &names.join(", "))],
+                            )),
                     )
                     .child({
                         let b =
@@ -1534,7 +1570,7 @@ impl Launcher {
                 .gap(px(4.))
                 .p(px(16.))
                 .child(text(theme::TITLE).text_color(t.ink).child(value))
-                .child(caps(label).text_color(t.muted))
+                .child(caps(tr(label)).text_color(t.muted))
         };
         let dash = || "–".to_string();
         let on = status.running();
@@ -1599,7 +1635,7 @@ impl Launcher {
             .flex_col()
             .gap(px(10.))
             .p(px(20.))
-            .child(caps("Address on this network").text_color(t.muted))
+            .child(caps(tr("Address on this network")).text_color(t.muted))
             .child(
                 div()
                     .flex()
@@ -1628,13 +1664,12 @@ impl Launcher {
                         })),
                     ),
             )
-            .child(text(theme::CAPTION).text_color(t.ink_soft).child(
+            .child(text(theme::CAPTION).text_color(t.ink_soft).child(tr(
                 "Friends on the same Wi-Fi: Multiplayer, Add Server, then paste this address.",
-            ))
-            .child(text(theme::CAPTION).text_color(t.muted).child(format!(
-                "Friends elsewhere can't reach it as it is: use Tailscale (free, nothing to change \
-                 on your router, only people you invite), or forward TCP port {port} on your router \
-                 to this computer."
+            )))
+            .child(text(theme::CAPTION).text_color(t.muted).child(trf(
+                "Friends elsewhere can't reach it as it is: use Tailscale (free, nothing to change on your router, only people you invite), or forward TCP port {port} on your router to this computer.",
+                &[("port", &port.to_string())],
             )));
         let mut tab = div().flex().flex_col().gap(px(20.)).child(address_plate);
         if !status.players.is_empty() {
@@ -1654,7 +1689,7 @@ impl Launcher {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(caps("Online now").text_color(t.muted))
+                    .child(caps(tr("Online now")).text_color(t.muted))
                     .child(row),
             );
         }
@@ -1687,9 +1722,9 @@ impl Launcher {
             .text_color(t.ink_soft)
             .when(empty, |d| {
                 d.child(div().text_color(t.muted).child(if running {
-                    "Waiting for the server's log…"
+                    tr("Waiting for the server's log…")
                 } else {
-                    "The server's log shows here while it runs."
+                    tr("The server's log shows here while it runs.")
                 }))
             })
             .children(lines);
@@ -1715,7 +1750,7 @@ impl Launcher {
                 .items_center()
                 .text_size(px(theme::CAPTION.px))
                 .text_color(t.muted)
-                .child("Start the server to type commands")
+                .child(tr("Start the server to type commands"))
                 .into_any_element()
         };
         plate(&t)
@@ -1730,7 +1765,7 @@ impl Launcher {
                     .px(px(20.))
                     .border_b_1()
                     .border_color(t.rule)
-                    .child(caps("Console").text_color(t.muted)),
+                    .child(caps(tr("Console")).text_color(t.muted)),
             )
             .child(log)
             .child(
@@ -3017,7 +3052,7 @@ impl Launcher {
                 .px(px(32.))
                 .py(px(24.))
                 .bg(t.page.opacity(0.92))
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .occlude()
                 .child(card),
         )
@@ -3027,16 +3062,16 @@ impl Launcher {
 /// The state, in a few words.
 fn phase_label(status: &Status) -> String {
     if let Some(busy) = &status.update_busy {
-        return format!("Updating: {busy}");
+        return trf("Updating: {step}", &[("step", busy)]);
     }
     match status.phase.as_str() {
-        "running" if status.crashes > 0 => "Running · restarted after a crash".into(),
-        "running" if status.paused => "Running · paused while nobody plays".into(),
-        "running" => "Running".into(),
-        "starting" => "Starting".into(),
-        "restarting" => "Restarting".into(),
-        "stopping" => "Stopping".into(),
-        _ => "Stopped".into(),
+        "running" if status.crashes > 0 => tr("Running · restarted after a crash").into(),
+        "running" if status.paused => tr("Running · paused while nobody plays").into(),
+        "running" => tr("Running").into(),
+        "starting" => tr("Starting").into(),
+        "restarting" => tr("Restarting").into(),
+        "stopping" => tr("Stopping").into(),
+        _ => tr("Stopped").into(),
     }
 }
 

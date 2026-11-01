@@ -1,8 +1,9 @@
 # Horizon launcher
 
 A small desktop app that installs Horizon builds, prepares them from your own copy of
-Minecraft, and starts the client or a dedicated server. Built with [GPUI](https://www.gpui.rs),
-Zed's UI framework; it has its own Cargo workspace and is not part of the game's builds.
+Minecraft, and starts the client or a dedicated server. Built with [GPUI Fast](https://github.com/longbridge/gpui-fast),
+a fork of Zed's UI framework [GPUI](https://www.gpui.rs) that draws unchanged views from the last frame;
+it has its own Cargo workspace and is not part of the game's builds.
 
 ![Play](docs/play.png)
 
@@ -113,6 +114,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
+- **Maximum memory**: a row on Home, per instance: a slider and a box that takes `4096`, `4gb`, or nothing
+  for no limit (the default), saved at once. For Horizon it goes to the game as
+  `HORIZON_MEMORY_LIMIT_MB` ([what it does](../docs/native-client.md#ram-limit)); a Java instance's sets `-Xmx`.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in
@@ -268,6 +272,15 @@ every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloa
 own binary, and offers "Restart" in the footer. Development builds and
 `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` never replace themselves.
 
+On Linux the release also comes as an AppImage, `horizon-launcher-linux-x86_64.AppImage`: one file
+to download, make executable and run, with no installation and no `libfuse2` (its runtime mounts
+the image where FUSE 2 is there and unpacks it where it is not). It is the same binary as the
+`.tar.gz`, with the libraries GPUI needs beside it; glibc, the graphics drivers and the session's
+D-Bus stay the machine's, so it needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and
+newer). A launcher running from one replaces the AppImage itself when it updates
+(`$APPIMAGE`), and the menu entry it writes starts the AppImage rather than the copy inside the
+image, which is gone when the launcher exits.
+
 On Linux a release build that starts writes its applications-menu entry only when there is
 none, or when the program the entry starts (its `TryExec`, else its `Exec`) no longer exists.
 An entry pointing at another launcher that works is left alone, so a test or development build
@@ -281,11 +294,25 @@ set `HORIZON_LAUNCHER_NO_SELF_UPDATE=1` to keep launcher updates with the packag
 Launcher releases are automatic (docs/release-flow.md in the repository): when main changes the
 launcher, `horizon-prepare` or `horizon-theme`, the `launcher` workflow builds Linux, macOS and
 Windows and publishes `launcher-vX.Y.Z` (the next patch, or the next minor after a pull request
-labelled `feature`) with `horizon-launcher-linux-x86_64.tar.gz`, `horizon-launcher-macos-arm64.zip`
-and `horizon-launcher-windows-x64.zip`, never marked latest. The version is built in from the tag
+labelled `feature`) with `horizon-launcher-linux-x86_64.tar.gz`,
+`horizon-launcher-linux-x86_64.AppImage`, `horizon-launcher-macos-arm64.zip`,
+`horizon-launcher-macos-x64.zip` (Intel Macs) and `horizon-launcher-windows-x64.zip`, never marked latest. The version is built in from the tag
 (`HORIZON_LAUNCHER_VERSION`); `Cargo.toml`'s version is only what local builds report.
 
 ## Command line
+
+Generate shell completions without opening the window:
+
+```sh
+horizon-launcher completions bash > horizon-launcher.bash
+horizon-launcher completions zsh > _horizon-launcher
+horizon-launcher completions fish > horizon-launcher.fish
+```
+
+Elvish and PowerShell are also supported (`completions elvish` and
+`completions powershell`). Source the generated script from your shell configuration,
+or install it in your shell’s completion directory. Packagers can generate these
+files at build time and install them in the corresponding system directories.
 
 The same binary is a command-line tool; without a subcommand it opens the window. On Windows it
 is a windowed program, so a desktop start opens no terminal; a subcommand writes to the terminal
@@ -405,9 +432,12 @@ Play, with the token renewal; with no network the last answer stands, and a "doe
 at once. The account also plays online-mode servers under your own name and skin; offline names
 play LAN and offline-mode servers beside it. The game binary started directly (`horizon-client`,
 `horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
-Credential Manager, or the Secret Service on Linux), never in a file, a log or the command line;
-`accounts.json` in the data folder keeps only names and UUIDs. Without a keychain you stay signed
-in until the launcher closes. When the game starts, it gets the session in a private file it
+Credential Manager, or the Secret Service on Linux), never in a log or the command line;
+`accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
+to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it
+answers; on macOS and Windows without one you stay signed in until the launcher closes. The
+Tailscale access token never goes to that file: without a keychain it lasts until the launcher
+closes. When the game starts, it gets the session in a private file it
 deletes as soon as it has read it. Sign out removes the tokens.
 
 Sign-in needs Horizon's own Azure app registration: its client ID is built in from

@@ -478,7 +478,7 @@ pub fn blocks_inside(from: Vec3, to: Vec3) -> Vec<BlockPos> {
     inside
 }
 /// `Projectile.lerpRotation`.
-fn lerp_rotation(mut old: f32, new: f32) -> f32 {
+pub fn lerp_rotation(mut old: f32, new: f32) -> f32 {
     while new - old < -180.0 {
         old -= 360.0;
     }
@@ -1071,6 +1071,15 @@ impl Ticker<'_, '_, '_, '_> {
             }
             effects.advance(step);
             let name = &*self.scene.facts.get(state).name;
+            crate::block_contact::emit(crate::block_contact::Event::Inside(
+                crate::block_contact::Contact {
+                    entity: self.p.id as i32,
+                    kind: self.p.kind.id(),
+                    block: name,
+                    state,
+                    position: p,
+                },
+            ));
             if matches!(name, "minecraft:fire" | "minecraft:soul_fire") {
                 // BaseFireBlock.entityInside (its inFire hurt does nothing to arrows).
                 effects.apply(Effect::ClearFreeze);
