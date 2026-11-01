@@ -887,6 +887,7 @@ pub struct ArmorStand {
     pub health: f32,
     pub id: u32,
     pub position: Vec3,
+    pub previous: Vec3,
     pub velocity: Vec3,
     pub on_ground: bool,
     pub yaw: f32,
@@ -931,6 +932,7 @@ impl ArmorStand {
             health: 20.0,
             id,
             position,
+            previous: position,
             velocity: Vec3::ZERO,
             on_ground: true,
             yaw,
@@ -1034,15 +1036,27 @@ impl ArmorStand {
     /// push it (`push`: a bubble column), then in water the 0.8 slowdown and
     /// `getFluidFallingAdjustedMovement`, in air gravity 0.08 and the 0.98
     /// drag, so a stand at rest on the ground keeps -0.0784 as vanilla's.
+    fn feet_are_leather_boots(&self) -> bool {
+        self.equipment[2]
+            .as_ref()
+            .is_some_and(|s| &*s.item == "minecraft:leather_boots")
+    }
     pub fn tick(
         &mut self,
         scene: &mut crate::collisions::SceneCollisions,
         in_water: bool,
         push: &mut dyn FnMut(Aabb, &mut Vec3),
     ) {
+        self.previous = self.position;
         if self.marker {
             return;
         }
+        scene.subject =
+            self.feet_are_leather_boots()
+                .then_some(crate::collisions::PowderSnowSubject {
+                    leather_boots: true,
+                    ..Default::default()
+                });
         let wanted = self.velocity;
         // `travelInFluid` reads `isFalling` before the move and any push.
         let falling = wanted.y <= 0.0;
@@ -1674,5 +1688,102 @@ mod slime_bounce_tests {
         let bounced = item_vertical_collision_velocity(-1.0, true) * 0.98;
         assert!(bounced > 0.0);
         assert_eq!(bounced, 0.8 * 0.98);
+    }
+}
+
+#[cfg(test)]
+mod armor_stand_motion_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_stand_starts_with_matching_previous() {
+        let at = Vec3::new(1.0, 2.0, 3.0);
+        let stand = ArmorStand::new(1, at, 90.0);
+        assert_eq!(stand.previous, at);
+        assert_eq!(stand.position, at);
+    }
+
+    fn tick_stand(stand: &mut ArmorStand, world: &World, collision: &BlockCollisionRegistry<'_>) {
+        let mut scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        stand.tick(&mut scene, false, &mut |_, _| {});
+    }
+
+    #[test]
+    fn a_tick_keeps_the_previous_position_for_interpolation() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let world = World::test_scene(&assets, &render, 3).unwrap();
+        let start = Vec3::new(20.5, 20.0, 20.5);
+        let mut stand = ArmorStand::new(1, start, 0.0);
+        stand.on_ground = false;
+        tick_stand(&mut stand, &world, &collision);
+        assert_eq!(stand.previous, start);
+        assert!(
+            stand.position.y < start.y,
+            "an airborne stand must fall, y={}",
+            stand.position.y
+        );
+        let mid = stand.previous.y + (stand.position.y - stand.previous.y) * 0.5;
+        assert!(
+            mid < start.y && mid > stand.position.y,
+            "alpha 0.5 must sit between previous and current"
+        );
+    }
+
+    #[test]
+    fn leather_boots_walk_on_powder_snow() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let snow = assets
+            .registry
+            .default_state("minecraft:powder_snow")
+            .unwrap();
+        for x in 19..=21 {
+            for z in 19..=21 {
+                world.set(x, 10, z, snow).unwrap();
+            }
+        }
+        let start = Vec3::new(20.5, 11.0, 20.5);
+        let mut bare = ArmorStand::new(1, start, 0.0);
+        bare.on_ground = true;
+        for _ in 0..8 {
+            tick_stand(&mut bare, &world, &collision);
+        }
+        assert!(
+            bare.position.y < start.y - 0.2,
+            "bare feet must sink into powder snow, y={}",
+            bare.position.y
+        );
+
+        let mut booted = ArmorStand::new(2, start, 0.0);
+        booted.on_ground = true;
+        booted.equipment[2] = Some(ItemStack::new("minecraft:leather_boots", 1));
+        for _ in 0..8 {
+            tick_stand(&mut booted, &world, &collision);
+        }
+        assert!(
+            (booted.position.y - start.y).abs() < 1.0e-6,
+            "leather boots must walk on powder snow, y={}",
+            booted.position.y
+        );
     }
 }

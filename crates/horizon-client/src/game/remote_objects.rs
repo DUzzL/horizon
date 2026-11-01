@@ -349,6 +349,7 @@ impl Game<'_> {
             b.position = step(b.id, b.position);
         }
         for a in &mut self.armor_stands {
+            a.previous = a.position;
             a.position = step(a.id, a.position);
         }
     }

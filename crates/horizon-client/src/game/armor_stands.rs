@@ -745,10 +745,11 @@ impl Game<'_> {
             let dragon = a.equipment[5]
                 .as_ref()
                 .is_some_and(|i| &*i.item == "minecraft:dragon_head");
+            let previous = super::entity_culling::at(a.previous);
             let position = super::entity_culling::at(a.position);
             if !self.standing_entity_in_view(
                 camera,
-                position,
+                previous,
                 position,
                 alpha,
                 width,
@@ -758,7 +759,7 @@ impl Game<'_> {
             ) {
                 continue;
             }
-            let p = glam::DVec3::new(a.position.x, a.position.y, a.position.z) - camera;
+            let p = previous.lerp(position, alpha) - camera;
             // setupRotations: 180 - body yaw, plus the wobble for 5 ticks after a hit.
             let wiggle = (self.world.game_time - a.last_hit) as f32 + alpha as f32;
             let wobble = if wiggle < 5.0 {
