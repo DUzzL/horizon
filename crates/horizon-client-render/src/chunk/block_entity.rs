@@ -135,6 +135,23 @@ pub struct ModFluidTanks {
     /// The tanks a drain may take from (`canTakeItemThroughFace`).
     pub outputs: Vec<usize>,
 }
+/// The energy buffer of a mod block's block entity (NeoForge's
+/// `SimpleEnergyHandler`): its capacity, the most one insert and one extract
+/// moves, and the faces a fill may come through and a drain may leave by.
+/// The amount is not here: it lives in the entity's saved compound, under
+/// `energy`, so it survives restarts and the block's own tick reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModEnergyBuffer {
+    pub capacity: i32,
+    /// The most one insert moves; 0 takes none.
+    pub max_insert: i32,
+    /// The most one extract moves; 0 gives none.
+    pub max_extract: i32,
+    /// The faces, by `Direction` number, a fill may come through.
+    pub insert_faces: [bool; 6],
+    /// The faces a drain may leave by.
+    pub extract_faces: [bool; 6],
+}
 /// The vanilla menus a mod container can open, with the slot count each
 /// shows: slot grids, and the furnaces' (input, fuel, result), whose four
 /// data slots draw the flame (`data[0]` of `data[1]`) and the arrow
