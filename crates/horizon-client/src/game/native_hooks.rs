@@ -2173,7 +2173,9 @@ impl Game<'_> {
     /// without its slash, for a command a mod registered and the player's
     /// level allows: set `ran` when it is yours. The player's state is
     /// swapped in for the call, so `native_player` and the other helpers
-    /// read that player; `native_feedback` answers them. API 8.
+    /// read that player; `native_feedback` answers them. A single player's
+    /// owner console (`horizon-ctl command`) reaches it too, as the owner at
+    /// level 4. API 8.
     pub(super) fn native_perform_command(
         &mut self,
         player: &NativeServerPlayer,
