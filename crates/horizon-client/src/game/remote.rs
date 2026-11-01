@@ -9567,7 +9567,9 @@ fn use_ends_click(info: &horizon_client::items::ItemInfo, fall_flying: bool) -> 
 /// Whether `Item.use` usually acts on this item (eats, drinks, equips, raises,
 /// throws, shoots, fills or places), which ends `Minecraft.startUseItem` at
 /// its hand. Tools and materials pass, and the off hand gets its turn. The
-/// server decides; this is the client's guess of whether to go on.
+/// server decides; this is the client's guess of whether to go on. A carrot or warped fungus
+/// on a stick is not here: `FoodOnAStickItem.use` passes on a client, and only the server's
+/// answer to a boost that can run swings the hand.
 fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
     let id = info.id.trim_start_matches("minecraft:");
     id.ends_with("_spear")
@@ -9603,8 +9605,6 @@ fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
                 | "goat_horn"
                 | "bundle"
                 | "brush"
-                | "carrot_on_a_stick"
-                | "warped_fungus_on_a_stick"
         )
 }
 
@@ -10518,6 +10518,14 @@ mod tests {
         for gliding in [false, true] {
             assert!(super::use_ends_click(shield, gliding));
             assert!(!super::use_ends_click(stick, gliding));
+            // FoodOnAStickItem.use passes on a client: no swing while the boost cools down.
+            for rod in [
+                "minecraft:carrot_on_a_stick",
+                "minecraft:warped_fungus_on_a_stick",
+            ] {
+                let rod = items.get(rod).unwrap();
+                assert!(!super::use_ends_click(rod, gliding), "{}", rod.id);
+            }
         }
     }
 }
