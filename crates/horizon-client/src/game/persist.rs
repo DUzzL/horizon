@@ -356,6 +356,8 @@ impl Game<'_> {
                             self.next_entity += 1;
                             orb.id = self.next_entity;
                             let (id, p) = (orb.id, orb.position);
+                            // An orb that came through a portal keeps its cooldown.
+                            self.restore_portal_cooldown(id, &tag);
                             self.orbs.push(orb);
                             self.remember_tags(id, &tag);
                             let kind = "minecraft:experience_orb";
@@ -391,6 +393,10 @@ impl Game<'_> {
                     | "minecraft:breeze_wind_charge" => {
                         if let Some(mut p) = entity_nbt::fireball_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
+                            // A projectile that came through a portal keeps its cooldown.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                             self.remember_last_projectile_tags(&tag);
                         }
@@ -398,6 +404,10 @@ impl Game<'_> {
                     id if entity_nbt::throwable_kind(id).is_some() => {
                         if let Some(mut p) = entity_nbt::throwable_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
+                            // A projectile that came through a portal keeps its cooldown.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                             self.remember_last_projectile_tags(&tag);
                         }
@@ -1168,14 +1178,13 @@ impl Game<'_> {
                 out.entry(chunk_of(f.position)).or_default().push(tag);
             }
         }
-        for r in &self.rockets {
-            if keys.contains(&chunk_of(r.position)) {
-                let (uuid, raw) = anon(&self.persist, "minecraft:firework_rocket", r.position);
-                out.entry(chunk_of(r.position)).or_default().push(r.to_nbt(
-                    uuid,
-                    self.level.player_uuid,
-                    raw.as_ref(),
-                ));
+        for i in 0..self.rockets.len() {
+            if keys.contains(&chunk_of(self.rockets[i].position)) {
+                let (id, at) = (self.rockets[i].id, self.rockets[i].position);
+                let uuid = self.uuid_for(id);
+                let tag =
+                    self.rockets[i].to_nbt(uuid, self.level.player_uuid, self.persist.raw.get(&id));
+                out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
         for t in &self.tridents {

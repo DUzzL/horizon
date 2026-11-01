@@ -215,17 +215,7 @@ impl Game<'_> {
             Target::Rocket(id) => {
                 let uuid = self.uuid_for(id);
                 let r = self.rockets.iter().find(|r| r.id == id)?;
-                let owner = if r.owner == Some(horizon_client::mobs::Who::Player) {
-                    player_uuid
-                } else {
-                    None
-                };
-                entity_nbt::firework_rocket_to_nbt(
-                    &r.saved_fields(),
-                    uuid,
-                    owner,
-                    self.persist.raw.get(&id),
-                )
+                r.to_nbt(uuid, player_uuid, self.persist.raw.get(&id))
             }
             Target::Spawner(id) => {
                 let s = self.ominous_spawners.iter().find(|s| s.id == id)?;

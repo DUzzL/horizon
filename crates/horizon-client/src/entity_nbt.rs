@@ -2493,44 +2493,6 @@ pub struct RocketNbt {
     pub owner: Option<Who>,
     pub left_owner: bool,
 }
-/// `FireworkRocketEntity.addAdditionalSaveData`: `Projectile`'s keys, then
-/// `Life`, `LifeTime`, `FireworksItem` and `ShotAtAngle`.
-pub fn firework_rocket_to_nbt(
-    r: &RocketNbt,
-    uuid: [i32; 4],
-    owner: Option<[i32; 4]>,
-    raw: Option<&Tag>,
-) -> Tag {
-    let mut tag = Base {
-        id: "minecraft:firework_rocket",
-        uuid,
-        position: r.position,
-        motion: r.motion,
-        rotation: [0.0, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
-    }
-    .tag(raw);
-    if let Tag::Compound(map) = &mut tag {
-        map.remove(&"LeftOwner".into());
-    }
-    if r.left_owner {
-        put(&mut tag, "LeftOwner", Tag::Byte(1));
-    }
-    if r.life > 0 || tag.get("HasBeenShot").is_none() {
-        put(&mut tag, "HasBeenShot", Tag::Byte(i8::from(r.life > 0)));
-    }
-    if let Some(owner) = owner {
-        put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
-    }
-    put(&mut tag, "Life", Tag::Int(r.life));
-    put(&mut tag, "LifeTime", Tag::Int(r.lifetime));
-    if let Some(item) = &r.item {
-        put(&mut tag, "FireworksItem", item_to_nbt(item));
-    }
-    put(&mut tag, "ShotAtAngle", Tag::Byte(i8::from(r.angled)));
-    tag
-}
 pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<RocketNbt> {
     let owner = uuid_from_tag(tag.get("Owner"));
     Some(RocketNbt {
