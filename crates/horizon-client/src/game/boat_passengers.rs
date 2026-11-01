@@ -231,6 +231,10 @@ impl Game<'_> {
             .collect();
         drop(teams);
         for (j, touched, pushes) in mobs {
+            // A mod's mount hook may have removed mobs since the list was made.
+            if j >= self.mobs.len() {
+                break;
+            }
             if touched {
                 let m = &self.mobs[j];
                 let boards = pick_up
@@ -244,13 +248,17 @@ impl Game<'_> {
                 if boards {
                     // startRiding fails quietly (no push) while the mob's
                     // boarding cooldown runs (Entity.canRide) or the boat
-                    // is under water.
-                    if room && m.extra.boarding_cooldown <= 0 {
-                        let m = &mut self.mobs[j];
+                    // is under water, or when a mod cancels it
+                    // (EntityMountEvent).
+                    let (mob, ready) = (m.id, m.extra.boarding_cooldown <= 0);
+                    if room
+                        && ready
+                        && self.native_mob_may_ride(mob, id, true)
+                        && let Some(m) = self.mobs.get_mut(j).filter(|m| m.id == mob)
+                    {
                         m.extra.mount = Some(id);
                         m.extra.passenger = true;
                         m.ai.nav.stop();
-                        let mob = m.id;
                         count += 1;
                         // Mob.startRiding drops its lead.
                         self.break_leash(mob, true, false);

@@ -1214,20 +1214,25 @@ impl Game<'_> {
             .collect();
         drop(teams);
         for j in candidates {
+            // A mod's mount hook may have removed mobs since the list was made.
+            if j >= self.mobs.len() {
+                break;
+            }
             let species = self.mobs[j].species();
             let player = &*self.mobs[j].kind.id == "minecraft:player";
             let cooldown = self.mobs[j].extra.boarding_cooldown;
             let passenger = self.mobs[j].extra.mount.is_some();
             if pickup_instead_of_push(species, passenger, occupied) && !player {
-                if can_ride_cart(species, cooldown) {
-                    let mob = self.mobs[j].id;
-                    {
-                        let m = &mut self.mobs[j];
-                        m.extra.mount = Some(id);
-                        m.extra.passenger = true;
-                        m.ai.nav.stop();
-                        m.needs_sync = true;
-                    }
+                let mob = self.mobs[j].id;
+                // Entity.startRiding: a mod may cancel it (EntityMountEvent).
+                if can_ride_cart(species, cooldown)
+                    && self.native_mob_may_ride(mob, id, true)
+                    && let Some(m) = self.mobs.get_mut(j).filter(|m| m.id == mob)
+                {
+                    m.extra.mount = Some(id);
+                    m.extra.passenger = true;
+                    m.ai.nav.stop();
+                    m.needs_sync = true;
                     occupied = true;
                     self.break_leash(mob, true, false);
                 }
