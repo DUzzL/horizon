@@ -65,6 +65,8 @@ pub(super) enum Target {
     Dragon(u32),
     /// A primed TNT, by its entity id (`minecraft:tnt`).
     Tnt(u32),
+    /// A falling block, by its entity id (`minecraft:falling_block`).
+    Falling(u32),
 }
 /// An entity of a type Horizon does not simulate: its compound lives in the
 /// entity memory (`persist.raw`), its position and rotation here.
@@ -138,7 +140,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Other(id)
     | Target::Crystal(id)
     | Target::Dragon(id)
-    | Target::Tnt(id)) = t
+    | Target::Tnt(id)
+    | Target::Falling(id)) = t
     else {
         return None;
     };
@@ -517,6 +520,11 @@ impl Game<'_> {
                 .iter()
                 .find(|t| t.id == id)
                 .map(|t| [t.position.x, t.position.y, t.position.z]),
+            Target::Falling(id) => self
+                .falling
+                .iter()
+                .find(|f| f.id == id)
+                .map(|f| [f.position.x, f.position.y, f.position.z]),
         }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
@@ -564,6 +572,7 @@ impl Game<'_> {
             Target::Crystal(_) => "minecraft:end_crystal".into(),
             Target::Dragon(_) => "minecraft:ender_dragon".into(),
             Target::Tnt(_) => "minecraft:tnt".into(),
+            Target::Falling(_) => "minecraft:falling_block".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -597,6 +606,18 @@ impl Game<'_> {
                     .map(|i| i.stack.item.to_string())
                     .unwrap_or_default();
                 Text::literal(self.pack.names.display_item(&item))
+            }
+            // FallingBlockEntity.getTypeName: `entity.minecraft.falling_block_type`
+            // with the block's name.
+            Target::Falling(id) => {
+                let block = self
+                    .falling
+                    .iter()
+                    .find(|f| f.id == id)
+                    .map(|f| self.res.facts().get(f.state).name.replace(':', "."))
+                    .unwrap_or_default();
+                let block = Text::translate(&format!("block.{block}"), &[]);
+                Text::translate("entity.minecraft.falling_block_type", &[block])
             }
             Target::Mob(id)
                 if self
@@ -818,6 +839,7 @@ impl Game<'_> {
                 // The kinds /data can write (entity_nbt).
                 .filter(|p| {
                     p.is_arrow()
+                        || horizon_client::entity_nbt::saved_with_chunk(p)
                         || matches!(
                             p.kind,
                             K::LargeFireball { .. }
@@ -841,6 +863,7 @@ impl Game<'_> {
             candidates.push(Target::Dragon(d.id));
         }
         candidates.extend(self.tnts.iter().map(|t| Target::Tnt(t.id)));
+        candidates.extend(self.falling.iter().map(|f| Target::Falling(f.id)));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -873,6 +896,7 @@ impl Game<'_> {
             Target::Crystal(id),
             Target::Dragon(id),
             Target::Tnt(id),
+            Target::Falling(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -895,6 +919,7 @@ impl Game<'_> {
             Target::Crystal(id) => self.crystals.iter().any(|c| c.id == id),
             Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
             Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
+            Target::Falling(id) => self.falling.iter().any(|f| f.id == id),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1511,6 +1536,12 @@ impl Game<'_> {
                     t.previous = v;
                 }
             }
+            Target::Falling(id) => {
+                if let Some(f) = self.falling.iter_mut().find(|f| f.id == id) {
+                    f.position = v;
+                    f.previous = v;
+                }
+            }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
         }
@@ -2009,6 +2040,7 @@ impl Game<'_> {
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
             Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
+            Target::Falling(id) => self.falling.retain(|f| f.id != id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         let before = self.orb_ids();
@@ -3681,6 +3713,7 @@ mod look_at_tests {
             Target::Crystal(7),
             Target::Dragon(7),
             Target::Tnt(7),
+            Target::Falling(7),
         ] {
             assert_eq!(non_player_entity_id(t), Some(7), "{t:?}");
         }

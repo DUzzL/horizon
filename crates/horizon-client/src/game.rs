@@ -1679,7 +1679,8 @@ impl LevelAccess for GameLevel<'_> {
 /// FallingBlockEntity carrying a block state.
 #[derive(Clone, Debug)]
 struct FallingBlock {
-    /// The entity id a server tracks it by (0 until it is tracked).
+    /// Its entity id: from the entity counter on the server, the server's on
+    /// a client.
     id: u32,
     state: BlockStateId,
     /// `DATA_START_POS`: spawn position used to select weighted block models.
@@ -2414,6 +2415,10 @@ struct Game<'a> {
     use_duration: i32,
     /// A mod's `Start` or `Tick` set that use's ticks left (`game/item_use.rs`).
     use_ticks_set: bool,
+    /// The crossbow charge's start and middle loading sounds played so far
+    /// (`game/crossbow.rs`): each charge plays each of them once, however
+    /// far a mod's tick moved the charge at a time.
+    crossbow_sounds: [bool; 2],
     /// Camera.oldFovModifier / fovModifier.
     /// `Camera` (eye height and field-of-view easing, view placement).
     view: horizon_client::camera::Camera,
@@ -4871,8 +4876,9 @@ impl Game<'_> {
                         f64::from(pos.y),
                         f64::from(pos.z) + 0.5,
                     );
+                    self.next_entity += 1;
                     self.falling.push(FallingBlock {
-                        id: 0,
+                        id: self.next_entity,
                         state,
                         start_pos: pos,
                         position: p,
@@ -11206,7 +11212,7 @@ impl Game<'_> {
         if landed {
             if knockback > 0.0 {
                 let (xd, zd) = self.extra_knockback_direction();
-                self.mobs[index].knockback(f64::from(knockback), xd, zd, &source);
+                self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
@@ -11775,6 +11781,8 @@ impl Game<'_> {
         self.streaming.sky_light = dim != Dim::Nether;
         self.streaming.nether_shading = dim == Dim::Nether;
         self.load_world_state();
+        // The level the world opens in, before any of its chunks.
+        self.native_level_opened(dim);
         Ok(())
     }
     /// Streaming and region storage for one dimension of a world.
@@ -17973,6 +17981,7 @@ impl<'a> Game<'a> {
             using: None,
             use_duration: 0,
             use_ticks_set: false,
+            crossbow_sounds: [false; 2],
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             frame_clock: Default::default(),
