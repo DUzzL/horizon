@@ -633,7 +633,7 @@
   "No version": "Nenhuma versão",
   "Search, then Enter": "Pesquisar e pressionar Enter",
   "Signed in as {name}.": "Conectado como {name}.",
-  "follows updates": "segue as atualizações",
+  "auto-update": "atualização auto",
   "Waiting for account access…": "Aguardando acesso à conta…",
   "Reading keychain…": "Lendo o chaveiro…",
   "Renewing Microsoft sign-in…": "Renovando o login da Microsoft…",
