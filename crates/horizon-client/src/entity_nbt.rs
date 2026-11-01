@@ -3461,6 +3461,10 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
             Some("minecraft:pig/variant"),
             Some("minecraft:pig/sound_variant"),
         ),
+        // ZombieNautilus.applyImplicitComponents: the variant only.
+        crate::mobs::Species::ZombieNautilus => {
+            (Some("minecraft:zombie_nautilus/variant"), None)
+        }
         _ => (None, None),
     };
     if let Some(name) = variant.and_then(|id| text(components.other(id))) {
@@ -4186,6 +4190,16 @@ mod item_component_tests {
         let mut sheep = spawn("minecraft:sheep", 2);
         apply_item_components(&mut sheep, &egg);
         assert_eq!(sheep.extra.color, 5, "lime, not the white it started as");
+        // ZombieNautilus.applyImplicitComponents: the egg carries the coral
+        // variant over the temperate one the biome picked.
+        let mut egg = crate::items::ItemStack::new("minecraft:zombie_nautilus_spawn_egg", 1);
+        egg.data_mut().set_other(
+            "minecraft:zombie_nautilus/variant",
+            Some(string("minecraft:warm")),
+        );
+        let mut nautilus = spawn("minecraft:zombie_nautilus", 4);
+        apply_item_components(&mut nautilus, &egg);
+        assert_eq!(nautilus.extra.variant, 1, "minecraft:warm, not temperate");
     }
 
     /// `EntityType.updateCustomEntityTag`: the egg's `entity_data` on the mob it
