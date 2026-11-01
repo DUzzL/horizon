@@ -799,11 +799,11 @@ mod tests {
             if prefetch {
                 sprites.prefetch(&root, names.iter().map(String::as_str).chain([tile]));
             }
-            let layers: Vec<u32> = names
+            let mut layers: Vec<u32> = names
                 .iter()
                 .map(|name| sprites.insert(&root, name).unwrap())
-                .chain([sprites.insert_file(&root, tile).unwrap()])
                 .collect();
+            layers.push(sprites.insert_file(&root, tile).unwrap());
             sprites.finish();
             (
                 layers,
