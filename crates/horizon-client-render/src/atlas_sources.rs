@@ -212,7 +212,8 @@ pub fn list_textures(root: &Path) -> Vec<String> {
 /// resource path, wherever the folder: `directory` is not used for it. An id whose path would
 /// leave the root (a pack's model may write any) names a file that is never there.
 pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
-    const NOWHERE: &str = "assets/minecraft/textures/horizon/refused.png";
+    // No file can have a NUL in its name, so this one is never there.
+    const NOWHERE: &str = "assets/minecraft/textures/horizon/\0refused.png";
     if texture.starts_with("horizon_cit:") {
         return root.join(
             crate::cit_assets::resource(texture, "png")

@@ -123,6 +123,11 @@ mod tests {
             assert_eq!(sprite_id(path), None, "{path}");
         }
         assert_eq!(model_id("assets/minecraft/optifine/cit/A.json"), None);
+        assert_eq!(
+            sprite_id("assets//textures/item/x.png"),
+            None,
+            "no namespace"
+        );
     }
 
     #[test]

@@ -467,8 +467,8 @@ impl Sprites {
         let count = frames.len() as u32;
         let layer = u32::try_from(self.native.len())?;
         let pbr = match name.split_once(':') {
-            Some((namespace, path)) if labpbr_maps() => {
-                let path = root.join(format!("assets/{namespace}/textures/{path}.png"));
+            Some(_) if labpbr_maps() => {
+                let path = crate::atlas_sources::texture_path(root, name, "textures");
                 ["_n", "_s"].map(|suffix| pbr_map(&path, suffix, count))
             }
             _ => [None, None],
@@ -478,9 +478,11 @@ impl Sprites {
             strategy,
             alpha_cutoff_bias,
             has_transparent,
-            item: name
-                .split_once(':')
-                .is_some_and(|(_, p)| p.starts_with("item/")),
+            // Custom Item Textures' ids are all item textures.
+            item: name.starts_with("horizon_cit:")
+                || name
+                    .split_once(':')
+                    .is_some_and(|(_, p)| p.starts_with("item/")),
             dither_cutouts: crate::mipmap::dither_cutouts(),
         };
         let still = (animation.is_none() && frames.len() == 1).then(|| {
@@ -738,7 +740,7 @@ mod tests {
     fn custom_item_textures_skip_the_disk_cache() {
         let root =
             std::env::temp_dir().join(format!("horizon-sprite-cit-disk-{}", std::process::id()));
-        // The cache's fingerprint needs a `textures` tree.
+        // A realistic root: the cache's fingerprint walks the `textures` trees.
         let vanilla = root.join("assets/minecraft/textures/item/stick.png");
         let file = root.join("assets/minecraft/optifine/cit/a.png");
         let write = |path: &Path, red: u8| {
