@@ -36,8 +36,8 @@ pub trait Host {
     /// the state with `properties` (`[("axis", "x")]`, the rest default)
     /// under `draw`'s pose, as vanilla's `submitBlockModel` draws a block in
     /// an entity's place: a block's baked model, with its default tints. A
-    /// moving part is often a block of the mod's own, never placed. False for
-    /// an unknown block or property. API 71.
+    /// moving part that is no block is a standalone model
+    /// (`native_draw_model`). False for an unknown block or property. API 71.
     fn draw_block(
         &self,
         draw: &mut BlockEntityDraw,
