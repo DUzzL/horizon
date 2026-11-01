@@ -29,7 +29,7 @@ ChatListener.handlePlayerChatMessage	port	crates/horizon-client/src/game/remote.
 ChatListener.handleChatMessageError	port	crates/horizon-client/src/game/remote.rs::Game::handle_chat_message_error	the red italic chat.validation_error in the message's chat type, tagged chatError; gap: minor: a blocked or friends-only sender is not skipped (no social list), no narration, no markMessageAsProcessed
 ChatListener.handleDisguisedChatMessage	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	gap: minor: no narration and no chat log entry
 ChatListener.showMessageToPlayer	port	crates/horizon-client/src/game/remote.rs::Game::chat_line	gap: player: trust, block, friend-only and secure-only checks are not run before showing
-ChatListener.evaluateTrustLevel	missing		player: no secure, modified or not-secure marking, so unsigned lines show with no Not Secure bar and Only Show Secure Chat does nothing
+ChatListener.evaluateTrustLevel	port	crates/horizon-client/src/game/remote.rs::Game::chat_trust	
 ChatListener.logPlayerMessage	skip:service		feeds the chat log that chat reports read
 ChatListener.logSystemMessage	skip:service		feeds the chat log that chat reports read
 ChatListener.handleSystemMessage	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	gap: minor: hide-matched-names and friend filtering are not applied to system lines

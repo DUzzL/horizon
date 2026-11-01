@@ -468,6 +468,17 @@ pub trait LevelAccess {
     fn is_client_side(&self) -> bool {
         false
     }
+    /// `FireBlock`'s flammability table for `state`'s block, before the
+    /// table answers it: `(igniteOdds, burnOdds)`, as `FireBlock.setFlammable`
+    /// sets them. Fire spread, burning out and where fire can stand read it;
+    /// a waterlogged state never burns and isn't asked. An answer put in
+    /// `odds` is the result. The default does nothing.
+    fn before_fire_odds(&self, _state: BlockStateId, _odds: &mut Option<(i32, i32)>) {}
+    /// `CampfireBlock.isSmokeSource(state)` for the block under a campfire,
+    /// before vanilla's rule (a hay bale) answers it: true makes the campfire
+    /// a signal fire. An answer put in `smoke` is the result. The default
+    /// does nothing.
+    fn before_smoke_source(&self, _state: BlockStateId, _smoke: &mut Option<bool>) {}
     /// `getBlockState`. Unloaded or out-of-bounds positions read as air.
     fn block_state(&self, pos: BlockPos) -> BlockStateId;
     /// Storage write (`LevelChunkSection.setBlockState`). Returns the previous
@@ -647,6 +658,12 @@ pub trait LevelAccess {
         _side_effects: bool,
     ) -> u8 {
         0
+    }
+    /// Whether a block entity a mod made lives at `pos` (`native_block_entity`),
+    /// whatever its block's template: it is removed with its block and no piston
+    /// moves it, as for a template that has one.
+    fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
+        false
     }
     /// Load saved block-entity data into the block entity of the block just
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown

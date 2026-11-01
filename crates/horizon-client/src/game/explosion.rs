@@ -4,7 +4,7 @@
 //! merged drops and TNT chain priming, and optional fire.
 use super::Game;
 use horizon_client::{
-    Result, blocks::Fluid, collisions::SceneCollisions, items::ItemStack, text::Text,
+    Result, blocks::Fluid, collisions::SceneCollisions, items::ItemStack, mobs::Who, text::Text,
 };
 use horizon_core::{
     geometry::{Vec3, VoxelShape},
@@ -100,6 +100,15 @@ pub(super) fn blast_reaches(center: [f64; 3], diameter: f64, at: [f64; 3]) -> bo
     d / diameter <= 1.0
 }
 
+/// `ItemEntity.ignoreExplosion` through
+/// `ServerExplosion.shouldAffectBlocklikeEntities`: an explosion that does not
+/// affect blocklike entities is ignored entirely by a dropped item. With
+/// `mobGriefing` off that is every blast that keeps blocks; with it on, none
+/// (no wind charge goes through `server_explode`).
+fn items_ignore_explosion(mob_griefing: bool, interaction: BlockInteraction) -> bool {
+    !mob_griefing && interaction == BlockInteraction::Keep
+}
+
 /// Whether a blast leaves item frames, paintings, cushions and armour stands
 /// alone. Without `mobGriefing`, a blast that keeps blocks is ignored
 /// (`ServerExplosion.shouldAffectBlocklikeEntities` through their
@@ -175,12 +184,17 @@ pub(super) fn client_float() -> f32 {
 impl Game<'_> {
     /// `blast_cause` for the blast going off now.
     pub(super) fn blast_attacker(&self) -> Option<(u32, Text)> {
-        blast_cause(
-            self.combat.explosion_owner,
-            self.combat.explosion_source,
-            |id| self.mob_display_name(id),
-            &self.combat.exploded,
-        )
+        // `Explosion.getIndirectSourceEntity`: a primed TNT's owner names the
+        // blast before any mob does, which makes the damage type
+        // `minecraft:player_explosion` (`server_explode` asks this).
+        self.combat.blast_owner.clone().or_else(|| {
+            blast_cause(
+                self.combat.explosion_owner,
+                self.combat.explosion_source,
+                |id| self.mob_display_name(id),
+                &self.combat.exploded,
+            )
+        })
     }
     /// `ServerExplosion.getSeenPercent` for an entity box.
     pub(super) fn seen_percent(&self, center: [f64; 3], min: [f64; 3], max: [f64; 3]) -> f32 {
@@ -254,6 +268,16 @@ impl Game<'_> {
             use horizon_world::level::LevelAccess;
             (level.min_y(), level.max_y())
         });
+        // WitherSkull.getBlockExplosionResistance: a dangerous skull's blast
+        // caps a block the wither may destroy at 0.8.
+        let cap = self.combat.blast_resistance_cap;
+        let wither_immune = cap.and_then(|_| {
+            self.res
+                .items()
+                .block_tags
+                .get("minecraft:wither_immune")
+                .cloned()
+        });
         let mut set: JavaHashMap<Key, ()> = JavaHashMap::default();
         for xx in 0..16 {
             for yy in 0..16 {
@@ -296,12 +320,14 @@ impl Game<'_> {
                                 power -= (resistance + 0.3) * 0.3;
                             }
                             _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
-                                let resistance = if spared {
+                                let base = if spared {
                                     0.0
                                 } else {
                                     f.explosion_resistance.max(fluid)
                                 };
-                                power -= (resistance + 0.3) * 0.3;
+                                let immune =
+                                    wither_immune.as_ref().is_some_and(|t| t.contains(&*f.name));
+                                power -= (blast_resistance(base, cap, immune) + 0.3) * 0.3;
                             }
                             _ => {}
                         }
@@ -436,7 +462,12 @@ impl Game<'_> {
         }
         self.combat.forget_noted(outcome.canceled);
         if raised {
-            self.after_block(outcome, None, false);
+            let source = horizon_client::health::HurtSource {
+                damage_type,
+                causing: attacker.map_or(0, |(id, _)| *id as i32),
+                direct: 0,
+            };
+            self.after_block(outcome, (None, false), source);
         }
         pushed
     }
@@ -583,9 +614,15 @@ impl Game<'_> {
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
+        // `ItemEntity.ignoreExplosion` asks `shouldAffectBlocklikeEntities`
+        // first, so a blast that keeps blocks leaves every item untouched.
+        let items_ignore = items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction);
         let before = self.dropped_ids();
         let mut items = std::mem::take(&mut self.dropped);
         items.retain_mut(|item| {
+            if items_ignore {
+                return true;
+            }
             let feet = [item.position.x, item.position.y, item.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
@@ -665,9 +702,18 @@ impl Game<'_> {
             );
         }
         self.tnts = tnts;
+        // `VehicleEntity.ignoreExplosion`: a mob's blast (not a primed TNT's)
+        // spares boats and minecarts while mob griefing is off.
+        let vehicles_ignore = self.combat.blast_owner.is_none()
+            && self.blast_attacker().is_some()
+            && !self.ui.rules.bool("mob_griefing");
         // Minecarts: VehicleEntity.hurtServer (explosions ignite TNT carts),
         // then the push from their eyes (0.85 of their height).
-        let ids: Vec<u32> = self.carts.iter().map(|c| c.id).collect();
+        let ids: Vec<u32> = if vehicles_ignore {
+            Vec::new()
+        } else {
+            self.carts.iter().map(|c| c.id).collect()
+        };
         for id in ids {
             let Some(i) = self.carts.iter().position(|c| c.id == id) else {
                 continue;
@@ -693,6 +739,130 @@ impl Game<'_> {
                 c.velocity.z + dir[2] * power,
             );
         }
+        // Boats: `VehicleEntity.hurtServer` (damage * 10, broken past 40), then the
+        // push from their eyes (`EntityType.OAK_BOAT & co`: the full 0.5625).
+        let ids: Vec<u32> = if vehicles_ignore {
+            Vec::new()
+        } else {
+            self.boats.iter().map(|b| b.id).collect()
+        };
+        for id in ids {
+            let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+                continue;
+            };
+            let bounds = self.boats[i].bounds();
+            let feet = self.boats[i].position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let (lo, hi) = (bounds.min_position(), bounds.max_position());
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            self.hurt_boat(i, damage(dist, exposure), false);
+            let Some(b) = self.boats.iter_mut().find(|b| b.id == id) else {
+                continue;
+            };
+            let dir = direction([feet.x, feet.y + 0.5625, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            b.velocity = Vec3::new(
+                b.velocity.x + dir[0] * power,
+                b.velocity.y + dir[1] * power,
+                b.velocity.z + dir[2] * power,
+            );
+        }
+        // Falling blocks: `Entity.hurtServer` does nothing, `pushFromExplosion`
+        // moves them from their eyes (0.85 of the 0.98 box).
+        let mut falling = std::mem::take(&mut self.falling);
+        for f in &mut falling {
+            let feet = f.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let b = horizon_client::falling_block::bounds(feet);
+            let (lo, hi) = (b.min_position(), b.max_position());
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            let eye = f64::from((hi.y - lo.y) as f32 * 0.85f32);
+            let dir = direction([feet.x, feet.y + eye, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            f.velocity = Vec3::new(
+                f.velocity.x + dir[0] * power,
+                f.velocity.y + dir[1] * power,
+                f.velocity.z + dir[2] * power,
+            );
+        }
+        self.falling = falling;
+        // Arrows, fire charges, snowballs and the rest: `Entity.pushFromExplosion`
+        // (`push`) from their eyes (0.85 of their height). `AbstractArrow.push`
+        // does nothing while it is in the ground; `hurtServer` never hurts them.
+        let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        for p in projectiles
+            .iter_mut()
+            .filter(|p| !p.stuck && !p.kind.ignores_blast())
+        {
+            let (lo, hi) = (p.bounds().min_position(), p.bounds().max_position());
+            let dist = distance([p.position.x, p.position.y, p.position.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            let eye_height = p.kind.eye_height();
+            let dir = direction([p.position.x, p.position.y + eye_height, p.position.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            p.velocity = Vec3::new(
+                p.velocity.x + dir[0] * power,
+                p.velocity.y + dir[1] * power,
+                p.velocity.z + dir[2] * power,
+            );
+            p.needs_sync = true;
+        }
+        self.creatures.projectiles = projectiles;
+        // Firework rockets (0.25 wide, so 0.2125 to the eyes).
+        let mut rockets = std::mem::take(&mut self.rockets);
+        for r in &mut rockets {
+            let feet = r.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(
+                center,
+                [feet.x - 0.125, feet.y, feet.z - 0.125],
+                [feet.x + 0.125, feet.y + 0.25, feet.z + 0.125],
+            );
+            let dir = direction([feet.x, feet.y + 0.2125, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            r.velocity = Vec3::new(
+                r.velocity.x + dir[0] * power,
+                r.velocity.y + dir[1] * power,
+                r.velocity.z + dir[2] * power,
+            );
+        }
+        self.rockets = rockets;
+        // Thrown tridents live apart from the other projectiles (`game/trident.rs`): 0.5
+        // wide and high, eyes at 0.13 (`EntityType.TRIDENT`), and like any arrow
+        // (`AbstractArrow.push`) not pushed while in the ground.
+        let mut tridents = std::mem::take(&mut self.tridents);
+        for t in tridents.iter_mut().filter(|t| !t.in_ground) {
+            let feet = t.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(
+                center,
+                [feet.x - 0.25, feet.y, feet.z - 0.25],
+                [feet.x + 0.25, feet.y + 0.5, feet.z + 0.25],
+            );
+            let dir = direction([feet.x, feet.y + f64::from(0.13_f32), feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            t.velocity = Vec3::new(
+                t.velocity.x + dir[0] * power,
+                t.velocity.y + dir[1] * power,
+                t.velocity.z + dir[2] * power,
+            );
+        }
+        self.tridents = tridents;
         // Frames, paintings, cushions and armour stands last: vanilla lists
         // the entities in reach before hurting any, so the items they drop
         // here are neither destroyed nor pushed by the same blast.
@@ -942,16 +1112,22 @@ impl Game<'_> {
             // tables' survives_explosion and explosion_decay draw from their
             // random sequence.
             let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
-            let mut drops = world_items!(self).block_drops_exploded(
-                self.pack.assets.registry,
-                state,
-                None,
-                &dynamic,
-                &mut self.world.random,
-                Some((&mut self.rand_sequences, self.level.seed)),
-                decay,
-                false,
+            let place = self.loot_place_at(
+                pos.map(|v| f64::from(v) + 0.5),
+                self.loot_block_entity(pos, &name),
             );
+            let mut drops = horizon_world::loot::with_native_loot_place(place, || {
+                world_items!(self).block_drops_exploded(
+                    self.pack.assets.registry,
+                    state,
+                    None,
+                    &dynamic,
+                    &mut self.world.random,
+                    Some((&mut self.rand_sequences, self.level.seed)),
+                    decay,
+                    false,
+                )
+            });
             self.native_block_drops(pos, state, None, None, Some(radius), &mut drops);
             for mut stack in drops {
                 if &*stack.item == "minecraft:air" || stack.count == 0 {
@@ -976,7 +1152,19 @@ impl Game<'_> {
             let r = &mut self.world.random;
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
-            self.add_primed_tnt(BlockPos::new(pos[0], pos[1], pos[2]), rot, fuse);
+            // TntBlock.wasExploded hands the new TNT the blast's indirect
+            // source, so a chain reaction keeps the player who started it.
+            let (owner, guest) = match &self.combat.blast_owner {
+                Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                None => (None, None),
+            };
+            self.add_primed_tnt(
+                BlockPos::new(pos[0], pos[1], pos[2]),
+                rot,
+                fuse,
+                owner,
+                guest,
+            );
         }
         Ok(())
     }
@@ -1009,9 +1197,44 @@ fn add_or_append_stack(
     stacks.push((pos, stack));
 }
 
+/// `WitherSkull.getBlockExplosionResistance`: `isDangerous() &&
+/// WitherBoss.canDestroy(state) ? min(0.8, resistance) : resistance`. Air has
+/// no resistance to begin with, and `#wither_immune` blocks keep theirs.
+fn blast_resistance(base: f32, cap: Option<f32>, wither_immune: bool) -> f32 {
+    match cap {
+        Some(cap) if !wither_immune => base.min(cap),
+        _ => base,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dangerous wither skull's blast treats a block as at most 0.8 harder to
+    /// break, but a `#wither_immune` block keeps its own resistance and any
+    /// other blast is unchanged.
+    #[test]
+    fn a_dangerous_wither_skull_caps_block_resistance() {
+        assert_eq!(blast_resistance(4.0, Some(0.8), false), 0.8);
+        assert_eq!(blast_resistance(0.3, Some(0.8), false), 0.3, "already low");
+        assert_eq!(blast_resistance(4.0, Some(0.8), true), 4.0, "wither immune");
+        assert_eq!(blast_resistance(4.0, None, false), 4.0, "another blast");
+    }
+
+    /// A dropped item survives a mob's blast untouched while `mobGriefing` is
+    /// off, and is thrown and hurt as usual by one that destroys blocks or by
+    /// any blast with the rule back on.
+    #[test]
+    fn items_ignore_a_blast_that_keeps_blocks_with_griefing_off() {
+        assert!(items_ignore_explosion(false, BlockInteraction::Keep));
+        assert!(!items_ignore_explosion(false, BlockInteraction::Destroy));
+        assert!(!items_ignore_explosion(
+            false,
+            BlockInteraction::DestroyWithDecay
+        ));
+        assert!(!items_ignore_explosion(true, BlockInteraction::Keep));
+    }
 
     #[test]
     fn blasts_reach_entities_within_their_diameter() {

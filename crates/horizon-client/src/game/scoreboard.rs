@@ -179,7 +179,15 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Crystal(id)
             | Target::Dragon(id)
+            | Target::Tnt(id)
+            | Target::Falling(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
+            // It keeps its UUID with itself.
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| uuid_text(s.uuid)),
             // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
         }
@@ -211,13 +219,22 @@ impl Game<'_> {
             | Target::Painting(id)
             | Target::Boat(id)
             | Target::Cart(id)
+            | Target::Tnt(id)
             | Target::Other(id) => self.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
-            Target::Guest(_)
-            | Target::Orb(_)
-            | Target::Projectile(_)
-            | Target::Crystal(_)
-            | Target::Dragon(_) => None,
+            // A server's player: the saved compound the guest's file is written from.
+            Target::Guest(conn) => self.command_guest(conn).and_then(|g| g.saved.as_ref()),
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.raw.as_deref()),
+            Target::Falling(id) => self
+                .falling
+                .iter()
+                .find(|f| f.id == id)
+                .and_then(|f| f.saved.as_ref().map(|s| &s.1)),
+            Target::Orb(_) | Target::Projectile(_) | Target::Crystal(_) | Target::Dragon(_) => None,
         };
         match raw.and_then(|r| r.get("Tags")) {
             Some(Tag::List(l)) => l
@@ -821,7 +838,7 @@ impl Game<'_> {
 }
 
 /// The host and guests that have entered the world, rebuilt from live state.
-fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlayer> {
+pub(super) fn local_tab_players(me: TabPlayer, guests: &[Guest]) -> Vec<TabPlayer> {
     let mut players = vec![me];
     players.extend(guests.iter().filter(|g| g.placed).map(|g| {
         let mut player = TabPlayer::new(g.uuid, &g.name);

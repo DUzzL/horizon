@@ -159,6 +159,14 @@ pub struct Guest {
     /// (`clientIsFloating`), and the ticks it has (`aboveGroundTickCount`).
     pub client_is_floating: bool,
     pub above_ground_ticks: i32,
+    /// The same for the vehicle the player drives (`clientVehicleIsFloating`,
+    /// `aboveGroundVehicleTickCount`), with that vehicle's gravity
+    /// (`getMaximumFlyingTicks(lastVehicle)`) and whether its last accepted
+    /// move came down onto something (`verticalCollisionBelow`).
+    pub vehicle_floating: bool,
+    pub above_ground_vehicle_ticks: i32,
+    pub vehicle_gravity: f64,
+    pub vehicle_rests: bool,
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
@@ -371,6 +379,10 @@ impl Guest {
             known_moves: 0,
             client_is_floating: false,
             above_ground_ticks: 0,
+            vehicle_floating: false,
+            above_ground_vehicle_ticks: 0,
+            vehicle_gravity: 0.0,
+            vehicle_rests: false,
             position_this_tick: false,
             anticheat: Default::default(),
             replay: None,
@@ -489,6 +501,13 @@ impl Guest {
                     .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
                 Change::Attributes { sprint }
             }
+            // Entity.DATA_SHARED_FLAGS_ID: its sprinting bit (0x08).
+            C::SetEntityData(p) if own(p.id) => match p.values.iter().find(|v| v.0 == 0) {
+                Some(&(_, _, horizon_protocol::entity_data::Value::Byte(flags))) => {
+                    Change::Sprinting(flags & 0x08 != 0)
+                }
+                _ => return,
+            },
             C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
             C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
             C::PlayerAbilities(_) => Change::Abilities,
@@ -753,6 +772,14 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // Unbreakable is a unit component; clients need its presence for the
+        // durability bar, tooltip and item model, including in single player.
+        if d.other("minecraft:unbreakable").is_some() {
+            stack.added.push((
+                horizon_protocol::item::component::UNBREAKABLE,
+                horizon_protocol::item::Component::Unit,
+            ));
+        }
         for (name, value) in &d.other {
             let (removed, kind) = match name.strip_prefix('!') {
                 Some(kind) => (true, kind),
@@ -1025,6 +1052,16 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
+    // Lore lines as loaded or as a server mod wrote them (a list of text
+    // components), so a server menu's items can say more than their name.
+    if let Some(horizon_world::nbt::Tag::List(lines)) =
+        s.data().and_then(|d| d.other("minecraft:lore"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::LORE,
+            horizon_protocol::item::Component::Lore(lines.clone()),
+        ));
+    }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
         stack.added.push((
@@ -1125,6 +1162,32 @@ mod tests {
     use horizon_protocol::buf::{Codec, Reader, Writer};
     use horizon_protocol::item::{Component, component};
     use horizon_world::nbt::Tag;
+
+    #[test]
+    fn lore_lines_reach_the_client() {
+        let lines = vec![
+            Tag::compound([("text", Tag::String("Buy 400".into()))]),
+            Tag::compound([
+                ("text", Tag::String("▲ 2.0%".into())),
+                ("color", Tag::String("green".into())),
+            ]),
+        ];
+        let mut item = ItemStack::new("minecraft:diamond", 1);
+        item.data_mut()
+            .other
+            .push(("minecraft:lore".into(), Tag::List(lines.clone())));
+        let sent = stack_to_network(|_| 7, |_, _| None, &Some(item));
+        let mut writer = Writer::new();
+        horizon_protocol::item::Slot::write(&sent, &mut writer);
+        let mut reader = Reader::new(&writer.data);
+        let received = horizon_protocol::item::Slot::read(&mut reader)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            received.component(component::LORE),
+            Some(&Component::Lore(lines))
+        );
+    }
 
     #[test]
     fn styled_custom_name_survives_inventory_sync() {

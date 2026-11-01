@@ -96,7 +96,7 @@ The opening, then Play ([clip](docs/opening.webm)):
   from the window or `horizon-launcher play` adds to it (`instance list` shows it too). Each
   instance plays the launcher's version, which follows updates, unless the Play page's version
   picker keeps it on another installed one (to keep an old world on the version it was made
-  with); picking the version marked "follows updates" lets it follow again.
+  with); picking the version marked "auto-update" lets it follow again.
 - **Export**: Home's Instance row has **Export…**: the selected instance (or a port) as a `.mrpack`
   (Modrinth's modpack format: resource packs the browser installed from Modrinth are listed by
   their download, the rest is in `overrides/`) or a `.zip` of the game folder's layout, with the
@@ -114,6 +114,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
+- **Maximum memory**: a row on Home, per instance: a slider and a box that takes `4096`, `4gb`, or nothing
+  for no limit (the default), saved at once. For Horizon it goes to the game as
+  `HORIZON_MEMORY_LIMIT_MB` ([what it does](../docs/native-client.md#ram-limit)); a Java instance's sets `-Xmx`.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in
@@ -262,6 +265,15 @@ minimize, maximize/restore and close; macOS and Linux keep their system title ba
 
 The launcher looks for a newer Nightly when it starts and every 30 minutes while it is open, and
 shows a small "available, Install" line on Play.
+
+Release lists and commits come from GitHub's API, which allows 60 anonymous calls an hour per
+address: players behind a shared one (a school, a dorm, a carrier's NAT) spend them together.
+So each answer is kept in `cache/github/` in the data folder and used again for 5 minutes without
+asking, then revalidated with its ETag. When GitHub answers with its rate limit, or not at all,
+Horizon's own releases are read through Kira's read-only mirror
+(`https://mcp.playhorizon.dev/github/public`; `HORIZON_GITHUB_MIRROR` replaces it, empty turns it
+off); when both fail the last saved answer is used, else the error names both. The release files
+themselves come from their download links, which that limit doesn't cover.
 
 It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
 `vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
@@ -429,9 +441,12 @@ Play, with the token renewal; with no network the last answer stands, and a "doe
 at once. The account also plays online-mode servers under your own name and skin; offline names
 play LAN and offline-mode servers beside it. The game binary started directly (`horizon-client`,
 `horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
-Credential Manager, or the Secret Service on Linux), never in a file, a log or the command line;
-`accounts.json` in the data folder keeps only names and UUIDs. Without a keychain you stay signed
-in until the launcher closes. When the game starts, it gets the session in a private file it
+Credential Manager, or the Secret Service on Linux), never in a log or the command line;
+`accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
+to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it
+answers; on macOS and Windows without one you stay signed in until the launcher closes. The
+Tailscale access token never goes to that file: without a keychain it lasts until the launcher
+closes. When the game starts, it gets the session in a private file it
 deletes as soon as it has read it. Sign out removes the tokens.
 
 Sign-in needs Horizon's own Azure app registration: its client ID is built in from
@@ -484,7 +499,9 @@ On Windows, `cargo test --bin horizon-launcher desktop_list_renders_the_viewport
     cargo build --release
 
 On NixOS, `nix-shell` in this folder provides the libraries GPUI links to (Wayland, X11,
-xkbcommon, Vulkan, fontconfig). macOS needs Xcode's command line tools. The `launcher`
+xkbcommon, Vulkan, fontconfig) and the ALSA and libudev files a native mod build looks up, so
+start the launcher from that shell to build native mods as well (#5248). macOS needs Xcode's
+command line tools. The `launcher`
 workflow builds all three platforms on every push to the `launcher` branch (or a
 `launcher-*` one), then installs the latest Horizon into a temporary folder and checks that the
 client starts (`--help`) and that the binaries import only system libraries (Windows).

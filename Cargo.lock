@@ -1314,6 +1314,7 @@ dependencies = [
  "horizon-chat-filter",
  "horizon-client-core",
  "horizon-client-input",
+ "horizon-client-lib",
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
@@ -1323,6 +1324,7 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -1374,6 +1376,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-client-lib"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bytemuck",
+ "chrono",
+ "flate2",
+ "fs4",
+ "gilrs",
+ "glam",
+ "horizon-anticheat",
+ "horizon-assets",
+ "horizon-bench",
+ "horizon-chat-filter",
+ "horizon-client-core",
+ "horizon-client-input",
+ "horizon-client-render",
+ "horizon-command",
+ "horizon-core",
+ "horizon-dualsense",
+ "horizon-friends",
+ "horizon-hdr",
+ "horizon-items",
+ "horizon-mods",
+ "horizon-narrator",
+ "horizon-optifine",
+ "horizon-protocol",
+ "horizon-server-files",
+ "horizon-shader-api",
+ "horizon-shaders",
+ "horizon-telemetry",
+ "horizon-theme",
+ "horizon-threads",
+ "horizon-world",
+ "log",
+ "miniz_oxide 0.8.9",
+ "naga",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "open",
+ "png",
+ "pollster",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "unicode-bidi",
+ "ureq",
+ "wgpu",
+ "winit",
+ "zip",
+]
+
+[[package]]
 name = "horizon-client-render"
 version = "0.1.0"
 dependencies = [
@@ -1394,6 +1452,7 @@ dependencies = [
  "horizon-hdr",
  "horizon-items",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1478,6 +1537,7 @@ dependencies = [
  "horizon-client-core",
  "horizon-core",
  "horizon-world",
+ "log",
  "serde",
  "serde_json",
 ]
@@ -1513,6 +1573,8 @@ dependencies = [
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
+ "horizon-bench",
+ "log",
  "regex",
 ]
 
@@ -1545,6 +1607,7 @@ dependencies = [
 name = "horizon-protocol"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "flate2",
  "getrandom 0.3.4",
  "horizon-core",

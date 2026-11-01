@@ -30,6 +30,7 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   change), none for a fix. Agents never add `release-now`: the maintainer decides it. Merges ship in batches of 5, or after
   6 hours ([docs/release-flow.md](docs/release-flow.md)).
 - Contributors first: `gh pr list --state open --search <area>` before you start; never duplicate theirs.
+- **No hardcoded user-facing strings.** Keep UI translation-ready from the start. In the launcher (`launcher/`), wrap visible text with `tr("...")` or `trf("... {arg} ...", &[("arg", &val)])` from `crate::i18n` instead of raw string literals or `format!`. In the game, use translation keys (`Text::tr`, `lang::get`), never hardcoded English strings.
 - **Claim before you start**: comment `/claim` on the issue (no issue yet: open one, then claim it). An assigned
   issue is taken: pick another. `/unclaim` when you stop; a claim with no open PR linking it is released after 5 days.
 
@@ -39,7 +40,8 @@ Game workspace (root `Cargo.toml`); `launcher/` and `crates/horizon-telemetry-se
 
 | Crate | Owns |
 |---|---|
-| `horizon-client` | The game: a lib (`src/lib.rs`, ~100 flat modules: gameplay, networking, title screens) and the bin (`src/main.rs` → `game.rs` + `game/`), plus `horizon-ctl` (`src/bin/horizon-ctl/`). Also the dedicated server (`--dedicated`) |
+| `horizon-client` | Gameplay library (`src/lib.rs`: `game.rs` + `game/`, `entry.rs`) and thin executable (`src/main.rs`). Also the dedicated server (`--dedicated`). Re-exports `horizon-client-lib` for existing mod paths. |
+| `horizon-client-lib` | Reusable client systems, `horizon-ctl`, probes and their tests. Its manifest points to the existing sources under `crates/horizon-client/`; the library root is `src/client_lib.rs`. It never depends on gameplay. |
 | `horizon-items` | Blocks and items below gameplay: `blocks.rs` (block facts), `items.rs`, `item_data.rs` (components), `enchant.rs`, `cooldowns.rs`, `bundle.rs`, `item_nbt.rs`. Re-exported as `horizon_client::items`... |
 | `horizon-command` | Command parsing (Brigadier): the vanilla tree, argument types, selectors, suggestions, the tree's network form. Re-exported as `horizon_client::command` |
 | `horizon-client-core` | The client lib's bottom layer: `text.rs`, `lang.rs`, `snbt.rs`, `nbt_path.rs`, `component.rs`, `scoreboard.rs`, `bossbar.rs`, `gamerules.rs`, `block_entity_nbt.rs`, registry/particle/sound tables. Re-exported under the old paths (`horizon_client::text`...) |
@@ -56,6 +58,7 @@ Game workspace (root `Cargo.toml`); `launcher/` and `crates/horizon-telemetry-se
 | `horizon-friends`, `horizon-relay` | Play with Friends: invite codes, encrypted tunnel, the relay ([docs/play-with-friends.md](docs/play-with-friends.md)) |
 | `horizon-mods`, `cargo-horizon-mod` | Content mods (`.hmod`: manifest, content fence, no code), the registry index and `.hpack`, and `cargo horizon-mod` (`new`, `build`, `run`, `check`, `registry`) ([docs/mods.md](docs/mods.md)). Code mods are native, built by the launcher ([docs/native-mods.md](docs/native-mods.md)) |
 | `horizon-port-pack` | Porting Java modpacks ([docs/modpacks.md](docs/modpacks.md)) |
+| `horizon-optifine` | OptiFine-format pack files below every feature that reads them: `.properties`, the name/range/block matchers, paths and `optifine/` folders, and custom entity models (`cem/`: `.jem`/`.jpm` parsing and baking) |
 | `horizon-shader-api` | Horizon's own WGSL shader packs ([docs/api/shaders.md](docs/api/shaders.md)): `horizon-shaders.toml`, the `.hshader` package; shared by the game, the launcher and the registry |
 | `horizon-shaders` | Shader packs (the `shaders/` folder format), rebuilt clean-room from a written spec of the format; no wgpu |
 | `horizon-theme` | Design tokens and fonts for the launcher, the game's own menus and the website |
@@ -83,8 +86,8 @@ reads `README.md`, `launcher/links.json`, `docs/api/`, `roadmap/roadmap.json` an
 ```sh
 python3 tools/pr_ready.py                  # the self-check: fmt, clippy -D warnings, touched crates' tests, harnesses; paste its block in the PR
 python3 tools/pr_ready.py --quick          # same without harnesses
-cargo test -p horizon-client --lib --bins --tests   # skips the 104 examples (pr_ready does this); `--doc` separately
-cargo test -p horizon-client --lib mod_content::tests:: -- --ignored   # the 5 slow content-root tests, #[ignore]d; pr_ready runs them when mod content, assets, blocks or items change
+cargo test -p horizon-client -p horizon-client-lib --lib --bins --tests   # skips the 104 examples (pr_ready does this); `--doc` separately
+cargo test -p horizon-client-lib --lib mod_content::tests:: -- --ignored   # the 5 slow content-root tests, #[ignore]d; pr_ready runs them when mod content, assets, blocks or items change
 cargo build --profile fast -p horizon-client        # optimized, quick to link: use it to play or run lan_e2e
 python3 tools/parity.py --changed origin/main       # the harnesses your branch can affect (CI's parity job)
 python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cover these files, without running them
@@ -101,8 +104,11 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
   or the game binary with a fixture env var (`game/dispense_fixture.rs`, `game/sculk_fixture.rs`,
   `game/command_harness.rs`, `game/net_harness.rs`). Copy a nearby harness for a new one.
 - Probes build into `.local/parity-target/`; harnesses find binaries via `lab.cargo_target()`, never `target/`.
-- What a change reruns (of 329 harnesses, measured 2026-10-23): a file of the game binary (`game.rs`, `game/`)
-  ~25, a file of the client lib ~103, of `horizon-world` ~103–109, of `horizon-core` ~119. Plan for it.
+- Harness selection uses Cargo dep-info and reachable-code narrowing (`tools/parity_reach.py`).
+  `horizon-client-lib` builds the control tool and client probes without gameplay; their dep-info
+  excludes `game.rs` and `game/`, so gameplay edits do not rebuild or select those probes.
+  Source paths remain in `crates/horizon-client/`. Measure actual harness selection on refreshed
+  records with `tools/parity.py --changed-files paths.txt --list`; historical counts are not a guarantee.
 - Rust integration tests: `crates/horizon-client/tests/` (`lan_bot.rs`, `generation_saves.rs`, `streaming_meshes.rs`).
 - Linux needs `libasound2-dev libudev-dev`; `--no-default-features` drops audio and controllers (the server build).
 - Run and drive the game (starts the `horizon-client` beside `horizon-ctl`; other arguments go to the game):
@@ -127,8 +133,11 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
 ## horizon-client: where things live
 
 `L:` = lib (`crates/horizon-client/src/`, or `crates/horizon-client-render/src/` for the modules that crate holds, under
-the same `horizon_client::<module>` paths), `G:` = bin (`crates/horizon-client/src/game/`). The lib can't see
-`Game`; bin code reaches the lib as `horizon_client::<module>`.
+the same `horizon_client::<module>` paths), `G:` = gameplay (`crates/horizon-client/src/game/`), also in the lib in normal builds.
+Gameplay keeps its `horizon_client::<module>` imports through a self-crate alias. The executable
+contains only the allocator, mod API marker and a call to `entry::main`. For unit tests, the lib
+excludes `entry` and `game`, and the executable test target owns `game` so its process-wide test
+state stays separate from the library tests. This compiles gameplay twice for executable tests.
 
 | Subsystem | Files |
 |---|---|
@@ -150,7 +159,7 @@ the same `horizon_client::<module>` paths), `G:` = bin (`crates/horizon-client/s
 | Save and load | L: `save.rs` (level.dat, regions, playerdata), `entity_nbt.rs`, `options_file.rs`; `horizon-client-core/src/block_entity_nbt.rs`; G: `saving.rs`, `persist.rs` (entities); `crates/horizon-world/src/{region.rs,nbt.rs,datafix/}` |
 | Input | game.rs `fn window_event`, `fn key_pressed`, `fn play_mouse`; crate `horizon-client-input` (`keybinds.rs`, `keymapping.rs`, `key_names.rs`, `mouse.rs`, `input.rs`, `interaction_input.rs`, `gamepad.rs`, `clipboard.rs`); L: `osk.rs`; G: `pad.rs`, `pad_menu.rs` |
 | Audio | L: `audio.rs` (mixer), `sound_engine.rs`, `sound_events.rs`, `music.rs`, `ambience.rs`; G: `music.rs`, `subtitle_hud.rs` |
-| Resource packs | L: `packs.rs` + `packs/`, `pack_screen.rs`, `atlas_sources.rs`, `sprites.rs`, `mipmap.rs`, `model_library.rs`, `font.rs`; `horizon-client-core/src/lang.rs`; crate `horizon-assets`; G: `packs.rs` |
+| Resource packs | L: `packs.rs` + `packs/`, `pack_screen.rs`, `atlas_sources.rs`, `sprites.rs`, `mipmap.rs`, `model_library.rs`, `font.rs`, `mobs/cem.rs` + `mobs/cem_anim.rs` (OptiFine/EMF entity models and their animations); `horizon-client-core/src/lang.rs`; crates `horizon-assets`, `horizon-optifine`; G: `packs.rs` |
 | Agent control | L: `control.rs` (socket), `bin/horizon-ctl/`; G: `control.rs`, `agent.rs`, `events.rs`, `ui_control.rs` ([docs/agent-control.md](docs/agent-control.md)) |
 | Mods | crate `horizon-mods`; G: `mods.rs`; L: `mod_content.rs`, `mod_list.rs` |
 | Horizon extras, settings | L: `extras.rs`, `graphics.rs`, `settings.rs`, `minimap.rs`; G: `extras.rs`, `tweaks.rs`, `options.rs` |
@@ -159,7 +168,7 @@ the same `horizon_client::<module>` paths), `G:` = bin (`crates/horizon-client/s
 
 - `struct Game` (game.rs, ~290 fields) holds everything. Its methods are spread over ~180 files: game.rs keeps
   the core (tick, render, input, inventory, world open/close) and each `game/<feature>.rs` adds an
-  `impl Game<'_>` block for one feature, with its own state types. Fields are private to the bin.
+  `impl Game<'_>` block for one feature, with its own state types. Fields stay private to the gameplay module and its descendants. Gameplay tests run in the gameplay library, separate from reusable-library tests.
 - Find a feature's code: `grep -rn "fn tick_<thing>\|fn <verb>_<thing>" crates/horizon-client/src/game*`;
   the file is usually `game/<thing>s.rs`. Who calls it: grep the name in game.rs's `fn tick` / `fn tick_world`.
 - Fields that say which mode runs: `remote` (this window is a client of a server: multiplayer, LAN guest, or

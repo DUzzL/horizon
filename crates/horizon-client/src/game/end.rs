@@ -177,6 +177,15 @@ impl EndFlash {
     fn intensity(&self, partial: f32) -> f32 {
         self.old_intensity + (self.intensity - self.old_intensity) * partial
     }
+    /// SkyRenderer.renderEndFlash's pose: the sprite at height 100 turned to the flash.
+    fn pose(&self) -> glam::Mat4 {
+        flash_pose(self.x_angle, self.y_angle)
+    }
+}
+
+fn flash_pose(x_angle: f32, y_angle: f32) -> glam::Mat4 {
+    glam::Mat4::from_rotation_y((180.0 - y_angle).to_radians())
+        * glam::Mat4::from_rotation_x((-90.0 - x_angle).to_radians())
 }
 impl EndState {
     pub(super) fn locator(&self) -> Option<Arc<VanillaTerrain>> {
@@ -316,9 +325,7 @@ impl Game<'_> {
                 .get("environment/celestial/end_flash")
                 .copied()
         {
-            let flash = &self.end.flash;
-            let pose = glam::Mat4::from_rotation_y((180.0 - flash.y_angle).to_radians())
-                * glam::Mat4::from_rotation_x((-90.0 - flash.x_angle).to_radians());
+            let pose = self.end.flash.pose();
             let level = (intensity.clamp(0.0, 1.0) * 255.0) as u32;
             let color = level << 24 | level << 16 | level << 8 | level;
             let corners = [
@@ -342,6 +349,21 @@ impl Game<'_> {
             }
         }
         out
+    }
+
+    /// Iris's `endFlashIntensity` and the flash's direction (camera-relative, length 100: the
+    /// sprite's centre), for shader packs; no flash outside the End.
+    pub(super) fn end_flash_for_pack(&self, partial: f32) -> (f32, glam::Vec3) {
+        if self.dim != Dim::End {
+            return (0.0, glam::Vec3::ZERO);
+        }
+        let flash = &self.end.flash;
+        (
+            flash.intensity(partial).clamp(0.0, 1.0),
+            flash
+                .pose()
+                .transform_point3(glam::Vec3::new(0.0, 100.0, 0.0)),
+        )
     }
 
     /// LightmapRenderStateExtractor: End flashes add to the sky light factor
@@ -489,6 +511,9 @@ impl Game<'_> {
         if self.dim == Dim::End {
             self.tick_fight();
             self.tick_dragon_fireballs();
+        } else {
+            // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
+            self.tick_fight();
         }
         self.tick_crystals();
         self.tick_eyes();
@@ -1855,5 +1880,18 @@ mod tests {
         let corners = quad.map(|v| glam::Vec3::from_array(v.pos));
         let centre = corners.iter().copied().sum::<glam::Vec3>() / 4.0;
         assert!((centre - at).abs_diff_eq(up_dir * 0.125, 1e-5), "{centre}");
+    }
+
+    /// `endFlashPosition`'s direction: the flash sprite's centre, 100 blocks away.
+    #[test]
+    fn the_end_flash_is_where_its_sprite_is() {
+        let at =
+            |x: f32, y: f32| flash_pose(x, y).transform_point3(glam::Vec3::new(0.0, 100.0, 0.0));
+        // Straight up whatever the turn, and level toward the north at y_angle 180.
+        assert!(at(-90.0, 37.0).abs_diff_eq(glam::Vec3::new(0.0, 100.0, 0.0), 1e-3));
+        assert!(at(0.0, 180.0).abs_diff_eq(glam::Vec3::new(0.0, 0.0, -100.0), 1e-3));
+        for (x, y) in [(-60.0, -180.0), (10.0, 95.0), (-25.0, 3.0)] {
+            assert!((at(x, y).length() - 100.0).abs() < 1e-3);
+        }
     }
 }

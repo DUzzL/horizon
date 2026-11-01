@@ -58,7 +58,7 @@ CreateWorldScreen.onCreate	port	crates/horizon-client/src/title.rs::Title::creat
 CreateWorldScreen.createWorldAndCleanup	inline	crates/horizon-client/src/game/startup_menu.rs::StartupMenu::queue_entry	gap: minor: temp datapack folder cleanup not modelled (no datapack copy)
 CreateWorldScreen.createNewWorld	port	crates/horizon-client/src/game.rs::Game::open_world	gap: minor: the folder is made in WorldRequest::prepare and no datapacks are copied in
 CreateWorldScreen.createLevelSettings	port	crates/horizon-client/src/game/world_loading.rs::WorldRequest::prepare	name, mode, difficulty, hardcore and commands written with the new level; gap: minor: debug world (spectator, peaceful) not modelled
-CreateWorldScreen.keyPressed	missing		player: Enter does not create the world; startup_menu title_key only confirms a focused rename box, so Enter on Create New World does nothing
+CreateWorldScreen.keyPressed	port	crates/horizon-client/src/title.rs::confirm_key_size	player: Enter with no button focused creates the world (Screenless Create mode falls through to create_action), as the screen does after its widgets decline the key
 CreateWorldScreen.extractRenderState	port	crates/horizon-client/src/title/create_world.rs::Title::draw_create	draws the footer separator
 CreateWorldScreen.extractMenuBackground	port	crates/horizon-client/src/title/create_world.rs::Title::draw_create	draws the tab header strip and menu background
 CreateWorldScreen.getOrCreateTempDataPackDir	missing		minor: temp folder for datapacks chosen at creation; Horizon has no create-time datapack picker

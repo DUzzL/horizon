@@ -512,6 +512,8 @@ pub struct PackPost {
     page_groups: HashMap<u32, (wgpu::Buffer, wgpu::BindGroup)>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<super::pack_timing::PassTiming>,
+    /// `depthtex0` at the screen's centre, read back for `centerDepthSmooth`.
+    center_depth: Option<super::pack_center_depth::CenterDepth>,
     /// `shaders.properties`' custom uniforms, after the frame's in `uniforms.values`.
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
@@ -2242,6 +2244,7 @@ impl PackPost {
             block_ids,
             page_groups: HashMap::new(),
             timing: None,
+            center_depth: None,
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
             lightmap: world.lightmap,
@@ -2740,6 +2743,13 @@ impl PackPost {
                 let rp = &mut open.as_mut().expect("open").0;
                 rp.set_pipeline(pass.render());
                 rp.set_bind_group(0, group, &[]);
+                // A sky program that reads the pack's SSBOs (Noble's `gbuffers_textured`, the
+                // sun's fallback) binds them, as the other passes do.
+                if pass.buffers
+                    && let Some(g) = &self.buffers.group
+                {
+                    rp.set_bind_group(4, g, &[]);
+                }
                 sky.geometry.bind(rp, part.textured);
                 open.as_mut().expect("open").1 = i;
             }
@@ -2893,6 +2903,13 @@ impl PackPost {
             only_player: e.only.0,
             blocks: e.shadow[1].is_some(),
             only_lit: e.only.1,
+        }
+    }
+
+    /// After the frame's submission: the centre depth it copied starts its way back.
+    pub fn submitted(&mut self) {
+        if let Some(center) = &mut self.center_depth {
+            center.submitted();
         }
     }
 
@@ -3117,8 +3134,7 @@ impl PackPost {
 
     /// What the shadow camera draws of the terrain this frame, when the pack draws it.
     pub fn shadow_view(&self, frame: &super::Frame) -> Option<ShadowView> {
-        self.shadow_targets.as_ref()?;
-        if self.shadow_terrain.is_none() && self.shadow_water.is_none() {
+        if !self.has_shadow() {
             return None;
         }
         let shadow = &self.uniforms.shadow;
@@ -3137,6 +3153,12 @@ impl PackPost {
     /// Whether the pack draws terrain itself.
     pub fn has_terrain(&self) -> bool {
         self.terrain.is_some()
+    }
+
+    /// Whether the pack's shadow pass draws terrain (`shadow_view`).
+    pub fn has_shadow(&self) -> bool {
+        self.shadow_targets.is_some()
+            && (self.shadow_terrain.is_some() || self.shadow_water.is_some())
     }
 
     /// Whether the pack draws the sky (disc, sunset, stars, void) itself.
@@ -3608,6 +3630,10 @@ impl PackPost {
         if let Some(t) = &mut self.timing {
             t.begin(device, queue);
         }
+        self.uniforms.center_depth_raw = self
+            .center_depth
+            .get_or_insert_with(|| super::pack_center_depth::CenterDepth::new(device))
+            .collect(device);
         self.uniforms.update(frame, inputs, size);
         // Until the camera's biome is known, `smooth` waits for the world's values.
         if !inputs.biome_known {
@@ -3846,6 +3872,10 @@ impl PackPost {
             self.draw_translucent(device, queue, encoder, size, terrain);
         }
         let targets = self.targets.as_ref().expect("resized");
+        // depthtex0 as the frame leaves it, for next frames' `centerDepthSmooth`.
+        if let Some(center) = &mut self.center_depth {
+            center.copy(device, encoder, &targets.depth_texture);
+        }
         let view = |m: u16, i: usize, alt: bool| {
             targets.color[i]
                 .as_ref()
@@ -3944,7 +3974,7 @@ mod tests {
     /// made. Such a panic skips the pass, as a validation error does, and the device goes on.
     #[test]
     fn a_shader_compiler_panic_skips_the_pass() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             return;
         };

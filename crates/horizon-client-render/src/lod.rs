@@ -26,6 +26,11 @@ const MAX_SAVED: usize = 1024;
 /// (`Lod::observing`).
 pub const OBSERVE_AHEAD: usize = 8;
 const SAMPLE_JOBS: usize = 4;
+/// Sample jobs queued per sampling thread once the near terrain is in.
+/// Results are taken and jobs started once a frame: with four in flight, a
+/// tile taking milliseconds left the threads idle for most of a slow frame
+/// (2-3 fps on a CPU renderer, with far terrain a few tiles a frame).
+const QUEUED_PER_SAMPLER: usize = 32;
 /// Threads that sample far tiles beside the mesher. Sampling is the cold-load
 /// bottleneck (each task evaluates a shared density lattice for 256 columns),
 /// so medium machines use half their cores, not a quarter.
@@ -47,6 +52,9 @@ fn meshing_threads(cores: usize) -> usize {
 /// terrain starts one sample job at most this often and no detail: it would
 /// otherwise take the cores the near chunks and the frame need.
 const HELD_SAMPLE_STEP: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long a tile whose sampling failed (`LodSampler::grid` gave no
+/// columns: a server refused or lost it) waits before it is asked again.
+const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 /// The coarsest tile level: `Plan` roots cover at most `MAX_CHUNKS` chunks
 /// around (a level-22 tile is 67 million blocks wide: the whole world).
 pub(crate) const MAX_LEVEL: u8 = 22;
@@ -494,7 +502,20 @@ struct Plan {
     /// selection is rebuilt, without sorting the whole set.
     by_level: [Vec<TileKey>; MAX_LEVEL as usize + 1],
     elevation: i32,
+    camera: [i32; 2],
+    /// The squared distance within which no coarser tile stands in for
+    /// missing detail (`stands_in`): the seam with the near chunks waits
+    /// for its own tiles instead of showing broad boxes beside them.
+    near: i64,
+    /// The squared distance within which planned tiles load before the
+    /// coarse backdrop (`wanted_tiles`).
+    first: i64,
 }
+/// Chunks past the render distance where only planned tiles are drawn (two
+/// past the last near chunk, `streaming::in_view_distance`), and where they
+/// load first.
+const SEAM_CHUNKS: i32 = 3;
+const FIRST_CHUNKS: i32 = 4;
 impl Plan {
     #[cfg(test)]
     fn new(camera: [i32; 2], detail: i32, distance: u32) -> Self {
@@ -518,6 +539,9 @@ impl Plan {
         let size = 16 << level;
         let mut result = Self {
             elevation,
+            camera,
+            near: i64::from((detail + SEAM_CHUNKS) * 16).pow(2),
+            first: i64::from((detail + FIRST_CHUNKS) * 16).pow(2),
             ..Self::default()
         };
         for z in (camera[1] - range).div_euclid(size)..=(camera[1] + range).div_euclid(size) {
@@ -589,7 +613,7 @@ impl Plan {
             if complete {
                 return true;
             }
-            if ready.contains_key(&key) {
+            if ready.contains_key(&key) && self.stands_in(key) {
                 // Its mesh is clipped around every selected finer tile.
                 out.push(key);
                 return true;
@@ -601,6 +625,26 @@ impl Plan {
         } else {
             false
         }
+    }
+    /// Whether a split tile may draw for its missing children: only away
+    /// from the near chunks, where its cells are small on screen.
+    fn stands_in(&self, key: TileKey) -> bool {
+        key.reach(self.camera) >= self.near
+    }
+    /// The coarse tile sampled to cover `leaf` while it loads: two levels
+    /// up (16 times fewer tiles, each as cheap as a leaf to sample), one
+    /// where that would reach the seam, none beside it.
+    fn backdrop(&self, leaf: TileKey) -> Option<TileKey> {
+        let mut backdrop = None;
+        let mut key = leaf;
+        for _ in 0..2 {
+            key = key.parent();
+            if !self.nodes.contains(&key) || !self.stands_in(key) {
+                break;
+            }
+            backdrop = Some(key);
+        }
+        backdrop
     }
     /// Whether chunk column (x, z) is drawn by the tile planned there (ready;
     /// at level 0, also `filled`) rather than by a coarser ancestor standing
@@ -625,6 +669,47 @@ impl Plan {
         self.split.contains(&key) || (ready.contains_key(&key) && (key.level > 0 || filled(key)))
     }
 }
+/// The tiles to sample, `Wanted`'s order best first. First the planned
+/// tiles at the seam with the near chunks, nearest first: coarse tiles
+/// there cost a far tile's work for broad boxes that fine tiles replace
+/// moments later. Then a coarse backdrop (`Plan::backdrop`) out to the
+/// horizon, then every other planned tile nearest first, each replacing its
+/// part of the backdrop: the horizon fills in early and sharpens from the
+/// player outward, whichever way they look.
+fn wanted_tiles(
+    plan: &Plan,
+    ready: &FxHashMap<TileKey, impl Sized>,
+    camera: [i32; 2],
+) -> impl Iterator<Item = Wanted> {
+    let wanted = |class, key: TileKey| Wanted {
+        class,
+        distance: i64::from(key.distance(camera)),
+        x: key.x,
+        z: key.z,
+        level: key.level,
+    };
+    let mut backdrop = FxHashSet::default();
+    let mut tiles: Vec<_> = plan
+        .nodes
+        .iter()
+        .filter(|key| !plan.split.contains(key) && !ready.contains_key(key))
+        .map(|&key| {
+            if let Some(coarse) = plan.backdrop(key)
+                && !ready.contains_key(&coarse)
+            {
+                backdrop.insert(coarse);
+            }
+            let first = key.reach(camera) < plan.first;
+            wanted(if first { SEAM } else { REST }, key)
+        })
+        .collect();
+    tiles.extend(backdrop.into_iter().map(|key| wanted(BACKDROP, key)));
+    tiles.into_iter()
+}
+/// `Wanted::class`es, best first.
+const SEAM: u8 = 0;
+const BACKDROP: u8 = 1;
+const REST: u8 = 2;
 /// Visited chunks' summaries (`Lod::saved`) and their reductions.
 type Saved = FxHashMap<(i32, i32), Arc<[Column; 256]>>;
 type Reduced = FxHashMap<(i32, i32), Arc<ReducedColumns>>;
@@ -791,9 +876,11 @@ impl Ord for MeshQueued {
             .then(other.order.cmp(&self.order))
     }
 }
-/// A tile the sampler should produce next, nearest first.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A tile the sampler should produce next: by `class`
+/// (`wanted_tiles`), then nearest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Wanted {
+    class: u8,
     distance: i64,
     x: i32,
     z: i32,
@@ -816,8 +903,9 @@ struct Shared {
     /// On small machines, hold queued far meshing while near terrain loads.
     mesh_held: AtomicBool,
 }
-/// One background worker and at most two outstanding sample jobs. Only the
-/// current view's quadtree and a bounded set of visited summaries are retained.
+/// A background worker, sampling and meshing threads, and a bounded queue of
+/// sample jobs (`sample_jobs`). Only the current view's quadtree and a
+/// bounded set of visited summaries are retained.
 pub struct Lod {
     shared: Arc<Shared>,
     thread: Option<thread::JoinHandle<()>>,
@@ -843,6 +931,8 @@ pub struct Lod {
     near_loading: bool,
     /// When `request_samples` last started a job while held.
     held_sample_at: std::time::Instant,
+    /// Tiles whose sampling failed, and when they may be asked again.
+    retry: FxHashMap<TileKey, std::time::Instant>,
     /// Each tile's samples, shared with mesh jobs in flight.
     ready: FxHashMap<TileKey, Arc<Vec<Column>>>,
     /// Fully covered subtrees, by tile.
@@ -1109,12 +1199,17 @@ impl Lod {
                                 if worker.stop.load(Ordering::Relaxed) {
                                     break;
                                 }
-                                if sampling.is_empty() {
+                                // Summaries and detail requests first: they
+                                // would otherwise wait behind a whole queue of
+                                // samples where no sampling threads take them.
+                                let other =
+                                    jobs.iter().position(|job| !matches!(job, Job::Sample(_)));
+                                if let Some(index) = other {
+                                    jobs.remove(index)
+                                } else if sampling.is_empty() {
                                     jobs.pop_front()
                                 } else {
-                                    jobs.iter()
-                                        .position(|job| !matches!(job, Job::Sample(_)))
-                                        .and_then(|index| jobs.remove(index))
+                                    None
                                 }
                             };
                             let Some(job) = job else { continue };
@@ -1176,9 +1271,10 @@ impl Lod {
             detail_request_pending: false,
             detail_request_at: std::time::Instant::now(),
             small: cores <= 4,
-            sample_jobs: SAMPLE_JOBS.max(sampling_threads(cores) + 1),
+            sample_jobs: sampling_threads(cores) * QUEUED_PER_SAMPLER,
             near_loading: false,
             held_sample_at: std::time::Instant::now(),
+            retry: FxHashMap::default(),
             ready: FxHashMap::default(),
             complete: FxHashMap::default(),
             active: FxHashSet::default(),
@@ -1241,13 +1337,30 @@ impl Lod {
         }
         (desired, sampled)
     }
+    /// Drawn columns that take their chunk's generated detail (trees,
+    /// structures; `request_detail`), and how many of them have it.
+    /// `refined_samples` counts the detail of every drawn tile instead.
+    pub fn detail_progress(&self) -> (usize, usize) {
+        self.active
+            .iter()
+            .filter(|key| self.wants_detail(key))
+            .fold((0, 0), |(wanted, refined), key| {
+                let mask = self.detail_masks.get(key).map_or(0, detail_count);
+                (wanted + CELLS * CELLS, refined + mask)
+            })
+    }
     pub fn refined_samples(&self) -> usize {
         self.active
             .iter()
             .filter_map(|key| self.detail_masks.get(key))
-            .flat_map(|mask| mask.iter())
-            .map(|bits| bits.count_ones() as usize)
+            .map(detail_count)
             .sum()
+    }
+    /// An active tile whose columns take generated chunks' detail.
+    fn wants_detail(&self, key: &TileKey) -> bool {
+        key.level <= DETAIL_LEVEL
+            && !self.plan.split.contains(key)
+            && !(key.level == 0 && self.covered.contains(&(key.x, key.z)))
     }
     pub fn removed(&mut self) -> Vec<TileKey> {
         std::mem::take(&mut self.removed)
@@ -1411,14 +1524,15 @@ impl Lod {
         let present = self.ready.contains_key(&key);
         // Covered level-0 stand-ins complete their parent but are never drawn.
         let ready = present && !(key.level == 0 && self.covered.contains(&(key.x, key.z)));
-        // Mirrors `Plan::select`: a ready split tile is a complete
-        // stand-in even while its children are still incomplete, so no
-        // second fallback is drawn above it.
+        // Mirrors `Plan::select`: a ready split tile away from the seam is a
+        // complete stand-in even while its children are still incomplete,
+        // so no second fallback is drawn above it.
         let (complete, active) = if self.plan.split.contains(&key) {
             let children = key.children().into_iter().all(|child| {
                 !self.plan.nodes.contains(&child)
                     || self.complete.get(&child).copied().unwrap_or(false)
             });
+            let ready = ready && self.plan.stands_in(key);
             (children || ready, ready && !children)
         } else {
             (present, ready)
@@ -1525,6 +1639,11 @@ impl Lod {
     pub fn observing(&self) -> usize {
         self.shared.observed.lock().unwrap().len()
     }
+    /// Whether tiles new to the plan are being sampled: far terrain on its way,
+    /// meshed as soon as it is.
+    pub fn sampling(&self) -> bool {
+        !self.pending.is_empty()
+    }
     /// Keeps a visited chunk's summary, unless it is unchanged.
     fn finish_observed(&mut self, key: (i32, i32), columns: ReducedColumns) {
         if self
@@ -1609,7 +1728,16 @@ impl Lod {
     }
     fn finish_sample(&mut self, key: TileKey, samples: Vec<Column>) {
         self.pending.remove(&key);
-        if self.plan.nodes.contains(&key) && samples.len() == CELLS * CELLS {
+        if samples.len() != CELLS * CELLS {
+            let now = std::time::Instant::now();
+            if self.retry.len() > 4096 {
+                self.retry.retain(|_, at| *at > now);
+            }
+            self.retry.insert(key, now + RETRY);
+            return;
+        }
+        self.retry.remove(&key);
+        if self.plan.nodes.contains(&key) {
             let mut samples = samples;
             if let (Some(old), Some(mask)) = (self.ready.get(&key), self.detail_masks.get(&key)) {
                 for i in 0..256 {
@@ -1638,9 +1766,43 @@ impl Lod {
         // neighbours. Coarser tiles do not read visited columns (stride > 16),
         // so re-meshing every tile touching the chunk was pure waste.
     }
-    /// Whether the near terrain is still loading: on small machines far
-    /// terrain then holds back (`HELD_SAMPLE_STEP`).
+    /// Whether the near terrain is still loading: far terrain then queues
+    /// `SAMPLE_JOBS` at most, and on small machines holds back
+    /// (`HELD_SAMPLE_STEP`).
     pub fn set_near_loading(&mut self, loading: bool) {
+        if loading && !self.near_loading {
+            // The queue filled while nothing loaded nearby; the near chunks
+            // must not wait behind it. Larger machines keep its first
+            // `SAMPLE_JOBS`, small ones none.
+            let mut keep = if self.small { 0 } else { SAMPLE_JOBS };
+            let dropped = drop_queued_samples(&self.shared, &mut self.pending, |_| {
+                let kept = keep > 0;
+                keep = keep.saturating_sub(1);
+                kept
+            });
+            // Back in line where `wanted_tiles` put them: the near terrain can
+            // start and stop loading every few frames, and rebuilding the whole
+            // queue each time cost more than the samples it held back.
+            let camera = self.plan.camera;
+            self.wanted.extend(dropped.into_iter().map(|key| {
+                let class = if self.plan.split.contains(&key) {
+                    BACKDROP
+                } else if key.reach(camera) < self.plan.first {
+                    SEAM
+                } else {
+                    REST
+                };
+                std::cmp::Reverse(Wanted {
+                    class,
+                    distance: i64::from(key.distance(camera)),
+                    x: key.x,
+                    z: key.z,
+                    level: key.level,
+                })
+            }));
+            // A sample may still be running: the held pace starts from now.
+            self.held_sample_at = std::time::Instant::now();
+        }
         self.near_loading = loading;
         let held = self.held();
         if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
@@ -1669,10 +1831,7 @@ impl Lod {
             .active
             .iter()
             .filter(|key| {
-                key.level <= DETAIL_LEVEL
-                    && !self.plan.split.contains(key)
-                    && !(key.level == 0 && self.covered.contains(&(key.x, key.z)))
-                    && self.detail_masks.get(key) != Some(&[u64::MAX; 4])
+                self.wants_detail(key) && self.detail_masks.get(key) != Some(&[u64::MAX; 4])
             })
             .copied()
             .collect();
@@ -1781,6 +1940,11 @@ impl Lod {
             self.reduced_detail,
         );
         self.ready.retain(|key, _| self.plan.nodes.contains(key));
+        // Queued tiles the view left are not sampled (a running one is
+        // dropped when it finishes, `finish_sample`).
+        drop_queued_samples(&self.shared, &mut self.pending, |key| {
+            self.plan.nodes.contains(key)
+        });
         self.detail_masks
             .retain(|key, _| self.plan.nodes.contains(key));
         // Complete resident columns need no duplicate noise work.
@@ -2150,7 +2314,8 @@ impl Lod {
                 self.pending.is_empty() && self.held_sample_at.elapsed() >= HELD_SAMPLE_STEP,
             )
         } else {
-            // The extra sampling threads wait until the near terrain is in.
+            // `SAMPLE_JOBS` while the near terrain loads, the full queue
+            // (`QUEUED_PER_SAMPLER` a thread) once it is in.
             let slots = if self.near_loading {
                 SAMPLE_JOBS
             } else {
@@ -2161,8 +2326,16 @@ impl Lod {
         if free == 0 {
             return;
         }
+        let now = std::time::Instant::now();
         if self.held() {
-            self.held_sample_at = std::time::Instant::now();
+            self.held_sample_at = now;
+        }
+        // A tile whose sampling failed waits out `RETRY`; once it has, the
+        // queue is rebuilt so the tile is asked again.
+        let retrying = self.retry.len();
+        self.retry.retain(|_, at| *at > now);
+        if self.retry.len() != retrying {
+            self.wanted_stale = true;
         }
         // The queue is rebuilt when the view moves a chunk, not scanned and
         // sorted on every frame.
@@ -2183,12 +2356,12 @@ impl Lod {
                 z: wanted.z,
                 level: wanted.level,
             };
-            // Final tiles only: a coarse tile under the near area is work
-            // that finer tiles replace moments later.
+            // Final tiles and the backdrop only (`wanted_tiles`).
             if self.pending.contains(&key)
                 || self.ready.contains_key(&key)
-                || self.plan.split.contains(&key)
+                || (self.plan.split.contains(&key) && wanted.class != BACKDROP)
                 || !self.plan.nodes.contains(&key)
+                || self.retry.contains_key(&key)
             {
                 continue;
             }
@@ -2203,17 +2376,19 @@ impl Lod {
     }
     fn rebuild_wanted(&mut self, camera: [i32; 2]) {
         self.wanted.clear();
-        for &key in &self.plan.nodes {
-            if self.plan.split.contains(&key) || self.ready.contains_key(&key) {
-                continue;
-            }
-            self.wanted.push(std::cmp::Reverse(Wanted {
-                distance: i64::from(key.distance(camera)),
-                x: key.x,
-                z: key.z,
-                level: key.level,
-            }));
-        }
+        // A failed tile waits out its retry delay (`retry`) before it is asked again.
+        let retry = &self.retry;
+        self.wanted.extend(
+            wanted_tiles(&self.plan, &self.ready, camera)
+                .filter(|w| {
+                    !retry.contains_key(&TileKey {
+                        x: w.x,
+                        z: w.z,
+                        level: w.level,
+                    })
+                })
+                .map(std::cmp::Reverse),
+        );
     }
 
     #[cfg(test)]
@@ -2361,6 +2536,28 @@ impl Drop for Lod {
             let _ = thread.join();
         }
     }
+}
+/// The columns of a tile's `detail_masks` entry that have their detail.
+fn detail_count(mask: &[u64; 4]) -> usize {
+    mask.iter().map(|bits| bits.count_ones() as usize).sum()
+}
+/// Removes the queued sample jobs `keep` rejects (in queue order, best
+/// first) and frees their slots; the tiles removed.
+fn drop_queued_samples(
+    shared: &Shared,
+    pending: &mut FxHashSet<TileKey>,
+    mut keep: impl FnMut(&TileKey) -> bool,
+) -> Vec<TileKey> {
+    let mut dropped = Vec::new();
+    shared.jobs.lock().unwrap().retain(|job| match job {
+        Job::Sample(key) if !keep(key) => {
+            pending.remove(key);
+            dropped.push(*key);
+            false
+        }
+        _ => true,
+    });
+    dropped
 }
 /// Fine retiring stand-ins need actual column detail before `Plan::replaces`
 /// can release their normal meshes. The caller keeps the usual detail-request
@@ -2607,14 +2804,14 @@ mod tests {
             (ox..ox + key.size()).contains(&(x * 16)) && (oz..oz + key.size()).contains(&(z * 16))
         };
         // 24 chunks out, now past the render distance: its planned tile was
-        // split before, so never sampled, and a root stands in for it.
+        // split before, so never sampled. The ready root reaches the seam, so
+        // it stands in for nothing: the column stays until its tile is in.
         let column = (24, 0);
         let mut selected = Vec::new();
         for &root in &after.roots {
             after.select(root, &ready, &mut selected);
         }
-        let drawn = selected.iter().filter(|key| contains(key, column));
-        assert_eq!(drawn.map(|key| key.level).min(), Some(6));
+        assert!(!selected.iter().any(|key| contains(key, column)));
         assert!(!after.replaces(column, &ready, |_| true));
         let planned = TileKey {
             x: 12,
@@ -3259,6 +3456,153 @@ mod tests {
     }
 
     #[test]
+    fn far_cells_past_render_distance_12_start_one_block_wide() {
+        // Leaves' cells: 1 block to 256 blocks out, 2 to 512 (Full); Reduced
+        // keeps 1 to the near terrain's edge and 2 to 256.
+        for (reduced, [one, two]) in [(false, [256, 512]), (true, [208, 256])] {
+            let plan = Plan::with_previous([8, 8], 12, 128, &Plan::default(), 0, reduced);
+            for key in plan.nodes.iter().filter(|key| !plan.split.contains(key)) {
+                let distance = key.distance([8, 8]);
+                if distance < one {
+                    assert_eq!(key.size() / 16, 1, "{key:?} reduced {reduced}");
+                } else if distance < two {
+                    assert!(key.size() / 16 <= 2, "{key:?} reduced {reduced}");
+                }
+            }
+        }
+    }
+    /// Loads a render distance 12 view one sample job at a time, in
+    /// `wanted_tiles`' order. Counts the jobs, and their density lattice
+    /// points (each job's cost), before every far column within two chunks
+    /// of the near terrain is drawn as finely as the plan wants it (one
+    /// block wide in Full): until then nothing is drawn there. And before
+    /// every far column is drawn, by its tile or a coarse stand-in: until
+    /// then the far terrain ends short of the horizon. Checks that no coarse
+    /// tile is ever drawn at the seam.
+    fn jobs_until_fine_seam(camera: [i32; 2], reduced: bool) -> ([(usize, i32); 2], usize) {
+        let (detail, distance) = (12, 128);
+        let center = (camera[0].div_euclid(16), camera[1].div_euclid(16));
+        let mut covered = FxHashSet::default();
+        for z in center.1 - detail..=center.1 + detail {
+            for x in center.0 - detail..=center.0 + detail {
+                if crate::streaming::in_view_distance(center, detail, x, z) {
+                    covered.insert((x, z));
+                }
+            }
+        }
+        let plan = Plan::with_previous(camera, detail, distance, &Plan::default(), 0, reduced);
+        let leaf = |x: i32, z: i32| {
+            (0..=MAX_LEVEL)
+                .map(|level| TileKey {
+                    x: x.div_euclid(16 << level),
+                    z: z.div_euclid(16 << level),
+                    level,
+                })
+                .find(|key| plan.nodes.contains(key) && !plan.split.contains(key))
+        };
+        let mut seam = Vec::new();
+        for z in (camera[1] - 256..camera[1] + 256).step_by(2) {
+            for x in (camera[0] - 256..camera[0] + 256).step_by(2) {
+                let chunk = (x.div_euclid(16), z.div_euclid(16));
+                let near = (-2..=2)
+                    .any(|dz| (-2..=2).any(|dx| covered.contains(&(chunk.0 + dx, chunk.1 + dz))));
+                if !covered.contains(&chunk) && near {
+                    seam.push((x, z, leaf(x, z).unwrap()));
+                }
+            }
+        }
+        let mut horizon = Vec::new();
+        for z in (camera[1] - 2048..camera[1] + 2048).step_by(64) {
+            for x in (camera[0] - 2048..camera[0] + 2048).step_by(64) {
+                if !covered.contains(&(x.div_euclid(16), z.div_euclid(16))) && leaf(x, z).is_some()
+                {
+                    horizon.push((x, z));
+                }
+            }
+        }
+        let mut ready: FxHashMap<TileKey, ()> = FxHashMap::default();
+        for key in &plan.nodes {
+            if key.level == 0 && covered.contains(&(key.x, key.z)) {
+                ready.insert(*key, ());
+            }
+        }
+        let leaves = plan
+            .nodes
+            .iter()
+            .filter(|k| !plan.split.contains(k))
+            .count();
+        let (mut cost, mut fine, mut reached) = (0, None, None);
+        for jobs in 0.. {
+            let mut selected = Vec::new();
+            for &root in &plan.roots {
+                plan.select(root, &ready, &mut selected);
+            }
+            let active: FxHashSet<_> = selected.into_iter().collect();
+            let drawn = |x: i32, z: i32, levels: u8| {
+                (0..=levels).any(|level| {
+                    active.contains(&TileKey {
+                        x: x.div_euclid(16 << level),
+                        z: z.div_euclid(16 << level),
+                        level,
+                    })
+                })
+            };
+            for &(x, z, leaf) in &seam {
+                assert!(drawn(x, z, leaf.level) || !drawn(x, z, MAX_LEVEL));
+            }
+            if fine.is_none() && seam.iter().all(|&(x, z, leaf)| drawn(x, z, leaf.level)) {
+                fine = Some((jobs, cost));
+            }
+            if reached.is_none() && horizon.iter().all(|&(x, z)| drawn(x, z, MAX_LEVEL)) {
+                reached = Some((jobs, cost));
+            }
+            if let (Some(fine), Some(reached)) = (fine, reached) {
+                return ([fine, reached], leaves);
+            }
+            let next = wanted_tiles(&plan, &ready, camera).min().unwrap();
+            let next = TileKey {
+                x: next.x,
+                z: next.z,
+                level: next.level,
+            };
+            // `lod_grid`'s density lattice: one point per max(stride, 4) blocks.
+            let stride = next.size() / 16;
+            let lattice = 16 * stride / stride.max(4) + 1;
+            cost += lattice * lattice;
+            ready.insert(next, ());
+        }
+        unreachable!()
+    }
+    #[test]
+    fn the_far_terrain_next_to_the_near_chunks_loads_first() {
+        // Measured: 270 to 301 jobs, all of them fine tiles (7500 to 8500
+        // lattice points). A coarse tile first costs up to 289 points; the
+        // order that filled a ring ahead first and refined broad tiles every
+        // other job took 54000 to 119000 for the seam in view alone.
+        for camera in [[8, 8], [40, -9], [-300, 517]] {
+            for reduced in [false, true] {
+                let ([(jobs, cost), _], _) = jobs_until_fine_seam(camera, reduced);
+                assert!(jobs < 320, "{jobs} jobs");
+                assert!(cost < 9000, "{cost} lattice points");
+            }
+        }
+    }
+    #[test]
+    fn a_coarse_backdrop_reaches_the_horizon_early() {
+        // Sampling only planned tiles, nearest first, reached the horizon
+        // with the last of ~3000 jobs in Full (500000 lattice points), ~1050
+        // in Reduced (200000): for minutes on a slow machine the far terrain
+        // ended in a hard edge. The backdrop adds ~230 coarse tiles (~80 in
+        // Reduced), about a tenth more work in all.
+        for camera in [[8, 8], [40, -9], [-300, 517]] {
+            for reduced in [false, true] {
+                let ([_, (jobs, cost)], leaves) = jobs_until_fine_seam(camera, reduced);
+                assert!(jobs < 1000 && jobs < leaves, "{jobs} jobs of {leaves}");
+                assert!(cost < 100_000, "{cost} lattice points");
+            }
+        }
+    }
+    #[test]
     fn extra_sampling_threads_only_on_large_machines() {
         assert_eq!([1, 2, 4, 8, 11].map(sampling_threads), [1, 1, 1, 4, 5]);
         assert_eq!([12, 16, 64].map(sampling_threads), [6, 8, 8]);
@@ -3341,6 +3685,100 @@ mod tests {
         lod.set_near_loading(false);
         lod.dispatch_meshes([0, 0]);
         assert_eq!(lod.shared.mesh_jobs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn queued_samples_follow_the_view_and_make_way_for_the_near_terrain() {
+        let mut lod = Lod::scheduler_for_test();
+        lod.small = true;
+        lod.sample_jobs = 16;
+        let queued = |lod: &Lod| -> Vec<TileKey> {
+            let jobs = lod.shared.jobs.lock().unwrap();
+            jobs.iter()
+                .filter_map(|job| match job {
+                    Job::Sample(key) => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        };
+        let observing = |lod: &Lod| {
+            let jobs = lod.shared.jobs.lock().unwrap();
+            jobs.iter().any(|job| matches!(job, Job::Observe((5, 5))))
+        };
+        let pending = |lod: &Lod| -> Vec<TileKey> {
+            let mut keys: Vec<_> = lod.pending.iter().copied().collect();
+            keys.sort();
+            keys
+        };
+        let sorted = |mut keys: Vec<TileKey>| {
+            keys.sort();
+            keys
+        };
+        let none = || Some(FxHashSet::default());
+        lod.update([8., 64., 8.], 2, 64, none());
+        let before = queued(&lod);
+        assert_eq!(before.len(), 16, "a full queue once the near terrain is in");
+        lod.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .push_back(Job::Observe((5, 5)));
+
+        // A chunk's move: the tiles still planned keep their place in line.
+        lod.update([24., 64., 8.], 2, 64, none());
+        let moved = queued(&lod);
+        let kept: Vec<_> = before
+            .iter()
+            .copied()
+            .filter(|key| lod.plan.nodes.contains(key))
+            .collect();
+        assert!(!kept.is_empty());
+        assert_eq!(moved[..kept.len()], kept[..]);
+        assert_eq!(moved.len(), 16);
+        assert!(observing(&lod), "only sample jobs are dropped");
+
+        // A teleport: none of the old view's tiles is sampled any more.
+        lod.update([100_000., 64., 100_000.], 2, 64, none());
+        let after = queued(&lod);
+        assert_eq!(after.len(), 16);
+        assert!(after.iter().all(|key| !moved.contains(key)));
+        assert!(after.iter().all(|key| lod.plan.nodes.contains(key)));
+        assert_eq!(
+            pending(&lod),
+            sorted(after.clone()),
+            "dropped jobs free their slots"
+        );
+
+        // New chunks load nearby: the queue gives way at once, not after it
+        // drained, and the dropped tiles come back, best first, once they are in.
+        lod.set_near_loading(true);
+        assert!(queued(&lod).is_empty());
+        assert!(lod.pending.is_empty());
+        assert!(observing(&lod));
+        lod.set_near_loading(false);
+        lod.update([100_000., 64., 100_000.], 2, 64, none());
+        assert_eq!(queued(&lod), after);
+
+        // Larger machines keep the first `SAMPLE_JOBS` of the queue.
+        lod.small = false;
+        lod.set_near_loading(true);
+        assert_eq!(queued(&lod), after[..SAMPLE_JOBS]);
+        assert_eq!(pending(&lod), sorted(after[..SAMPLE_JOBS].to_vec()));
+    }
+
+    #[test]
+    fn detail_progress_counts_the_columns_that_take_generated_detail() {
+        let mut lod = Lod::scheduler_for_test();
+        let tile = |x, level| TileKey { x, z: 0, level };
+        let (fine, covered, coarse, split) = (tile(0, 0), tile(1, 0), tile(1, 3), tile(1, 2));
+        lod.active = [fine, covered, coarse, split].into_iter().collect();
+        lod.covered.insert((1, 0));
+        lod.plan.split.insert(split);
+        lod.detail_masks.insert(fine, [u64::MAX, 1, 0, 0]);
+        lod.detail_masks.insert(coarse, [u64::MAX; 4]);
+        // Only the fine tile: the covered one is the near chunk's, the split
+        // one stands in for finer tiles and the coarse one is past the detail.
+        assert_eq!(lod.detail_progress(), (256, 65));
     }
 
     /// Drives the scheduler by hand: every sample the new incremental path

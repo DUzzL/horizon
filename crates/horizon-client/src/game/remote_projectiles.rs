@@ -112,7 +112,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// `AbstractArrow.tick` on a client: water drag before the move, air drag
 /// after it, then gravity; a block it reaches holds it (`inGround`).
 fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    p.previous = p.position;
+    p.set_old_pos_and_rot();
     p.age += 1;
     // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
     // the ticks in a block.
@@ -127,6 +127,12 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if water {
         p.velocity = p.velocity.scale(0.6);
     }
+    let (movement_x, movement_y, movement_z) = (p.velocity.x, p.velocity.y, p.velocity.z);
+    let sd = (movement_x * movement_x + movement_z * movement_z).sqrt();
+    let y_rot = horizon_core::geometry::trig::atan2_degrees(movement_x, movement_z);
+    let x_rot = horizon_core::geometry::trig::atan2_degrees(movement_y, sd);
+    p.pitch = horizon_client::arrows::lerp_rotation(p.pitch, x_rot);
+    p.yaw = horizon_client::arrows::lerp_rotation(p.yaw, y_rot);
     let to = p.position.add_vector(p.velocity);
     if let Some((at, _, _)) = w.clip(p.position, to) {
         p.position = at;
@@ -153,6 +159,17 @@ pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorl
     if !matches!(p.tick(w).1, Hit::None) {
         p.velocity = Vec3::ZERO;
     }
+}
+
+/// `Entity.getRandomX(0.5)` / `getRandomY` / `getRandomZ(0.5)` for a shulker
+/// bullet (`EntityType.SHULKER_BULLET` is 0.3125 x 0.3125).
+fn shulker_bullet_trail_at(at: Vec3, random: &mut impl RandomSource) -> [f64; 3] {
+    const SIZE: f64 = 0.3125;
+    [
+        at.x + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
+        at.y + SIZE * random.next_double(),
+        at.z + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
+    ]
 }
 
 /// `ClientPacketListener.handleProjectilePowerPacket`: the power a hurting
@@ -262,6 +279,25 @@ impl Game<'_> {
         }
     }
 
+    /// `ShulkerBullet.tick` on a client: two `END_ROD` particles in its
+    /// 0.3125 box (`getRandomX(0.5)`, `getRandomY`, `getRandomZ(0.5)`).
+    pub(super) fn shulker_bullet_trails(&mut self) {
+        let bullets: Vec<Vec3> = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| matches!(p.kind, ProjectileKind::ShulkerBullet { .. }))
+            .map(|p| p.position)
+            .collect();
+        let options = ParticleOptions::simple(ParticleType::EndRod);
+        for at in bullets {
+            for _ in 0..2 {
+                let p = shulker_bullet_trail_at(at, self.particles.random());
+                self.particles.add(&options, p, [0.0; 3]);
+            }
+        }
+    }
+
     /// `handleAddEntity` for these types; false when `kind` isn't one.
     pub(super) fn spawn_remote_projectile(
         &mut self,
@@ -286,6 +322,8 @@ impl Game<'_> {
                 velocity,
                 fuse: 80,
                 on_ground: false,
+                owner: None,
+                guest: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
@@ -297,6 +335,7 @@ impl Game<'_> {
                 velocity,
                 age: 0,
                 no_gravity: false,
+                portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
                 stuck: Vec3::ZERO,
@@ -584,7 +623,7 @@ impl Game<'_> {
                     ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
-                        p.previous = p.position;
+                        p.set_old_pos_and_rot();
                         p.age += 1;
                         p.position = p.position.add_vector(p.velocity);
                     }
@@ -606,6 +645,7 @@ impl Game<'_> {
             .map(|p| p.position)
             .collect();
         self.smoke_trails(trails);
+        self.shulker_bullet_trails();
         // FireworkRocketEntity.tick: a rocket attached to an entity follows it
         // and boosts it client-side too (attachedToEntity.isFallFlying), and
         // every rocket leaves its spark trail on a client.
@@ -742,7 +782,13 @@ impl Game<'_> {
             out.push(json!({"id": t.id, "kind": "minecraft:tnt", "position": at(t.position), "fuse": t.fuse}));
         }
         for f in &self.falling {
-            out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "state": f.state.0}));
+            out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "velocity": at(f.velocity), "state": f.state.0}));
+        }
+        for b in &self.boats {
+            out.push(json!({"id": b.id, "kind": "minecraft:boat", "position": at(b.position), "velocity": at(b.velocity)}));
+        }
+        for c in &self.carts {
+            out.push(json!({"id": c.id, "kind": "minecraft:minecart", "position": at(c.position), "velocity": at(c.velocity)}));
         }
         for c in &self.crystals {
             out.push(json!({"id": c.id, "kind": "minecraft:end_crystal", "position": at(c.position), "show_bottom": c.show_bottom}));
@@ -797,6 +843,53 @@ mod tests {
     /// The same, under the id a server tracks it by.
     fn tracked(kind: ProjectileKind, id: u32) -> Projectile {
         Projectile { id, ..thrown(kind) }
+    }
+
+    #[test]
+    fn a_shulker_bullet_trail_stays_inside_its_box() {
+        let at = Vec3::new(10.0, 20.0, 30.0);
+        let mut random = horizon_core::random::LegacyRandom::new(1);
+        for _ in 0..32 {
+            let [x, y, z] = shulker_bullet_trail_at(at, &mut random);
+            assert!((x - at.x).abs() <= 0.3125 * 0.5 + 1e-12, "{x}");
+            assert!((0.0..0.3125 + 1e-12).contains(&(y - at.y)), "{y}");
+            assert!((z - at.z).abs() <= 0.3125 * 0.5 + 1e-12, "{z}");
+        }
+    }
+
+    /// `Entity.setOldPosAndRot`: what the renderer interpolates a projectile's
+    /// rotation from is the rotation the last tick ended with. An arrow shot
+    /// straight up at the lowest power a bow fires turns over within a few
+    /// ticks, so every tick has to carry the value of the one before it.
+    #[test]
+    fn a_remote_arrow_keeps_the_rotation_the_last_tick_drew() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 100.0, 0.0),
+            None,
+        );
+        let mut random = horizon_core::random::LegacyRandom::new(7);
+        p.shoot(&mut random, [0.0, 1.0, 0.0], 0.3, 0.0);
+        // `Projectile.shoot` ends with `yRotO = getYRot(); xRotO = getXRot()`.
+        assert_eq!(p.previous_pitch, p.pitch);
+        assert_eq!(p.previous_yaw, p.yaw);
+        assert!((p.pitch - 90.0).abs() < 1.0e-4, "aimed up: {}", p.pitch);
+        let (mut yaw, mut pitch) = (p.yaw, p.pitch);
+        for _ in 0..30 {
+            remote_arrow_tick(&mut p, &Empty);
+            assert_eq!(p.previous_pitch, pitch);
+            assert_eq!(p.previous_yaw, yaw);
+            (yaw, pitch) = (p.yaw, p.pitch);
+        }
+        assert!(
+            p.pitch < 0.0,
+            "the arrow turned over as it fell: {}",
+            p.pitch
+        );
     }
 
     #[test]

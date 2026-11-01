@@ -77,6 +77,32 @@ impl Rocket {
             item,
         }
     }
+    /// `FireworkRocketEntity.addAdditionalSaveData`; the owner only when it is `player`.
+    pub(super) fn to_nbt(
+        &self,
+        uuid: [i32; 4],
+        player: Option<[i32; 4]>,
+        raw: Option<&horizon_world::nbt::Tag>,
+    ) -> horizon_world::nbt::Tag {
+        horizon_client::entity_nbt::firework_rocket_to_nbt(
+            &horizon_client::entity_nbt::RocketSave {
+                position: self.position,
+                motion: self.velocity,
+                life: self.life,
+                lifetime: self.lifetime,
+                item: &self.item,
+                angled: self.angled,
+                owner: if matches!(self.owner, Some(Who::Player)) {
+                    player
+                } else {
+                    None
+                },
+                left_owner: self.left_owner,
+            },
+            uuid,
+            raw,
+        )
+    }
     /// A rocket loaded from its NBT (`/summon`, a saved chunk).
     pub(super) fn from_nbt(r: RocketNbt) -> Self {
         let item = r
@@ -122,6 +148,18 @@ impl Rocket {
                 self.velocity.z * 1.15,
             )
         }
+    }
+    /// `EntityType.FIREWORK_ROCKET`: 0.25 x 0.25.
+    pub(super) fn bounds(&self) -> Aabb {
+        let h = 0.125;
+        Aabb::new(
+            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
+            Vec3::new(
+                self.position.x + h,
+                self.position.y + 2.0 * h,
+                self.position.z + h,
+            ),
+        )
     }
     /// `FireworkRocketEntity.tick` for a rocket attached to no entity: speed
     /// up (an angled one keeps its motion) and rise, then move.
@@ -479,8 +517,13 @@ impl Game<'_> {
     }
     /// The owner as `rocket_targets` names it: a guest by their entity id.
     fn rocket_owner(&self, r: &Rocket) -> Option<Who> {
-        let owner = r.owner?;
-        let Some(conn) = r.guest.filter(|_| owner == Who::Player) else {
+        self.shooter_who(r.owner, r.guest)
+    }
+    /// `Projectile.getOwner` as a target's `Who`: a guest's `Who::Player`
+    /// (kept with the connection that shot it) is their entity, not the host.
+    pub(super) fn shooter_who(&self, owner: Option<Who>, guest: Option<u32>) -> Option<Who> {
+        let owner = owner?;
+        let Some(conn) = guest.filter(|_| owner == Who::Player) else {
             return Some(owner);
         };
         let host = self.lan.as_ref()?;

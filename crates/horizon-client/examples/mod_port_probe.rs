@@ -7,6 +7,7 @@
 //!
 //! WORK is a `horizon-port-pack` work folder: `oracle/facts.json` and
 //! `mods/<id>/carry/`. The root is built in `WORK/horizon-root`.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     Result,
     assets::Assets,
@@ -133,7 +134,7 @@ fn main() -> Result<()> {
                 .collect();
             let descriptor = BlockState {
                 name: name.clone(),
-                properties,
+                properties: properties.into(),
             };
             let Some(id) = registry.id(&descriptor) else {
                 states.insert(key.clone(), Value::Null);

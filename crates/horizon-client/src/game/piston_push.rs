@@ -40,6 +40,13 @@ enum Target {
     ArmorStand(usize),
     /// Primed TNT (`PrimedTnt`): slime piston bounce (#4550).
     Tnt(usize),
+    /// Every other entity `getEntities` returns is pushed too: only
+    /// `PushReaction.IGNORE_ENTITY` (a marker armor stand) is spared.
+    Falling(usize),
+    Orb(usize),
+    Projectile(usize),
+    Rocket(usize),
+    Trident(usize),
 }
 
 /// `Entity.getStepHeight` of each body, read before the push.
@@ -360,6 +367,11 @@ impl Game<'_> {
         targets.extend((0..self.carts.len()).map(Target::Cart));
         targets.extend((0..self.armor_stands.len()).map(Target::ArmorStand));
         targets.extend((0..self.tnts.len()).map(Target::Tnt));
+        targets.extend((0..self.falling.len()).map(Target::Falling));
+        targets.extend((0..self.orbs.len()).map(Target::Orb));
+        targets.extend((0..self.creatures.projectiles.len()).map(Target::Projectile));
+        targets.extend((0..self.rockets.len()).map(Target::Rocket));
+        targets.extend((0..self.tridents.len()).map(Target::Trident));
         targets
     }
 
@@ -468,6 +480,67 @@ impl Game<'_> {
                     supported: false,
                 })
             }
+            Target::Falling(i) => {
+                let entity = &self.falling[i];
+                Some(Body {
+                    bounds: horizon_client::falling_block::bounds(entity.position),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Orb(i) => {
+                let entity = &self.orbs[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: entity.on_ground,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Projectile(i) => {
+                let entity = &self.creatures.projectiles[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Rocket(i) => {
+                let entity = &self.rockets[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Trident(i) => {
+                let entity = &self.tridents[i];
+                Some(Body {
+                    bounds: Aabb::new(
+                        Vec3::new(
+                            entity.position.x - 0.25,
+                            entity.position.y,
+                            entity.position.z - 0.25,
+                        ),
+                        Vec3::new(
+                            entity.position.x + 0.25,
+                            entity.position.y + 0.5,
+                            entity.position.z + 0.25,
+                        ),
+                    ),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
         }
     }
 
@@ -507,6 +580,12 @@ impl Game<'_> {
             )
             .unwrap_or(Vec3::ZERO)
         });
+        // Entity.move updates an authoritative living entity's ground flag
+        // even for a horizontal piston push. Keeping the old support flag
+        // would run Frost Walker while the stand is moving over open water.
+        if let Target::ArmorStand(i) = target {
+            self.armor_stands[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
+        }
         if resolved.length_squared() <= 1.0e-7
             && limited.length_squared() - resolved.length_squared() >= 1.0e-7
         {
@@ -579,6 +658,27 @@ impl Game<'_> {
                 self.armor_stands[i].position = self.armor_stands[i].position.add_vector(movement)
             }
             Target::Tnt(i) => self.tnts[i].position = self.tnts[i].position.add_vector(movement),
+            Target::Falling(i) => {
+                self.falling[i].position = self.falling[i].position.add_vector(movement)
+            }
+            Target::Orb(i) => {
+                let orb = &mut self.orbs[i];
+                orb.position = orb.position.add_vector(movement);
+                if movement.y != 0.0 {
+                    orb.on_ground = movement.y < 0.0;
+                }
+            }
+            Target::Projectile(i) => {
+                let p = &mut self.creatures.projectiles[i];
+                p.position = p.position.add_vector(movement);
+                p.needs_sync = true;
+            }
+            Target::Rocket(i) => {
+                self.rockets[i].position = self.rockets[i].position.add_vector(movement)
+            }
+            Target::Trident(i) => {
+                self.tridents[i].position = self.tridents[i].position.add_vector(movement)
+            }
         }
     }
 
@@ -621,6 +721,28 @@ impl Game<'_> {
                 // Leave the ground so the next tick does not apply the
                 // on-ground Y * -0.5 friction that cancels the launch.
                 self.tnts[i].on_ground = false;
+            }
+            Target::Falling(i) => {
+                self.falling[i].velocity =
+                    piston_push::bounce_velocity(movement, self.falling[i].velocity)
+            }
+            Target::Orb(i) => {
+                self.orbs[i].velocity =
+                    piston_push::bounce_velocity(movement, self.orbs[i].velocity);
+                self.orbs[i].on_ground = false;
+            }
+            Target::Projectile(i) => {
+                let p = &mut self.creatures.projectiles[i];
+                p.velocity = piston_push::bounce_velocity(movement, p.velocity);
+                p.needs_sync = true;
+            }
+            Target::Rocket(i) => {
+                self.rockets[i].velocity =
+                    piston_push::bounce_velocity(movement, self.rockets[i].velocity)
+            }
+            Target::Trident(i) => {
+                self.tridents[i].velocity =
+                    piston_push::bounce_velocity(movement, self.tridents[i].velocity)
             }
         }
     }

@@ -48,7 +48,17 @@ impl NativePack {
         let shadow = report
             .shadow
             .as_ref()
-            .map(|s| NativeShadow::new(device, terrain, &frame, &s.solid_materials))
+            .map(|s| {
+                let vertex = report.stages.iter().find(|s| s.kind == StageKind::Vertex);
+                NativeShadow::new(
+                    device,
+                    terrain,
+                    &frame,
+                    &s.solid_materials,
+                    vertex,
+                    constants,
+                )
+            })
             .transpose()?;
         // The mirror is drawn for a material that reads it, while `[reflection] option` is on.
         let option = report.reflection.as_ref().and_then(|r| r.option.as_ref());
@@ -91,6 +101,7 @@ impl NativePack {
             .iter()
             .find(|s| s.kind == StageKind::Weather)
             .map(|s| s.label.clone());
+        let has_vertex = report.stages.iter().any(|s| s.kind == StageKind::Vertex);
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
@@ -103,7 +114,9 @@ impl NativePack {
         let material = others
             .iter()
             .find(|s| s.kind == StageKind::Material)
-            .map(|stage| NativeMaterial::new(device, terrain, &frame, stage, constants, fog))
+            .map(|stage| {
+                NativeMaterial::new(device, terrain, &frame, stage, constants, fog, has_vertex)
+            })
             .transpose()?;
         let post = (!post.is_empty())
             .then(|| NativePost::new(device, post, &report.manifest, constants, format, &frame))

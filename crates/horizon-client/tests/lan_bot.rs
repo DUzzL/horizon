@@ -2,6 +2,7 @@
 //! handshake, status, offline login, configuration (registries and tags),
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
@@ -203,7 +204,7 @@ impl Server {
             clock_rate: 1.0,
             tick_rate: 20.0,
             tick_frozen: false,
-            tick_steps: (0, 0),
+            tick_steps: Default::default(),
             collision: None,
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
@@ -1279,7 +1280,7 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
 /// with no `BlockEntityData` for one whose mod gives no tag.
 #[test]
 fn a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick() {
-    use horizon_client::containers::{BlockEntity, ModBlockEntity};
+    use horizon_client::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
     use horizon_world::nbt::{Compound, JavaString, Tag};
     let Some(resources) = resources() else {
         return;
@@ -1308,10 +1309,10 @@ fn a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick() {
         s.world
             .set(pos.0, pos.1, pos.2, BlockStateId(MACHINE))
             .unwrap();
-        let mut machine = ModBlockEntity {
+        let mut machine = ModBlockEntity::new(ModBlockEntityFields {
             id: "test:machine".into(),
-            ..ModBlockEntity::default()
-        };
+            ..Default::default()
+        });
         if let Some(on) = on {
             machine.nbt.insert("on".into(), Tag::Byte(on));
         }
@@ -1419,7 +1420,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         clock_rate: 1.0,
         tick_rate: 20.0,
         tick_frozen: false,
-        tick_steps: (0, 0),
+        tick_steps: Default::default(),
         collision: None,
         border: &border,
         streaming: None,
@@ -1442,5 +1443,48 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
     assert!(
         s.hub.guests[0].client_loaded(),
         "the packet marks it loaded"
+    );
+}
+
+/// `tickPlayer`'s vehicle check (BoatFly): the driver of a boat its last accepted move left hovering
+/// over air is kicked once the boat has floated longer than `getMaximumFlyingTicks` (160 ticks at a
+/// boat's gravity), and a move that doesn't float starts the count again.
+#[test]
+fn a_boat_floating_too_long_kicks_its_driver() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _bot = run(&mut s, move || connect(port, "Boater", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    let g = &mut s.hub.guests[0];
+    (g.vehicle, g.vehicle_floating, g.vehicle_gravity) = (Some(7), true, 0.04);
+    for _ in 0..100 {
+        s.tick(&[]);
+    }
+    assert_eq!(s.hub.guests[0].above_ground_vehicle_ticks, 100);
+    // The boat touched water: the next floating move counts from zero.
+    s.hub.guests[0].vehicle_floating = false;
+    s.tick(&[]);
+    assert_eq!(s.hub.guests[0].above_ground_vehicle_ticks, 0);
+    s.hub.guests[0].vehicle_floating = true;
+    for _ in 0..160 {
+        s.tick(&[]);
+    }
+    assert!(
+        s.hub.guests[0].left_reason.is_empty(),
+        "160 ticks are a boat's allowance: {}",
+        s.hub.guests[0].left_reason
+    );
+    s.tick(&[]);
+    assert!(
+        !s.hub.guests[0].left_reason.is_empty(),
+        "the 161st floating tick kicks the driver"
     );
 }

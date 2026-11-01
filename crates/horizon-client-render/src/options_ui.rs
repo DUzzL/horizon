@@ -1264,6 +1264,8 @@ pub enum Page {
     Online,
     /// Splitscreen: the profile another player joins as (`split_profiles`).
     SplitProfiles,
+    /// Splitscreen: enable joining on this computer.
+    SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -1526,6 +1528,8 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// Other local players are joined: leave before turning splitscreen off.
+    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1571,6 +1575,7 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            split_joined: false,
         }
     }
 }
@@ -1634,6 +1639,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
         Page::Mods => "horizon.pages.mods.tooltip",
+        Page::SplitSetup => "horizon.pages.split_setup.tooltip",
         _ => return None,
     })
 }
@@ -1795,7 +1801,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
     };
     let mut tip = None;
     if let Act::Extra(item) = act {
-        tip = Some(Text::literal(item.description()));
+        tip = Some(Text::literal(item.description_text()));
     }
     if let Act::Push(page) = act
         && let Some(text) = horizon_page_tooltip(*page)
@@ -1970,7 +1976,7 @@ fn pairs(opts: &[Opt]) -> Vec<Row> {
 impl OptionsUi {
     /// A switch of `horizon-extras.txt` as the Extras page draws it: "Caption: On".
     fn extra_button(&self, s: &Settings, item: crate::extras::Item) -> Widget {
-        let label = format!("{}: {}", item.caption(), item.value(&s.extras));
+        let label = format!("{}: {}", item.caption_text(), item.value(&s.extras));
         button(0.0, 0.0, 150.0, Text::literal(label), Act::Extra(item))
     }
     fn settings_search_active(&self) -> bool {
@@ -2166,6 +2172,7 @@ impl OptionsUi {
             Page::Horizon => "horizon.pages.settings",
             Page::Agent => "horizon.pages.agent",
             Page::SplitProfiles => "horizon.pages.split_profiles",
+            Page::SplitSetup => "horizon.pages.split_setup",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -2255,11 +2262,19 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
+            Page::SplitSetup => vec![Row::Buttons(
+                if self.split_guest || self.split_joined {
+                    inactive(self.extra_button(s, crate::extras::Item::Splitscreen))
+                } else {
+                    self.extra_button(s, crate::extras::Item::Splitscreen)
+                },
+                None,
+            )],
             Page::Extras => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
                 let extra = |item: crate::extras::Item| {
-                    let value = format!("{}: {}", item.caption(), item.value(&s.extras));
+                    let value = format!("{}: {}", item.caption_text(), item.value(&s.extras));
                     let label = if item.key_name().is_some() && self.selected_key == item.key_name()
                     {
                         Text::literal(format!("> {value} <")).with_color(text::YELLOW)
@@ -2320,6 +2335,17 @@ impl OptionsUi {
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open(
+                            "horizon.pages.open.split_setup",
+                            if self.split_guest {
+                                Page::SplitProfiles
+                            } else {
+                                Page::SplitSetup
+                            },
+                        ),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
@@ -3332,7 +3358,7 @@ impl OptionsUi {
             let m = crate::screen_draw::Measure(&atlas.font);
             let mouse = (cursor.0.floor() as i32, cursor.1.floor() as i32);
             let packs = self.packs(atlas, (w, h));
-            let mut draws = packs.draw(&m, mouse, blink);
+            let mut draws = packs.draw(&m, mouse, blink, crate::hud_overlays::now_ms());
             packs.bind_icons(&mut draws, atlas, &mut batch.patches);
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
@@ -4914,6 +4940,24 @@ impl OptionsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window allows the input method only while `typing` says a search
+    /// box has the focus (`Game::text_field_focused`), so a page without one
+    /// must not claim the keys: the movement and menu keys keep working there.
+    #[test]
+    fn only_a_focused_search_box_takes_text() {
+        let mut ui = OptionsUi::default();
+        assert!(!ui.typing(), "the main page has no text box");
+        ui.show(Page::Language);
+        assert!(ui.typing(), "the language list's search takes the keys");
+        ui.show(Page::Video);
+        assert!(!ui.typing(), "the settings search is not focused");
+        ui.settings_search.focused = true;
+        assert!(ui.typing(), "the settings search, once focused, does");
+        ui.settings_search.focused = false;
+        ui.show(Page::Packs);
+        assert!(!ui.typing(), "the pack screen's search is not open yet");
+    }
 
     #[test]
     fn accessibility_sliders_and_toggles_survive_options_round_trip() {
@@ -6788,6 +6832,7 @@ mod tests {
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,
+                Page::SplitSetup,
                 Page::Agent,
             ]
         );

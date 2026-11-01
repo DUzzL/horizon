@@ -94,7 +94,7 @@ fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
 }
 /// The loaded compound underneath the fields Horizon models: what the entity was
 /// loaded with, with every key of `modelled` replacing its loaded value.
-fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
+pub(super) fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
     let (Some(Tag::Compound(raw)), Tag::Compound(modelled)) = (raw, &modelled) else {
         return modelled;
     };
@@ -317,6 +317,8 @@ impl Game<'_> {
                         | "minecraft:egg"
                         | "minecraft:ender_pearl"
                         | "minecraft:falling_block"
+                        | "minecraft:firework_rocket"
+                        | "minecraft:trident"
                         | "minecraft:end_crystal"
                         | "minecraft:ender_dragon"
                 ) || horizon_client::projectiles::thrown_type(&kind).is_some())
@@ -373,6 +375,11 @@ impl Game<'_> {
                                 a.last_state = in_block.and_then(|t| self.state_from_nbt(&t));
                             }
                             self.claim_owner(&mut p);
+                            // An arrow that came through a portal keeps its
+                            // cooldown: it does not go straight back through.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
@@ -397,8 +404,11 @@ impl Game<'_> {
                             && let Some(state) = self.state_from_nbt(&state)
                         {
                             let (no_gravity, drop_item) = entity_nbt::falling_block_flags(&tag);
+                            self.next_entity += 1;
+                            // A summoned one has no UUID yet: `Entity` makes a random one.
+                            let uuid = uuid.unwrap_or_else(|| self.uuid_for(self.next_entity));
                             self.falling.push(FallingBlock {
-                                id: 0,
+                                id: self.next_entity,
                                 state,
                                 // DATA_START_POS is not persisted by vanilla.
                                 start_pos: horizon_core::position::BlockPos::default(),
@@ -407,6 +417,14 @@ impl Game<'_> {
                                 velocity,
                                 age,
                                 no_gravity,
+                                portal: horizon_client::nether_portal::PortalState {
+                                    cooldown: horizon_client::save::number(
+                                        tag.get("PortalCooldown"),
+                                    )
+                                    .unwrap_or(0)
+                                        as i32,
+                                    process: None,
+                                },
                                 drop_item,
                                 fall_distance,
                                 stuck: Vec3::ZERO,
@@ -414,8 +432,14 @@ impl Game<'_> {
                                     &tag,
                                     self.res.facts().get(state).name.ends_with("anvil"),
                                 ),
-                                saved: uuid.map(|u| Box::new((u, tag.clone()))),
+                                saved: Some(Box::new((uuid, tag.clone()))),
                             });
+                        }
+                    }
+                    "minecraft:trident" => {
+                        if let Some(n) = entity_nbt::trident_from_nbt(&tag) {
+                            self.tridents
+                                .push(super::trident::ThrownTrident::from_nbt(n));
                         }
                     }
                     "minecraft:firework_rocket" => {
@@ -424,20 +448,32 @@ impl Game<'_> {
                         }
                     }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
+                    // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
                     "minecraft:tnt" => {
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         if let Some(position) = entity_nbt::position(&tag) {
+                            self.next_entity += 1;
+                            let id = self.next_entity;
                             let fuse = match tag.get("fuse") {
                                 Some(Tag::Short(f)) => i32::from(*f),
                                 _ => 80,
                             };
                             self.tnts.push(super::tnt::PrimedTnt {
-                                id: 0,
+                                id,
                                 position,
                                 previous: position,
                                 velocity: entity_nbt::motion(&tag),
                                 fuse,
                                 on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                                owner: None,
+                                guest: None,
                             });
+                            // `Entity.load`: the `PortalCooldown` of one that just came through.
+                            self.remember(id, uuid, tag);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     k if super::boats::any_boat_wood(k)
@@ -1094,9 +1130,46 @@ impl Game<'_> {
                     f.fall_distance,
                     uuid,
                 );
-                out.entry(chunk_of(f.position))
+                let mut tag = with_raw(tag, raw.as_ref());
+                if let Tag::Compound(fields) = &mut tag {
+                    fields.insert("PortalCooldown".into(), Tag::Int(f.portal.cooldown));
+                }
+                out.entry(chunk_of(f.position)).or_default().push(tag);
+            }
+        }
+        for r in &self.rockets {
+            if keys.contains(&chunk_of(r.position)) {
+                let (uuid, raw) = anon(&self.persist, "minecraft:firework_rocket", r.position);
+                out.entry(chunk_of(r.position)).or_default().push(r.to_nbt(
+                    uuid,
+                    self.level.player_uuid,
+                    raw.as_ref(),
+                ));
+            }
+        }
+        for t in &self.tridents {
+            if keys.contains(&chunk_of(t.position)) {
+                let (uuid, raw) = anon(&self.persist, "minecraft:trident", t.position);
+                out.entry(chunk_of(t.position))
                     .or_default()
-                    .push(with_raw(tag, raw.as_ref()));
+                    .push(t.to_nbt(uuid, raw.as_ref()));
+            }
+        }
+        for i in 0..self.tnts.len() {
+            let t = &self.tnts[i];
+            if keys.contains(&chunk_of(t.position)) {
+                let (id, at) = (t.id, t.position);
+                let uuid = self.uuid_for(id);
+                let t = &self.tnts[i];
+                let tag = entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                );
+                out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
         let boats: Vec<usize> = (0..self.boats.len())
@@ -1348,6 +1421,9 @@ impl Game<'_> {
                 !leaves || !gone(p.position)
             });
             self.falling.retain(|f| !gone(f.position));
+            self.rockets.retain(|r| !gone(r.position));
+            self.tridents.retain(|t| !gone(t.position));
+            self.tnts.retain(|t| !gone(t.position));
             self.persist
                 .anon
                 .retain(|_, (at, _, _)| !keys.contains(&chunk_of(*at)));

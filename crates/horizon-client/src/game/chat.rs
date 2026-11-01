@@ -63,6 +63,8 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
+        // The window answers this one itself, as it does a client mod's.
+        names.push(horizon_client::ram_limit::COMMAND);
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
@@ -250,13 +252,14 @@ fn block_properties(registry: &'static BlockRegistry) -> Arc<BlockProperties> {
     properties
 }
 
-static COMMAND_EXPORTS: Mutex<Vec<(PathBuf, Option<Arc<serde_json::Value>>)>> =
-    Mutex::new(Vec::new());
+static COMMAND_EXPORTS: Mutex<Vec<(PathBuf, Option<Arc<Registries>>)>> = Mutex::new(Vec::new());
 
-/// A folder's `command-registries.json` (vanilla's built-in registries),
-/// read once like the resource ids: parsing its 1.6 MB again took about
-/// 15 ms of every world opening.
-fn command_export(dir: &Path) -> Option<Arc<serde_json::Value>> {
+/// What the registries take from a folder's `command-registries.json`
+/// (vanilla's built-in registries), read once like the resource ids: parsing
+/// its 1.6 MB again took about 15 ms of every world opening. Only the part
+/// the registries fill from stays, not the parsed export (4.2 MB, against
+/// 2.2 MB). A dedicated server opens its world once and keeps nothing.
+fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
     let mut cache = COMMAND_EXPORTS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, export)) = cache.iter().find(|(cached, _)| cached == dir) {
         return export.clone();
@@ -264,8 +267,10 @@ fn command_export(dir: &Path) -> Option<Arc<serde_json::Value>> {
     let export = std::fs::read(dir.join("command-registries.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .map(Arc::new);
-    cache.push((dir.to_owned(), export.clone()));
+        .map(|export| Arc::new(Registries::from_export(&export)));
+    if keep {
+        cache.push((dir.to_owned(), export.clone()));
+    }
     export
 }
 
@@ -529,8 +534,8 @@ impl Game<'_> {
         }
         // Vanilla's built-in registries (mob effects, components, dialogs...).
         for dir in [&self.options.resources, &self.ui.vanilla_root] {
-            if let Some(export) = command_export(dir) {
-                self.ui.registries.fill_from_export(&export);
+            if let Some(export) = command_export(dir, self.options.dedicated.is_none()) {
+                self.ui.registries.fill_from_exported(&export);
                 break;
             }
         }
@@ -1073,8 +1078,7 @@ impl Game<'_> {
     /// `Screen.clickCommandAction`: run a clicked command as the player
     /// without adding it to the chat history. A client mod's command goes
     /// first, as `ClientPacketListener.sendUnattendedCommand` lets client
-    /// commands take it. (Vanilla asks first when the command fails to
-    /// parse; here the server answers it.)
+    /// commands take it.
     pub(super) fn click_command(&mut self, command: &str) {
         let command = command.strip_prefix('/').unwrap_or(command);
         if self.client_mod_command(command) {
@@ -1092,9 +1096,12 @@ impl Game<'_> {
         if self.ui.hide_gui && !focused {
             return;
         }
-        self.ui
-            .chat
-            .draw(batch, &self.gui.atlas, self.ticks, focused);
+        self.ui.chat.smooth = self.settings.extras.chat_animation;
+        self.ui.chat.hide_indicator = !self.settings.extras.chat_indicator;
+        // The fractional tick makes the smooth chat extra's slide move every
+        // frame; vanilla's fade reads it too.
+        let now = self.ticks as f32 + self.clock.fraction() as f32;
+        self.ui.chat.draw(batch, &self.gui.atlas, now, focused);
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
     /// event has one, the entity type and the UUID.
@@ -1183,6 +1190,7 @@ impl Game<'_> {
                 h,
                 true,
                 horizon_client::screen_draw::inside(mouse, x, y, w, h),
+                horizon_client::hud_overlays::now_ms(),
             );
             horizon_client::screen_draw::paint(batch, &self.gui.atlas, &button);
         }
@@ -1421,9 +1429,7 @@ impl Game<'_> {
     }
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name.
     pub(super) fn take_screenshot(&mut self) {
-        let dir = std::env::current_dir()
-            .unwrap_or_default()
-            .join("screenshots");
+        let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
@@ -1549,12 +1555,34 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("horizon-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("command-registries.json"), r#"{"effects":["a"]}"#).unwrap();
-        let first = command_export(&dir).unwrap();
-        assert_eq!(first["effects"][0], "a");
+        let first = command_export(&dir, true).unwrap();
+        assert_eq!(first.effects, ["a"]);
         std::fs::write(dir.join("command-registries.json"), "{}").unwrap();
-        assert!(Arc::ptr_eq(&first, &command_export(&dir).unwrap()));
-        assert!(command_export(&dir.join("missing")).is_none());
+        assert!(Arc::ptr_eq(&first, &command_export(&dir, true).unwrap()));
+        assert!(command_export(&dir.join("missing"), true).is_none());
+        // A dedicated server's read is not kept.
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("command-registries.json"),
+            r#"{"effects":["b"]}"#,
+        )
+        .unwrap();
+        let once = command_export(&other, false).unwrap();
+        assert_eq!(once.effects, ["b"]);
+        assert!(!Arc::ptr_eq(&once, &command_export(&other, false).unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ram_limit_command_is_known_to_the_chat_box() {
+        let reg = Registries::default();
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        assert!(vanilla.find(horizon_client::ram_limit::COMMAND).is_none());
+        let tree = with_native_commands(vanilla, &[horizon_client::ram_limit::COMMAND]);
+        for typed in ["ramlimit", "ramlimit 2048", "ramlimit off"] {
+            assert!(tree.parse(typed, &reg).executable().is_ok(), "{typed}");
+        }
     }
 
     /// A native mod's command is in the tree the chat box uses (#456): known

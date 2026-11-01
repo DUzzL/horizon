@@ -219,7 +219,7 @@ def main():
     if args.java_only:
         print(f'{len(vanilla)} oracle lines')
         return
-    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--example', 'client_probe'], 'compile-rust')
+    run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client-lib', '--example', 'client_probe'], 'compile-rust')
     binary = lab.cargo_target() / 'fast/examples/client_probe'
     run([binary, 'trading_fixture', resources, inputs, build / 'server.txt', build / 'rust.txt'], 'rust')
     rust = (build / 'rust.txt').read_text().splitlines()

@@ -21,11 +21,8 @@ struct Params {
     // The HUD and menus' brightness as a share of paper white.
     ui: f32,
     // Per tier, low to very bright (hdr.rs `Tier`): the share of the headroom
-    // the brightest pixels get, and the brightness where the lift starts and
-    // where it is full.
+    // its fully lifted pixels get.
     share: vec4<f32>,
-    start: vec4<f32>,
-    full: vec4<f32>,
     // HDR calibration (hdr_calibration.rs): x its step (0 none, 1 black level,
     // 2 peak, 3 paper white), y the slider in nits, z where its controls start,
     // a share of the height.
@@ -40,9 +37,11 @@ struct Params {
 // near-white spots (glowstone) and leaves the rest (lava, a jack o'lantern's
 // face) nearly as it was. Each tier's pixels brighter than its `full` get its
 // `share` of the headroom, dimmer ones less down to none at its `start`
-// (lava's crust, a lantern's metal), and no channel goes past the peak.
-// Brightness is the mean of luminance and the brightest channel, so saturated
-// light counts as bright.
+// (lava's crust, a lantern's metal), and no channel goes past the peak. That
+// brightness is the texel's own, before lighting: the shaders that mark the
+// frame (hdr_mark) work it out, so a light source shines the same at any light
+// level and on every face. Brightness is the mean of luminance and the
+// brightest channel, so saturated light counts as bright.
 
 // Whether `c` still shows the world pixel `w`: the same, or darkened evenly
 // across its channels, as the vignette and other screen-wide tints darken it.
@@ -157,24 +156,23 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     // 1/255 (Hdr::mark_hand: drawn at the world's brightness), else the HUD or a
     // menu, by how much.
     let covered = f.a > 0.0;
-    let ui = select(f.a, 0.0, f.a < 1.5 / 255.0);
+    let hand = covered && f.a < 1.5 / 255.0;
+    let ui = select(f.a, 0.0, hand);
     // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
     var light = pow(max(c, vec3(0.0)), vec3(2.2));
     let w = textureLoad(world, at, 0);
     // The world's alpha is below 0.75 on light sources, the sun and the moon
-    // (terrain.wgsl, the celestial pipeline): only those shine, by the tier it
-    // holds, the lower the brighter, and only where nothing was drawn over them
-    // since: grey text over the white sun still looks like the sun darkened, but
-    // it raised the frame's alpha.
+    // (terrain.wgsl, entity.wgsl): only those shine, and only where nothing was
+    // drawn over them since: grey text over the white sun still looks like the sun
+    // darkened, but it raised the frame's alpha. Its band of 0.175 is the tier, the
+    // lower the brighter, and where in the band how much (hdr_mark). The hand
+    // writes its own alpha there (Hdr::hand_light_view): 1, or a light source it holds.
     var lifted = false;
-    if params.world > 0.5 && params.peak > 1.0 && w.a < 0.75 && !covered
-        && shows_world(c, w.rgb) {
-        // Brightness of the world pixel, before the vignette darkens the frame
-        // toward its edges: a light source shines the same anywhere on screen.
-        let wl = pow(max(w.rgb, vec3(0.0)), vec3(2.2));
-        let y = 0.5 * (dot(wl, vec3(0.2126, 0.7152, 0.0722)) + max(wl.r, max(wl.g, wl.b)));
-        let tier = u32(clamp(round(4.0 - 4.0 * w.a / 0.7), 1.0, 4.0)) - 1u;
-        let lift = smoothstep(params.start[tier], params.full[tier], y);
+    if params.world > 0.5 && params.peak > 1.0 && w.a < 0.75
+        && (hand || (!covered && shows_world(c, w.rgb))) {
+        let band = u32(clamp(floor((w.a + 0.005) / 0.175), 0.0, 3.0));
+        let tier = 3u - band;
+        let lift = 1.0 - clamp((w.a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);
         if lift > 0.0 {
             let top = max(light.r, max(light.g, light.b));
             let gain = min(1.0 + (params.peak - 1.0) * params.share[tier] * lift, params.peak / max(top, 1e-4));

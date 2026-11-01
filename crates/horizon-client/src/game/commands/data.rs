@@ -164,7 +164,8 @@ impl Game<'_> {
                     .and_then(|a| a.last_state)
                     .map(|s| self.state_to_nbt(s));
                 entity_nbt::arrow_to_nbt(p, random_uuid(), owner, in_block, None)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))?
+                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))
+                    .or_else(|| entity_nbt::throwable_to_nbt(p, random_uuid(), owner, None))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -175,6 +176,47 @@ impl Game<'_> {
                 let d = self.dragon.as_ref().filter(|d| d.id == id)?;
                 let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
                 d.to_nbt(uuid.unwrap_or_else(random_uuid), raw)
+            }
+            Target::Tnt(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.tnts.iter().find(|t| t.id == id)?;
+                entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
+            }
+            Target::Falling(id) => {
+                let f = self.falling.iter().find(|f| f.id == id)?.clone();
+                let (uuid, raw) = match &f.saved {
+                    Some(saved) => (saved.0, Some(&saved.1)),
+                    None => (self.uuid_for(id), None),
+                };
+                let tag = entity_nbt::falling_block_to_nbt(
+                    self.state_to_nbt(f.state),
+                    f.position,
+                    f.velocity,
+                    f.age,
+                    f.drop_item,
+                    f.damage,
+                    f.fall_distance,
+                    uuid,
+                );
+                crate::game::persist::with_raw(tag, raw)
+            }
+            Target::Spawner(id) => {
+                let s = self.ominous_spawners.iter().find(|s| s.id == id)?;
+                let [x, y, z] = s.position;
+                entity_nbt::ominous_item_spawner_to_nbt(
+                    &s.item,
+                    horizon_core::geometry::Vec3::new(x, y, z),
+                    s.spawn_item_after,
+                    s.uuid,
+                    s.raw.as_deref(),
+                )
             }
         })
     }
@@ -249,6 +291,14 @@ impl Game<'_> {
     fn raw_mut(&mut self, t: Target) -> Option<&mut Tag> {
         match t {
             Target::Player => Some(self.level.player_extra.get_or_insert_with(empty)),
+            Target::Guest(conn) => self
+                .lan
+                .as_mut()?
+                .hub
+                .guests
+                .iter_mut()
+                .find(|g| g.conn == conn)
+                .map(|g| g.saved.get_or_insert_with(empty)),
             Target::Mob(id)
             | Target::Item(id)
             | Target::Stand(id)
@@ -256,6 +306,9 @@ impl Game<'_> {
             | Target::Painting(id)
             | Target::Boat(id)
             | Target::Cart(id)
+            // `tags_of` reads a primed TNT's compound; without this arm
+            // `/tag` wrote nothing and still reported success.
+            | Target::Tnt(id)
             | Target::Other(id) => Some(self.persist.raw.entry(id).or_insert_with(empty)),
             _ => None,
         }
@@ -776,6 +829,12 @@ impl Game<'_> {
             Some(Target::Cart(id))
         } else if self.others.iter().any(|o| o.id == id) {
             Some(Target::Other(id))
+        } else if self.tnts.iter().any(|t| t.id == id) {
+            Some(Target::Tnt(id))
+        } else if self.falling.iter().any(|f| f.id == id) {
+            Some(Target::Falling(id))
+        } else if self.ominous_spawners.iter().any(|s| s.id == id) {
+            Some(Target::Spawner(id))
         } else {
             None
         }

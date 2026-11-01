@@ -159,6 +159,8 @@ pub fn register(m: &mut Mob) {
             m.ai.nav.kind = NavKind::Water { breach: false };
         }
         S::Dolphin => {
+            // `Dolphin`'s `moistness` field starts full.
+            m.extra.counter = 2400;
             let g = &mut m.ai.goals;
             g.add(0, BreathAir);
             g.add(0, TryFindWater::default());
@@ -169,6 +171,8 @@ pub fn register(m: &mut Mob) {
             g.add(5, LookAtPlayer::new(6.0));
             g.add(5, super::dolphin::Jump::new(10));
             g.add(6, MeleeAttack::new(1.2, true));
+            g.add(7, super::dolphin::MoveToItem::default());
+            g.add(8, super::dolphin::PlayWithItems);
             g.add(8, super::dolphin::FollowPlayerRidden::new(false));
             g.add(8, super::dolphin::FollowPlayerRidden::new(true));
             // `Dolphin.registerGoals`: AvoidEntityGoal(Guardian.class, 8, 1, 1).
@@ -337,7 +341,9 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             } else {
                 m.extra.counter -= 1;
                 if m.extra.counter <= 0 {
-                    m.damage(1.0, super::Damage::of(super::DamageKind::Drown));
+                    // `Dolphin.tick` hurts with `damageSources().dryOut()`: the
+                    // death message names dehydration, not drowning.
+                    m.damage(1.0, super::Damage::of(super::DamageKind::DryOut));
                 }
                 if m.on_ground {
                     let (a, b) = (m.random.next_float(), m.random.next_float());

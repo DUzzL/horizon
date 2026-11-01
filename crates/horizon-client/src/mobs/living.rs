@@ -13,6 +13,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_world::{
+    block_landing::LandingEntityKind,
     entity_fluid::{CurrentAccumulator, CurrentTarget},
     fluid::{FluidKind, FluidState},
     fluid_flow::{FluidFlowWorld, flow_at},
@@ -652,34 +653,9 @@ impl Mob {
         }
         if self.on_ground {
             if self.fall_distance > 0.0 {
-                self.trample_farmland(w, events);
-                self.cause_fall_damage(w, events);
+                self.fall_on_block(w, events);
             }
             self.fall_distance = 0.0;
-        }
-    }
-    /// `FarmlandBlock.fallOn`: a landing on farmland turns it to dirt with
-    /// chance `fallDistance - 0.5`, if mobs may grief and the mob's
-    /// `width * width * height` is over 0.512. `Block.pushEntitiesUp` lifts
-    /// the mob onto the dirt, which is a full block.
-    fn trample_farmland(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
-        let p = self.block_on_legacy(w);
-        if w.block_name(p[0], p[1], p[2]) != "minecraft:farmland" {
-            return;
-        }
-        let roll = f64::from(self.random.next_float());
-        let Some(dirt) = w.registry.default_state("minecraft:dirt") else {
-            return;
-        };
-        if roll < self.fall_distance - 0.5
-            && w.mob_griefing
-            && self.width() * self.width() * self.height() > 0.512
-        {
-            events.push(MobEvent::SetBlock {
-                pos: p,
-                state: dirt,
-            });
-            self.position.y = self.position.y.max(f64::from(p[1]) + 1.0);
         }
     }
     /// Entity.updateFluidInteraction: the fluid state, then touching water
@@ -894,11 +870,45 @@ impl Mob {
             self.position.z.floor() as i32,
         ]
     }
-    /// The landing of `check_fall_damage`: the whole fall, with no block
-    /// softening it.
-    fn cause_fall_damage(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    /// `Block.fallOn` of the block under the mob (`Entity.checkFallDamage`):
+    /// the block's own rule (hay, honey, slime, powder snow, a bed, a
+    /// stalagmite, farmland, a turtle egg) decides how much of the fall hurts.
+    fn fall_on_block(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let pos = self.block_on_legacy(w);
-        self.cause_fall_damage_at(self.fall_distance, 1.0, events, Some((w, pos)));
+        let state = w.world.block(pos[0], pos[1], pos[2]);
+        let species = self.species();
+        let entity = if super::doors::is_zombie(species) {
+            LandingEntityKind::Zombie
+        } else if species == super::Species::Turtle {
+            LandingEntityKind::Turtle
+        } else if species == super::Species::Bat {
+            LandingEntityKind::Bat
+        } else {
+            LandingEntityKind::Living
+        };
+        let distance = self.fall_distance;
+        let result = w.landing.fall_on(
+            &mut super::landing::MobLanding {
+                mob: self,
+                w,
+                events,
+                pos,
+            },
+            state,
+            BlockPos::new(pos[0], pos[1], pos[2]),
+            entity,
+            distance,
+        );
+        // A block outside the landing registry falls back to the plain fall.
+        if result.is_err() {
+            self.cause_fall_damage_at(
+                distance,
+                1.0,
+                events,
+                Some((w, pos)),
+                super::DamageKind::Fall,
+            );
+        }
     }
     fn mod_block_fall(
         &self,
@@ -931,15 +941,17 @@ impl Mob {
         modifier: f32,
         events: &mut Vec<MobEvent>,
     ) {
-        self.cause_fall_damage_at(distance, modifier, events, None);
+        self.cause_fall_damage_at(distance, modifier, events, None, super::DamageKind::Fall);
     }
-    fn cause_fall_damage_at(
+    /// True when the fall hurt (`causeFallDamage`'s result).
+    pub(super) fn cause_fall_damage_at(
         &mut self,
         distance: f64,
         modifier: f32,
         events: &mut Vec<MobEvent>,
         contact: Option<(&MobWorld, [i32; 3])>,
-    ) {
+        source: super::DamageKind,
+    ) -> bool {
         // Breeze.causeFallDamage: a landing from higher than three blocks.
         if self.species() == super::Species::Breeze && distance > 3.0 {
             let at = [self.position.x, self.position.y, self.position.z];
@@ -970,7 +982,7 @@ impl Mob {
         // to those on it.
         if self.kind.flags.fall_immune {
             self.mod_block_fall(contact, distance, 0.0);
-            return;
+            return false;
         }
         let power = distance + 1.0e-6 - self.kind.safe_fall_distance;
         let mut damage = (power * f64::from(modifier) * self.kind.fall_damage_multiplier).floor();
@@ -990,7 +1002,7 @@ impl Mob {
             // Llama.causeFallDamage: only a fall of six blocks or more hurts the
             // llama and its riders.
             if super::llama::is_llama(self.species()) && distance < 6.0 {
-                return;
+                return false;
             }
             let at = [self.position.x, self.position.y, self.position.z];
             // Monster.getFallSounds: the hostile pair.
@@ -1005,11 +1017,13 @@ impl Mob {
             if !horse {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
             }
-            self.damage(damage as f32, super::Damage::fall());
+            self.damage(damage as f32, super::Damage::of(source));
             if horse {
                 self.fall_to_passengers(distance, modifier, events);
             }
+            return true;
         }
+        false
     }
     /// `Entity.propagateFallToPassengers`: the game gives the fall to each
     /// passenger (`causeFallDamage`), a mob or a player, for this mob is
@@ -1037,6 +1051,17 @@ impl Mob {
     }
     fn flying_speed(&self) -> f32 {
         0.02
+    }
+    /// `LivingEntity.getEffectiveGravity`: the gravity, floored to 0.01 while a
+    /// Slow Falling mob is on its way down.
+    pub fn effective_gravity(&self) -> f64 {
+        let gravity = self.gravity();
+        if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") && !gravity.is_nan()
+        {
+            gravity.min(0.01)
+        } else {
+            gravity
+        }
     }
     /// Entity.getGravity: none while isNoGravity.
     pub fn gravity(&self) -> f64 {
@@ -1178,7 +1203,12 @@ impl Mob {
         {
             y += (0.05 * f64::from(amp + 1) - movement.y) * 0.2;
         } else {
-            y -= self.gravity();
+            // LivingEntity.travelInAir: a Slow Falling mob on its way down lands without
+            // having fallen.
+            if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") {
+                self.fall_distance = 0.0;
+            }
+            y -= self.effective_gravity();
         }
         // LivingEntity.shouldDiscardFriction (a breeze's, a frog's or a goat's
         // long jump).
@@ -1206,7 +1236,7 @@ impl Mob {
     fn travel_in_fluid(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
         let falling = self.velocity.y <= 0.0;
         let old_y = self.position.y;
-        let gravity = self.gravity();
+        let gravity = self.effective_gravity();
         if self.fluids.in_water {
             let mut slow = if self.extra.sprinting {
                 0.9
@@ -1276,6 +1306,18 @@ impl Mob {
             })
         {
             self.velocity.y = f64::from(0.3_f32);
+        }
+        // `LivingEntity.travelInFluid` ends with
+        // `floatInLiquidWhileRidden(FluidTags.ENTITY_FLOATABLE)`: a mount with
+        // a passenger that is in `minecraft:can_float_while_ridden` and deeper
+        // in the water than its jump threshold rises 0.04 a tick, which is
+        // what keeps a ridden horse and its rider afloat.
+        if (self.rider.is_some() || self.extra.rider.is_some())
+            && w.data
+                .entity_has("minecraft:can_float_while_ridden", &self.kind.id)
+            && self.fluids.water > self.fluid_jump_threshold()
+        {
+            self.velocity.y += f64::from(0.04_f32);
         }
     }
     /// The jump part of LivingEntity.aiStep.
@@ -1563,16 +1605,7 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
     /// `living_motion::effective_gravity`: the gravity attribute, floored to
     /// 0.01 while a Slow Falling mob is on its way down.
     fn effective_gravity(&mut self) -> Result<f64, ()> {
-        let gravity = self.mob.gravity();
-        if self.mob.velocity.y <= 0.0 && self.mob.has_effect("minecraft:slow_falling") {
-            Ok(if gravity.is_nan() {
-                gravity
-            } else {
-                gravity.min(0.01)
-            })
-        } else {
-            Ok(gravity)
-        }
+        Ok(self.mob.effective_gravity())
     }
     fn block_suppresses_bounce(&mut self, state: BlockStateId) -> Result<bool, ()> {
         Ok(self.movement(state)?.suppresses_bounce)
@@ -1632,7 +1665,9 @@ mod tests {
     use super::*;
     /// A pig dropped hard onto a block bounces by that block's restitution
     /// (`Entity.getBlockBounciness`): landing on a slime block sends it back
-    /// up, landing on stone stops it dead.
+    /// up, landing on stone stops it dead. The same 8-block fall then costs the
+    /// pig what the block's own `fallOn` allows (`Block.fallOn`): all 5 on
+    /// stone, 1 on hay or honey, 0 on slime, 1 on a bed, and a stalagmite kills.
     #[test]
     fn a_mob_bounces_off_a_bouncy_block_and_not_off_stone() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1659,7 +1694,14 @@ mod tests {
         .unwrap();
         let collision = crate::collisions::load(&root, registry).unwrap();
         let lid_openers = std::collections::HashMap::new();
-        for (ground, bounces) in [("minecraft:slime_block", true), ("minecraft:stone", false)] {
+        for (ground, bounces, health) in [
+            ("minecraft:slime_block", true, 10.0),
+            ("minecraft:stone", false, 5.0),
+            ("minecraft:hay_block", false, 9.0),
+            ("minecraft:honey_block", false, 9.0),
+            ("minecraft:red_bed", true, 9.0),
+            ("minecraft:pointed_dripstone", false, 0.0),
+        ] {
             let air = registry.default_state("minecraft:air").unwrap();
             let mut world = crate::world::World::new(air, 0);
             world.chunks.insert(
@@ -1695,6 +1737,7 @@ mod tests {
                 thundering: false,
                 nether: false,
                 block_tags: &items.block_tags,
+                landing: &motion.landing,
                 biomes: &biomes,
                 universal_anger: false,
                 mob_griefing: true,
@@ -1712,7 +1755,9 @@ mod tests {
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
             // Falling faster than gravity, so the landing is hard enough.
             m.velocity = Vec3::new(0.0, -1.0, 0.0);
+            m.fall_distance = 8.0;
             m.do_move(&w, &mut Vec::new());
+            assert_eq!(m.health, health, "{ground}: health after an 8 block fall");
             assert!(
                 m.vertical_collision_below,
                 "{ground}: the pig lands on the block"
@@ -1731,5 +1776,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `LivingEntity.travelInFluid` ends with
+    /// `floatInLiquidWhileRidden(FluidTags.ENTITY_FLOATABLE)`: a mount that
+    /// carries a passenger, is in `minecraft:can_float_while_ridden` and sits
+    /// deeper in the water than its jump threshold gains 0.04 a tick upwards.
+    /// That is what keeps a ridden horse and its rider afloat; an empty horse
+    /// gets nothing and goes on sinking.
+    #[test]
+    fn a_ridden_horse_floats_in_deep_water() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists()
+            || !root.join("movement-properties.nbt").exists()
+        {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let registry = assets.registry;
+        let facts = crate::blocks::BlockFacts::load(&root, registry).unwrap();
+        let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let data = super::super::MobData::load(&root, &facts);
+        let types = super::super::MobTypes::load(&root).unwrap();
+        let biomes = crate::biome::Biomes::load(&root).unwrap();
+        let items = crate::items::Items::load(
+            &root,
+            registry,
+            &facts,
+            &horizon_world::loot::PackOverlay::NONE,
+        )
+        .unwrap();
+        let collision = crate::collisions::load(&root, registry).unwrap();
+        let lid_openers = std::collections::HashMap::new();
+        let air = registry.default_state("minecraft:air").unwrap();
+        let water = registry.default_state("minecraft:water").unwrap();
+        let mut world = crate::world::World::new(air, 0);
+        world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+        );
+        for x in 4..=12 {
+            for z in 4..=12 {
+                for y in 63..=66 {
+                    world.set(x, y, z, water).unwrap();
+                }
+            }
+        }
+        let w = MobWorld {
+            teams: Default::default(),
+            world: &world,
+            registry,
+            facts: &facts,
+            fluid_tables: &motion.fluids,
+            movement: &motion.blocks,
+            collision: &collision,
+            data: &data,
+            player: None,
+            nearest_player: None,
+            others: &[],
+            leash_boats: &[],
+            others_grid: None,
+            others_index: None,
+            daylight: true,
+            monsters_burn: false,
+            game_time: 1000,
+            day_time: 18000,
+            raining: false,
+            thundering: false,
+            nether: false,
+            block_tags: &items.block_tags,
+            landing: &motion.landing,
+            biomes: &biomes,
+            universal_anger: false,
+            mob_griefing: true,
+            mob_drops: true,
+            max_entity_cramming: 24,
+            difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
+            end: false,
+            world_seed: 0,
+            sea_level: 63,
+            items: Some(&items),
+            lid_openers: &lid_openers,
+            mod_effects: None,
+        };
+        let kind = std::sync::Arc::new(types.types["minecraft:horse"].clone());
+        let mut sank = 0.0;
+        let mut floated = 0.0;
+        for ridden in [false, true] {
+            let mut m = Mob::new(1, kind.clone(), Vec3::new(8.5, 64.0, 8.5), 0.0);
+            if ridden {
+                m.rider = Some(super::super::equine::Rider {
+                    strafe: 0.0,
+                    forward: 0.0,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    jump: 0.0,
+                    steer: false,
+                    sprint: false,
+                    jumping: false,
+                    client: false,
+                });
+            }
+            m.fluids.in_water = true;
+            m.fluids.water = 1.0;
+            m.travel(&w, Vec3::ZERO, &mut Vec::new());
+            if ridden {
+                floated = m.velocity.y;
+            } else {
+                sank = m.velocity.y;
+            }
+        }
+        assert!(sank < 0.0, "an empty horse sinks, got {sank}");
+        let lift = floated - sank;
+        assert!(
+            (lift - f64::from(0.04_f32)).abs() < 1.0e-9,
+            "a ridden horse gains 0.04 a tick, got {lift}"
+        );
     }
 }

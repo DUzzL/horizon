@@ -160,6 +160,11 @@ impl MenuBlur {
             })
             .collect();
     }
+    /// Give the targets' video memory back: no frame blurs until the next
+    /// screen that does, which makes them again.
+    pub fn release(&mut self) {
+        self.targets.clear();
+    }
     /// Blur `frame` (the swapchain texture) in place through `target`, its
     /// non-sRGB view, by `radius` pixels (`menuBackgroundBlurriness`).
     #[allow(clippy::too_many_arguments)]
@@ -172,6 +177,7 @@ impl MenuBlur {
         target: &wgpu::TextureView,
         size: [u32; 2],
         radius: f32,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         self.ensure(device, size);
         encoder.copy_texture_to_texture(
@@ -224,6 +230,7 @@ impl MenuBlur {
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Menu blur pass"),
+                timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("Menu blur")),
                 color_attachments: &attachments,
                 ..Default::default()
             });
@@ -236,6 +243,90 @@ impl MenuBlur {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A frame of hard stripes, blurred, read back.
+    fn blurred(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        blur: &mut MenuBlur,
+        size: [u32; 2],
+    ) -> Vec<u8> {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let extent = wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        };
+        let stripes: Vec<u8> = (0..size[0] * size[1])
+            .flat_map(|i| if i % 4 < 2 { [255; 4] } else { [0, 0, 0, 255] })
+            .collect();
+        let frame = wgpu::util::DeviceExt::create_texture_with_data(
+            device,
+            queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &stripes,
+        );
+        let out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(size[0] * size[1] * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let view = frame.create_view(&Default::default());
+        blur.apply(device, queue, &mut encoder, &frame, &view, size, 2.0, None);
+        encoder.copy_texture_to_buffer(
+            frame.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &out,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size[0] * 4),
+                    rows_per_image: None,
+                },
+            },
+            extent,
+        );
+        queue.submit([encoder.finish()]);
+        out.slice(..).map_async(wgpu::MapMode::Read, |_| ());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        out.slice(..).get_mapped_range().unwrap().to_vec()
+    }
+
+    /// Released between two screens, the blur makes its targets again and
+    /// blurs the same.
+    #[test]
+    fn blurs_the_same_after_its_targets_were_released() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let mut blur = MenuBlur::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let size = [64, 8];
+        let first = blurred(&device, &queue, &mut blur, size);
+        // The stripes are blurred into greys.
+        assert!(first.chunks(4).any(|p| p[0] != 0 && p[0] != 255));
+        blur.release();
+        assert_eq!(blurred(&device, &queue, &mut blur, size), first);
+    }
+
     #[test]
     fn box_blur_shader_validates() {
         let module = naga::front::wgsl::parse_str(include_str!("menu_blur.wgsl")).unwrap();
