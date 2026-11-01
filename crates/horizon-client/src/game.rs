@@ -2294,7 +2294,7 @@ struct Game<'a> {
     /// Horizon Extras' dynamic lights this frame (`dynamic_lights.rs`), and how brightly each
     /// item glows (built the first time the extra is on).
     dynamic_lights: Vec<[f32; 4]>,
-    luminance: Option<horizon_client::dynamic_light::Luminance>,
+    luminance: std::cell::OnceCell<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
     /// The first-person player's model, which only a native pack's shadow pass draws.
@@ -18083,7 +18083,7 @@ impl<'a> Game<'a> {
             last_device_recovery: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
-            luminance: None,
+            luminance: Default::default(),
             see_through_vertices: Vec::new(),
             shadow_only_vertices: Default::default(),
             entity_spans: Default::default(),
