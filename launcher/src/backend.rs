@@ -1470,7 +1470,9 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        log(format!("Horizon: the accounts are not saved: {e}"));
+    }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
 }
 
@@ -3376,11 +3378,18 @@ impl Settings {
         self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
     }
     pub fn save(&self) {
-        let _ = fs::create_dir_all(data_dir());
-        let _ = fs::write(
-            data_dir().join("settings.json"),
-            serde_json::to_string_pretty(self).unwrap(),
-        );
+        // A write that stops halfway leaves settings.json unreadable, and `load` answers
+        // defaults for it: the file is replaced only once it is whole.
+        let dir = data_dir();
+        let path = dir.join("settings.json");
+        let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
+        let written = fs::create_dir_all(&dir)
+            .and_then(|()| fs::write(&tmp, serde_json::to_string_pretty(self).unwrap()))
+            .and_then(|()| fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            eprintln!("Horizon: settings.json is not saved: {e}");
+        }
     }
 }
 

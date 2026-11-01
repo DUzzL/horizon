@@ -1327,6 +1327,16 @@ impl LevelAccess for GameLevel<'_> {
             self.native_perform_bonemeal(ticks, self.dimension, pos, state);
         }
     }
+    fn before_fire_odds(&self, state: BlockStateId, odds: &mut Option<(i32, i32)>) {
+        if self.native_authoritative {
+            self.native_fire_odds(self.dimension, state, odds);
+        }
+    }
+    fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
+        if self.native_authoritative {
+            self.native_smoke_source(self.dimension, state, smoke);
+        }
+    }
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.world.world_surface(x, z, |s| self.facts.is_air(s))
     }
@@ -2864,6 +2874,9 @@ struct Game<'a> {
     lan_acting_uuid: Option<u128>,
     /// Their permission level: an op's above 0 (`PlayerList.isOp`).
     lan_acting_permission: Option<u8>,
+    /// Their entity id, which the hub (often taken out of `lan` while they
+    /// act) would otherwise have to be asked for.
+    lan_acting_entity: Option<u32>,
     /// Command feedback to forward to a guest.
     chat_capture: Option<Vec<horizon_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
@@ -18428,6 +18441,7 @@ impl<'a> Game<'a> {
             lan_acting_name: None,
             lan_acting_uuid: None,
             lan_acting_permission: None,
+            lan_acting_entity: None,
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,
