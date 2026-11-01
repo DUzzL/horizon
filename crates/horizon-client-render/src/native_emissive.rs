@@ -61,7 +61,8 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
         }
         if pairs.len() == MAX - NATIVE {
             log::warn!(
-                "Horizon: more than {MAX} emissive block overlays: {overlay} and later skipped"
+                "Horizon: more than {} emissive block overlays: {overlay} and later skipped",
+                MAX - NATIVE
             );
             break;
         }
