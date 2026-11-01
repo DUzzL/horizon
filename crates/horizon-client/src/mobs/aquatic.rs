@@ -339,7 +339,9 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             } else {
                 m.extra.counter -= 1;
                 if m.extra.counter <= 0 {
-                    m.damage(1.0, super::Damage::of(super::DamageKind::Drown));
+                    // `Dolphin.tick` hurts with `damageSources().dryOut()`: the
+                    // death message names dehydration, not drowning.
+                    m.damage(1.0, super::Damage::of(super::DamageKind::DryOut));
                 }
                 if m.on_ground {
                     let (a, b) = (m.random.next_float(), m.random.next_float());
