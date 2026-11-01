@@ -159,6 +159,8 @@ pub fn register(m: &mut Mob) {
             m.ai.nav.kind = NavKind::Water { breach: false };
         }
         S::Dolphin => {
+            // `Dolphin`'s `moistness` field starts full.
+            m.extra.counter = 2400;
             let g = &mut m.ai.goals;
             g.add(0, BreathAir);
             g.add(0, TryFindWater::default());
