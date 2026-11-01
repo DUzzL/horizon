@@ -1675,9 +1675,14 @@ fn render_visible(
     };
     let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
     let (model, texture) = match cem.layer(cem_key) {
+        // A `.jem` texture the atlas doesn't have would hide the mob: the vanilla one draws.
         Some(custom) => (
             custom.model.clone(),
-            custom.texture.clone().unwrap_or(texture),
+            custom
+                .texture
+                .clone()
+                .filter(|t| atlas(t).is_some())
+                .unwrap_or(texture),
         ),
         None => (
             m.kind
@@ -1757,21 +1762,26 @@ fn render_visible(
     // One Poses refilled for every layer (armour draws up to seven): it keeps
     // its maps' capacity.
     let mut layer_poses = Poses::default();
-    for mut layer in all_layers {
+    for layer in all_layers {
         let custom = cem.layer(&layer.model);
+        // A `.jem`'s texture paints the layer it was made for, one with a model of its own
+        // (`sheep#wool`). The overlays drawn on the body's model (eyes, collars, a villager's
+        // type and profession, armour cracks) keep their own textures over its new geometry,
+        // and so does any layer when the atlas lacks the `.jem`'s texture. `layer.texture`
+        // stays the vanilla name (the villager hats below look for its `/type/` folder).
+        let texture = custom
+            .filter(|_| layer.model != model_key && layer.model != cem_key)
+            .and_then(|c| c.texture.as_deref())
+            .filter(|t| atlas(t).is_some())
+            .unwrap_or(layer.texture.as_str());
         let part = match custom {
-            Some(custom) => {
-                if let Some(texture) = &custom.texture {
-                    layer.texture.clone_from(texture);
-                }
-                custom.model.clone()
-            }
+            Some(custom) => custom.model.clone(),
             None => match m.kind.layer(&layer.model) {
                 Some(part) => part.clone(),
                 None => continue,
             },
         };
-        let Some(uv) = random_uv(&layer.texture).or_else(|| atlas(&layer.texture)) else {
+        let Some(uv) = random_uv(texture).or_else(|| atlas(texture)) else {
             continue;
         };
         layer_poses.reset(&part);
@@ -1927,7 +1937,8 @@ pub fn part_matrix(
         .iter()
         .find_map(|c| part_matrix(c, m, poses, name, x_offset))
 }
-fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
+/// The first part named `name`, depth first.
+pub(super) fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
     if part.name == name {
         return Some(part);
     }
