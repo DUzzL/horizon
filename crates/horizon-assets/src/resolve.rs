@@ -102,10 +102,48 @@ impl ModelLibrary {
             missing,
         })
     }
+    /// This library plus `extra` models; an `extra` model replaces a
+    /// same-named one. Every existing model is shared, not copied.
+    pub fn overlaid(&self, extra: BTreeMap<String, CuboidModel>) -> Result<Self> {
+        let mut models = self.models.clone();
+        let mut added = BTreeSet::new();
+        for (name, model) in extra {
+            let name = identifier(&name)?;
+            if !added.insert(name.clone()) {
+                return Err(error("duplicate normalized model identifier"));
+            }
+            // As in `from_models`, the built-in missing model cannot be replaced.
+            if name != MISSING_MODEL {
+                models.insert(name, Arc::new(model));
+            }
+        }
+        Ok(Self {
+            models,
+            missing: Arc::clone(&self.missing),
+        })
+    }
     /// Follow the complete parent chain. A missing resource uses the built-in
     /// model; a cyclic chain is rejected, as native discovery excludes it.
     /// The returned model can outlive this library without copying its elements.
     pub fn resolve(&self, name: &str) -> Result<ResolvedCuboidModel> {
+        self.resolve_chain(name, None)
+    }
+    /// `name`'s resolved model with a virtual child in front of it that has
+    /// only `textures`: the child's slots win, and `#references` anywhere in
+    /// the chain re-bind through them (so `builtin/generated`'s
+    /// `particle: #layer0` follows a replaced `layer0`).
+    pub fn resolve_with_textures(
+        &self,
+        name: &str,
+        child: &BTreeMap<String, TextureSlot>,
+    ) -> Result<ResolvedCuboidModel> {
+        self.resolve_chain(name, Some(child))
+    }
+    fn resolve_chain(
+        &self,
+        name: &str,
+        child: Option<&BTreeMap<String, TextureSlot>>,
+    ) -> Result<ResolvedCuboidModel> {
         let mut name = identifier(name)?;
         let mut visited = BTreeSet::new();
         let mut chain = Vec::new();
@@ -155,6 +193,9 @@ impl ModelLibrary {
         let mut slots = BTreeMap::new();
         for model in chain.into_iter().rev() {
             slots.extend(model.textures.iter().map(|(k, v)| (k.clone(), v)));
+        }
+        if let Some(child) = child {
+            slots.extend(child.iter().map(|(k, v)| (k.clone(), v)));
         }
         let mut textures = BTreeMap::<String, Material>::new();
         let mut unresolved_textures = BTreeSet::<String>::new();
@@ -273,6 +314,102 @@ mod tests {
                 force_translucent: true
             }
         );
+    }
+    fn library(models: &[(&str, &str)]) -> ModelLibrary {
+        ModelLibrary::with_item_generator(
+            models
+                .iter()
+                .map(|(name, json)| (name.to_string(), CuboidModel::from_json(json).unwrap()))
+                .collect(),
+        )
+        .unwrap()
+    }
+    const GENERATED: &str = r#"{"parent":"builtin/generated","display":{"ground":{"translation":[0,2,0],"scale":[0.5,0.5,0.5]}}}"#;
+    const CIT: &str = "horizon_cit:minecraft/optifine/cit/x";
+    #[test]
+    fn child_textures_replace_slots_and_rebind_the_generated_particle() {
+        let library = library(&[
+            ("item/generated", GENERATED),
+            (
+                "item/stick",
+                r#"{"parent":"item/generated","textures":{"layer0":"item/stick"}}"#,
+            ),
+        ]);
+        let child = BTreeMap::from([(
+            "layer0".to_owned(),
+            TextureSlot::Material(Material {
+                sprite: CIT.to_owned(),
+                force_translucent: false,
+            }),
+        )]);
+        let model = library.resolve_with_textures("item/stick", &child).unwrap();
+        assert!(model.uses_item_generator());
+        assert_eq!(model.material("layer0").unwrap().unwrap().sprite, CIT);
+        assert_eq!(model.material("particle").unwrap().unwrap().sprite, CIT);
+        assert_eq!(
+            model.display.contexts[6],
+            DisplayTransform::Explicit(Some(ItemTransform {
+                rotation: [0.0; 3],
+                translation: [0.0, 0.125, 0.0],
+                scale: [0.5; 3],
+            }))
+        );
+        // The library itself is untouched.
+        let plain = library.resolve("item/stick").unwrap();
+        assert_eq!(
+            plain.material("particle").unwrap().unwrap().sprite,
+            "minecraft:item/stick"
+        );
+    }
+    #[test]
+    fn overlaid_models_inherit_from_the_library_and_share_the_rest() {
+        let base = library(&[
+            ("item/generated", GENERATED),
+            (
+                "item/handheld",
+                r#"{"parent":"item/generated","display":{"thirdperson_righthand":{"rotation":[0,-90,55]}}}"#,
+            ),
+            (
+                "item/stick",
+                r#"{"parent":"item/generated","textures":{"layer0":"item/stick"}}"#,
+            ),
+            (
+                "item/apple",
+                r#"{"parent":"item/generated","textures":{"layer0":"item/apple"}}"#,
+            ),
+        ]);
+        let cit = format!(r#"{{"parent":"item/handheld","textures":{{"layer0":"{CIT}"}}}}"#);
+        let over = base
+            .overlaid(BTreeMap::from([
+                (CIT.to_owned(), CuboidModel::from_json(&cit).unwrap()),
+                (
+                    "item/stick".to_owned(),
+                    CuboidModel::from_json(
+                        r#"{"parent":"item/generated","textures":{"layer0":"item/bone"}}"#,
+                    )
+                    .unwrap(),
+                ),
+            ]))
+            .unwrap();
+        let model = over.resolve(CIT).unwrap();
+        assert!(model.uses_item_generator());
+        assert_eq!(model.material("particle").unwrap().unwrap().sprite, CIT);
+        let DisplayTransform::Explicit(Some(right)) = &model.display.contexts[1] else {
+            panic!("handheld's right-hand transform is inherited");
+        };
+        assert_eq!(right.rotation, [0.0, -90.0, 55.0]);
+        let sprite = |l: &ModelLibrary| {
+            l.resolve("item/stick").unwrap().textures["layer0"]
+                .sprite
+                .clone()
+        };
+        assert_eq!(sprite(&over), "minecraft:item/bone");
+        assert_eq!(sprite(&base), "minecraft:item/stick");
+        assert!(!base.resolve(CIT).unwrap().uses_item_generator());
+        assert!(Arc::ptr_eq(
+            &base.models["minecraft:item/apple"],
+            &over.models["minecraft:item/apple"]
+        ));
     }
     #[test]
     fn absent_parents_fall_back_but_cycles_invalidate_descendants() {
