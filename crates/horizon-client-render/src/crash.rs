@@ -195,14 +195,6 @@ fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-fn windows_processor_name(query: &str) -> Option<String> {
-    query.lines().find_map(|line| {
-        let (_, value) = line.split_once("REG_SZ")?;
-        let value = value.trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    })
-}
-
 /// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
 fn operating_system() -> String {
     let arch = std::env::consts::ARCH;
@@ -244,17 +236,7 @@ pub fn cpu() -> String {
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
     } else if cfg!(windows) {
-        command_output(
-            "reg",
-            &[
-                "query",
-                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
-                "/v",
-                "ProcessorNameString",
-            ],
-        )
-        .and_then(|query| windows_processor_name(&query))
-        .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok())
+        horizon_telemetry::system::windows_cpu()
     } else {
         std::env::var("PROCESSOR_IDENTIFIER").ok()
     };
@@ -680,22 +662,6 @@ pub fn debug_crash_after() -> Option<std::time::Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn windows_registry_cpu_name_is_read_without_the_registry_columns() {
-        let query = r#"
-HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0
-    ProcessorNameString    REG_SZ    13th Gen Intel(R) Core(TM) i7-13700F
-"#;
-        assert_eq!(
-            windows_processor_name(query).as_deref(),
-            Some("13th Gen Intel(R) Core(TM) i7-13700F")
-        );
-        assert_eq!(
-            windows_processor_name("ProcessorNameString REG_SZ   "),
-            None
-        );
-    }
 
     #[test]
     fn a_release_reports_its_built_in_version() {

@@ -5484,19 +5484,21 @@ impl Game<'_> {
             self.tick_breeze_effects();
         }
         self.tick_remote_guardian_eyes(running);
-        // ClientLevel.tickBlockEntities: chest lids, shulker boxes, bells,
-        // and the moving pistons a block event's client-side moveBlocks made
-        // (their progress advances between the server's block updates).
-        self.tick_block_entity_anims();
-        self.tick_remote_spawners();
-        self.client_tick_beacons();
-        self.tick_remote_potent_sulfur();
-        self.with_level(|b, level, ticks| {
-            b.client_tick_block_entities(level, ticks);
-        });
-        let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
-        self.push_piston_entities(pushes);
-        self.sync_moving_pistons();
+        // Level.tickBlockEntities: a frozen level ticks no block entities.
+        // A step advances the moving pistons created by the block event once,
+        // rather than finishing them during the frozen ticks between steps.
+        if running {
+            self.tick_block_entity_anims();
+            self.tick_remote_spawners();
+            self.client_tick_beacons();
+            self.tick_remote_potent_sulfur();
+            self.with_level(|b, level, ticks| {
+                b.client_tick_block_entities(level, ticks);
+            });
+            let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
+            self.push_piston_entities(pushes);
+            self.sync_moving_pistons();
+        }
         self.tick_hand();
         if running {
             self.tick_particles();

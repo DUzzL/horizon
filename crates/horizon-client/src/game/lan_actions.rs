@@ -3979,6 +3979,15 @@ impl Game<'_> {
                     }
                 }
                 MotionEvent::Fall(event) => self.landing_block_updates(&event),
+                // PowderSnowBlock.entityInside: every player around sees the
+                // snowflake (`ServerLevel.sendParticles`).
+                MotionEvent::Snowflake { position, velocity } => {
+                    super::lan_particles::send_snowflake_particle(
+                        host,
+                        [position.x, position.y, position.z],
+                        [velocity.x, velocity.y, velocity.z],
+                    );
+                }
                 // LivingEntity.baseTick's entity event 67, to every client
                 // around, the guest's own included; this window draws it too.
                 MotionEvent::Drown => {

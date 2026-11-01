@@ -120,6 +120,7 @@ pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
@@ -2150,6 +2151,40 @@ impl HudRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_bytes_ignores_crc_checksum_error() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ])
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        let idat_pos = encoded
+            .windows(4)
+            .position(|w| w == b"IDAT")
+            .expect("IDAT chunk");
+        let len = u32::from_be_bytes([
+            encoded[idat_pos - 4],
+            encoded[idat_pos - 3],
+            encoded[idat_pos - 2],
+            encoded[idat_pos - 1],
+        ]) as usize;
+        let crc_pos = idat_pos + 4 + len;
+        encoded[crc_pos] ^= 0xFF;
+
+        let (w, h, rgba) = decode_bytes(&encoded).expect("should decode despite bad CRC");
+        assert_eq!(w, 2);
+        assert_eq!(h, 2);
+        assert_eq!(rgba.len(), 16);
+    }
 
     #[test]
     fn clip_since_keeps_the_visible_part_of_a_straddling_triangle() {

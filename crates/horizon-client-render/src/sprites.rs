@@ -528,6 +528,7 @@ impl Sprites {
 /// A PNG's width, height and pixels as RGBA.
 fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![

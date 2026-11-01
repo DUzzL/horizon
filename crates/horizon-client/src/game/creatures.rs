@@ -1110,6 +1110,8 @@ impl Game<'_> {
         self.tick_fangs();
         self.tick_allays();
         self.tick_pandas();
+        self.tick_foxes();
+        self.tick_dolphins();
         self.tick_mob_looting();
         self.tick_breeze_effects();
         self.tick_sniffer_effects();
@@ -2153,6 +2155,20 @@ impl Game<'_> {
                         && let Some(id) = id
                     {
                         self.finalize_converted(id);
+                    }
+                }
+                MobEvent::ThrowItem {
+                    mob,
+                    stack,
+                    at,
+                    motion,
+                    pickup_delay,
+                } => {
+                    // `thrownItem.setThrower(the mob)`.
+                    self.spawn_item(stack, at, motion, pickup_delay);
+                    let thrower = self.mob_uuid(mob);
+                    if let Some(thrown) = self.just_spawned_item() {
+                        thrown.thrower = Some(thrower);
                     }
                 }
                 MobEvent::DropItem { item, count, at } => self.spawn_item(
