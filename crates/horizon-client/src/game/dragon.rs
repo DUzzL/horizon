@@ -278,6 +278,7 @@ pub(super) struct Dragon {
     /// `lastHurtByPlayer` with its 100 tick memory: the player credited with
     /// the kill, and the dragon tick of their last hit.
     hurt_by_player: Option<(FightWho, i32)>,
+    pub last_source: Option<(&'static str, Option<i32>, Option<i32>)>,
     pub death_time: i32,
     pub flap: f32,
     pub old_flap: f32,
@@ -406,6 +407,7 @@ impl Dragon {
             invulnerable: 0,
             last_hurt: 0.0,
             hurt_by_player: None,
+            last_source: None,
             death_time: 0,
             flap: 0.0,
             old_flap: 0.0,
@@ -438,8 +440,10 @@ impl Dragon {
     fn sample(&self, delay: usize) -> (f64, f32) {
         self.history[(self.head + 64 - (delay & 63)) & 63]
     }
-    /// DragonFlightHistory.get(delay, partial).
+    /// `DragonFlightHistory.get(delay, partial)`, with
+    /// `EnderDragonRenderer.extractRenderState`'s frozen history on death.
     fn sample_lerp(&self, delay: usize, partial: f32) -> (f64, f32) {
+        let partial = if self.alive() { partial } else { 0.0 };
         let a = self.sample(delay);
         let b = self.sample(delay + 1);
         let yaw = b.1 + wrap(a.1 - b.1) * partial;
@@ -865,7 +869,13 @@ impl Game<'_> {
     /// `EnderDragonFight.tick` and the fight's entities, while the End is
     /// ticked (in place for its player, or on a server with players in it).
     pub(super) fn tick_fight(&mut self) {
-        if self.dim != Dim::End || self.travelling.is_some() {
+        if self.travelling.is_some() {
+            return;
+        }
+        // A dragon outside the End (`/summon`) has no fight: `ServerLevel.getDragonFight` is
+        // null there, but `EnderDragon.aiStep` still flies it.
+        if self.dim != Dim::End {
+            self.tick_dragon();
             return;
         }
         self.load_fight();
@@ -1174,6 +1184,15 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
             self.audio
                 .play("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
+            if let Some(s) = source {
+                d.last_source = Some((
+                    s.damage_type,
+                    (s.causing != 0).then_some(s.causing),
+                    (s.direct != 0).then_some(s.direct),
+                ));
+            } else {
+                d.last_source = Some(("minecraft:generic", None, None));
+            }
         }
         hurt
     }
@@ -3579,9 +3598,14 @@ impl Game<'_> {
             }
         }
     }
-    /// The remote dragon, if `id` is it.
+    /// The remote dragon, if `id` is it or one of its parts.
     fn remote_dragon_mut(&mut self, id: i32) -> Option<&mut Dragon> {
-        self.dragon.as_mut().filter(|d| d.id as i32 == id)
+        let Ok(uid) = u32::try_from(id) else {
+            return None;
+        };
+        self.dragon
+            .as_mut()
+            .filter(|d| d.id == uid || (d.id != 0 && (d.id + 1..=d.id + 8).contains(&uid)))
     }
     /// `handleSetEntityData`: LivingEntity.DATA_HEALTH_ID and
     /// EnderDragon.DATA_PHASE (`onSyncedDataUpdated` sets the phase).
@@ -3606,13 +3630,15 @@ impl Game<'_> {
     /// `handleHurtAnimation` and `handleDamageEvent`: the red flash.
     pub(super) fn remote_dragon_hurt(&mut self, id: i32) {
         if let Some(d) = self.remote_dragon_mut(id) {
+            // `LivingEntity.handleDamageEvent`: the red flash. Its sound is the
+            // server's (`playHurtSound`); a client plays one only for its own player.
             d.hurt_time = 10;
         }
     }
     /// `handleRemoveEntities`, or a crystal removed: the healing beam
     /// keeps pointing at the same crystal.
     pub(super) fn remove_remote_dragon(&mut self, id: i32) {
-        if self.remote_dragon_mut(id).is_some() {
+        if self.dragon.as_ref().is_some_and(|d| d.id as i32 == id) {
             self.dragon = None;
             return;
         }
@@ -3874,7 +3900,7 @@ fn dragon_rays(base: glam::Mat4, t: f32, white: horizon_client::hud::Rect, out: 
                     normal: [0; 4],
                     pos: m.transform_point3(p).to_array(),
                     uv,
-                    layer: 2,
+                    layer: horizon_client::gfx::DRAGON_RAYS_OVERLAY,
                     color: c,
                     light: 0,
 
@@ -3910,6 +3936,55 @@ fn push_seen_with_hurt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dying_dragons_keep_their_flight_pose_between_frames() {
+        let mut dragon = Dragon::new(Vec3::new(0.0, 80.0, 0.0), 0.0, 432);
+        dragon.history.fill((70.0, 170.0));
+        dragon.position.y = 90.0;
+        dragon.yaw = -170.0;
+        dragon.record();
+        assert_eq!(dragon.sample_lerp(0, 0.5), (80.0, 180.0));
+        dragon.health = 0.0;
+        for partial in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(dragon.sample_lerp(0, partial), (70.0, 170.0));
+        }
+    }
+
+    /// Driven by `tools/test_dragon_render_parity.py`; compares the actual
+    /// ray vertices with EnderDragonRenderer's captured VertexConsumer output.
+    #[test]
+    #[ignore]
+    fn dragon_render_parity_fixture() {
+        let path = std::env::var("HORIZON_DRAGON_RENDER_OUTPUT").expect("harness output path");
+        let mut cases = Vec::new();
+        for t in [0.0, 0.05, 0.25, 0.5, 0.8, 0.9, 0.95, 1.0] {
+            let mut vertices = Vec::new();
+            dragon_rays(
+                glam::Mat4::IDENTITY,
+                t,
+                horizon_client::hud::Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 1,
+                    h: 1,
+                },
+                &mut vertices,
+            );
+            // The fourth quad vertex only pads a triangle for our index buffer.
+            let triangles: Vec<_> = vertices
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|q| &q[..3])
+                .map(|v| serde_json::json!([v.pos[0], v.pos[1], v.pos[2], v.color]))
+                .collect();
+            cases.push(triangles);
+        }
+        std::fs::write(path, serde_json::to_vec(&cases).unwrap()).unwrap();
+    }
 
     #[test]
     fn death_rays_sample_inside_the_white_sprite() {
@@ -4319,5 +4394,13 @@ mod tests {
         assert_eq!(t.map(|p| p.who), Some(FightWho::Guest(8)));
         let t = nearest_enemy(&players, false, Vec3::new(9.0, 64.0, 0.0), None, |_| true);
         assert_eq!(t.map(|p| p.who), Some(FightWho::Host));
+    }
+    #[test]
+    fn a_landed_hurt_sets_the_dragon_hurt_flash_time() {
+        let mut d = dragon_as(42);
+        assert_eq!(d.hurt_time, 0);
+        let hurt = d.hurt(0, 5.0, HIT, false);
+        assert_eq!(hurt, Hurt::Landed { full: true });
+        assert_eq!(d.hurt_time, 10);
     }
 }

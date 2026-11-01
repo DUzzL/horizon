@@ -63,6 +63,33 @@ pub struct BlockEntityDraw {
 
 #[allow(dead_code)]
 impl BlockEntityDraw {
+    /// A frame drawn from `pose` (relative to the camera), lit by `light` and
+    /// `lights`, adding to `vertices`; `block` is where `native_draw_item`'s
+    /// owner stands. A mob's frame (`native_mob_submit`) is made this way.
+    pub(super) fn posed(
+        partial: f32,
+        game_time: i64,
+        light: u32,
+        block: [i32; 3],
+        pose: Mat4,
+        lights: (Vec3, Vec3),
+        vertices: Vec<Vertex>,
+    ) -> Self {
+        Self {
+            partial,
+            game_time,
+            light,
+            block,
+            poses: vec![pose],
+            lights,
+            vertices,
+            kept: false,
+        }
+    }
+    /// The vertices drawn, with those it was made with first.
+    pub(super) fn into_vertices(self) -> Vec<Vertex> {
+        self.vertices
+    }
     /// `PoseStack.pushPose`: `pop` comes back to the pose as it is now.
     pub fn push(&mut self) {
         let pose = self.pose();
@@ -253,6 +280,19 @@ impl KeptGeometry {
 }
 
 impl Game<'_> {
+    /// The mod block entities within view distance of `camera` whose block's
+    /// template has none, which the mesher's block entity lists (made from
+    /// the template) leave out: where they are and their block's state, for
+    /// `mod_block_entity_geometry`. From the per-chunk list of
+    /// `BlockEntities::mods_near`, not a scan of every block entity.
+    pub(super) fn untemplated_mod_block_entities(&self, camera: DVec3) -> Vec<([i32; 3], u32)> {
+        self.world
+            .block_entities
+            .mods_near(camera.x, camera.z, VIEW_DISTANCE)
+            .map(|p| ([p.0, p.1, p.2], self.world.block(p.0, p.1, p.2).0))
+            .filter(|&(_, state)| !self.res.facts().get(BlockStateId(state)).block_entity)
+            .collect()
+    }
     /// `native_block_entity_submit` for each of `blocks` (in drawn sections,
     /// drawn by no vanilla renderer) whose block entity is a mod's, closer than
     /// `BlockEntityRenderer.getViewDistance` to the camera (`shouldRender`)

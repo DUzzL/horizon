@@ -1324,6 +1324,7 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -1400,6 +1401,7 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -1450,6 +1452,7 @@ dependencies = [
  "horizon-hdr",
  "horizon-items",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1534,6 +1537,7 @@ dependencies = [
  "horizon-client-core",
  "horizon-core",
  "horizon-world",
+ "log",
  "serde",
  "serde_json",
 ]
@@ -1569,6 +1573,8 @@ dependencies = [
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
+ "horizon-bench",
+ "log",
  "regex",
 ]
 
@@ -1675,6 +1681,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga",
+ "png",
  "serde",
  "serde_json",
  "sha2",

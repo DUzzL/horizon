@@ -64,6 +64,16 @@ fn bounds(p: Vec3) -> Aabb {
         Vec3::new(p.x + h, p.y + SIZE, p.z + h),
     )
 }
+impl Hook {
+    pub(super) fn bounds(&self) -> Aabb {
+        bounds(self.position)
+    }
+    /// `FishingHook.tick` returns before `applyEffectsFromBlocks` while it
+    /// holds an entity.
+    pub(super) fn applies_block_effects(&self) -> bool {
+        !matches!(self.state, State::Hooked(_))
+    }
+}
 /// RandomSource.triangle(mode, deviation).
 fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
     mode + deviation * (f64::from(r.next_float()) - f64::from(r.next_float()))
@@ -570,6 +580,12 @@ impl Game<'_> {
                             .map(|i| i.id)
                     });
                 if let Some(id) = hit {
+                    // Projectile.onHit on an entity: PROJECTILE_LAND.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(horizon_client::mobs::Who::Player),
+                        [h.position.x, h.position.y, h.position.z],
+                    );
                     h.state = State::Hooked(id);
                     h.velocity = Vec3::ZERO;
                     self.hook = Some(h);
@@ -595,6 +611,12 @@ impl Game<'_> {
                     shape.clip(h.position, to, p)
                 });
                 if let Some(hit) = hit.ok().flatten() {
+                    // Projectile.onHit on a block: PROJECTILE_LAND.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(horizon_client::mobs::Who::Player),
+                        [hit.location.x, hit.location.y, hit.location.z],
+                    );
                     h.velocity = rebound(h.velocity, hit.location, h.position);
                 }
             }

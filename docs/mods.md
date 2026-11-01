@@ -72,7 +72,12 @@ Unknown keys are refused, so a typo is an error, not a silently ignored permissi
 
 A content mod has capability `registries` and carries `assets/` and `data/` in the `.hmod`. It adds blocks and items
 by declaring them in `data/<id>/horizon/block/*.json` and `data/<id>/horizon/item/*.json`, each copying a vanilla
-template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and mob effects (below):
+template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and creative tabs, mob
+effects, entity types and menu types (each below) in `creative_tab/`, `mob_effect/`, `entity_type/` and `menu/` beside
+them. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different
+content is refused when it joins, with the reason.
+
+A block names its template and what differs from it:
 
 ```json
 { "template": "minecraft:iron_block",
@@ -123,6 +128,18 @@ JSON values become NBT values. Values must fit the network NBT limits and
 round-trip through saved NBT; negative zero is not supported. A key such as
 `"!sample:charge": {}` removes the template's default. Unknown types fail when Horizon builds the content root;
 `cargo horizon-mod check` cannot check native registrations.
+
+`crafting_remainder` names what the item leaves in the crafting grid when a
+recipe uses it, as a milk bucket leaves a bucket (vanilla's
+`Item.Properties.craftRemainder`, not a data component): a vanilla item or
+one of the mod's own, refused at load otherwise. It holds on the crafting
+table, the inventory grid and the crafter, not yet as furnace fuel or in a
+brewing stand. What the item leaves once eaten
+or drunk is the `minecraft:use_remainder` component instead:
+
+```json
+{ "template": "minecraft:mushroom_stew", "crafting_remainder": "minecraft:bowl" }
+```
 
 A block's item takes the same `components`, over the components of its
 template block's item; a block with `"item": false` can't have them. Block files
@@ -220,21 +237,13 @@ slot, and one on the container goes to the inventory, as a chest's does. `result
 container's faces and `inputs`, so leave result slots out of `inputs`. The data slots are the block entity's `data`
 (16-bit on the network, as vanilla's), all sent when it opens, then each change. A Horizon client shows it through the
 mod's own screen (`native_screen`); without one it closes again. Clients join a server only with the same mods' menu
-types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Not
-yet: per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra data, and
-client prediction of its clicks.
+types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Its
+clicks run on the server's vanilla menu engine (`menu::Kind::Mod`), shift-clicks routed as `ChestMenu`'s, and a native
+mod can decide what a slot takes in code with `native_menu_slot_rules` ([native-mods.md](native-mods.md#menu-slot-rules)).
+Not yet: declared per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra
+data, and client prediction of its clicks.
 
-`crafting_remainder` names what the item leaves in the crafting grid when a
-recipe uses it, as a milk bucket leaves a bucket (vanilla's
-`Item.Properties.craftRemainder`, not a data component): a vanilla item or
-one of the mod's own, refused at load otherwise. It holds on the crafting
-table, the inventory grid and the crafter, not yet as furnace fuel or in a
-brewing stand. What the item leaves once eaten
-or drunk is the `minecraft:use_remainder` component instead:
-
-```json
-{ "template": "minecraft:mushroom_stew", "crafting_remainder": "minecraft:bowl" }
-```
+#### Namespaces and limits
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
@@ -253,7 +262,8 @@ namespaces = ["kaisyn", "towns_and_towers"]
 ```
 
 A listed namespace is the mod's as its id is: its `assets/` and `data/` files load, and the game reads its tags,
-recipes, names and loot. Blocks, items and mob effects are declared in `data/<id>/horizon/` only. `minecraft`, `c` and
+recipes, names and loot. Blocks, items, creative tabs, mob effects, entity types and menu types are declared in
+`data/<id>/horizon/` only. `minecraft`, `c` and
 `horizon` cannot be listed. Two mods that are on may not own the same namespace (one's id or listed namespace being
 the other's): the game keeps the first in load order and leaves the other's content out, with "mods A and B both use
 the namespace N; turn one of them off" in the log. Paths use vanilla's resource characters, at most 65,536 files, 16

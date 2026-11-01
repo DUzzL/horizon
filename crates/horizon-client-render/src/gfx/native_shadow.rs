@@ -1,5 +1,5 @@
 //! The shadow map of Horizon's own shader packs (`[shadow]`, docs/shaders.md): each frame the
-//! solid terrain the light (the sun by day, the moon by night) sees is drawn into a square depth
+//! solid terrain and entities the light (the sun by day, the moon by night) sees are drawn into a square depth
 //! map, which the material and post stages read as `shadow_map`; translucent terrain goes over a
 //! copy of it, `shadow_map_translucent`, with its colour in `shadow_color`. The shadow camera is the one
 //! `shaders/` packs use (`pack_uniforms::shadow_camera`), so the renderer's shadow visibility and
@@ -41,22 +41,26 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
 }
 @vertex fn horizon_shadow_vs(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(3) color: vec4<f32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> HorizonShadowOut {
-    return horizon_shadow_vertex(position + origin.xyz, horizon_terrain_terrain_uv(uv, origin.w), layer, color);
+    let atlas = horizon_terrain_terrain_uv(uv, origin.w);
+    let pos = horizon_material_displace(position + origin.xyz, atlas, layer, color, light);
+    return horizon_shadow_vertex(pos, atlas, layer, color);
 }
 @vertex fn horizon_shadow_vs_flat(
     @builtin(vertex_index) index: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>, @location(2) layer: u32,
-    @location(3) color: vec4<f32>
+    @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> HorizonShadowOut {
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[index >> 8u]];
-    return horizon_shadow_vertex(position + origin.xyz, horizon_terrain_terrain_uv(uv, origin.w), layer, color);
+    let atlas = horizon_terrain_terrain_uv(uv, origin.w);
+    let pos = horizon_material_displace(position + origin.xyz, atlas, layer, color, light);
+    return horizon_shadow_vertex(pos, atlas, layer, color);
 }
 @fragment fn horizon_shadow_fs(in: HorizonShadowOut) {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let alpha = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu).a;
-    if alpha < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    if alpha < 0.5 && (in.layer & 0x8000u) == 0u && !horizon_shadow_solid(in.layer & 0x7fffu) { discard; }
 }
 // Translucent terrain: its colour where it is the nearest thing the light passes through;
 // alpha 1 marks a fluid, other surfaces keep their alpha below it.
@@ -64,6 +68,40 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
     let color = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
     if color.a < 0.01 { discard; }
     return vec4(color.rgb * in.tint, select(min(color.a, 0.99), 1.0, in.fluid != 0u));
+}
+";
+
+/// The entity draw of the shadow pass: the renderer's opaque entity quads (`EntityBatch`'s first
+/// material) through the shadow camera, with their texture's cutout. The sky's bodies, clouds,
+/// beacon beams and breaking cracks share that buffer but are unlit (entity.wgsl's overlays) and
+/// cast nothing. A quad's layer holds the overlay in its low 16 bits.
+const ENTITY_ENTRIES: &str = "
+@group(0) @binding(1) var horizon_atlas: texture_2d<f32>;
+@group(0) @binding(2) var horizon_atlas_sampler: sampler;
+struct HorizonEntityShadowOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) alpha: f32,
+}
+@vertex fn horizon_entity_shadow_vs(@location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>, @location(2) layer: u32, @location(3) color: vec4<f32>)
+    -> HorizonEntityShadowOut {
+    let clip = frame.shadow_view_proj * vec4(position, 1.0);
+    let xy = shadow_distort(clip.xy);
+    let overlay = layer & 0xffffu;
+    // As entity.wgsl's `unlit`.
+    let unlit = overlay == 2u || overlay == 4u || overlay == 6u
+        || (overlay >= 9u && overlay <= 12u);
+    var out: HorizonEntityShadowOut;
+    // Unlit geometry lands outside the clip volume.
+    out.clip = select(vec4(xy, clamp(clip.z, 0.0, 1.0), 1.0), vec4(2.0, 2.0, 2.0, 1.0), unlit);
+    out.uv = uv;
+    out.alpha = color.a;
+    return out;
+}
+@fragment fn horizon_entity_shadow_fs(in: HorizonEntityShadowOut) {
+    let alpha = textureSampleLevel(horizon_atlas, horizon_atlas_sampler, in.uv, 0.0).a;
+    if alpha * in.alpha < 0.5 { discard; }
 }
 ";
 
@@ -191,14 +229,36 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) -> wgpu::RenderPass<'e> {
+        self.depth_pass(encoder, label, wgpu::LoadOp::Clear(1.0), timing)
+    }
+
+    /// A depth pass that adds to the map. Entities draw here, after the translucent map was
+    /// copied: where one casts, the solid map is the darker and decides.
+    pub fn begin_entities<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        label: &str,
+    ) -> wgpu::RenderPass<'e> {
+        self.depth_pass(encoder, label, wgpu::LoadOp::Load, None)
+    }
+
+    fn depth_pass<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        label: &str,
+        load: wgpu::LoadOp<f32>,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> wgpu::RenderPass<'e> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
+            timestamp_writes: timing.and_then(|t| t.writes(label)),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load,
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
@@ -213,6 +273,7 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> wgpu::RenderPass<'e> {
         encoder.copy_texture_to_texture(
             self.depth.as_image_copy(),
@@ -221,6 +282,7 @@ impl ShadowMap {
         );
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
+            timestamp_writes: timing.and_then(|t| t.writes(label)),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.color_view,
                 resolve_target: None,
@@ -245,8 +307,8 @@ impl ShadowMap {
     /// Clears the 1×1 map of a pack without `[shadow]` once.
     pub fn clear_blank(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if std::mem::take(&mut self.blank_uncleared) {
-            drop(self.begin(encoder, "Native shader pack shadow map clear"));
-            drop(self.begin_translucent(encoder, "Native shader pack shadow colour clear"));
+            drop(self.begin(encoder, "Native shader pack shadow map clear", None));
+            drop(self.begin_translucent(encoder, "Native shader pack shadow colour clear", None));
         }
     }
 }
@@ -261,16 +323,120 @@ pub struct NativeShadow {
     /// flat.
     pub translucent: wgpu::RenderPipeline,
     pub flat_translucent: Option<wgpu::RenderPipeline>,
+    /// The entities' draw, with the entities' group 0 (`ENTITY_ENTRIES`).
+    pub entity: wgpu::RenderPipeline,
     pub group: wgpu::BindGroup,
 }
 
-/// The shadow pass's shader: the frame, Horizon's terrain, and the entries.
-fn shader_source() -> String {
+/// The entity draw's shader.
+fn entity_source() -> String {
     format!(
-        "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}\
-         // Horizon's terrain (terrain.wgsl)\n{}{ENTRIES}",
+        "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}{ENTITY_ENTRIES}",
         FrameInputs::WGSL.wgsl(),
         horizon_shader_api::stages::SHADOW_HELPERS,
+    )
+}
+
+/// The shadow pass's entity pipeline: the entities' vertices and group 0, the frame at group 3.
+fn entity_pipeline(
+    device: &wgpu::Device,
+    entities: &wgpu::BindGroupLayout,
+    frame_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Native shader pack entity shadow"),
+        source: wgpu::ShaderSource::Wgsl(entity_source().into()),
+    });
+    let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
+    groups[0] = Some(entities);
+    groups[GROUP as usize] = Some(frame_layout);
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Native shader pack entity shadow"),
+        bind_group_layouts: &groups,
+        ..Default::default()
+    });
+    let attributes =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Uint32, 3 => Unorm8x4];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Native shader pack entity shadow"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("horizon_entity_shadow_vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<super::Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &attributes,
+            })],
+        },
+        // Both sides, as the terrain: thin parts (ears, item quads) cast from either.
+        primitive: wgpu::PrimitiveState {
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: wgpu::DepthBiasState {
+                constant: 0,
+                slope_scale: 1.5,
+                clamp: 0.0,
+            },
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("horizon_entity_shadow_fs"),
+            compilation_options: Default::default(),
+            targets: &[],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// `horizon_shadow_solid(layer)`: whether the sprite layer's id, out of `materials`
+/// (`(layer, id)`), is one of the pack's `solid` ones.
+fn shadow_solid(materials: &[(u32, u32)], solid: &[u32]) -> String {
+    let layers: Vec<String> = materials
+        .iter()
+        .filter(|(_, id)| solid.contains(id))
+        .map(|(layer, _)| format!("{layer}u"))
+        .collect();
+    let cases = if layers.is_empty() {
+        String::new()
+    } else {
+        format!("        case {}: {{ return true; }}\n", layers.join(", "))
+    };
+    format!(
+        "fn horizon_shadow_solid(layer: u32) -> bool {{\n    switch layer {{\n{cases}        \
+         default: {{ return false; }}\n    }}\n}}\n"
+    )
+}
+
+/// The shadow pass's shader: the frame, Horizon's terrain, and the entries, with the layers
+/// `solid` of `shadow_solid`.
+fn shader_source(solid: &str, vertex: Option<&str>, materials: &[(u32, u32)]) -> String {
+    let (head, displace) = match vertex {
+        Some(stage) => (
+            stage.to_owned()
+                + &super::native_material::layer_table("horizon_sprite_material", materials),
+            super::native_material::DISPLACE_PACK,
+        ),
+        None => (
+            format!(
+                "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}",
+                FrameInputs::WGSL.wgsl(),
+                horizon_shader_api::stages::SHADOW_HELPERS,
+            ),
+            super::native_material::DISPLACE_VANILLA,
+        ),
+    };
+    format!(
+        "{head}// Horizon's terrain (terrain.wgsl)\n{}{solid}{displace}{ENTRIES}",
         prefixed(
             section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
             PREFIX
@@ -283,14 +449,22 @@ impl NativeShadow {
         device: &wgpu::Device,
         shape: &TerrainShape<'_>,
         frame: &super::native_post::NativeFrame,
+        solid_materials: &[u32],
+        vertex: Option<&horizon_shader_api::check::CheckedStage>,
+        constants: &[(String, f64)],
     ) -> Result<Self, String> {
-        let text = shader_source();
+        let text = shader_source(
+            &shadow_solid(shape.sprite_materials, solid_materials),
+            vertex.map(|s| s.source.as_str()),
+            shape.sprite_materials,
+        );
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|e| format!("shadow pass: {}", e.emit_to_string(&text)))?;
-        let constants = [
+        let mut constants = super::native_post::present_constants(&module, constants);
+        constants.extend([
             ("horizon_terrain_SPRITE_ARRAYS", shape.sprites[0]),
             ("horizon_terrain_SPRITE_SPLIT", shape.sprites[1]),
-        ];
+        ]);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Native shader pack shadow"),
@@ -420,6 +594,7 @@ impl NativeShadow {
         };
         let flat = flat_pipeline(false);
         let flat_translucent = flat_pipeline(true);
+        let entity = entity_pipeline(device, shape.entities, &frame_layout);
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("shadow pass: {e}"));
         }
@@ -428,6 +603,7 @@ impl NativeShadow {
             flat,
             translucent,
             flat_translucent,
+            entity,
             group,
         })
     }
@@ -439,7 +615,29 @@ mod tests {
 
     #[test]
     fn the_shadow_shader_validates() {
-        let text = shader_source();
+        for materials in [&[][..], &[(3, 7), (4, 8), (9, 7)][..]] {
+            let text = shader_source(&shadow_solid(materials, &[7]), None, materials);
+            let module = naga::front::wgsl::parse_str(&text).unwrap();
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+        }
+    }
+
+    #[test]
+    fn only_the_layers_of_solid_ids_lose_their_cutouts() {
+        let materials = [(3, 7), (4, 8), (9, 7)];
+        assert!(shadow_solid(&materials, &[7]).contains("case 3u, 9u: { return true; }"));
+        assert!(!shadow_solid(&materials, &[]).contains("case"));
+        assert!(!shadow_solid(&materials, &[5]).contains("case"));
+    }
+
+    #[test]
+    fn the_entity_shader_validates() {
+        let text = entity_source();
         let module = naga::front::wgsl::parse_str(&text).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -454,6 +652,7 @@ mod tests {
         let settings = Settings {
             resolution: 2048,
             distance: 128.0,
+            solid_materials: Vec::new(),
         };
         let shadow = camera(&settings);
         let (view, projection) = super::super::pack_uniforms::shadow_camera(
@@ -474,6 +673,7 @@ mod tests {
         let shadow = camera(&Settings {
             resolution: 2048,
             distance: 128.0,
+            solid_materials: Vec::new(),
         });
         let light = glam::Vec3::Y;
         for x in [5.5, -5.5, -2064.5, 2064.5] {

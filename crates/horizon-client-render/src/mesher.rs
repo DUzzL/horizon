@@ -4,6 +4,7 @@
 //! cardinal shading, tint sources, block offsets; see `lighting`). Fluids
 //! follow `FluidRenderer` (see `fluid`).
 mod fluid;
+mod leaf_culling;
 mod lighting;
 mod sides;
 use crate::{
@@ -11,6 +12,7 @@ use crate::{
     biome::Biomes,
     blocks::{BlockFacts, RenderShape},
     chunk::{Chunk, MIN_Y},
+    graphics::LeafCullingMode,
     models::catalog::BakedFace,
 };
 use horizon_core::{
@@ -231,6 +233,9 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
+    /// Blocks that give off light (world position, state id), for the colour of block light
+    /// Horizon's shader packs read (`gfx::block_light`).
+    pub lights: Vec<([i32; 3], u32)>,
     /// Sprite layers emitted while building this mesh. Kept distinct before
     /// upload so the renderer does not rescan every terrain vertex.
     pub sprite_layers: Vec<u16>,
@@ -248,6 +253,7 @@ impl Default for SectionMesh {
             translucent: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
+            lights: Vec::new(),
             sprite_layers: Vec::new(),
             bounds: None,
             keep: false,
@@ -278,6 +284,7 @@ impl SectionMesh {
         self.solid.clear();
         self.translucent.clear();
         self.block_entities.clear();
+        self.lights.clear();
         self.sprite_layers.clear();
         self.sides = Sides::default();
         self.visibility = ALL_VISIBLE;
@@ -288,6 +295,7 @@ impl SectionMesh {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.translucent.capacity() * std::mem::size_of::<TerrainVertex>()
             + self.block_entities.capacity() * std::mem::size_of::<([i32; 3], u32)>()
+            + self.lights.capacity() * std::mem::size_of::<([i32; 3], u32)>()
             + self.sprite_layers.capacity() * std::mem::size_of::<u16>()
     }
     /// Sorts the solid quads by the side they face, for the renderer to
@@ -464,6 +472,9 @@ struct Info {
     overlay: bool,
     /// `LeavesBlock`: with opaque leaves the faces between two leaf blocks are skipped.
     leaves: bool,
+    /// A full opaque cube: `RenderShape::Model`, `can_occlude`, `solid_render`
+    /// and a full collision shape. The only block leaf culling treats as solid.
+    opaque_cube: bool,
     blocks_flow: bool,
     ice: bool,
     sturdy: u8,
@@ -641,6 +652,12 @@ impl MeshTables {
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
                 leaves: s.has_class("LeavesBlock"),
+                opaque_cube: leaf_culling::opaque_cube(
+                    s.render_shape,
+                    s.can_occlude,
+                    s.solid_render,
+                    s.full_collision,
+                ),
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
                 ice: s.has_class("IceBlock"),
                 sturdy: s.sturdy_full,
@@ -679,6 +696,14 @@ impl MeshTables {
             overlay: i.overlay,
             tint_sources: i.tint_count,
         })
+    }
+    /// Whether `state` is a full opaque cube: the only block leaf culling
+    /// treats as a solid neighbour. Glass, fluids, slabs, stairs and models
+    /// that only partly fill their block are not.
+    pub fn opaque_cube(&self, state: BlockStateId) -> bool {
+        self.info
+            .get(state.0 as usize)
+            .is_some_and(|i| i.opaque_cube)
     }
     /// `BlockTintSource.color(state)`: block-model colour without a level.
     /// `grass` is `GrassColor.getDefaultColor()` from the active pack's colormap.
@@ -854,13 +879,17 @@ impl Padded {
     }
 }
 /// Per-worker temporary arrays. They never hold resource-pack references or
-/// geometry still owned by the renderer, and total about 88 KiB per worker.
+/// geometry still owned by the renderer, and total about 150 KiB per worker
+/// (the leaf mask adds 8,000 cells, depths and a queue).
 #[derive(Default)]
 pub(crate) struct MeshScratch {
     padded: Padded,
     own: Option<Box<[u32; 4096]>>,
     visibility: Vec<usize>,
+    leaf: leaf_culling::LeafMask,
 }
+#[cfg(test)]
+mod leaf_culling_tests;
 #[cfg(test)]
 mod reuse_tests;
 /// Set on a terrain vertex's sprite layer when its texture alpha must be ignored.
@@ -1073,6 +1102,10 @@ pub struct Mesher<'a> {
     pub smooth_lighting: bool,
     /// The `cutoutLeaves` option (fancy graphics); off makes leaves opaque.
     pub cutout_leaves: bool,
+    /// Sprite layers a shader pack moves into the translucent pass, by layer.
+    pub translucent_layers: &'a [bool],
+    /// What the worker does with leaf faces inside a canopy.
+    pub leaf_culling: LeafCullingMode,
 }
 impl Mesher<'_> {
     /// `region[dz][dx]` are the chunks around the meshed column (centre 1,1).
@@ -1102,6 +1135,11 @@ impl Mesher<'_> {
         let pad = &scratch.padded;
         out.visibility = visibility_reusing(pad, &self.tables.info, &mut scratch.visibility);
         let base_y = center.min_y() + sy * 16;
+        if self.leaf_culling.is_interior() {
+            scratch
+                .leaf
+                .prepare(self.leaf_culling, pad, &self.tables.info, region, base_y);
+        }
         let mut tints = Tints::new(
             region,
             self.biomes,
@@ -1122,6 +1160,10 @@ impl Mesher<'_> {
                     let state = &info[id as usize];
                     if state.block_entity {
                         out.block_entities
+                            .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
+                    }
+                    if state.emission > 0 {
+                        out.lights
                             .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
                     }
                     if state.solid
@@ -1162,13 +1204,21 @@ impl Mesher<'_> {
                         None => [x as f32, y as f32, z as f32],
                     };
                     let mut visible = [false; 6];
+                    let interior_leaf = state.leaves
+                        && self.leaf_culling.is_interior()
+                        && scratch.leaf.interior(self.leaf_culling, x, y, z);
                     for d in Direction::ALL {
                         let [dx, dy, dz] = d.normal();
                         let neighbor = pad.blocks[pi(x + dx, y + dy, z + dz)];
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
+                        let hollow_leaf = self.leaf_culling == LeafCullingMode::Hollow
+                            && state.leaves
+                            && other.leaves
+                            && leaf_culling::in_section(x + dx, y + dy, z + dz);
                         visible[d as usize] = !opaque_leaves
+                            && !hollow_leaf
                             && self
                                 .visibility
                                 .should_render_face(
@@ -1193,6 +1243,7 @@ impl Mesher<'_> {
                                 face,
                                 ao,
                                 state,
+                                interior_leaf,
                             );
                         }
                     }
@@ -1231,6 +1282,7 @@ impl Mesher<'_> {
         face: &BakedFace,
         ao: bool,
         state: &Info,
+        interior_leaf: bool,
     ) {
         let q = &face.quad;
         // A quad's own light (a model's glowing part) may raise the tier; whether it
@@ -1260,10 +1312,27 @@ impl Mesher<'_> {
         if self.tables.is_animated(face.layer as u16) {
             out.note_sprite_layer(face.layer as u16);
         }
-        let target = if face.translucent {
+        let translucent = face.translucent
+            || self
+                .translucent_layers
+                .get(face.layer as usize)
+                .copied()
+                .unwrap_or(false);
+        let target = if translucent {
             &mut out.translucent
         } else {
             &mut out.solid
+        };
+        // Opaque leaves (forceOpaque), quads over opaque texels and leaves a
+        // leaf-culling mode proved internal draw in the solid layer: no alpha
+        // cutout. All four vertices of the quad share the layer.
+        let layer = if face.opaque && !translucent
+            || !self.cutout_leaves && state.leaves
+            || interior_leaf
+        {
+            face.layer as u16 | OPAQUE_LAYER
+        } else {
+            face.layer as u16
         };
         for i in 0..4 {
             let g = gray[i] as u32;
@@ -1275,13 +1344,7 @@ impl Mesher<'_> {
             target.push(TerrainVertex::new(
                 [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
                 q.uv[i],
-                // Opaque leaves (forceOpaque) and quads over opaque texels draw in the
-                // solid layer: no alpha cutout (a dirt path's side skips its clear top row).
-                if face.opaque && !face.translucent || !self.cutout_leaves && state.leaves {
-                    face.layer as u16 | OPAQUE_LAYER
-                } else {
-                    face.layer as u16
-                },
+                layer,
                 emitting(pack_rgb(rgb), tier),
                 pack_coords(lighting::with_emission(coords[i], q.light_emission)),
             ));
