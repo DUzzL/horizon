@@ -1264,6 +1264,8 @@ pub enum Page {
     Online,
     /// Splitscreen: the profile another player joins as (`split_profiles`).
     SplitProfiles,
+    /// Splitscreen: enable joining on this computer.
+    SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -1526,6 +1528,8 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// Other local players are joined: leave before turning splitscreen off.
+    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1571,6 +1575,7 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            split_joined: false,
         }
     }
 }
@@ -1634,6 +1639,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
         Page::Mods => "horizon.pages.mods.tooltip",
+        Page::SplitSetup => "horizon.pages.split_setup.tooltip",
         _ => return None,
     })
 }
@@ -2166,6 +2172,7 @@ impl OptionsUi {
             Page::Horizon => "horizon.pages.settings",
             Page::Agent => "horizon.pages.agent",
             Page::SplitProfiles => "horizon.pages.split_profiles",
+            Page::SplitSetup => "horizon.pages.split_setup",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -2255,6 +2262,14 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
+            Page::SplitSetup => vec![Row::Buttons(
+                if self.split_guest || self.split_joined {
+                    inactive(self.extra_button(s, crate::extras::Item::Splitscreen))
+                } else {
+                    self.extra_button(s, crate::extras::Item::Splitscreen)
+                },
+                None,
+            )],
             Page::Extras => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
@@ -2320,6 +2335,17 @@ impl OptionsUi {
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open(
+                            "horizon.pages.open.split_setup",
+                            if self.split_guest {
+                                Page::SplitProfiles
+                            } else {
+                                Page::SplitSetup
+                            },
+                        ),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
@@ -6788,6 +6814,7 @@ mod tests {
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,
+                Page::SplitSetup,
                 Page::Agent,
             ]
         );

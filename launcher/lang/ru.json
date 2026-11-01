@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "Не удалось прочитать сохранённый вход.",
   "Could not save the renewed sign-in.": "Не удалось сохранить обновлённый вход.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Не удалось сохранить обновлённый вход в связке ключей. Разблокируйте её и повторите.",
-  "Another account operation is running. Try again in a moment.": "Выполняется другая операция с аккаунтом. Повторите через минуту."
+  "Another account operation is running. Try again in a moment.": "Выполняется другая операция с аккаунтом. Повторите через минуту.",
+  "Built on {base}": "Собрано на {base}",
+  "Native mod builds": "Сборки с нативными модами"
 }

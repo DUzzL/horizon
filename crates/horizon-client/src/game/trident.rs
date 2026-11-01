@@ -483,11 +483,6 @@ impl Game<'_> {
                         return false;
                     };
                     let rest = self.as_guest(&mut host, conn, |g| g.give(t.stack.clone()));
-                    // Player.take: the guest's client plays the pickup sound.
-                    if rest.is_some() {
-                        let at = [t.position.x, t.position.y, t.position.z];
-                        host.hub.take_item(t.id as i32, by.id, 1, at);
-                    }
                     self.lan = Some(host);
                     let Some(rest) = rest else {
                         return false;
@@ -498,6 +493,14 @@ impl Game<'_> {
             if let Some(rest) = rest {
                 self.spawn_item(rest, [by.feet.x, by.feet.y, by.feet.z], [0.0; 3], 0);
             }
+        }
+        // Player.take, for a creative thrower's trident too: the clients near
+        // play the pickup sound and fly the trident to its collector.
+        if by.guest.is_some()
+            && let Some(host) = self.lan.as_ref()
+        {
+            let at = [t.position.x, t.position.y, t.position.z];
+            host.hub.take_item(t.id as i32, by.id, 1, at);
         }
         if by.guest.is_none() {
             let pitch = ((self.world.random.next_float() - self.world.random.next_float()) * 0.7
@@ -723,25 +726,38 @@ impl Game<'_> {
                 glam::DVec3::splat(2.0 * HALF),
                 self.view_scale(),
             );
-        for t in &self.tridents {
-            // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5.
-            if !self.standing_entity_in_view(
-                camera,
-                super::entity_culling::at(t.previous),
-                super::entity_culling::at(t.position),
-                alpha,
-                2.0 * HALF,
-                2.0 * HALF,
-                range,
-                1.5,
-            ) {
-                continue;
-            }
-            let p = glam::DVec3::new(
-                t.previous.x + (t.position.x - t.previous.x) * alpha,
-                t.previous.y + (t.position.y - t.previous.y) * alpha,
-                t.previous.z + (t.position.z - t.previous.z) * alpha,
-            ) - camera;
+        let live = self
+            .tridents
+            .iter()
+            .filter(|t| {
+                // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5.
+                self.standing_entity_in_view(
+                    camera,
+                    super::entity_culling::at(t.previous),
+                    super::entity_culling::at(t.position),
+                    alpha,
+                    2.0 * HALF,
+                    2.0 * HALF,
+                    range,
+                    1.5,
+                )
+            })
+            .map(|t| {
+                let at = [
+                    t.previous.x + (t.position.x - t.previous.x) * alpha,
+                    t.previous.y + (t.position.y - t.previous.y) * alpha,
+                    t.previous.z + (t.position.z - t.previous.z) * alpha,
+                ];
+                (t, at)
+            });
+        // ItemPickupParticle: a picked-up trident flying to its collector,
+        // drawn with the render state extracted at partial tick 1.
+        let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
+            super::pickups::Taken::Trident(t) => Some((&**t, super::pickups::position(p, alpha))),
+            _ => None,
+        });
+        for (t, at) in live.chain(taken) {
+            let p = glam::DVec3::from_array(at) - camera;
             let base = glam::Mat4::from_translation(p.as_vec3())
                 * glam::Mat4::from_rotation_y((t.yaw - 90.0).to_radians())
                 * glam::Mat4::from_rotation_z((t.pitch + 90.0).to_radians());

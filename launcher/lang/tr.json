@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "Kaydedilen oturum okunamadı.",
   "Could not save the renewed sign-in.": "Yenilenen oturum kaydedilemedi.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Yenilenen oturum anahtar zincirine kaydedilemedi. Kilidini açıp tekrar deneyin.",
-  "Another account operation is running. Try again in a moment.": "Başka bir hesap işlemi sürüyor. Birazdan tekrar deneyin."
+  "Another account operation is running. Try again in a moment.": "Başka bir hesap işlemi sürüyor. Birazdan tekrar deneyin.",
+  "Built on {base}": "{base} üzerinde derlendi",
+  "Native mod builds": "Yerel mod derlemeleri"
 }

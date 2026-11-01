@@ -5,6 +5,7 @@
 //!
 //! Written from OptiFine's public documentation of the file formats; no mod's source was read.
 
+pub mod cem;
 pub mod matchers;
 pub mod paths;
 pub mod properties;

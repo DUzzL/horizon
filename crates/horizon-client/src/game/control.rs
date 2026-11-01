@@ -109,10 +109,28 @@ impl Game<'_> {
             let _ = flight.reply.send(summary.to_string());
         }
     }
+    /// The frame summary, with Horizon's own passes' median GPU times while they are timed.
+    fn summary_with_passes(&self) -> Value {
+        let mut summary = self.frame_stats.summary();
+        let passes = self
+            .renderer
+            .as_ref()
+            .map(|r| r.own_pass_times())
+            .unwrap_or_default();
+        if !passes.is_empty() {
+            summary["gpu_passes"] = Value::Object(
+                passes
+                    .into_iter()
+                    .map(|(name, ms)| (name, json!(ms)))
+                    .collect(),
+            );
+        }
+        summary
+    }
     pub(super) fn poll_control(&mut self, event_loop: &dyn EventLoopCtl) {
         if let Some((deadline, reply)) = self.pending_bench.take() {
             if Instant::now() >= deadline {
-                let _ = reply.send(self.frame_stats.summary().to_string());
+                let _ = reply.send(self.summary_with_passes().to_string());
             } else {
                 self.pending_bench = Some((deadline, reply));
             }
@@ -311,6 +329,15 @@ impl Game<'_> {
                     Some(other) => return Err(format!("unknown section cull mode {other}").into()),
                 }
                 Ok(Some(json!({ "ok": true, "cull": r.section_cull() })))
+            }
+            "gpu-passes" => {
+                match words.get(1).copied() {
+                    None => {}
+                    Some("on") => self.gpu_passes = true,
+                    Some("off") => self.gpu_passes = false,
+                    Some(other) => return Err(format!("unknown gpu pass mode {other}").into()),
+                }
+                Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
             "section-sides" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
@@ -820,7 +847,7 @@ impl Game<'_> {
                 })))
             }
             "stats" => {
-                let summary = self.frame_stats.summary();
+                let summary = self.summary_with_passes();
                 if words.get(1) == Some(&"reset") {
                     self.frame_stats.reset();
                 }

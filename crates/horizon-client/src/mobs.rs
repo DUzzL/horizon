@@ -20,6 +20,7 @@ pub mod brain;
 pub mod breeze;
 pub mod camel;
 pub mod caravan;
+pub mod cem;
 pub mod combat;
 pub mod control;
 pub mod conversion;

@@ -48,6 +48,8 @@ pub struct MobData {
     pub animations: HashMap<String, Animation>,
     /// Replaced when the resource packs change (the rest of `MobData` never is).
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
+    /// The packs' custom entity models (OptiFine CEM); replaced when the resource packs change.
+    pub cem: std::sync::RwLock<std::sync::Arc<super::cem::CemModels>>,
     /// Biome tags (spawns_warm_variant_farm_animals, is_ocean...) by tag id.
     pub biome_tags: HashMap<String, std::collections::HashSet<String>>,
     /// Entity type tags (`data/*/tags/entity_type`).
@@ -145,6 +147,7 @@ impl MobData {
             heightmaps,
             animations,
             villager_hats: Default::default(),
+            cem: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),
@@ -202,6 +205,7 @@ impl MobData {
             heightmaps: HashMap::new(),
             animations: HashMap::new(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),

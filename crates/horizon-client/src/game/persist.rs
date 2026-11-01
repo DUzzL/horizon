@@ -445,6 +445,8 @@ impl Game<'_> {
                                 velocity: entity_nbt::motion(&tag),
                                 fuse,
                                 on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                                owner: None,
+                                guest: None,
                             });
                         }
                     }
