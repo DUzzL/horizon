@@ -1434,6 +1434,7 @@ mod preview_tests {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };

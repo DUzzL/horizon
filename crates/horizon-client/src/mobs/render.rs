@@ -1752,18 +1752,35 @@ fn render_visible(
             .unwrap_or_else(|| m.kind.model.clone()),
     };
     let texture = cem_texture(custom_body, &texture, atlas);
-    // OptiFine random textures: the sprite of the variant the mob wears for a texture, when
-    // the atlas has it. The texture keeps its name for everything else.
+    // OptiFine random textures and ETF blinking: the sprite a texture draws with instead, when
+    // the atlas has it: the variant the mob wears, then its blink frame while it blinks (or
+    // sleeps). The texture keeps its name for everything else.
     let random = data
         .random_textures
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let blinks = data
+        .blinks
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sprite = |texture: &str| {
-        if random.is_empty() {
-            return None;
-        }
-        let variant = super::random_textures::texture(m, &random, texture)?;
-        Some((variant, atlas(variant)?))
+        let variant = (!random.is_empty())
+            .then(|| super::random_textures::texture(m, &random, texture))
+            .flatten()
+            .filter(|v| atlas(v).is_some());
+        let frame = (!blinks.is_empty())
+            .then(|| blinks.get(variant.unwrap_or(texture)))
+            .flatten()
+            .and_then(|b| {
+                if super::villager::sleeping(m) {
+                    Some(b.shut.as_str())
+                } else {
+                    b.frame(s.age as u32, m.id.wrapping_mul(0x9E37_79B1))
+                }
+            })
+            .filter(|f| atlas(f).is_some());
+        let name = frame.or(variant)?;
+        Some((name, atlas(name)?))
     };
     // OptiFine emissive overlays: the drawn sprite's `_e`, at full brightness with the model's
     // shading, as OptiFine draws them.
@@ -2572,6 +2589,7 @@ mod tests {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2664,6 +2682,7 @@ mod tests {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2720,6 +2739,7 @@ mod tests {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2832,6 +2852,7 @@ mod tests {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -3069,7 +3090,7 @@ mod scroll_tests {
 mod emissive_tests {
     use super::*;
     use crate::mobs::{Polygon, Species};
-    use horizon_optifine::{emissive::Emissive, random_textures::RandomTextures};
+    use horizon_optifine::{blink::Blinks, emissive::Emissive, random_textures::RandomTextures};
     use std::sync::{Arc, RwLock};
 
     /// A silverfish (drawn with its type's texture) whose model is one quad.
@@ -3116,6 +3137,7 @@ mod emissive_tests {
         }
         let random = RandomTextures::scan(&root);
         let emissive = Emissive::scan(&root, &random);
+        let blinks = Blinks::scan(&root, &random);
         let _ = std::fs::remove_dir_all(&root);
         MobData {
             states: Vec::new(),
@@ -3128,6 +3150,7 @@ mod emissive_tests {
             cem: Default::default(),
             random_textures: RwLock::new(random),
             emissive: RwLock::new(emissive),
+            blinks: RwLock::new(blinks),
             pois: Default::default(),
             species_placements: Default::default(),
         }
@@ -3138,6 +3161,7 @@ mod emissive_tests {
         match name {
             "entity/silverfish" => Some([0.0, 0.0, 0.5, 0.5]),
             "entity/silverfish_e" => Some([0.5, 0.5, 1.0, 1.0]),
+            "entity/silverfish_blink" => Some([0.0, 0.5, 0.5, 1.0]),
             _ => None,
         }
     }
@@ -3170,6 +3194,30 @@ mod emissive_tests {
             glow.iter().map(|v| v.normal).collect::<Vec<_>>(),
             body.iter().map(|v| v.normal).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_blink_frame_replaces_the_texture_for_a_few_ticks() {
+        let data = data(&[
+            "assets/minecraft/textures/entity/silverfish.png",
+            "assets/minecraft/textures/entity/silverfish_blink.png",
+        ]);
+        let uvs = |age: u32| {
+            let mut m = silverfish();
+            m.age = age;
+            let mut out = Vec::new();
+            render_with(&m, 0.0, glam::DVec3::ZERO, &atlas, 0, &data, &[], &mut out);
+            out.iter().map(|v| v.uv).collect::<Vec<_>>()
+        };
+        // Entity 1's phase is 0x9E3779B1 % 150 = 61: of every 150 ticks, it blinks for the
+        // default 5 from age 89 (89 + 61 = 150).
+        let shut = |uv: &Vec<[f32; 2]>| uv.iter().all(|uv| uv[0] <= 0.5 && uv[1] >= 0.5);
+        let open = |uv: &Vec<[f32; 2]>| uv.iter().all(|uv| uv[0] <= 0.5 && uv[1] <= 0.5);
+        assert!(open(&uvs(88)));
+        assert!(shut(&uvs(89)));
+        assert!(shut(&uvs(93)));
+        assert!(open(&uvs(94)));
+        assert!(shut(&uvs(89 + 150)));
     }
 
     /// Draws `m` and returns each vertex's (uv, light).
@@ -3314,6 +3362,7 @@ mod random_texture_tests {
             cem: Default::default(),
             random_textures: RwLock::new(random),
             emissive: Default::default(),
+            blinks: Default::default(),
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             pois: Default::default(),

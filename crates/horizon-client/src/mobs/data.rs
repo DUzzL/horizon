@@ -54,6 +54,8 @@ pub struct MobData {
     pub random_textures: std::sync::RwLock<horizon_optifine::random_textures::RandomTextures>,
     /// The packs' emissive overlays of entity textures, replaced with them too.
     pub emissive: std::sync::RwLock<horizon_optifine::emissive::Emissive>,
+    /// ETF's blinking textures, replaced with the packs too.
+    pub blinks: std::sync::RwLock<horizon_optifine::blink::Blinks>,
     /// Biome tags (spawns_warm_variant_farm_animals, is_ocean...) by tag id.
     pub biome_tags: HashMap<String, std::collections::HashSet<String>>,
     /// Entity type tags (`data/*/tags/entity_type`).
@@ -93,6 +95,7 @@ impl MobData {
         let random = horizon_optifine::random_textures::RandomTextures::scan(root);
         data.emissive =
             std::sync::RwLock::new(horizon_optifine::emissive::Emissive::scan(root, &random));
+        data.blinks = std::sync::RwLock::new(horizon_optifine::blink::Blinks::scan(root, &random));
         data.random_textures = std::sync::RwLock::new(random);
         data
     }
@@ -158,6 +161,7 @@ impl MobData {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),
@@ -218,6 +222,7 @@ impl MobData {
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),

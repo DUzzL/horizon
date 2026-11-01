@@ -87,6 +87,8 @@ pub struct HudAtlas {
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
     pub emissive: horizon_optifine::emissive::Emissive,
+    /// ETF's blinking frames (`_blink`), packed here too.
+    pub blinks: horizon_optifine::blink::Blinks,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -622,6 +624,7 @@ impl HudAtlas {
             text_shader: None,
             random_textures: Default::default(),
             emissive: Default::default(),
+            blinks: Default::default(),
         }
     }
     /// `layout`, but when `extras` (Custom Item Textures) make the images more than `max`
@@ -741,8 +744,17 @@ impl HudAtlas {
         } else {
             Default::default()
         };
+        let blinks = if folders.contains(&"entity") {
+            horizon_optifine::blink::Blinks::scan(root, &random_textures)
+        } else {
+            Default::default()
+        };
         let mut named: HashMap<PathBuf, String> = HashMap::new();
-        for (file, name) in random_textures.files().chain(emissive.files()) {
+        let extra = random_textures
+            .files()
+            .chain(emissive.files())
+            .chain(blinks.files());
+        for (file, name) in extra {
             named.insert(root.join(file), name.to_owned());
         }
         if !named.is_empty() {
@@ -999,6 +1011,7 @@ impl HudAtlas {
             text_shader: None,
             random_textures,
             emissive,
+            blinks,
             font,
             white,
         })
