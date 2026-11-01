@@ -139,6 +139,50 @@ fn sky_visible(frame: &Frame) -> bool {
     !frame.title && frame.skybox && sky_open(frame)
 }
 
+/// The world pass's part that draws a shader pack's solid terrain: the world's colour and
+/// depth loaded, and its `surface` target, cleared on the first of these passes.
+fn surface_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    surface: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    clear: bool,
+) -> wgpu::RenderPass<'e> {
+    let keep = |load| wgpu::Operations {
+        load,
+        store: wgpu::StoreOp::Store,
+    };
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Horizon world, pack terrain"),
+        color_attachments: &[
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: keep(wgpu::LoadOp::Load),
+            }),
+            Some(wgpu::RenderPassColorAttachment {
+                view: surface,
+                resolve_target: None,
+                depth_slice: None,
+                ops: keep(if clear {
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                } else {
+                    wgpu::LoadOp::Load
+                }),
+            }),
+        ],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        ..Default::default()
+    })
+}
 fn world_pass_after_culling<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
@@ -6235,6 +6279,16 @@ impl Renderer {
                 .frame
                 .fit_opaque(&self.device, world_depth.texture(), color);
         }
+        if let Some(native) = self.native.as_mut().filter(|_| !frame.title) {
+            let writes = native.material.as_ref().is_some_and(|m| m.writes_surface);
+            let depth = world_depth.texture();
+            let size = if writes {
+                [depth.width(), depth.height()]
+            } else {
+                [1, 1]
+            };
+            native.frame.fit_surface(&self.device, size);
+        }
         // One of Horizon's own packs with a material stage: terrain draws with its pipelines,
         // which read the pack's frame at group 3.
         let material = self
@@ -6253,6 +6307,17 @@ impl Renderer {
                 pass.set_bind_group(horizon_shader_api::stages::GROUP, group, &[]);
             }
         };
+        // A pack's solid terrain that calls `set_surface` also writes the surface target, in
+        // passes of its own between the sky and everything else.
+        let surface = self
+            .native
+            .as_ref()
+            .filter(|n| {
+                !frame.title
+                    && !pack_draws_terrain
+                    && n.material.as_ref().is_some_and(|m| m.writes_surface)
+            })
+            .map(|n| n.frame.surface_view.clone());
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: world_view,
@@ -6337,6 +6402,27 @@ impl Renderer {
                     pass.draw(0..3, 0..1);
                 }
             }
+            let terrain_pass =
+                |encoder: &mut wgpu::CommandEncoder, surface: &wgpu::TextureView, clear: bool| {
+                    // Its lifetime forgotten: a closure cannot tie it to `encoder`'s.
+                    let mut pass = surface_pass(encoder, world_view, surface, world_depth, clear)
+                        .forget_lifetime();
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
+                    pass
+                };
+            // The occlusion test's pipeline draws into the world's colour alone.
+            let plain_pass = |encoder: &mut wgpu::CommandEncoder| {
+                let mut pass = world_pass_after_culling(encoder, world_view, world_depth, true)
+                    .forget_lifetime();
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                pass
+            };
+            if let Some(surface) = &surface {
+                drop(pass);
+                pass = terrain_pass(&mut encoder, surface, true);
+            }
             match self
                 .flat
                 .as_ref()
@@ -6353,16 +6439,23 @@ impl Renderer {
                         // that the test saw, copied after it.
                         Some(cull) => {
                             flat.draw(&mut pass, &flat.calls[..flat.phase1_calls], vertices);
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder);
                             flat.flatten_phase2(&mut encoder);
-                            pass = world_pass_after_culling(
-                                &mut encoder,
-                                world_view,
-                                world_depth,
-                                keep_depth,
-                            );
+                            pass = match &surface {
+                                Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                None => world_pass_after_culling(
+                                    &mut encoder,
+                                    world_view,
+                                    world_depth,
+                                    keep_depth,
+                                ),
+                            };
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
                             pass.set_pipeline(pack_flat.map_or(&flat.solid, |p| &p.0));
@@ -6384,15 +6477,22 @@ impl Renderer {
                             // what they found in sight, in a pass that loads
                             // both targets (it reads the test's results).
                             self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder);
-                            pass = world_pass_after_culling(
-                                &mut encoder,
-                                world_view,
-                                world_depth,
-                                keep_depth,
-                            );
+                            pass = match &surface {
+                                Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                None => world_pass_after_culling(
+                                    &mut encoder,
+                                    world_view,
+                                    world_depth,
+                                    keep_depth,
+                                ),
+                            };
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
                             pass.set_pipeline(solid_pipeline);
@@ -6412,6 +6512,11 @@ impl Renderer {
                         None => self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws),
                     }
                 }
+            }
+            if surface.is_some() {
+                drop(pass);
+                pass = plain_pass(&mut encoder);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             if entity_quads > 0 {
                 pass.set_pipeline(&self.entity_pipeline);
@@ -6964,7 +7069,7 @@ impl Renderer {
             post.run(
                 &self.device,
                 &mut encoder,
-                (color, depth),
+                (color, depth, &native.frame.surface_view),
                 &view_target,
                 size,
                 history_reset,
