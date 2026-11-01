@@ -2304,6 +2304,21 @@ mod tests {
         assert!(reads_bool_uniform(&p), "the uniform is back after the loop");
     }
 
+    /// A `for` loop with a single-statement body: its variable hides the uniform to the `;`.
+    #[test]
+    fn unbraced_for_body_ends_the_hiding_at_its_statement() {
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   void main() {\n    float t = 0.0;\n    \
+                   for (bool hideGUI = false; t < 2.0; t += 1.0) t += hideGUI ? 1.0 : 0.0;\n    \
+                   c = vec4(t, hideGUI ? 1.0 : 0.0, 0.0, 1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(reads_bool_uniform(&p));
+    }
+
     /// A sampler parameter's name reused as a local of an inner block, then read again.
     #[test]
     fn sampler_parameter_is_back_after_the_block_of_a_local() {
@@ -2330,6 +2345,10 @@ mod tests {
             &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
             Target::Buffers,
         );
-        assert!(p.is_ok(), "{:?}", p.err());
+        let p = p.unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(
+            reads_bool_uniform(&p),
+            "the uniform is back after the block"
+        );
     }
 }
