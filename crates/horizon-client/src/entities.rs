@@ -2322,6 +2322,12 @@ mod armor_stand_motion_tests {
         let start = Vec3::new(20.5, 20.0, 20.5);
         let mut stand = ArmorStand::new(1, start, 0.0);
         stand.on_ground = false;
+        // A summoned stand has no motion yet: the first tick only builds it
+        // (vanilla moves by the velocity, then applies gravity), so it falls
+        // from the second tick on (measured on the real server: drop 0, 0, 0.0784 blocks).
+        tick_stand(&mut stand, &world, &facts, &collision);
+        assert_eq!(stand.position, start);
+        assert!((stand.velocity.y + 0.0784).abs() < 1e-6);
         tick_stand(&mut stand, &world, &facts, &collision);
         assert_eq!(stand.previous, start);
         assert!(
