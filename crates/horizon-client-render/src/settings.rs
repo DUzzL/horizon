@@ -332,6 +332,7 @@ impl Settings {
             .parent()
             .map(crate::graphics::Graphics::load)
             .unwrap_or_default();
+        crate::mipmap::set_dither_cutouts(horizon.dither_cutout_mips);
         let controller = path
             .parent()
             .map(crate::gamepad::PadSettings::load)
