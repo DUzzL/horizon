@@ -287,6 +287,9 @@ impl Game<'_> {
             | Target::Painting(id)
             | Target::Boat(id)
             | Target::Cart(id)
+            // `tags_of` reads a primed TNT's compound; without this arm
+            // `/tag` wrote nothing and still reported success.
+            | Target::Tnt(id)
             | Target::Other(id) => Some(self.persist.raw.entry(id).or_insert_with(empty)),
             _ => None,
         }
