@@ -938,16 +938,9 @@ impl Streaming {
         world.chunks.insert(key, Arc::new(chunk));
         world.revision = world.revision.wrapping_add(1);
         // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
-        // blends across the border.
-        for &s in &kept.biomes {
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    world
-                        .dirty_sections
-                        .insert((key.0 + dx, s as i32, key.1 + dz));
-                }
-            }
-        }
+        // blends across the border: above and below too, as a block's tint can sample the biome quart of the
+        // section next to it (`BiomeManager.getBiome`'s zoom reaches a quart beyond the block).
+        Self::light_updated(world, key.0, key.1, &kept.biomes);
         // A section with the same blocks and new light takes the packet's light (vanilla's
         // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
         Self::light_updated(world, key.0, key.1, &kept.light);
@@ -965,7 +958,8 @@ impl Streaming {
     }
     /// A server's light update for a resident column: the sections whose
     /// light changed and their neighbours remesh
-    /// (`setSectionDirtyWithNeighbors`).
+    /// (`setSectionDirtyWithNeighbors`). A resent column's sections with new
+    /// biomes remesh the same way.
     pub fn light_updated(world: &mut World, x: i32, z: i32, sections: &[usize]) {
         for &sy in sections {
             for dz in -1..=1 {
