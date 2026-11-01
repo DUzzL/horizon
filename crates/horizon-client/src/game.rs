@@ -1911,7 +1911,7 @@ impl UiResources {
     pub fn load(root: &std::path::Path, defaults: &std::path::Path) -> Result<Self> {
         Ok(Self {
             atlas: HudAtlas::build_over(root, defaults)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root, defaults)),
         })
     }
     /// What a server's game holds, since it draws nothing: the font, which books
