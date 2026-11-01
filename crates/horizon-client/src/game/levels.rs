@@ -169,6 +169,7 @@ impl Game<'_> {
             &self.level.enabled_features,
         )?;
         let mut world = World::new(self.res.facts().air, self.level.seed);
+        world.attachments = save.load_attachments()?;
         world.shape = self.level_shapes.get(dim.id());
         world.fast_lava = dim == Dim::Nether;
         Ok(Parked {

@@ -46,6 +46,7 @@ pub enum Ticking {
 #[derive(Default)]
 pub struct BlockEntities {
     map: HashMap<Pos, BlockEntity>,
+    attachments: HashMap<Pos, horizon_world::attachments::Attachments>,
     /// `Level.blockEntityTickers`: positions and the slot each was given.
     tickers: Arc<Vec<(Pos, u32)>>,
     /// `LevelChunk.tickersInLevel`: the live slot of each ticking position.
@@ -190,6 +191,34 @@ impl BlockEntities {
         self.pending.remove(pos);
     }
 
+    /// Attachment map for a live block entity.
+    pub fn attachments_mut(
+        &mut self,
+        pos: Pos,
+    ) -> Option<&mut horizon_world::attachments::Attachments> {
+        if !self.map.contains_key(&pos) && !self.out.contains(&pos) {
+            return None;
+        }
+        Some(self.attachments.entry(pos).or_default())
+    }
+    /// Attachment maps in a loaded chunk, for a save snapshot.
+    pub fn chunk_attachments(
+        &self,
+        x: i32,
+        z: i32,
+    ) -> Vec<(Pos, horizon_world::attachments::Attachments)> {
+        self.attachments
+            .iter()
+            .filter(|(p, _)| p.0 >> 4 == x && p.2 >> 4 == z)
+            .map(|(p, data)| (*p, data.clone()))
+            .collect()
+    }
+    /// Restore a loaded block entity's attachment map.
+    pub fn restore_attachments(&mut self, pos: Pos, data: horizon_world::attachments::Attachments) {
+        if self.map.contains_key(&pos) {
+            self.attachments.insert(pos, data);
+        }
+    }
     pub fn get_mut(&mut self, pos: &Pos) -> Option<&mut BlockEntity> {
         self.map.get_mut(pos)
     }
@@ -202,6 +231,7 @@ impl BlockEntities {
     /// `LevelChunk.setBlockEntity` (+ `addAndRegisterBlockEntity`): a new
     /// block entity may get a slot; one replacing another keeps its slot.
     pub fn insert(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
+        self.attachments.remove(&pos);
         let old = self.map.insert(pos, entity);
         if old.is_none() {
             self.add(pos);
@@ -221,6 +251,7 @@ impl BlockEntities {
     }
     /// `LevelChunk.removeBlockEntity`: the block entity and its slot.
     pub fn remove(&mut self, pos: &Pos) -> Option<BlockEntity> {
+        self.attachments.remove(pos);
         self.cancel(pos);
         self.map.remove(pos)
     }
@@ -246,10 +277,16 @@ impl BlockEntities {
     /// Removes the block entities `keep` refuses, and their slots
     /// (`clearAllBlockEntities` of unloaded chunks).
     pub fn retain(&mut self, mut keep: impl FnMut(&Pos, &mut BlockEntity) -> bool) {
-        let (live, pending, freed) = (&mut self.live, &mut self.pending, &mut self.freed);
+        let (live, pending, freed, attachments) = (
+            &mut self.live,
+            &mut self.pending,
+            &mut self.freed,
+            &mut self.attachments,
+        );
         self.map.retain(|p, e| {
             let kept = keep(p, e);
             if !kept {
+                attachments.remove(p);
                 *freed |= live.remove(p).is_some();
                 pending.remove(p);
             }
@@ -257,6 +294,7 @@ impl BlockEntities {
         });
     }
     pub fn clear(&mut self) {
+        self.attachments.clear();
         self.map.clear();
         self.tickers = Arc::default();
         self.live.clear();
@@ -274,6 +312,7 @@ impl BlockEntities {
     pub fn load_chunk(&mut self, entities: Vec<(Pos, BlockEntity)>) {
         let order = chunk_map_order(entities.iter().map(|(p, _)| *p));
         for (p, e) in entities {
+            self.attachments.remove(&p);
             if self.map.insert(p, e).is_some() {
                 self.replaced.insert(p);
             }
@@ -367,6 +406,33 @@ mod tests {
             .iter()
             .map(|(p, _)| *p)
             .collect()
+    }
+
+    #[test]
+    fn attachments_follow_block_entity_lifetime() {
+        use horizon_world::attachments::AttachmentType;
+        let ty = AttachmentType {
+            namespace: "test",
+            name: "value",
+            default: || 0,
+            codec: None,
+            copy_on_death: false,
+        };
+        let p = (1, 64, 2);
+        let mut entities = level();
+        assert!(entities.attachments_mut(p).is_none());
+        entities.insert(p, hopper());
+        entities.attachments_mut(p).unwrap().set(&ty, 4).unwrap();
+        let held = entities.take(&p).unwrap();
+        entities.put(p, held);
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(4));
+        entities.remove(&p);
+        entities.insert(p, hopper());
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(0));
+        entities.attachments_mut(p).unwrap().set(&ty, 5).unwrap();
+        entities.retain(|_, _| false);
+        entities.insert(p, hopper());
+        assert_eq!(entities.attachments_mut(p).unwrap().get(&ty), Ok(0));
     }
 
     #[test]

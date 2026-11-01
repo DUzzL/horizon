@@ -281,6 +281,7 @@ use horizon_client::mod_api::{
     self, NativeCommand, NativeDispensed, NativeLifecycleContext, NativeLootDrops,
     NativeScreenView, NativeServerPlayer, NativeZoom, ServerTickPhase, WorldPhase,
 };
+use horizon_client::mod_api::{AttachmentResult, Attachments, Holder};
 pub(crate) use horizon_client::mod_api::{
     NativeBlockRim, NativeColoredLight, NativeMinimap, NativeMod, NativePanelEvent, NativeScreen,
     NativeStack,
@@ -3143,6 +3144,13 @@ impl GameLevel<'_> {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
+    /// Access a server-owned holder's attachment map.
+    pub(super) fn native_attachments(
+        &mut self,
+        holder: Holder,
+    ) -> AttachmentResult<&mut Attachments> {
+        self.attachment_map(holder)
+    }
     /// Read a loaded, light-emitting block. No implicit chunk loading.
     pub(super) fn native_lit_block_name(&self, pos: [i32; 3]) -> Option<&str> {
         self.world

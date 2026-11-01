@@ -1,5 +1,6 @@
 {
   "helpers": [
+    {"name":"attachments","target":"horizon_client::game::native_hooks::Game<'_>::native_attachments"},
     {"name":"teleport_mob","target":"horizon_client::game::native_hooks::Game<'_>::native_teleport_mob"},
     {"name":"push_mob","target":"horizon_client::game::native_hooks::Game<'_>::native_push_mob"},
     {"name":"set_mob_health","target":"horizon_client::game::native_hooks::Game<'_>::native_set_mob_health"},

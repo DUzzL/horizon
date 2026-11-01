@@ -3,6 +3,9 @@ use horizon_client::mod_api::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 impl Host for super::Game<'_> {
+    fn attachments(&mut self, holder: Holder) -> AttachmentResult<&mut Attachments> {
+        self.native_attachments(holder)
+    }
     fn teleport_mob(&mut self, dimension: &str, id: u32, pos: [f64; 3]) -> bool {
         self.native_teleport_mob(dimension, id, pos)
     }

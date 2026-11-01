@@ -26,6 +26,7 @@ use horizon_core::{
     position::{BlockPos, ChunkPos},
     ticks::{SavedTick, TickPriority, TickTypeId},
 };
+use horizon_world::attachments::{ATTACHMENTS_KEY, attachment_compound};
 use horizon_world::{
     DATA_VERSION,
     chunk::BlockState,
@@ -1443,6 +1444,18 @@ pub fn encode_with(
                 None => current,
             };
             let mut saved = crate::block_entity_nbt::canonical(&merged).unwrap_or(merged);
+            if let Some((_, attachments)) =
+                extras.and_then(|e| e.block_entity_attachments.iter().find(|(pos, _)| pos == p))
+                && let Tag::Compound(map) = &mut saved
+                && attachment_compound(map.get(&ATTACHMENTS_KEY.into())).is_ok()
+            {
+                let data = attachments.to_nbt();
+                if data.is_empty() {
+                    map.remove(&ATTACHMENTS_KEY.into());
+                } else {
+                    map.insert(ATTACHMENTS_KEY.into(), Tag::Compound(data));
+                }
+            }
             if let Some(r) = extras.and_then(|x| x.rolled_loot.iter().find(|r| r.pos == *p))
                 && let Tag::Compound(map) = &mut saved
                 && !r.restore(map)
@@ -1487,6 +1500,16 @@ pub fn encode_with(
         put(&mut root, key, value);
     }
     if let Some(Tag::Compound(map)) = Some(&mut root) {
+        if let Some(extras) = extras
+            && attachment_compound(map.get(&ATTACHMENTS_KEY.into())).is_ok()
+        {
+            let attachments = extras.attachments.to_nbt();
+            if attachments.is_empty() {
+                map.remove(&ATTACHMENTS_KEY.into());
+            } else {
+                map.insert(ATTACHMENTS_KEY.into(), Tag::Compound(attachments));
+            }
+        }
         map.entry("InhabitedTime".into()).or_insert(Tag::Long(0));
         map.entry("structures".into()).or_insert_with(|| {
             Tag::compound([
@@ -1703,6 +1726,12 @@ fn decode_column(
             }
             match decode_block_entity(e) {
                 Some(mut be) => {
+                    if let Ok(Some(data)) = attachment_compound(e.get(ATTACHMENTS_KEY)) {
+                        extras.block_entity_attachments.push((
+                            be.0,
+                            horizon_world::attachments::Attachments::from_nbt(data.clone()),
+                        ));
+                    }
                     if let Some(name) = text(e.get("CustomName")) {
                         chunk.block_names.push((be.0, name));
                     }
@@ -1717,6 +1746,9 @@ fn decode_column(
         }
     }
     if let Tag::Compound(map) = tag {
+        if let Ok(Some(data)) = attachment_compound(map.get(&ATTACHMENTS_KEY.into())) {
+            extras.attachments = horizon_world::attachments::Attachments::from_nbt(data.clone());
+        }
         extras.root = map
             .iter()
             .filter(|(k, _)| !GENERATED_KEYS.contains(&k.to_string_lossy().as_str()))
@@ -2353,6 +2385,29 @@ struct LodRegion {
 /// it was read show in the far view this long after.
 const LOD_REGION_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 impl SaveDir {
+    /// Load this dimension's server-owned mod attachments.
+    pub fn load_attachments(&self) -> Result<horizon_world::attachments::Attachments> {
+        match read_saved_data(&self.root, "horizon_attachments") {
+            Some(Tag::Compound(data)) => {
+                Ok(horizon_world::attachments::Attachments::from_nbt(data))
+            }
+            Some(_) => Err("invalid level attachment data".into()),
+            None => Ok(Default::default()),
+        }
+    }
+
+    /// Save this dimension's server-owned mod attachments.
+    pub fn save_attachments(
+        &self,
+        attachments: &horizon_world::attachments::Attachments,
+    ) -> Result<()> {
+        write_saved_data(
+            &self.root,
+            "horizon_attachments",
+            Tag::Compound(attachments.to_nbt()),
+        )
+    }
+
     /// The saves of a level of `shape` at `root` (its dimension folder).
     pub fn new(root: PathBuf, shape: LevelShape) -> Self {
         Self {
@@ -5084,6 +5139,82 @@ mod tests {
             record([9, 71, 9], "minecraft:home", Some(1)),
         ]);
         assert_eq!(saved.tag, expected.tag);
+    }
+
+    #[test]
+    fn level_attachments_survive_save_and_load() {
+        use horizon_world::attachments::{
+            AttachmentCodec, AttachmentError, AttachmentType, Attachments,
+        };
+        let dir =
+            std::env::temp_dir().join(format!("horizon-level-attachments-{}", std::process::id()));
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let key = AttachmentType {
+            namespace: "test",
+            name: "counter",
+            default: || 0,
+            codec: Some(AttachmentCodec {
+                encode: |n: &i32| Ok([("count".into(), Tag::Int(*n))].into()),
+                decode: |c: &Compound| match c.get(&"count".into()) {
+                    Some(Tag::Int(n)) => Ok(*n),
+                    _ => Err(AttachmentError::Decode),
+                },
+            }),
+            copy_on_death: false,
+        };
+        let mut map = Attachments::default();
+        map.set(&key, 7).unwrap();
+        save.save_attachments(&map).unwrap();
+        assert_eq!(save.load_attachments().unwrap().get(&key), Ok(7));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn chunk_attachments_survive_save_and_load() {
+        use horizon_world::attachments::{AttachmentCodec, AttachmentError, AttachmentType};
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Biomes::load(&root).expect("biomes");
+        let key = AttachmentType {
+            namespace: "test",
+            name: "counter",
+            default: || 0,
+            codec: Some(AttachmentCodec {
+                encode: |n: &i32| Ok([("count".into(), Tag::Int(*n))].into()),
+                decode: |c: &Compound| match c.get(&"count".into()) {
+                    Some(Tag::Int(n)) => Ok(*n),
+                    _ => Err(AttachmentError::Decode),
+                },
+            }),
+            copy_on_death: false,
+        };
+        let mut chunk = Chunk::empty(2, 3);
+        let mut extras = ChunkExtras::default();
+        extras.attachments.set(&key, 42).unwrap();
+        let mut block_data = horizon_world::attachments::Attachments::default();
+        block_data.set(&key, 21).unwrap();
+        let pos = (33, 64, 50);
+        let chest = assets.registry.default_state("minecraft:chest").unwrap();
+        chunk.set(1, 64, 2, chest.0);
+        chunk
+            .block_entities
+            .push((pos, crate::containers::BlockEntity::Chest(vec![None; 27])));
+        extras.block_entity_attachments.push((pos, block_data));
+        chunk.saved = Some(Arc::new(extras));
+        let saved = encode(&chunk, assets.registry, &biomes);
+        let mut loaded = decode(&saved, assets.registry, &biomes).expect("chunk");
+        assert_eq!(
+            Arc::make_mut(loaded.saved.as_mut().unwrap())
+                .attachments
+                .get(&key),
+            Ok(42)
+        );
+        let extras = Arc::make_mut(loaded.saved.as_mut().unwrap());
+        assert_eq!(extras.block_entity_attachments[0].0, pos);
+        assert_eq!(extras.block_entity_attachments[0].1.get(&key), Ok(21));
     }
 
     #[test]

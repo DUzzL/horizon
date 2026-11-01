@@ -2687,6 +2687,7 @@ struct Game<'a> {
     /// The camera's block and the second `water_plane` last scanned at.
     water_plane_scan: std::cell::Cell<Option<([i32; 3], i64)>>,
     persist: persist::EntityMemory,
+    entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
     /// This world is open to the network (game/lan.rs).
@@ -2800,6 +2801,7 @@ struct Game<'a> {
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_acting: Option<u32>,
+    player_attachments: horizon_world::attachments::Attachments,
     /// The block the acting player is breaking (`break_block`): its destroy
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
     /// with the player excluded); the events after it are not.
@@ -3984,6 +3986,7 @@ impl Game<'_> {
             tnts: &self.tnts,
             falling: &self.falling,
         };
+        let native_authoritative = self.native_authoritative();
         let mut level = GameLevel {
             cart_boxes,
             item_frames: &self.item_frames,
@@ -4036,7 +4039,7 @@ impl Game<'_> {
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
             client_side: self.remote.is_some(),
-            native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
+            native_authoritative,
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
@@ -11230,6 +11233,9 @@ impl Game<'_> {
     }
     fn tick_mobs(&mut self) -> Result<()> {
         self.tick_creatures()?;
+        if !self.entity_attachments.is_empty() {
+            self.prune_entity_memory();
+        }
         self.position_rider();
         self.tick_stats();
         self.tick_scoreboard();
@@ -12027,6 +12033,7 @@ impl Game<'_> {
         self.pickups.clear();
         self.riding = None;
         self.persist = Default::default();
+        self.entity_attachments.clear();
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
     fn apply_equipment(&mut self) {
@@ -14419,6 +14426,7 @@ impl Game<'_> {
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.save.save_attachments(&self.world.attachments)?;
         self.save.save_forced_chunks(&self.streaming.forced)?;
         self.streaming.save(&mut self.world, wait);
         let keys: Vec<_> = self.world.modified.drain().collect();
@@ -17815,6 +17823,7 @@ impl<'a> Game<'a> {
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
             persist: Default::default(),
+            entity_attachments: Default::default(),
             remote: None,
             lan: None,
             integrated: None,
@@ -17870,6 +17879,7 @@ impl<'a> Game<'a> {
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
             lan_acting: None,
+            player_attachments: Default::default(),
             lan_break_pos: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),

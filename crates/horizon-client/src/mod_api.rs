@@ -19,9 +19,12 @@ pub use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 pub use horizon_world::{
+    attachments::{
+        AttachmentCodec, AttachmentError, AttachmentHost, AttachmentType, Attachments, Holder,
+    },
     fluid::FluidState,
     level::{BlockId, Dimension as LevelDimension, PlacementContext},
-    nbt::Compound,
+    nbt::{Compound, Tag},
     registry::BlockStateId,
 };
 pub use serde_json;
@@ -374,6 +377,15 @@ pub enum Flow {
 mod generated_host;
 pub use generated_host::Host;
 
+/// Result of accessing or decoding an attachment.
+pub type AttachmentResult<T> = std::result::Result<T, AttachmentError>;
+
+impl AttachmentHost for dyn Host + '_ {
+    fn attachments(&mut self, holder: Holder) -> Result<&mut Attachments, AttachmentError> {
+        Host::attachments(self, holder)
+    }
+}
+
 /// Read-only level services, like vanilla's `LevelReader`.
 pub trait LevelHost {
     /// Read a block through `LevelAccess::block_state`.
@@ -391,6 +403,8 @@ pub trait LevelHost {
 
 /// Access vanilla's `Level.random`, so draws come in vanilla's order.
 pub trait LevelRandomHost: LevelHost {
+    /// Access a holder's server-owned attachment map.
+    fn attachments(&mut self, holder: Holder) -> Result<&mut Attachments, AttachmentError>;
     /// The level's random stream through `native_level_random`, or None on a non-authoritative level.
     fn random(&mut self) -> Option<&mut LegacyRandom>;
 }
@@ -408,6 +422,17 @@ pub trait LevelWriteHost: LevelTicksHost + LevelRandomHost {
     /// Change a block property through `native_set_block_property`.
     fn set_block_property(&mut self, pos: [i32; 3], key: &str, value: &str, flags: i32) -> bool;
 }
+
+macro_rules! level_attachment_host {
+    ($($host:ident),+) => { $(
+        impl AttachmentHost for dyn $host + '_ {
+            fn attachments(&mut self, holder: Holder) -> Result<&mut Attachments, AttachmentError> {
+                LevelRandomHost::attachments(self, holder)
+            }
+        }
+    )+ };
+}
+level_attachment_host!(LevelRandomHost, LevelWriteHost);
 
 mod generated;
 pub use generated::Hooks;
