@@ -68,6 +68,9 @@ pub enum Ticking {
     /// `RidingEntitySoundInstance` for the player riding a happy ghast
     /// (`underwater_sound` false) or a nautilus (true).
     RidingEntity { entity: u32, underwater_sound: bool },
+    /// A native mod's music layer (`MusicLayers`), whose volume its owner
+    /// sets each tick.
+    MusicLayer,
 }
 /// What a minecart's sound instances read about it.
 #[derive(Clone, Copy, Debug)]
@@ -232,6 +235,25 @@ impl SoundInstance {
             [0.0; 3],
             true,
         )
+    }
+    /// A native mod's music layer: a looping, unattenuated track on the music
+    /// source that starts silent (`MusicLayers` fades it in).
+    pub fn for_music_layer(id: &str, random: LegacyRandom) -> Self {
+        let mut s = Self::new(
+            id,
+            MUSIC,
+            0.0,
+            1.0,
+            random,
+            true,
+            0,
+            Attenuation::None,
+            [0.0; 3],
+            true,
+        );
+        s.can_start_silent = true;
+        s.ticking = Ticking::MusicLayer;
+        s
     }
     /// `SimpleSoundInstance.forJukeboxSong`.
     pub fn for_jukebox_song(id: &str, at: [f64; 3], random: LegacyRandom) -> Self {
@@ -522,7 +544,7 @@ impl SoundInstance {
     /// `TickableSoundInstance.tick`.
     pub fn tick(&mut self, ctx: &TickContext) {
         match &mut self.ticking {
-            Ticking::No => {}
+            Ticking::No | Ticking::MusicLayer => {}
             Ticking::BiomeLoop { fade, direction } => {
                 let stop = *fade < 0;
                 *fade += *direction;
