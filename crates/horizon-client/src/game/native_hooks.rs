@@ -3468,6 +3468,44 @@ impl Game<'_> {
     ) {
         let _ = (player, item, count, canceled);
     }
+    /// Whether a mod hears `native_experience_orb_pickup`: set `listened`
+    /// (a HEAD injection), or the server skips swapping the player in for it,
+    /// and with this empty the pickup costs nothing more without mods.
+    /// Server-side. @API:experience_orb_pickup@.
+    pub(super) fn native_experience_orb_pickup_listened(&self, listened: &mut bool) {
+        let _ = listened;
+    }
+    /// Before `player` picks up orb `orb` in `dimension`. Mutations to `value`
+    /// and `count` take effect only when not canceled; value is clamped to
+    /// 1..=i32::MAX and count to at least one.
+    /// Canceling leaves the orb and pickup delay unchanged. Server-side.
+    /// @API:experience_orb_pickup@.
+    pub(super) fn native_experience_orb_pickup(
+        &mut self,
+        player: u128,
+        dimension: &str,
+        orb: u32,
+        value: &mut u32,
+        count: &mut u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (player, dimension, orb, value, count, canceled);
+    }
+    /// The selected damaged Mending `stack` and the proposed durability repair
+    /// for `experience` points. The amount is clamped to the stack's current damage. Zero leaves the
+    /// experience unspent when it overrides a positive proposal. If the selected
+    /// stack changes, the repair is skipped.
+    /// Server-side, including `native_give_experience`.
+    /// @API:experience_orb_pickup@.
+    pub(super) fn native_mending_repair(
+        &mut self,
+        player: u128,
+        stack: &ItemStack,
+        experience: u32,
+        repair: &mut u32,
+    ) {
+        let _ = (player, stack, experience, repair);
+    }
     /// A player's hit landed on the mob `entity` of type `kind`
     /// (`minecraft:zombie`), holding `stack`: where `Item.hurtEnemy` is called,
     /// before the post-attack enchantments and the weapon's wear. It only
