@@ -2106,7 +2106,14 @@ pub fn ominous_item_spawner_to_nbt(
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
-    put(&mut tag, "item", item_to_nbt(item));
+    // `ItemStack.CODEC` can't encode `ItemStack.EMPTY`, so an empty item
+    // writes no key.
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"item".into());
+    }
+    if &*item.item != "minecraft:air" {
+        put(&mut tag, "item", item_to_nbt(item));
+    }
     put(
         &mut tag,
         "spawn_item_after_ticks",
@@ -2118,7 +2125,11 @@ pub fn ominous_item_spawner_to_nbt(
 /// and `spawn_item_after_ticks` (0 when absent). None without an item:
 /// such a spawner would spawn nothing.
 pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemStack, Vec3, i64)> {
-    let item = tag.get("item").and_then(item_from_nbt)?;
+    // `readAdditionalSaveData`: `ItemStack.EMPTY` when it has none.
+    let item = tag
+        .get("item")
+        .and_then(item_from_nbt)
+        .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:air", 1));
     let after = number(tag.get("spawn_item_after_ticks")).unwrap_or(0);
     Some((item, position(tag)?, after))
 }
@@ -3064,6 +3075,17 @@ mod tests {
         );
         assert_eq!((pos, after), (at, 97));
         assert!(ominous_item_spawner_from_nbt(&raw).is_none());
+        // No item is `ItemStack.EMPTY`, which writes no key back.
+        let empty = ominous_item_spawner_to_nbt(
+            &crate::items::ItemStack::new("minecraft:air", 1),
+            at,
+            0,
+            [1, 2, 3, 4],
+            Some(&tag),
+        );
+        assert!(empty.get("item").is_none());
+        let (back, pos, after) = ominous_item_spawner_from_nbt(&empty).unwrap();
+        assert_eq!((back.item.as_ref(), pos, after), ("minecraft:air", at, 0));
     }
 
     #[test]
