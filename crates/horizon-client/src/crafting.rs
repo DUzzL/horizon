@@ -1219,6 +1219,15 @@ pub(crate) fn recipe_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(named)
 }
 /// The type of a recipe the game doesn't craft itself: one outside `minecraft`.
+/// A recipe's whole id from its name in the tables: vanilla's are kept bare
+/// (`oak_planks`), everyone else's whole (`mymod:crusher/iron`).
+pub fn recipe_id(name: &str) -> String {
+    if name.contains(':') {
+        name.to_owned()
+    } else {
+        format!("minecraft:{name}")
+    }
+}
 fn custom_type(v: &Value) -> Option<&str> {
     v["type"]
         .as_str()
@@ -1309,10 +1318,14 @@ fn matches_all(ingredients: &[Ingredient], stacks: &[&ItemStack]) -> bool {
 }
 impl Recipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Result<Self> {
-        let mut crafting = Vec::new();
-        let mut cooking = Vec::new();
-        let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
-        let mut meta = HashMap::new();
+        let sources = Self::sources(root, overlay)?;
+        Self::from_sources(root, items, overlay, sources)
+    }
+    /// The recipe files the tables are built from, each id once: vanilla's by
+    /// bare name, then the content mods' as `<ns>:<name>`, the world's packs'
+    /// over them (`overlay`), parsed, and only those whose load conditions
+    /// hold. A server sends some of them to its clients (`recipe_content`).
+    pub fn sources(root: &Path, overlay: &PackOverlay) -> Result<Vec<(String, Value)>> {
         // Vanilla's recipes by bare name, then content mods' as `<ns>:<name>`.
         let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
         // NeoForge's load conditions: `mod_loaded` asks which mods' data is
@@ -1357,6 +1370,7 @@ impl Recipes {
             }
         }
         let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        let mut parsed = Vec::with_capacity(sources.len());
         for (name, bytes) in sources {
             // Vanilla's RecipeManager logs a file that does not parse and
             // goes on ("Couldn't parse data file").
@@ -1375,13 +1389,26 @@ impl Recipes {
                 continue;
             }
             // The data's recipe filters, over the final set.
-            let full_id = match name.contains(':') {
-                true => name.clone(),
-                false => format!("minecraft:{name}"),
-            };
-            if !filters.apply(&full_id, &mut v) {
+            if !filters.apply(&recipe_id(&name), &mut v) {
                 continue;
             }
+            parsed.push((name, v));
+        }
+        Ok(parsed)
+    }
+    /// The tables from `sources` (`Recipes::sources`' shape); `root` and
+    /// `overlay` give the enchantment tags the tables keep.
+    pub fn from_sources(
+        root: &Path,
+        items: &Items,
+        overlay: &PackOverlay,
+        sources: Vec<(String, Value)>,
+    ) -> Result<Self> {
+        let mut crafting = Vec::new();
+        let mut cooking = Vec::new();
+        let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
+        let mut meta = HashMap::new();
+        for (name, v) in sources {
             if let Some(kind) = custom_type(&v) {
                 let id = if name.contains(':') {
                     name

@@ -25,6 +25,8 @@ impl Name {
             ignore_case,
         };
         let regex = |re: &str, ignore_case| {
+            // On its own first: a stray `)` would otherwise close the anchoring group early.
+            Regex::new(re).ok()?;
             RegexBuilder::new(&format!("^(?:{re})$"))
                 .case_insensitive(ignore_case)
                 .build()
@@ -242,6 +244,10 @@ mod tests {
         assert!(!m("regex:Bob|Alice", "Alice2"));
         assert!(m("iregex:j(eb)_", "JEB_"));
         assert!(Name::parse("regex:(").is_none());
+        assert!(
+            Name::parse("regex:Excalibur)|(.*").is_none(),
+            "would match every name"
+        );
         assert!(m("pattern:a*b*c", "aXbYc"));
         assert!(!m("pattern:a*b*c", "aXbY"));
         assert!(m("pattern:**", ""));

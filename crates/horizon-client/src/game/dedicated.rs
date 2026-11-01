@@ -990,6 +990,8 @@ impl Game<'_> {
         let pause_after = props.pause_when_empty_seconds * 20;
         let idle_timeout = props.player_idle_timeout;
         let mut next = Instant::now();
+        // The panic that ended the tick loop, when one did.
+        let mut crashed: Option<String> = None;
         self.fns.permission = Some(props.function_permission_level.clamp(0, 4) as u8);
         let watchdog = Watchdog::start(props.max_tick_time);
         let mut braked = Instant::now();
@@ -998,10 +1000,18 @@ impl Game<'_> {
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());
             }
-            while let Ok(line) = state.console.try_recv() {
-                self.console_line(&mut state, &line);
+            // The console's lines and the control socket run in the tick too
+            // (`handleConsoleInputs`): a panic there is the same crash.
+            let prelude = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                while let Ok(line) = state.console.try_recv() {
+                    self.console_line(&mut state, &line);
+                }
+                self.poll_server_control(&mut state);
+            }));
+            if let Err(payload) = prelude {
+                crashed = Some(panic_message(payload.as_ref()));
+                break;
             }
-            self.poll_server_control(&mut state);
             let players = self.lan.as_ref().map_or(0, |h| h.hub.guests.len());
             if pause_after > 0 {
                 // A `/pregen` task keeps the server busy as a player would:
@@ -1029,11 +1039,23 @@ impl Game<'_> {
                 self.ticks = self.ticks.max(1);
             }
             // MinecraftServer.tickServer: while paused only the connections run.
-            match &mut state.report {
-                Some(recording) => self.tick_server_spans(paused, |wall, cpu, spans| {
-                    recording.add(wall, cpu, spans)
-                })?,
-                None => self.tick_server_timed(paused)?,
+            // `MinecraftServer.runServer` catches what the tick throws, writes the crash
+            // report and still stops the server (saves). A panic here does the same.
+            let ticked =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    match &mut state.report {
+                        Some(recording) => self.tick_server_spans(paused, |wall, cpu, spans| {
+                            recording.add(wall, cpu, spans)
+                        }),
+                        None => self.tick_server_timed(paused),
+                    }
+                }));
+            match ticked {
+                Ok(result) => result?,
+                Err(payload) => {
+                    crashed = Some(panic_message(payload.as_ref()));
+                    break;
+                }
             }
             if state.report.as_ref().is_some_and(report::Recording::done)
                 && let Some(recording) = state.report.take()
@@ -1067,7 +1089,10 @@ impl Game<'_> {
         if let Some(watchdog) = &watchdog {
             watchdog.running.store(false, Ordering::Relaxed);
         }
-        self.stop_dedicated()
+        match crashed {
+            Some(message) => self.stop_after_crash(&message),
+            None => self.stop_dedicated(),
+        }
     }
 
     /// A dedicated server of its own, not single player's server thread
@@ -1237,6 +1262,7 @@ impl Game<'_> {
         self.console_command(state, line);
         self.console_broadcast = None;
         if let Some(mut host) = self.lan.take() {
+            crash_fixture("hub", || host.hub.guests.iter().any(|g| g.placed));
             self.run_level_teleports(&mut host);
             self.send_admin_feedback(&mut host, None);
             self.lan = Some(host);
@@ -1818,6 +1844,41 @@ impl Game<'_> {
         }
     }
 
+    /// `MinecraftServer.runServer`'s `finally`: a tick that panicked still saves. What the panic
+    /// interrupted is not trusted: a guest's turn (`as_guest`) holds the game's player state
+    /// swapped in, so its record is older than what the game holds, and writing it would put
+    /// back older data than the last autosave; that guest keeps the file it has. A hub that the
+    /// panic took with it (`self.lan.take()` was in progress) saves no players at all. The
+    /// levels, the scoreboard and the other state are saved as in a normal stop.
+    fn stop_after_crash(&mut self, message: &str) -> Result<()> {
+        log("ERROR", &format!("The server thread panicked: {message}"));
+        let acting = self.lan_acting;
+        let hub_lost = self.lan.is_none();
+        if let (Some(conn), Some(host)) = (acting, self.lan.as_mut())
+            && let Some(guest) = host.hub.guests.iter_mut().find(|g| g.conn == conn)
+        {
+            guest.placed = false;
+        }
+        if hub_lost {
+            log(
+                "WARN",
+                "The panic interrupted the network tick: players are not saved, only the world",
+            );
+        } else if acting.is_some() {
+            log(
+                "WARN",
+                "The panic interrupted a player's turn: that player keeps the last saved file",
+            );
+        }
+        self.native_lifecycle.begin_close();
+        log("INFO", "Saving worlds");
+        self.save_game()?;
+        self.log_saved_levels();
+        self.native_lifecycle_world_closed();
+        self.lan_close(false);
+        Err(format!("the server thread panicked: {message}").into())
+    }
+
     fn stop_dedicated(&mut self) -> Result<()> {
         // The close request starts before player and world saves.
         self.native_lifecycle.begin_close();
@@ -1855,6 +1916,28 @@ impl Game<'_> {
     }
 }
 
+/// `tools/test_dedicated_crash_save.py`'s fixture: with `HORIZON_CRASH_FIXTURE` naming `point`
+/// (`guest`: during a placed guest's turn, `hub`: while a console line has the hub out and a
+/// player is in), the tick panics there, to see what `stop_after_crash` keeps.
+/// `armed` is asked only when the variable names `point`, so the tick pays one
+/// load of a `OnceLock` without it.
+pub(super) fn crash_fixture(point: &str, armed: impl FnOnce() -> bool) {
+    static FIXTURE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let fixture = FIXTURE.get_or_init(|| std::env::var("HORIZON_CRASH_FIXTURE").ok());
+    if fixture.as_deref() == Some(point) && armed() {
+        panic!("crash fixture at {point}");
+    }
+}
+
+/// The text of a panic payload (`panic!("..")` is a `&str`, a formatted one a `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_owned())
+}
+
 /// The width and height of a PNG (its IHDR chunk).
 fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
@@ -1867,13 +1950,26 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_log, log, log_from};
+    use super::{capture_log, log, log_from, panic_message};
     use std::{
         fs,
         io::{self, BufRead, BufReader, Read, Write},
         process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// A `panic!("literal")` carries a `&str`, a formatted one a `String`; anything else is
+    /// named as unknown, so the crash line is never empty.
+    #[test]
+    fn a_panic_payload_is_read_as_text() {
+        let literal = std::panic::catch_unwind(|| panic!("a literal")).unwrap_err();
+        assert_eq!(panic_message(literal.as_ref()), "a literal");
+        let n = 3;
+        let formatted = std::panic::catch_unwind(|| panic!("tick {n}")).unwrap_err();
+        assert_eq!(panic_message(formatted.as_ref()), "tick 3");
+        let other = std::panic::catch_unwind(|| std::panic::panic_any(7_u8)).unwrap_err();
+        assert_eq!(panic_message(other.as_ref()), "unknown panic");
+    }
 
     const LOGIN: &str = "Player[/127.0.0.1:0] logged in with entity id 2 at (0.5, 115.0, 0.5)";
     const WARNING: &str = "Authentication warning";

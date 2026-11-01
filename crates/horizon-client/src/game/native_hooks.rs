@@ -1186,6 +1186,35 @@ impl Game<'_> {
     ) {
         let _ = (context, phase, error_text);
     }
+    /// The server is about to send its data to the players (NeoForge's
+    /// `OnDatapackSyncEvent`, its `sendRecipes`): push the recipe types
+    /// (`minecraft:smelting`, `mymod:crusher`) whose recipes your client half
+    /// needs. Horizon sends their final recipes — the world's data packs
+    /// merged, load conditions held — to every Horizon client when it joins
+    /// and again after each `/reload`; a vanilla client is sent nothing new.
+    /// Asked once per load, when the server's data tables are built, and the
+    /// same types go to every player: unlike NeoForge, which asks again for
+    /// each joining player, it can't differ between players. Push nothing and
+    /// nothing is sent; push nothing after a load that pushed some and the
+    /// clients go back to their own recipes. Server-side (the single
+    /// player's integrated server included). API @API:recipe_sync@.
+    pub(super) fn native_datapack_sync(&mut self, recipe_types: &mut Vec<String>) {
+        let _ = recipe_types;
+    }
+    /// The server's recipes of `recipe_types` arrived (NeoForge's
+    /// `RecipesReceivedEvent`): from now on the recipe helpers
+    /// (`native_recipes`, `native_recipes_of_type`) give the server's recipes
+    /// of those types in place of the window's own, so rebuild what you made
+    /// of them. It comes after a join, once the window has its player, and
+    /// after every `/reload`, on a server whose mods asked for them
+    /// (`native_datapack_sync`), single player included; with no types when
+    /// the server stopped sending them and the window is back on its own
+    /// recipes. A recipe the
+    /// window's own recipe book doesn't know has `book_id` -1. Client-side.
+    /// API @API:recipe_sync@.
+    pub(super) fn native_recipes_received(&mut self, recipe_types: &[String]) {
+        let _ = recipe_types;
+    }
     /// The server's data tables are built (NeoForge's `TagsUpdatedEvent`
     /// with `SERVER_DATA_LOAD`): the recipes, tags, loot and advancements of
     /// the world's data packs, and the files mods added through
@@ -1324,6 +1353,12 @@ impl Game<'_> {
     pub(super) fn native_key(&mut self, key: &str, pressed: bool) {
         let _ = (key, pressed);
     }
+    /// A real window key event after handling, including repeats and consumed shortcuts.
+    /// Receives the original physical/logical key, text, location, state and repeat flag.
+    /// Modifier bits use the screen hooks' GLFW encoding. Not cancellable.
+    pub(super) fn native_input_key(&mut self, event: &winit::event::KeyEvent, modifiers: u32) {
+        let _ = (event, modifiers);
+    }
     /// Raw mouse button input on any screen, before dispatch; cancel skips dispatch and Post.
     /// Button/modifiers use the same GLFW encoding as screen hooks. Synthetic clicks skip it.
     pub(super) fn native_mouse_button_pre(
@@ -1342,6 +1377,20 @@ impl Game<'_> {
     /// Wheel steps while playing: set `claimed` to keep them from the hotbar.
     pub(super) fn native_wheel(&mut self, steps: f32, claimed: &mut bool) {
         let _ = (steps, claimed);
+    }
+    /// Gameplay scrolling after whole steps accumulate, before hotbar/spectator handling.
+    /// `scroll` is scaled x/y, `accumulated` whole x/y steps, `buttons` left/middle/right,
+    /// and `cursor` the GUI position. Cancel skips gameplay scrolling; synthetic input skips it.
+    pub(super) fn native_mouse_scrolling(
+        &mut self,
+        scroll: [f64; 2],
+        accumulated: [i32; 2],
+        buttons: [bool; 3],
+        cursor: [f32; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (scroll, accumulated, buttons, cursor, modifiers, canceled);
     }
     /// A command typed or clicked in chat, without its slash, before the
     /// server and Horizon's commands see it: set `ran` when the mod ran it.
@@ -1761,6 +1810,19 @@ impl Game<'_> {
     ) {
         let _ = (screen, button, modifiers, canceled);
     }
+    /// Before a real held-button movement reaches screen drag handlers.
+    /// `screen.mouse` is the current GUI position; `delta` is its GUI-space movement.
+    /// Cancel keeps the new cursor position but skips all screen drag handlers.
+    pub(super) fn native_screen_mouse_dragged_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        button: i32,
+        delta: [f32; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, button, delta, modifiers, canceled);
+    }
     /// The wheel turned over the open screen (`ScreenEvent.MouseScrolled.Pre`,
     /// vanilla's `Screen.mouseScrolled`): `screen` is the screen it is,
     /// `screen.mouse` where the pointer is (so there is no position of its
@@ -1903,6 +1965,34 @@ impl Game<'_> {
             image.width as f32,
             image.height as f32,
         ]
+    }
+    pub(super) fn track_drag_button(&mut self, button: MouseButton, pressed: bool) {
+        // Any release ends the drag, as vanilla's `MouseHandler.onButton` clears `activeButton`:
+        // left down, right down, left up sends no drag while right is still held.
+        self.drag_button = pressed.then_some(button);
+    }
+    pub(super) fn screen_mouse_dragged(&self, previous: (f32, f32)) -> bool {
+        if self.pad_synthetic_input() || self.cursor == previous {
+            return false;
+        }
+        let Some(button) = self
+            .drag_button
+            .filter(|b| self.physical_buttons.contains(b))
+        else {
+            return false;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return false;
+        };
+        let mut canceled = false;
+        self.native_screen_mouse_dragged_pre(
+            &screen,
+            super::glfw_button(button),
+            [self.cursor.0 - previous.0, self.cursor.1 - previous.1],
+            super::glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
     }
     /// A screen the native mods' input hooks are for is open: the window has a
     /// renderer, `Screen::Playing` is behind it (so not the title screen, nor a
@@ -2448,6 +2538,25 @@ impl Game<'_> {
     /// @API:native_player_respawned@.
     pub(super) fn native_player_respawned(&mut self, player: u128, name: &str) {
         let _ = (player, name);
+    }
+    /// The number of players with the mod container at `pos` of `dimension`
+    /// open went from `previous` to `viewers` (vanilla's
+    /// `ContainerOpenersCounter`, as a barrel keeps it): 0 to more than 0 is
+    /// `onOpen`, back to 0 is `onClose`, any change `openerCountChanged`, so a
+    /// block can show itself open while `viewers` is not 0. Counted every
+    /// tick from the players' open menus, so a player who leaves without
+    /// closing (a lost connection, death, another dimension, out of reach, the
+    /// block gone) is heard too (`recheckOpeners`). Once for each change, with
+    /// no player's state swapped in. Server-side.
+    /// @API:mod_container_viewers@.
+    pub(super) fn native_mod_container_viewers(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        viewers: u32,
+        previous: u32,
+    ) {
+        let _ = (dimension, pos, viewers, previous);
     }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
@@ -3747,7 +3856,8 @@ impl Game<'_> {
     /// nobody uses and outside a world. These are the server's table on the
     /// server thread, a dedicated server or a LAN host; a client, the
     /// single-player window included, sees only the content mods' recipes, not
-    /// the world's data packs'. API 36.
+    /// the world's data packs', unless a mod had the server send it the type
+    /// (`native_datapack_sync`). API 36.
     pub(super) fn native_recipes_of_type(&self, kind: &str) -> &[CustomRecipe] {
         if self.outside_world() {
             return &[];
@@ -3806,9 +3916,10 @@ impl Game<'_> {
         self.player.is_none() && self.options.execution_role.is_client()
     }
     /// Every item and recipe the game knows, made once (the same for every
-    /// call); none outside a world. They are the window's own: the world's
-    /// in single player, vanilla's on a server, which sends a client no
-    /// others.
+    /// call); none outside a world. They are the window's own (the content
+    /// mods' and vanilla's), with the server's recipes of the types a mod had
+    /// it send (`native_datapack_sync`) in their place; made again when those
+    /// arrive (`native_recipes_received`).
     pub(super) fn native_recipes(&mut self) -> Option<Arc<NativeRecipes>> {
         self.player.as_ref()?;
         self.made_recipes()

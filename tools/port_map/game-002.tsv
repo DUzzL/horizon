@@ -96,8 +96,8 @@ ServerPlayer.setExperienceLevels	port	crates/horizon-client/src/game/commands.rs
 ServerPlayer.onLeaveCombat	skip:other		the client ignores ClientboundPlayerCombatEnd
 ServerPlayer.playShoulderEntityAmbientSound	missing		player: a parrot on the player's shoulder never chirps or imitates nearby mobs (1 in 200 ticks in vanilla)
 ServerPlayer.respawnEntityOnShoulder	port	crates/horizon-client/src/game/shoulders.rs::Game::remove_entities_on_shoulder	
-ServerPlayer.trackStartFallingPosition	missing		player: the Caves & Cliffs (fall_from_height) and Who Needs Rockets? (fall_after_explosion) advancements can never be earned; neither trigger exists
-ServerPlayer.trackEnteredOrExitedLavaOnVehicle	missing		player: the This Boat Has Legs advancement (ride_entity_in_lava) can never be earned; the trigger does not exist
+ServerPlayer.trackStartFallingPosition	port	crates/horizon-client/src/game/advancements.rs::Game::tick_marks	the fall start and the lava ride feed `DistanceTrigger` (`fall_from_height`, `ride_entity_in_lava`)
+ServerPlayer.trackEnteredOrExitedLavaOnVehicle	port	crates/horizon-client/src/game/advancements.rs::Game::tick_marks	the fall start and the lava ride feed `DistanceTrigger` (`fall_from_height`, `ride_entity_in_lava`)
 ServerPlayer.updateScoreForCriteria	port	crates/horizon-client/src/game/scoreboard.rs::Game::tick_scoreboard	health, food, air, armor, xp and level objectives
 ServerPlayer.tellNeutralMobsThatIDied	missing		player: wolves, bees, piglins and other mobs that were angry at the player stay angry after the player dies and respawns (vanilla forgives them with forgive_dead_players)
 ServerPlayer.handleTeamKill	inline	crates/horizon-client/src/game/scoreboard.rs::Game::score_player_killed	teamkill and killedByTeam objectives
