@@ -38,7 +38,7 @@ harness named checks that loader against vanilla).
 | Block states: variants, multipart, weights, rotations, uvlock | `blockstates/` | works | `test_blockstate_model_parity`, `test_model_choice_parity`, `test_blockstate_transform_parity` |
 | Block models: parents, elements, rotations, faces, cullface, tint, shade, light emission, ambient occlusion | `models/block/` | works | `test_model_resolution_parity`, `test_model_baking_parity`, `test_section_mesh_parity` |
 | Item definitions and item models (all model types, display transforms, tints) | `items/`, `models/item/` | works | `test_item_model_parity` |
-| Entity models | (code in vanilla) | n/a | entity models aren't resource files in 26.3 (`test_entity_model_parity` checks the code ones) |
+| Custom entity models (OptiFine/EMF): a `.jem` reshapes a mob's model layer, with its animations and texture; Entity Model Features' files win over OptiFine's | `optifine/cem/`, `emf/cem/` | partly | `mobs::cem` and `mobs::cem_anim` unit tests; no per-bone textures, no random models, no textures under `optifine/` (vanilla's own entity models are code in 26.3, which `test_entity_model_parity` checks) |
 | Textures, any resolution (16x to 512x) | `textures/` | works | atlases stitched from the overlay; Faithful 32x, Default HD 128x and FPBR measured in [reuse-pack-overlays.md](reuse-pack-overlays.md) |
 | Texture animation: frames, frame time, frame size | `*.png.mcmeta` `animation` | works | `test_sprite_animation_parity` |
 | Texture animation: `interpolate` | `*.png.mcmeta` `animation` | **no** | frames step instead of blending (vanilla's own prismarine, magma, stems, lit furnaces and campfires, command blocks, sculk too): fix in progress |
