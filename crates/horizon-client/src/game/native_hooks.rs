@@ -2987,6 +2987,61 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// Whether a mod hears projectiles' impacts (`native_projectile_impact`):
+    /// set `hears`. Asked once a server tick before the projectiles fly; only
+    /// then does the tick keep the copy of each flying projectile that a
+    /// canceled impact flies on from, so a game without such a mod pays
+    /// nothing. Server-side. API @API:projectile_impact@.
+    pub(super) fn native_hears_projectile_impacts(&self, hears: &mut bool) {
+        let _ = hears;
+    }
+    /// A projectile hit something (NeoForge's `ProjectileImpactEvent`, posted
+    /// where vanilla's projectile has found what it meets, before the hit
+    /// acts): `projectile` (its entity id) of type `kind` (`minecraft:arrow`),
+    /// shot by `owner` (a mob's or a player's entity id, 0 for none) in the level
+    /// `dimension`. It hit the entity `entity` of type `entity_kind` (a player is
+    /// `minecraft:player`; a dragon's part is `minecraft:ender_dragon`), or, with
+    /// `entity` None, the block at `block` on its `face` (the face's normal,
+    /// `[0, 1, 0]` for the top), at the point `at`. Set `canceled` and the impact
+    /// does not happen: no damage, no knockback, no sound, no block reaction, the
+    /// arrow does not stick, a pearl does not teleport, a potion or a fireball
+    /// does not burst. The projectile flies on and is not discarded, so a mod
+    /// that cancels also decides what becomes of it: it hits again the next tick
+    /// unless the mod moves, turns or removes it. An arrow stays where it would
+    /// have hit, and the other projectiles go on through the whole of their
+    /// motion. Covers what `tick_projectiles` flies: arrows, tridents, snowballs,
+    /// eggs, pearls, potions, fireballs, wither skulls, wind charges, llama spit and
+    /// shulker bullets, from players, mobs and dispensers. It does not fire for
+    /// a breeze's deflection, for a hit on a wind charge, for fireworks or for
+    /// fishing bobbers. A dragon part or End crystal is told by the id of the
+    /// dragon or crystal. Heard only when a mod also sets
+    /// `native_hears_projectile_impacts`. Server-side. API @API:projectile_impact@.
+    pub(super) fn native_projectile_impact(
+        &mut self,
+        dimension: &str,
+        projectile: u32,
+        kind: &str,
+        owner: u32,
+        entity: Option<u32>,
+        entity_kind: &str,
+        block: [i32; 3],
+        face: [i32; 3],
+        at: [f64; 3],
+        canceled: &mut bool,
+    ) {
+        let _ = (
+            dimension,
+            projectile,
+            kind,
+            owner,
+            entity,
+            entity_kind,
+            block,
+            face,
+            at,
+            canceled,
+        );
+    }
 
     /// `Block.stepOn` for a mod block, on its authoritative server level.
     /// No self: the simulation owns the entity during this callback.
