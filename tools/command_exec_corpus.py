@@ -3,7 +3,8 @@
 Each group is a list of operations: `cmd` runs a command as the player and
 records its messages and results (`record: false` runs setup silently),
 `tick` advances the game, `settle` loads the terrain and entities around the
-player and `portal` sends the player through the nether portal it stands in.
+player, `portal` sends the player through the nether portal it stands in,
+and `falling` counts physical falling blocks by dimension, state and gravity.
 Everything happens high above the terrain (y 200 and up, where both worlds
 are air) after the world's entities are removed, so the results do not
 depend on world generation.
@@ -653,6 +654,46 @@ def levels():
         cmd('/execute if entity @e[type=minecraft:pig]'),
         cmd('/summon minecraft:armor_stand 4.5 210 4.5 {NoGravity:1b,Tags:["lv"],CustomName:"Back"}'),
         *setup('/kill @e[tag=lv]', '/fill 2 231 12 5 236 12 minecraft:air', '/tp @s 8.5 230 8.5 0 0'),
+        {'op': 'settle'},
+    ]
+
+
+def end_portal_entities():
+    """Non-player exit travel with two ticking levels, and a falling block
+    crossing the portal's inside shape on the tick it reaches the floor."""
+    end = '/execute in minecraft:the_end run'
+    local = 'distance=..1000000'
+    return [
+        *setup('/forceload add 0 0', '/setblock 8 229 8 minecraft:stone', '/setworldspawn 8 230 8',
+               f'{end} tp @s 8.5 230 8.5'),
+        {'op': 'settle'},
+        *setup(f'{end} forceload add 0 0',
+               f'{end} fill 2 209 2 6 209 6 minecraft:stone',
+               f'{end} fill 2 210 2 6 215 6 minecraft:air',
+               f'{end} setblock 4 210 4 minecraft:end_portal',
+               f'{end} summon minecraft:pig 4.5 210.5 4.5 {{NoAI:1b,NoGravity:1b,Tags:["end_portal_mob"]}}'),
+        {'op': 'tick', 'n': 10},
+        cmd(f'{end} execute if entity @e[tag=end_portal_mob,{local}]'),
+        cmd(f'/execute in minecraft:overworld if entity @e[tag=end_portal_mob,{local}]'),
+        *setup(f'{end} summon minecraft:falling_block 4.5 213 4.5 {{BlockState:{{id:"minecraft:sand"}},Time:1,Motion:[0.0d,-2.0d,0.0d],Tags:["end_portal_falling"]}}'),
+        {'op': 'tick', 'n': 10},
+        cmd('/execute in minecraft:overworld if block 8 230 8 minecraft:sand'),
+        cmd(f'{end} execute if block 4 210 4 minecraft:end_portal'),
+        *setup('/execute in minecraft:overworld run setblock 8 230 8 minecraft:air',
+               f'{end} summon minecraft:falling_block 4.5 210.5 4.5 {{BlockState:{{id:"minecraft:gravel"}},Time:1,NoGravity:1b,Tags:["end_portal_float"]}}'),
+        {'op': 'tick', 'n': 5},
+        {'op': 'falling', 'dimension': 'minecraft:the_end', 'block': 'minecraft:gravel', 'no_gravity': True},
+        {'op': 'falling', 'dimension': 'minecraft:overworld', 'block': 'minecraft:gravel', 'no_gravity': True, 'discard': True},
+        # FallingBlock.isFree(end_portal) is false: a placed egg above it
+        # stays a block in vanilla, despite the portal's empty collision shape.
+        *setup(f'{end} setblock 4 211 4 minecraft:dragon_egg'),
+        {'op': 'tick', 'n': 5},
+        cmd(f'{end} execute if block 4 211 4 minecraft:dragon_egg'),
+        *setup('/kill @e[tag=end_portal_mob]',
+               f'{end} fill 2 209 2 6 215 6 minecraft:air',
+               f'{end} forceload remove 0 0',
+               '/execute in minecraft:overworld run fill 8 229 8 8 231 8 minecraft:air',
+               '/execute in minecraft:overworld run tp @s 8.5 230 8.5'),
         {'op': 'settle'},
     ]
 
@@ -1365,6 +1406,37 @@ def experience_orb_fall():
     ]
 
 
+def creative_shulker_drops():
+    """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
+    even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
+    colors = ('white orange magenta light_blue yellow lime pink gray light_gray cyan '
+              'purple blue brown green red black').split()
+    blocks = ['shulker_box', *(f'{color}_shulker_box' for color in colors)]
+    item = '@e[type=minecraft:item,limit=1]'
+    contents = ('Items:[{Slot:0b,id:"minecraft:diamond_sword",count:1,components:{'
+                '"minecraft:custom_name":"Blade","minecraft:enchantments":{"minecraft:sharpness":5}}},'
+                '{Slot:26b,id:"minecraft:apple",count:16}],')
+    out = []
+    for block in blocks:
+        for mode, filled, drops in [('creative', True, True), ('creative', False, True),
+                                    ('creative', True, False), ('survival', True, True),
+                                    ('survival', False, True), ('survival', True, False)]:
+            out += setup('/kill @e[type=minecraft:item]', f'/gamemode {mode}',
+                         f'/gamerule block_drops {str(drops).lower()}',
+                         f'/setblock 4 210 4 minecraft:{block}'
+                         '{' + (contents if filled else '') + 'TestOnly:7}')
+            out += [{'op': 'break', 'pos': [4, 210, 4]},
+                    cmd('/execute if block 4 210 4 minecraft:air'),
+                    cmd('/execute if entity @e[type=minecraft:item]')]
+            if (mode == 'creative' and filled) or (mode == 'survival' and drops):
+                out += [cmd(f'/data get entity {item} Item'),
+                        cmd(f'/execute if data entity {item} Item.components."minecraft:block_entity_data"')]
+                if mode == 'creative':
+                    out += [cmd(f'/data get entity {item} Pos'), cmd(f'/data get entity {item} PickupDelay')]
+    out += setup('/kill @e[type=minecraft:item]', '/gamemode creative', '/gamerule block_drops true')
+    return out
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1381,6 +1453,7 @@ def groups():
         ('scores, teams and bossbars', scores()),
         ('execute', execute()),
         ('levels', levels()),
+        ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
         ('world', world_misc()),
         ('progression', progression()),
@@ -1391,6 +1464,7 @@ def groups():
         ('test', test_command()),
         ('wither breaks', wither_breaks()),
         ('tnt minecart rails', tnt_minecart_rails()),
+        ('creative shulker drops', creative_shulker_drops()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
