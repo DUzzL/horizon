@@ -1005,7 +1005,9 @@ mod tests {
         );
         let mut poses = Poses::new(&model);
         let mut tx = |counter: u32| {
-            animation.run_with(7, counter, |_| {}, &mut poses);
+            // Only `is_in_gui` matters here: the rest of the parameters stay 0.
+            let fill = |slots: &mut [f32]| slots[Param::InGui as usize] = flag(IN_GUI.get());
+            animation.run_with(7, counter, fill, &mut poses);
             poses.get("root")[0]
         };
         // Two draws in the world and a preview in frame 1 read the same start; only the first
