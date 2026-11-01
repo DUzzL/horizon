@@ -733,5 +733,15 @@
   "No backup yet.": "Резервных копий пока нет.",
   "Replace the world": "Заменить мир",
   "Back up now": "Создать копию сейчас",
-  "Changes save as you make them. Those the game can't take while it runs wait for a restart, and the page says so.": "Изменения сохраняются сразу. Параметры, которые нельзя применить во время работы, ждут перезапуска, о чем указано на странице."
+  "Changes save as you make them. Those the game can't take while it runs wait for a restart, and the page says so.": "Изменения сохраняются сразу. Параметры, которые нельзя применить во время работы, ждут перезапуска, о чем указано на странице.",
+  "No version is installed yet.": "Пока не установлена ни одна версия.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} Они часто всё равно собираются: передайте --allow-version-mismatch, чтобы попробовать.",
+  "Built the server engine: {path}": "Серверный движок собран: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Укажите серверу на этот файл: задайте engine.path в server.toml сервера (docs/hosting.md); лаунчер ничего сам не записывает.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} уже существует. Переместите его, или соберите в другую папку.",
+  "Choose a new folder for the server export.": "Выберите новую папку для экспорта сервера.",
+  "Export the server outside the launcher's managed folders.": "Экспортируйте сервер вне управляемых лаунчером папок.",
+  "{path} is not a folder to build into.": "{path} не является папкой для сборки.",
+  "Could not copy the build: {error}": "Не удалось скопировать сборку: {error}",
+  "Could not move the build to {path}: {error}": "Не удалось переместить сборку в {path}: {error}"
 }

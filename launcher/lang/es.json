@@ -733,5 +733,15 @@
   "No backup yet.": "Aún no hay copias de seguridad.",
   "Replace the world": "Reemplazar el mundo",
   "Back up now": "Crear copia ahora",
-  "Changes save as you make them. Those the game can't take while it runs wait for a restart, and the page says so.": "Los cambios se guardan al realizarlos. Los que el juego no pueda aplicar en ejecución esperarán a reiniciar, y la página lo indicará."
+  "Changes save as you make them. Those the game can't take while it runs wait for a restart, and the page says so.": "Los cambios se guardan al realizarlos. Los que el juego no pueda aplicar en ejecución esperarán a reiniciar, y la página lo indicará.",
+  "No version is installed yet.": "Aún no hay ninguna versión instalada.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} A menudo aún se compilan: pasa --allow-version-mismatch para intentar.",
+  "Built the server engine: {path}": "Motor del servidor construido: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Apunta el servidor a este archivo: establece engine.path en el server.toml del servidor (docs/hosting.md); el launcher no escribe nada por sí mismo.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} ya existe. Mueve el archivo, o compila en otra carpeta.",
+  "Choose a new folder for the server export.": "Elija una nueva carpeta para la exportación del servidor.",
+  "Export the server outside the launcher's managed folders.": "Exporte el servidor fuera de las carpetas administradas por el launcher.",
+  "{path} is not a folder to build into.": "{path} no es una carpeta para compilar.",
+  "Could not copy the build: {error}": "No se pudo copiar la compilación: {error}",
+  "Could not move the build to {path}: {error}": "No se pudo mover la compilación a {path}: {error}"
 }

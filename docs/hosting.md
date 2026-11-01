@@ -223,6 +223,21 @@ Already have a vanilla server? Run `horizon-server init` in its folder, or `hori
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists
 keep vanilla's names and formats, so going back to vanilla works too.
 
+## Native server export
+
+A native-mods build exports a standalone engine
+(`horizon-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code`;
+see [Native mods](native-mods.md#standalone-server-export)). Point the server at it:
+
+    horizon-server --dir SERVER config set engine.path=/absolute/export/horizon-engine
+    horizon-server --dir SERVER restart
+
+Use the absolute engine path printed by the build. Build on the same OS and architecture as the server
+(no cross compilation), using a prepared installed launcher release. Updates do not rebuild a pinned `engine.path`: build a new
+export folder, set `engine.path` to it, restart, and keep the old folder for manual rollback. The supervisor does
+not auto-update or rebuild a pinned engine path, and there is no compatibility handshake yet (follow-up #6304).
+Native mods run unsandboxed: only build code you have read and trust.
+
 ### Behind a Velocity proxy
 
 A network can put one Velocity proxy in front of several servers: the proxy signs the players in with their
