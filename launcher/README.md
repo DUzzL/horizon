@@ -1,8 +1,9 @@
 # Horizon launcher
 
 A small desktop app that installs Horizon builds, prepares them from your own copy of
-Minecraft, and starts the client or a dedicated server. Built with [GPUI](https://www.gpui.rs),
-Zed's UI framework; it has its own Cargo workspace and is not part of the game's builds.
+Minecraft, and starts the client or a dedicated server. Built with [GPUI Fast](https://github.com/longbridge/gpui-fast),
+a fork of Zed's UI framework [GPUI](https://www.gpui.rs) that draws unchanged views from the last frame;
+it has its own Cargo workspace and is not part of the game's builds.
 
 ![Play](docs/play.png)
 
@@ -113,6 +114,9 @@ The opening, then Play ([clip](docs/opening.webm)):
   pack into the selected instance. A data pack is pointed at the world rows, and the Packs section
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
+- **Maximum memory**: a row on Home, per instance: a slider and a box that takes `4096`, `4gb`, or nothing
+  for no limit (the default), saved at once. For Horizon it goes to the game as
+  `HORIZON_MEMORY_LIMIT_MB` ([what it does](../docs/native-client.md#ram-limit)); a Java instance's sets `-Xmx`.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
   (`nice -n 5`), and environment variables (`NAME=value OTHER="two words"`), kept in
@@ -428,9 +432,12 @@ Play, with the token renewal; with no network the last answer stands, and a "doe
 at once. The account also plays online-mode servers under your own name and skin; offline names
 play LAN and offline-mode servers beside it. The game binary started directly (`horizon-client`,
 `horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
-Credential Manager, or the Secret Service on Linux), never in a file, a log or the command line;
-`accounts.json` in the data folder keeps only names and UUIDs. Without a keychain you stay signed
-in until the launcher closes. When the game starts, it gets the session in a private file it
+Credential Manager, or the Secret Service on Linux), never in a log or the command line;
+`accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
+to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it
+answers; on macOS and Windows without one you stay signed in until the launcher closes. The
+Tailscale access token never goes to that file: without a keychain it lasts until the launcher
+closes. When the game starts, it gets the session in a private file it
 deletes as soon as it has read it. Sign out removes the tokens.
 
 Sign-in needs Horizon's own Azure app registration: its client ID is built in from
@@ -483,7 +490,9 @@ On Windows, `cargo test --bin horizon-launcher desktop_list_renders_the_viewport
     cargo build --release
 
 On NixOS, `nix-shell` in this folder provides the libraries GPUI links to (Wayland, X11,
-xkbcommon, Vulkan, fontconfig). macOS needs Xcode's command line tools. The `launcher`
+xkbcommon, Vulkan, fontconfig) and the ALSA and libudev files a native mod build looks up, so
+start the launcher from that shell to build native mods as well (#5248). macOS needs Xcode's
+command line tools. The `launcher`
 workflow builds all three platforms on every push to the `launcher` branch (or a
 `launcher-*` one), then installs the latest Horizon into a temporary folder and checks that the
 client starts (`--help`) and that the binaries import only system libraries (Windows).

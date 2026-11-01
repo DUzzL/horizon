@@ -138,6 +138,8 @@ fn connect(port: u16, name: &str, known_pack: bool) -> Result<Bot, String> {
             }
             cfg::Clientbound::RegistryData(r) => {
                 registries += 1;
+                // A client that knows the core pack rebuilds the entries itself
+                // (RegistrySynchronization.packRegistry), dialogs included.
                 let has_data = r.entries.iter().any(|e| e.data.is_some());
                 assert_eq!(has_data, !known_pack, "{}", r.registry);
             }
@@ -201,7 +203,7 @@ impl Server {
             clock_rate: 1.0,
             tick_rate: 20.0,
             tick_frozen: false,
-            tick_steps: (0, 0),
+            tick_steps: Default::default(),
             collision: None,
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
@@ -1417,7 +1419,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         clock_rate: 1.0,
         tick_rate: 20.0,
         tick_frozen: false,
-        tick_steps: (0, 0),
+        tick_steps: Default::default(),
         collision: None,
         border: &border,
         streaming: None,

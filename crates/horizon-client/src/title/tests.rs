@@ -1302,8 +1302,11 @@ fn world_with_unreadable_level_dat_is_listed_and_recovers_from_level_dat_old() {
     assert_eq!(issues[1], None);
     assert_eq!(fs::read(dir.join("level.dat")).unwrap(), b"truncated");
 
-    // restoreLevelDataFromOld: level.dat_old back in place, the broken file kept aside.
+    // attemptRestore backs the world up first, then restoreLevelDataFromOld: level.dat_old
+    // back in place, the broken file kept aside.
     f.click("Attempt to Restore");
+    assert!(matches!(f.title.mode, Mode::Backup { .. }));
+    f.finish_backup();
     assert!(matches!(
         f.title.mode,
         Mode::Recovered { success: true, .. }

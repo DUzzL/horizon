@@ -60,6 +60,9 @@ struct Flags {
     entity_distance: AtomicU32,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
+    /// Splitscreen players joined through memory (offline uuids): let in although the world is
+    /// not open to the LAN, and the game no longer pauses while they play.
+    split_players: Mutex<Vec<u128>>,
     /// The generators of the levels the server has run, by dimension: what
     /// F3's chunk generation entry asks `ServerChunkCache.getGenerator`.
     terrain: Mutex<
@@ -120,7 +123,42 @@ impl Integrated {
     }
     /// `IntegratedServer.tickServer` skips the world while the game is paused.
     pub fn set_paused(&self, paused: bool) {
-        self.flags.paused.store(paused, Ordering::Relaxed);
+        let split = !self.flags.split_players.lock().unwrap().is_empty();
+        self.flags.paused.store(paused && !split, Ordering::Relaxed);
+    }
+    /// Splitscreen: `name` left; the game pauses again once every such player has. The owner's
+    /// permissions it was given go with it (a LAN player could otherwise join under that name).
+    pub fn leave_split(&self, name: &str) {
+        let uuid = horizon_protocol::crypto::offline_uuid(name);
+        self.flags
+            .split_players
+            .lock()
+            .unwrap()
+            .retain(|&u| u != uuid);
+        self.call(move |g| {
+            if let Some(host) = g.lan.as_mut() {
+                host.hub.ops.remove(&uuid);
+            }
+        });
+    }
+    /// Splitscreen: a connection through memory for another player on this machine, who gets
+    /// the owner's permissions. `None` once the server has stopped.
+    pub fn join_split(&self, name: &str) -> Option<horizon_protocol::connection::Pipe> {
+        let uuid = horizon_protocol::crypto::offline_uuid(name);
+        self.flags.split_players.lock().unwrap().push(uuid);
+        let pipe = self
+            .call(move |g| {
+                let host = g.lan.as_mut()?;
+                let owner = host.owner.as_ref()?.uuid;
+                let level = host.hub.ops.get(&owner).copied().unwrap_or(0);
+                host.hub.ops.insert(uuid, level);
+                host.hub.lan.connect_local().ok()
+            })
+            .flatten();
+        if pipe.is_none() {
+            self.leave_split(name);
+        }
+        pipe
     }
     /// The window's render and simulation distances and its Entity Distance
     /// option, for the server to follow.
@@ -679,14 +717,25 @@ impl Game<'_> {
         };
         let owner = launch.owner;
         let published = flags.clone();
+        let local_players = flags.clone();
         let net = NetConfig {
             // No network until it is opened to the LAN; the memory connection
             // is not compressed (`Connection.isMemoryConnection`).
             listen: false,
             online: horizon_client::lan::OnlineMode::lan(),
-            gate: Some(Arc::new(move |_, uuid, _| {
-                (uuid != owner && published.published.load(Ordering::Relaxed) == 0)
-                    .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
+            // Registered local seats share this computer; the vanilla LAN capacity still
+            // applies to other connections when the world is published.
+            bypasses_limit: Some(Arc::new(move |uuid| {
+                local_players.split_players.lock().unwrap().contains(&uuid)
+            })),
+            gate: Some(Arc::new(move |address, uuid, _| {
+                refused(
+                    uuid == owner,
+                    published.published.load(Ordering::Relaxed) != 0,
+                    published.split_players.lock().unwrap().contains(&uuid),
+                    address == horizon_client::lan::conn::MEMORY_ADDRESS,
+                )
+                .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
             levels: self.level_shapes,
             owner_profile: launch.owner_profile.clone(),
@@ -1033,12 +1082,17 @@ impl Game<'_> {
     /// `IntegratedServer.setWorldAllowCommands`: the owner is an operator
     /// while the world allows commands; everyone's level is sent again.
     pub(super) fn owner_allow_commands(&mut self, allow: bool) {
-        let Some(owner) = self.serving.as_ref().map(|s| s.owner) else {
+        let Some((owner, flags)) = self.serving.as_ref().map(|s| (s.owner, s.flags.clone())) else {
             return;
         };
         let published = self.published_port().is_some();
         if let Some(host) = self.lan.as_mut() {
-            host.hub.ops.insert(owner, if allow { 4 } else { 0 });
+            let level = if allow { 4 } else { 0 };
+            host.hub.ops.insert(owner, level);
+            // Splitscreen seats have the owner's permissions (`join_split`): they follow it.
+            for &seat in flags.split_players.lock().unwrap().iter() {
+                host.hub.ops.insert(seat, level);
+            }
             if published {
                 host.hub.config.guest_commands = allow && host.settings.guest_commands;
             }
@@ -1144,9 +1198,37 @@ fn server_game(
     Game::new(res, pack, gui, options, settings, audio, None)
 }
 
+/// Who the integrated server turns away: anyone but the owner until it is opened to the LAN,
+/// except a splitscreen seat. A seat's name is let in only through memory, so a LAN player
+/// logging in under it never gets its place or the owner's permissions it holds.
+fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool {
+    if split_seat {
+        !memory
+    } else {
+        !owner && !published
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_splitscreen_seat_is_let_in_only_through_memory() {
+        // (owner, published, seat, memory)
+        assert!(!refused(false, false, true, true), "a local seat joins");
+        assert!(
+            refused(false, true, true, false),
+            "a LAN player under a seat's name"
+        );
+        assert!(refused(false, false, true, false));
+        assert!(
+            !refused(false, true, false, false),
+            "anyone once open to the LAN"
+        );
+        assert!(refused(false, false, false, false), "nobody else before");
+        assert!(!refused(true, false, false, true), "the owner");
+    }
 
     #[test]
     fn shutdown_request_does_not_join_a_server_still_saving() {

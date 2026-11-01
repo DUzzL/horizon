@@ -176,7 +176,7 @@ impl Features {
                 &entity_module,
                 entities,
                 &entity_buffers,
-                kind("text", "entity", None, offset),
+                kind("text", "entity", Some(wgpu::Face::Back), offset),
             ),
             crumbling: set(
                 &entity_module,
@@ -217,7 +217,12 @@ impl Features {
                 &entity_module,
                 entities,
                 &entity_buffers,
-                kind("additive entities", "lightning", None, PLAIN),
+                kind(
+                    "additive entities",
+                    "lightning",
+                    Some(wgpu::Face::Back),
+                    PLAIN,
+                ),
             ),
             weather: set(
                 &entity_module,

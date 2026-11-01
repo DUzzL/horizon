@@ -124,7 +124,7 @@ NetherPortalBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::bl
 NetherPortalBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	axis swap through the rotate table
 NoteBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	instrument follows the block below
 NoteBlock.neighborChanged	port	crates/horizon-world/src/level/redstone.rs::Sim::note_neighbor_changed	
-NoteBlock.getCustomSoundId	missing	-	player: a player head on top of a note block does not change its sound; the head's sound is stored but the note play never reads it
+NoteBlock.getCustomSoundId	inline	crates/horizon-client/src/game.rs::Game::process_level_events	
 NoteBlock.createBlockStateDefinition	skip:data	-	state properties come from the data tables
 PathBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	pushes entities up when the path would not survive
 PathBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	schedules a tick when the block above changes

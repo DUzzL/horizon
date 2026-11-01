@@ -173,6 +173,10 @@ pub struct Guest {
     pub moved: bool,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
+    /// Since it joined or respawned, the client hasn't said it loaded the level
+    /// (ServerboundPlayerLoadedPacket): it may still be on its loading screen, where it doesn't
+    /// move, even once the server stops waiting for it (`load_timeout`).
+    pub loading: bool,
     /// Ticks left before the server stops waiting for that packet
     /// (ServerGamePacketListenerImpl.clientLoadedTimeoutTimer): 60 at join and
     /// after a respawn, 0 once it comes.
@@ -274,6 +278,9 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
+    /// another (`native_set_flying_speed`). Saved with the player.
+    pub flying_speed: f32,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -370,6 +377,7 @@ impl Guest {
             changes: Default::default(),
             moved: false,
             loaded: false,
+            loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
             center: None,
             sent_chunks: Default::default(),
@@ -422,6 +430,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -438,6 +447,14 @@ impl Guest {
             scoreboard: Default::default(),
             recipes_unlocked: Vec::new(),
         }
+    }
+    /// `ServerPlayer.onUpdateAbilities`: the guest's abilities, flying speed included.
+    pub fn abilities(&self) -> play::Clientbound {
+        play::Clientbound::PlayerAbilities(play::PlayerAbilities {
+            flags: self.ability_flags(),
+            flying_speed: self.flying_speed,
+            walking_speed: 0.1,
+        })
     }
     pub fn send(&self, packet: &play::Clientbound) {
         if self.anticheat.record.is_some() {
@@ -472,6 +489,13 @@ impl Guest {
                     .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
                 Change::Attributes { sprint }
             }
+            // Entity.DATA_SHARED_FLAGS_ID: its sprinting bit (0x08).
+            C::SetEntityData(p) if own(p.id) => match p.values.iter().find(|v| v.0 == 0) {
+                Some(&(_, _, horizon_protocol::entity_data::Value::Byte(flags))) => {
+                    Change::Sprinting(flags & 0x08 != 0)
+                }
+                _ => return,
+            },
             C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
             C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
             C::PlayerAbilities(_) => Change::Abilities,
@@ -736,6 +760,14 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // Unbreakable is a unit component; clients need its presence for the
+        // durability bar, tooltip and item model, including in single player.
+        if d.other("minecraft:unbreakable").is_some() {
+            stack.added.push((
+                horizon_protocol::item::component::UNBREAKABLE,
+                horizon_protocol::item::Component::Unit,
+            ));
+        }
         for (name, value) in &d.other {
             let (removed, kind) = match name.strip_prefix('!') {
                 Some(kind) => (true, kind),
@@ -1008,6 +1040,16 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
+    // Lore lines as loaded or as a server mod wrote them (a list of text
+    // components), so a server menu's items can say more than their name.
+    if let Some(horizon_world::nbt::Tag::List(lines)) =
+        s.data().and_then(|d| d.other("minecraft:lore"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::LORE,
+            horizon_protocol::item::Component::Lore(lines.clone()),
+        ));
+    }
     // The component as loaded, so a translatable name stays one.
     if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
         stack.added.push((
@@ -1023,6 +1065,16 @@ fn network_stack(
         stack.added.push((
             horizon_protocol::item::component::ITEM_MODEL,
             horizon_protocol::item::Component::Ident(model),
+        ));
+    }
+    // Arbitrary NBT other mods and item models read back client-side
+    // (`item_model.rs`'s `custom_data_at`), as vanilla's DataComponentPatch does.
+    if let Some(tag @ horizon_world::nbt::Tag::Compound(_)) =
+        s.data().and_then(|d| d.other("minecraft:custom_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_DATA,
+            horizon_protocol::item::Component::Nbt(tag.clone()),
         ));
     }
     if let Some(t) = s
@@ -1098,6 +1150,32 @@ mod tests {
     use horizon_protocol::buf::{Codec, Reader, Writer};
     use horizon_protocol::item::{Component, component};
     use horizon_world::nbt::Tag;
+
+    #[test]
+    fn lore_lines_reach_the_client() {
+        let lines = vec![
+            Tag::compound([("text", Tag::String("Buy 400".into()))]),
+            Tag::compound([
+                ("text", Tag::String("▲ 2.0%".into())),
+                ("color", Tag::String("green".into())),
+            ]),
+        ];
+        let mut item = ItemStack::new("minecraft:diamond", 1);
+        item.data_mut()
+            .other
+            .push(("minecraft:lore".into(), Tag::List(lines.clone())));
+        let sent = stack_to_network(|_| 7, |_, _| None, &Some(item));
+        let mut writer = Writer::new();
+        horizon_protocol::item::Slot::write(&sent, &mut writer);
+        let mut reader = Reader::new(&writer.data);
+        let received = horizon_protocol::item::Slot::read(&mut reader)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            received.component(component::LORE),
+            Some(&Component::Lore(lines))
+        );
+    }
 
     #[test]
     fn styled_custom_name_survives_inventory_sync() {

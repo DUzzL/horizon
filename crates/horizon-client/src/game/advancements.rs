@@ -4,7 +4,7 @@
 use super::{Dim, Game};
 use horizon_client::{
     advancements::{self as adv, EntityView, Frame, ItemView, Progress, Tree},
-    hud::HudBatch,
+    hud::{HudBatch, rgba},
     items::ItemStack,
     text::{self, Style, Text},
     toasts::Slide,
@@ -326,13 +326,19 @@ impl Game<'_> {
             return;
         }
         let data = self.options.resources.join("data");
-        // The world's packs' advancements go over the game's own.
-        let files = super::functions::content_overlay(
-            &self.world_root,
-            &self.options.resources,
-            self.cmds.vanilla_disabled,
-            &self.level.enabled_features,
-        );
+        // The world's packs' advancements go over the game's own, and a
+        // native mod's contributed files are already among them: the tables
+        // were built for this open (`build_world_tables`), so the hook is
+        // asked once, not again here.
+        let files = match &self.world_tables {
+            Some(tables) => tables.files.clone(),
+            None => super::functions::content_overlay(
+                &self.world_root,
+                &self.options.resources,
+                self.cmds.vanilla_disabled,
+                &self.level.enabled_features,
+            ),
+        };
         self.adv.pending_tree = std::thread::Builder::new()
             .name("horizon-advancements".into())
             .spawn(move || Tree::shared(&data, &horizon_world::loot::PackOverlay { files: &files }))
@@ -457,6 +463,8 @@ impl Game<'_> {
         EntityView {
             kind: "minecraft:player".into(),
             position: [p.position.x, p.position.y, p.position.z],
+            // Entity.isOnFire on a server: remainingFireTicks (players aren't fire immune).
+            on_fire: p.fire_ticks > 0,
             sneaking: p.pose == horizon_client::pose::Pose::Crouching,
             // Input.shift: the held key, as `BlockItem.place`'s sneaking reads it.
             input_sneak: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
@@ -1819,11 +1827,7 @@ impl Game<'_> {
         }
         let atlas = &self.gui.atlas;
         batch.sprite(atlas, "gui/sprites/toast/advancement", x, y);
-        let (key, color) = match frame {
-            Frame::Task => ("advancements.toast.task", 0xFFFF_FF00),
-            Frame::Goal => ("advancements.toast.goal", 0xFFFF_FF00),
-            Frame::Challenge => ("advancements.toast.challenge", 0xFFFF_88FF),
-        };
+        let (key, color) = toast_label(frame);
         // AdvancementToast.extractRenderState: a title of one line sits under
         // the frame's label; a longer one is wrapped at 125, the label fading
         // out first (to 1.5 s) and the lines fading in after it over 0.3 s.
@@ -1858,6 +1862,15 @@ impl Game<'_> {
             }
         }
         self.draw_item(batch, &ItemStack::new(&icon, 1), x + 8.0, y + 8.0);
+    }
+}
+/// The toast's frame label and its colour (`AdvancementToast`: -30465, pink,
+/// for a challenge, else -256, yellow), packed as `hud::rgba` for the batch.
+fn toast_label(frame: Frame) -> (&'static str, u32) {
+    match frame {
+        Frame::Task => ("advancements.toast.task", rgba(255, 255, 0, 255)),
+        Frame::Goal => ("advancements.toast.goal", rgba(255, 255, 0, 255)),
+        Frame::Challenge => ("advancements.toast.challenge", rgba(255, 136, 255, 255)),
     }
 }
 /// `Advancement.name`: the bracketed title in the frame's colour, with the
@@ -1993,7 +2006,7 @@ impl Game<'_> {
                     criteria.push(adv::Criterion {
                         name: name.clone(),
                         trigger: String::new(),
-                        conditions: Value::Null,
+                        conditions: Value::Null.into(),
                     });
                 }
             }
@@ -2056,6 +2069,18 @@ pub(super) fn text_of(v: &Value) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toast_labels_are_yellow_or_pink() {
+        // The batch takes colours as `rgba`: 0xFFFF_FF00 there is cyan (#5850).
+        for frame in [Frame::Task, Frame::Goal] {
+            assert_eq!(toast_label(frame).1.to_le_bytes(), [255, 255, 0, 255]);
+        }
+        assert_eq!(
+            toast_label(Frame::Challenge).1.to_le_bytes(),
+            [255, 136, 255, 255]
+        );
+    }
 
     fn recipes(n: usize) -> Toast {
         Toast::recipe(

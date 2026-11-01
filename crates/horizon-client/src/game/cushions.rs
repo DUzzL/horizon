@@ -359,8 +359,10 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        // `skipAttackInteraction` when `mayInteract` is false.
+        // `Cushion.hurtServer` refuses a player who may not build, so
+        // skipAttackInteraction is false and Player.attack goes on to onAttack.
         if !self.may_build() {
+            self.attack_ticks = 0;
             return true;
         }
         self.break_cushion(i, true);
@@ -374,7 +376,7 @@ impl Game<'_> {
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
         if self.riding == Some(c.id) {
-            self.riding = None;
+            self.dismount_removed_vehicle(p.y);
         }
         self.audio.play(
             "minecraft:entity.cushion.break",
@@ -466,6 +468,49 @@ impl Game<'_> {
             1.0,
             1.0,
         );
+    }
+
+    /// `LivingEntity.dismountVehicle` from a removed vehicle (a broken
+    /// cushion) whose position was at `vehicle_y`: up to the higher of the
+    /// rider's and the vehicle's heights, then the free spot nearest there
+    /// (`findFreePosition` within the rider's own box). No get-up sound:
+    /// `Cushion.removePassenger` plays none once the cushion is removed.
+    pub(super) fn dismount_removed_vehicle(&mut self, vehicle_y: f64) {
+        self.riding = None;
+        let border = self.border_bounds();
+        let b = self.res.behaviours();
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let (w, h) = (
+            f64::from(p.dimensions.width),
+            f64::from(p.dimensions.height),
+        );
+        let mut at = Vec3::new(p.position.x, p.position.y.max(vehicle_y), p.position.z);
+        // `getBbWidth() <= 4 && getBbHeight() <= 4`.
+        if w <= 4.0 && h <= 4.0 {
+            let center = at.add_vector(Vec3::new(0.0, h / 2.0, 0.0));
+            let size = Vec3::new(w, h, w);
+            let free = horizon_world::level::portal_travel::find_free_position(
+                Aabb::of_size(center, size),
+                center,
+                size,
+                &border,
+                |q| {
+                    b.collision_shape(self.world.block(q.x, q.y, q.z))
+                        .map(|s| s.moved(Vec3::new(f64::from(q.x), f64::from(q.y), f64::from(q.z))))
+                },
+            );
+            if let Some(free) = free {
+                at = free.add_vector(Vec3::new(0.0, -h / 2.0, 0.0));
+            }
+        }
+        if let Some(p) = self.player.as_mut() {
+            self.previous_position = p.position;
+            p.position = at;
+            p.velocity = Vec3::ZERO;
+            p.fall_distance = 0.0;
+        }
     }
 
     /// `Player.rideTick` on a cushion: hold the seat, and get up on sneak.

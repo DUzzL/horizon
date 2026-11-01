@@ -34,14 +34,14 @@ pub(super) fn aim_deflect(
     p: &mut Projectile,
     look: Option<Vec3>,
     owner: Option<Who>,
+    owner_uuid: Option<[i32; 4]>,
     guest: Option<u32>,
 ) {
     if let Some(look) = look {
         p.velocity = look;
         p.needs_sync = true;
     }
-    p.owner = owner;
-    p.guest = guest;
+    (p.owner, p.owner_uuid, p.guest) = (owner, owner_uuid, guest);
     p.acceleration = 0.1;
 }
 
@@ -196,14 +196,14 @@ impl Game<'_> {
     /// `Projectile.deflect(AIM_DEFLECT, player, player, true)`.
     pub(super) fn deflect(&mut self, i: usize) {
         let dir = view_vector(self.yaw, self.pitch);
-        let guest = self.lan_acting;
+        let (guest, owner_uuid) = (self.lan_acting, Some(self.acting_player_uuid()));
         let p = &mut self.creatures.projectiles[i];
         p.velocity = Vec3::new(dir[0], dir[1], dir[2]);
         p.yaw = dir[0].atan2(dir[2]).to_degrees() as f32;
         p.pitch = dir[1].atan2(dir[0].hypot(dir[2])).to_degrees() as f32;
         p.owner = Some(Who::Player);
         // On a server, the guest who struck it (their projectile now).
-        p.guest = guest;
+        (p.guest, p.owner_uuid) = (guest, owner_uuid);
         // Not into the one who turned it on its way out.
         p.left_owner = false;
         // `AbstractHurtingProjectile.onDeflection` by an attack, and the
@@ -274,9 +274,9 @@ mod tests {
     fn a_redirected_wind_charge_flies_along_the_new_owners_look() {
         let mut p = wind_charge();
         let look = Vec3::new(0.0, -1.0, 0.0);
-        aim_deflect(&mut p, Some(look), Some(Who::Player), Some(3));
+        aim_deflect(&mut p, Some(look), Some(Who::Player), Some([4; 4]), Some(3));
         assert_eq!(p.velocity, look);
-        assert_eq!(p.owner, Some(Who::Player));
+        assert_eq!((p.owner, p.owner_uuid), (Some(Who::Player), Some([4; 4])));
         assert_eq!(p.guest, Some(3));
         assert_eq!(p.acceleration, 0.1);
         assert!(p.needs_sync);
@@ -285,9 +285,10 @@ mod tests {
     #[test]
     fn with_no_owner_here_it_keeps_its_movement_but_changes_hands() {
         let mut p = wind_charge();
-        aim_deflect(&mut p, None, None, None);
+        p.owner_uuid = Some([7; 4]);
+        aim_deflect(&mut p, None, None, None, None);
         assert_eq!(p.velocity, Vec3::new(0.0, 1.5, 0.0));
-        assert_eq!(p.owner, None);
+        assert_eq!((p.owner, p.owner_uuid), (None, None));
         assert_eq!(p.acceleration, 0.1);
         assert!(!p.needs_sync);
     }

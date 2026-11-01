@@ -14,7 +14,7 @@ use horizon_client::{
         leash::{Holder, Pending},
         riders,
     },
-    motion::RiddenBoat,
+    motion::{BubbleColumn, RiddenBoat, bubble_column_at},
 };
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
@@ -48,6 +48,25 @@ pub(super) struct Boat {
     water_level: f64,
     land_friction: f32,
     out_of_control: f32,
+    /// `AbstractBoat.DATA_ID_BUBBLE_TIME` (synched): the ticks of `BUBBLE_TIME`
+    /// left before a bubble column lifts or drags the boat; 0 when it is not
+    /// over one.
+    pub bubble_time: i32,
+    /// `AbstractBoat.isAboveBubbleColumn`, set by `onAboveBubbleColumn` and
+    /// cleared by `tickBubbleColumn` (the server's).
+    above_bubble_column: bool,
+    /// `AbstractBoat.bubbleColumnDirectionIsDown`.
+    bubble_down: bool,
+    /// The server asked a rider whose client moves it (a player) to get out:
+    /// `guest_vehicle_tick` honors it (`Entity.ejectPassengers`).
+    pub eject_riders: bool,
+    /// `Entity.tickCount`, counted where the wobble is (a client's tick).
+    tick_count: i32,
+    /// `AbstractBoat.bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
+    /// (a client's).
+    bubble_multiplier: f32,
+    bubble_angle: f32,
+    bubble_angle_old: f32,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
@@ -72,9 +91,27 @@ pub(super) struct Boat {
 }
 /// `ChestBoat.CONTAINER_SIZE`.
 pub(super) const CHEST_SLOTS: usize = 27;
+/// `AbstractBoat.BUBBLE_TIME`: the ticks over a bubble column before it
+/// lifts or drags the boat.
+const BUBBLE_TIME: i32 = 60;
+/// `EntityEvent` 71 and 72, which `AbstractBoat.tickBubbleColumn` broadcasts
+/// for a down and an up column.
+pub(super) const BUBBLE_DOWN_EVENT: i8 = 71;
+pub(super) const BUBBLE_UP_EVENT: i8 = 72;
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 impl Boat {
+    /// `AbstractBoat.tick`: passengers lose control after 60 consecutive
+    /// underwater ticks; any other status resets the counter.
+    fn tick_submersion(&mut self) {
+        self.out_of_control =
+            if matches!(self.status, Status::UnderWater | Status::UnderFlowingWater) {
+                self.out_of_control + 1.0
+            } else {
+                0.0
+            };
+    }
+
     pub fn new(id: u32, wood: Arc<str>, position: Vec3, yaw: f32) -> Self {
         Self {
             id,
@@ -90,6 +127,14 @@ impl Boat {
             water_level: 0.0,
             land_friction: 0.0,
             out_of_control: 0.0,
+            bubble_time: 0,
+            above_bubble_column: false,
+            bubble_down: false,
+            eject_riders: false,
+            tick_count: 0,
+            bubble_multiplier: 0.0,
+            bubble_angle: 0.0,
+            bubble_angle_old: 0.0,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
@@ -173,6 +218,42 @@ impl Boat {
             at,
             yaw,
         )
+    }
+    /// `AbstractBoat.getBubbleAngle`: the wobble, in degrees, `a` of the way
+    /// from the last tick's to this one's.
+    pub fn bubble_angle(&self, a: f32) -> f32 {
+        self.bubble_angle_old + a * (self.bubble_angle - self.bubble_angle_old)
+    }
+    /// `AbstractBoat.tickBubbleColumn`: on a client, the wobble grows by 0.05 a
+    /// tick while the synched bubble time runs and fades by 0.1 otherwise.
+    pub(super) fn tick_bubble_wobble(&mut self) {
+        self.tick_count += 1;
+        if self.bubble_time > 0 {
+            self.bubble_multiplier += 0.05;
+        } else {
+            self.bubble_multiplier -= 0.1;
+        }
+        self.bubble_multiplier = self.bubble_multiplier.clamp(0.0, 1.0);
+        self.bubble_angle_old = self.bubble_angle;
+        self.bubble_angle =
+            10.0 * (0.5 * f64::from(self.tick_count)).sin() as f32 * self.bubble_multiplier;
+    }
+    /// `AbstractBoat.tickBubbleColumn`'s countdown on the server: the bubble
+    /// time drops while the boat stays over a column and resets when it leaves.
+    /// `Some(down)` on the tick it runs out: the boat is thrown up (`false`) or
+    /// pulled down (`true`).
+    pub(super) fn tick_bubble_countdown(&mut self) -> Option<bool> {
+        if !self.above_bubble_column {
+            self.bubble_time = 0;
+        }
+        if self.bubble_time <= 0 {
+            return None;
+        }
+        self.bubble_time -= 1;
+        let diff = BUBBLE_TIME - self.bubble_time - 1;
+        let fired = (diff > 0 && self.bubble_time == 0).then_some(self.bubble_down);
+        self.above_bubble_column = false;
+        fired
     }
     /// `getRowingTime`.
     pub fn rowing_time(&self, side: usize, a: f32) -> f32 {
@@ -489,11 +570,7 @@ impl Game<'_> {
         }
         b.old_status = b.status;
         b.status = self.boat_status(&mut b);
-        b.out_of_control = if matches!(b.status, Status::UnderWater | Status::UnderFlowingWater) {
-            b.out_of_control + 1.0
-        } else {
-            0.0
-        };
+        b.tick_submersion();
         b.hurt_time = (b.hurt_time - 1).max(0);
         b.damage = (b.damage - 1.0).max(0.0);
         if !controlled {
@@ -681,10 +758,197 @@ impl Game<'_> {
             if !ticking(p.x.floor() as i32, p.z.floor() as i32) {
                 continue;
             }
-            if self.boats[i].out_of_control >= 60.0 {
-                self.eject_boat_mobs(i, false);
+            // `AbstractBoat.tick` counts submersion on the server even when
+            // its controlling client owns the boat's movement.
+            if driven.contains(&self.boats[i].id) {
+                self.refresh_boat_status(i);
             }
+            if self.boats[i].out_of_control >= 60.0 {
+                self.eject_boat_riders(i);
+            }
+            self.boat_bubble_tick(i);
             self.boat_contacts(i);
+        }
+    }
+    /// `Entity.canSimulateMovement`: for a boat (`AUTHORITATIVE_SIDE`) a
+    /// server leaves the boat its player drives to that player's client, and a
+    /// client moves only the boat its player drives.
+    fn boat_can_simulate_movement(&self, id: u32) -> bool {
+        if self.remote.is_some() {
+            self.riding == Some(id)
+        } else {
+            !self.guest_vehicles().contains(&id)
+        }
+    }
+    /// `AbstractBoat.tick`: `status = getStatus()` for a boat this window
+    /// does not tick (`tick_boat` sets it for the others): a client's boats
+    /// other than the one it drives, and a server's boats its players drive.
+    pub(super) fn refresh_boat_status(&mut self, i: usize) {
+        let b = &self.boats[i];
+        let mut probe = Boat::new(b.id, b.wood.clone(), b.position, b.yaw);
+        let status = self.boat_status(&mut probe);
+        self.boats[i].status = status;
+        self.boats[i].tick_submersion();
+    }
+    /// `BubbleColumnBlock.entityInside`: the bubble columns boat `i` touches
+    /// (its box deflated by 1e-5 as `Entity.checkInsideBlocks` does), in x, y,
+    /// z order.
+    pub(super) fn boat_bubble_columns(&self, i: usize) -> Vec<BubbleColumn> {
+        let b = self.boats[i].bounds().deflate(Vec3::new(
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+        ));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        let mut columns = Vec::new();
+        for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
+            for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
+                for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
+                    if let Some(column) = bubble_column_at(
+                        &self.world,
+                        self.pack.assets.registry,
+                        self.res.facts(),
+                        self.collision,
+                        BlockPos::new(x, y, z),
+                    ) {
+                        columns.push(column);
+                    }
+                }
+            }
+        }
+        columns
+    }
+    /// `Entity.handleOnInsideBubbleColumn`: a column under more water lifts
+    /// boat `i` up to 0.7 or drags it down to -0.3 (`AbstractBoat` does not
+    /// override `onInsideBubbleColumn`), applied by the column's own push below
+    /// the surface.
+    pub(super) fn boat_inside_bubble_column(&mut self, i: usize, column: BubbleColumn) {
+        if !self.boat_can_simulate_movement(self.boats[i].id) {
+            return;
+        }
+        column.push(&mut self.boats[i].velocity);
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: whether the splash comes up, one
+    /// time in a hundred for a boat that is not under water.
+    pub(super) fn boat_splash_roll(&mut self, i: usize) -> bool {
+        !self.boats[i].under_water() && self.world.random.next_int_bound(100).unwrap_or(1) == 0
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: the client's half after the roll,
+    /// the splash sound and particle at the boat.
+    pub(super) fn boat_bubble_splash(&mut self, i: usize) {
+        use horizon_client::particles::{ParticleOptions, ParticleType};
+        let p = self.boats[i].position;
+        let pitch = 0.8 + 0.4 * self.world.random.next_float();
+        self.audio.play(
+            "minecraft:entity.generic.splash",
+            Some([p.x, p.y, p.z]),
+            1.0,
+            pitch,
+        );
+        let x = p.x + f64::from(self.world.random.next_float());
+        let z = p.z + f64::from(self.world.random.next_float());
+        self.particles.add(
+            &ParticleOptions::simple(ParticleType::Splash),
+            [x, p.y + 0.7, z],
+            [0.0; 3],
+        );
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: on the server (this window
+    /// simulates the boat) the column is remembered, the countdown starts and
+    /// the splash's game event goes to the listeners (its sound and particle
+    /// are the client's).
+    fn boat_above_bubble_column(&mut self, i: usize, drag_down: bool) {
+        let b = &mut self.boats[i];
+        b.above_bubble_column = true;
+        b.bubble_down = drag_down;
+        if b.bubble_time == 0 {
+            b.bubble_time = BUBBLE_TIME;
+        }
+        if !self.boat_splash_roll(i) {
+            return;
+        }
+        // A window that is its own client hears and sees the splash too.
+        if self.options.execution_role.is_client() {
+            self.boat_bubble_splash(i);
+        }
+        let (id, p) = (self.boats[i].id, self.boats[i].position);
+        // Entity.gameEvent(SPLASH, getControllingPassenger()): the window's
+        // own player when it drives the boat.
+        let ctx = if self.riding == Some(id) && self.player.is_some() {
+            self.player_context(None)
+        } else {
+            self.who_context(None, None)
+        };
+        self.post_game_event("minecraft:splash", [p.x, p.y, p.z], ctx);
+    }
+    /// `AbstractBoat.handleBubbleColumnEffect`: an up column throws the boat
+    /// up at 0.6, a down column pulls it down by 0.7.
+    pub(super) fn handle_bubble_column_effect(&mut self, i: usize, drag_down: bool) {
+        if !self.boat_can_simulate_movement(self.boats[i].id) {
+            return;
+        }
+        let v = &mut self.boats[i].velocity;
+        if drag_down {
+            // movement.add(0.0, -0.7, 0.0)
+            v.y += -0.7;
+        } else {
+            v.y = 0.6;
+        }
+    }
+    /// `Entity.ejectPassengers`: the mobs get out here, this window's player
+    /// gets out, and a server's player is asked to
+    /// (`guest_vehicle_tick` lets it out through its client).
+    fn eject_boat_riders(&mut self, i: usize) {
+        self.eject_boat_mobs(i, false);
+        let id = self.boats[i].id;
+        if self.riding == Some(id) && self.player.is_some() {
+            self.dismount(i);
+        } else if self.guest_rides(id) {
+            self.boats[i].eject_riders = true;
+        }
+    }
+    /// `AbstractBoat.tickBubbleColumn`: on the server, a boat that stays over
+    /// a column for `BUBBLE_TIME` ticks is thrown up or pulled down (a down
+    /// column lets the riders out first), and every client is told.
+    fn tick_boat_bubble_column(&mut self, i: usize) {
+        if let Some(down) = self.boats[i].tick_bubble_countdown() {
+            let (id, p) = (self.boats[i].id, self.boats[i].position);
+            let event = if down {
+                BUBBLE_DOWN_EVENT
+            } else {
+                BUBBLE_UP_EVENT
+            };
+            if down {
+                self.eject_boat_riders(i);
+            }
+            self.lan_entity_event(id as i32, event, [p.x, p.y, p.z]);
+            self.handle_bubble_column_effect(i, down);
+        }
+    }
+    /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
+    /// `applyEffectsFromBlocks` that reach bubble columns (the lava is
+    /// `boat_lava_tick`'s), then `tickBubbleColumn`; and the wobble when this
+    /// window is its own client.
+    fn boat_bubble_tick(&mut self, i: usize) {
+        let id = self.boats[i].id;
+        // An ejection nobody took (its player left the boat first) is void.
+        if !self.guest_rides(id) {
+            self.boats[i].eject_riders = false;
+        }
+        let touches = self.boat_bubble_columns(i);
+        // AbstractBoat.tick calls applyEffectsFromBlocks twice.
+        for _ in 0..2 {
+            for &column in &touches {
+                if column.surface {
+                    self.boat_above_bubble_column(i, column.drag);
+                } else {
+                    self.boat_inside_bubble_column(i, column);
+                }
+            }
+        }
+        self.tick_boat_bubble_column(i);
+        if self.options.execution_role.is_client() {
+            self.boats[i].tick_bubble_wobble();
         }
     }
     /// `LavaFluid.entityInside` (`lavaHurt`) from the two
@@ -864,7 +1128,7 @@ impl Game<'_> {
             if let Some((h, _)) = self.fluid_height_of(x, y, z, None)
                 && p[1] <= f64::from(y) + f64::from(h)
             {
-                fluid = Some(([p[0], f64::from(y) + f64::from(h), p[2]], t));
+                fluid = Some((fluid_hit_point(p, y, h), t));
                 break;
             }
             t += 0.05;
@@ -1036,6 +1300,8 @@ impl Game<'_> {
         let (damage, _, _, magic) = self.melee_damage(&kind, false);
         self.hurt_boat(i, damage, self.creative);
         self.vehicle_attack_sounds(area, magic.then_some(id));
+        // Player.onAttack: the hit starts the attack strength again.
+        self.attack_ticks = 0;
         self.swing_arm();
         true
     }
@@ -1053,6 +1319,8 @@ impl Game<'_> {
         let destroyed = creative || b.damage > 40.0;
         if destroyed {
             self.eject_boat_mobs(i, true);
+            let id = self.boats[i].id;
+            self.release_vehicle_container(id);
             let b = self.boats.remove(i);
             let at = [b.position.x, b.position.y, b.position.z];
             // AbstractBoat.remove: a destroyed boat drops its lead.
@@ -1132,6 +1400,16 @@ impl Game<'_> {
                     (hurt.sin() * hurt * damage / 10.0 * b.hurt_dir as f32).to_radians(),
                 );
             }
+            // AbstractBoatRenderer.extractRenderState: bubbleAngle.
+            let wobble = b.bubble_angle(a);
+            // AbstractBoatRenderer.submit: a boat above water wobbles in a
+            // bubble column, about the axis (1, 0, 1).
+            if !b.under_water() && wobble.abs() >= 1.0e-5 {
+                base *= glam::Mat4::from_axis_angle(
+                    glam::Vec3::new(1.0, 0.0, 1.0).normalize(),
+                    wobble * (std::f64::consts::PI / 180.0) as f32,
+                );
+            }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
             let mut poses = Poses::new(model);
@@ -1184,5 +1462,123 @@ impl Game<'_> {
             }
             self.cull_entity_vertices(out, entity_start);
         }
+    }
+}
+
+/// Where a fluid pick lands in the cell the ray sample `p` is in. Vanilla's
+/// `ClipContext.Fluid.ANY` clips against the fluid shape: a full-height cell
+/// (the same fluid above it) is a full cube, so the hit is the ray's own
+/// point and a boat placed under water stays at the eye; a partial cell is
+/// clipped to its surface.
+fn fluid_hit_point(p: [f64; 3], y: i32, h: f32) -> [f64; 3] {
+    if h >= 1.0 {
+        p
+    } else {
+        [p[0], f64::from(y) + f64::from(h), p[2]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `VoxelShape.clip` on a full-cube fluid cell keeps the true hit point
+    /// (a ray starting inside hits at `from + delta * 0.001`); only a partial
+    /// cell is clipped to its surface.
+    #[test]
+    fn a_full_height_fluid_cell_keeps_the_ray_point_and_a_partial_one_snaps_to_its_surface() {
+        let eye = [0.5, 3.62, 0.5];
+        assert_eq!(fluid_hit_point(eye, 3, 1.0), eye);
+        assert_eq!(
+            fluid_hit_point(eye, 3, 8.0 / 9.0),
+            [0.5, 3.0 + f64::from(8.0f32 / 9.0), 0.5]
+        );
+    }
+
+    fn boat() -> Boat {
+        Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
+    }
+
+    /// `AbstractBoat.tickBubbleColumn` on a client: the wobble grows while the
+    /// bubble time runs and fades after.
+    #[test]
+    fn the_wobble_grows_while_the_bubble_time_runs_and_fades_after() {
+        let mut b = boat();
+        b.bubble_time = BUBBLE_TIME;
+        for _ in 0..30 {
+            b.tick_bubble_wobble();
+        }
+        // 0.05 a tick, capped at 1.
+        assert_eq!(b.bubble_multiplier, 1.0);
+        // 10 * sin(0.5 * tickCount) * multiplier.
+        let expected = 10.0 * (0.5 * 30.0f64).sin() as f32;
+        assert!((b.bubble_angle - expected).abs() < 1.0e-4);
+        // The render angle lerps between the last two ticks.
+        let mid = b.bubble_angle(0.5);
+        assert!((mid - (b.bubble_angle_old + b.bubble_angle) / 2.0).abs() < 1.0e-5);
+        // Once the bubble time is 0 the multiplier fades by 0.1 a tick.
+        b.bubble_time = 0;
+        for _ in 0..4 {
+            b.tick_bubble_wobble();
+        }
+        assert!((b.bubble_multiplier - 0.6).abs() < 1.0e-5);
+        for _ in 0..10 {
+            b.tick_bubble_wobble();
+        }
+        assert_eq!(b.bubble_multiplier, 0.0);
+        assert_eq!(b.bubble_angle, 0.0);
+    }
+
+    /// `AbstractBoat.tickBubbleColumn` on the server: a boat held over a
+    /// column fires on the 60th tick, with the column's direction, then the
+    /// time restarts.
+    #[test]
+    fn the_bubble_countdown_fires_every_sixty_ticks_over_a_column() {
+        for down in [false, true] {
+            let mut b = boat();
+            let mut fired = Vec::new();
+            for tick in 1..=130 {
+                // What boat_above_bubble_column does each tick.
+                b.above_bubble_column = true;
+                b.bubble_down = down;
+                if b.bubble_time == 0 {
+                    b.bubble_time = BUBBLE_TIME;
+                }
+                if let Some(d) = b.tick_bubble_countdown() {
+                    fired.push((tick, d));
+                }
+                assert!(!b.above_bubble_column);
+            }
+            assert_eq!(fired, vec![(60, down), (120, down)]);
+        }
+    }
+
+    /// Leaving the column resets the time: nothing fires, and a boat with no
+    /// time left does nothing over a column until the column sets it.
+    #[test]
+    fn leaving_the_column_resets_the_bubble_countdown() {
+        let mut b = boat();
+        b.bubble_time = BUBBLE_TIME;
+        for _ in 0..30 {
+            b.above_bubble_column = true;
+            assert_eq!(b.tick_bubble_countdown(), None);
+        }
+        assert_eq!(b.bubble_time, 30);
+        // A tick away from the column.
+        assert_eq!(b.tick_bubble_countdown(), None);
+        assert_eq!(b.bubble_time, 0);
+        b.above_bubble_column = true;
+        assert_eq!(b.tick_bubble_countdown(), None);
+        assert!(b.above_bubble_column);
+    }
+
+    #[test]
+    fn a_boat_that_never_saw_a_column_does_not_wobble() {
+        let mut b = boat();
+        for _ in 0..10 {
+            b.tick_bubble_wobble();
+        }
+        assert_eq!(b.bubble_angle, 0.0);
+        assert_eq!(b.bubble_angle(0.5), 0.0);
     }
 }

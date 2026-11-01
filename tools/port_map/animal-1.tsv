@@ -96,7 +96,7 @@ Camel.getRiddenRotation	port	crates/horizon-client/src/mobs/equine.rs::Goal::rid
 Camel.onPlayerJump	inline	crates/horizon-client/src/mobs/camel.rs::dash	the cooldown, ground and refuse_to_move gates
 Camel.handleStartJump	port	crates/horizon-client/src/mobs/camel.rs::dash	dash sound and dashing flag; no entity_action game event
 Camel.mobInteract	port	crates/horizon-client/src/game/mounts.rs::Game::interact_mount	inventory on sneak, feeding, riding
-Camel.onElasticLeashPull	missing		a leashed sitting camel does not stand up when the lead pulls
+Camel.onElasticLeashPull	port	crates/horizon-client/src/mobs/camel.rs::on_elastic_leash_pull	
 Camel.canMate	port	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	gap: no canParent checks for camels (full health, not ridden)
 Camel.getBodyAnchorAnimationYOffset	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: sitting or standing height only, no sit/stand transition interpolation
 Camel.getLeashOffset	port	crates/horizon-client/src/mobs/camel.rs::leash_offset	ticked in #3512; `Camel.getLeashOffset` is cited at crates/horizon-client/src/mobs/camel.rs:187

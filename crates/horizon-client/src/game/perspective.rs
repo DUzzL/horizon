@@ -275,18 +275,28 @@ impl Game<'_> {
             facts: self.res.facts(),
             context,
         };
-        view.align_with_entity(&entity, partial, kind, |from, to| {
-            let hit = clip_world(
-                &mut rays,
-                Vec3::new(from[0], from[1], from[2]),
-                Vec3::new(to[0], to[1], to[2]),
-                RayBlockMode::Visual,
-                RayFluidMode::None,
-                4096,
-            )
-            .ok()?;
-            (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
-        });
+        view.align_with_entity_distance(
+            &entity,
+            partial,
+            kind,
+            |distance| {
+                let mut distance = distance;
+                self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
+                distance
+            },
+            |from, to| {
+                let hit = clip_world(
+                    &mut rays,
+                    Vec3::new(from[0], from[1], from[2]),
+                    Vec3::new(to[0], to[1], to[2]),
+                    RayBlockMode::Visual,
+                    RayFluidMode::None,
+                    4096,
+                )
+                .ok()?;
+                (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
+            },
+        );
         self.view = view;
         Some((
             glam::DVec3::from_array(view.position),
@@ -568,7 +578,6 @@ impl Game<'_> {
     pub(super) fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
         (self.own_body_in_view() || self.pack_shadow_casters.1)
-            && !self.spectator()
             && self
                 .player
                 .as_ref()
@@ -616,7 +625,11 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
         let body = self.own_body_visible();
-        let render = if body {
+        // A spectator still draws its own model in third person: the poses'
+        // visibility (set by player_model_visibility) hides body parts, and
+        // translucent_body marks the body OIT for the ghostly look. Only first
+        // person and dead players skip it.
+        let render = if body || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
             horizon_client::mobs::render::render_layers
@@ -717,8 +730,9 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let mut verts = Vec::new();
-        // The same render state as in the world: an invisible body is not drawn.
-        let render = if self.own_body_visible() {
+        // A spectator preview still draws its own model: the poses'
+        // visibility hides body parts, leaving the head and its layers.
+        let render = if self.own_body_visible() || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
             horizon_client::mobs::render::render_layers
@@ -1401,6 +1415,8 @@ mod preview_tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };

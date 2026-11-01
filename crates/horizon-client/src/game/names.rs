@@ -287,13 +287,15 @@ impl Game<'_> {
                 lift = f64::from(9.0f32 * 1.15 * 0.025);
             }
             lines.push((shown, lift));
+            // The tag rides with the body, between last tick's position and this one's.
+            let at = a.render_position(alpha);
             let l = self.world.light(
-                a.position.x.floor() as i32,
-                (a.position.y + height).floor() as i32,
-                a.position.z.floor() as i32,
+                at.x.floor() as i32,
+                (at.y + height).floor() as i32,
+                at.z.floor() as i32,
             );
             tags.push(NameTag {
-                at: glam::DVec3::new(a.position.x, a.position.y + height + 0.5, a.position.z),
+                at: glam::DVec3::new(at.x, at.y + height + 0.5, at.z),
                 lines,
                 light: l,
                 discrete: false,

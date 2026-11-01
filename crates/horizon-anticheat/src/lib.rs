@@ -153,8 +153,8 @@ checks! {
 
     /// Ground: a move that says it ends on the ground with nothing there to stand on: no-fall (claiming
     /// the ground to skip fall damage) and walking on water. The claim is dropped, so vanilla's
-    /// fall damage follows; from `setback` on the player is also sent back, and a player that keeps
-    /// claiming is kicked, then banned at the second kick (`ban_after = 2`). A claim standing still isn't
+    /// fall damage follows (the player is never sent back: `setback = 0` makes the check log only), and
+    /// a player that keeps claiming is kicked, then banned at the second kick (`ban_after = 2`). A claim standing still isn't
     /// judged (no fall to skip). On the official server's first two hours (67 players), every player who
     /// wasn't flying or walking on water peaked at level 7 (4 claims standing still in one second); the
     /// ones who were, at 113 to 3749.
@@ -281,6 +281,13 @@ pub struct Player {
     pub ground: Option<(u64, f64)>,
     /// The client ticks the prediction plays again (only while it runs).
     pub record: Option<Box<prediction::Record>>,
+    /// Sprinting as the client's own commands left it (ServerboundPlayerCommandPacket's
+    /// START_SPRINTING and STOP_SPRINTING: LocalPlayer.wasSprinting), which the record's ticks take.
+    /// Not the server's player: a hit with extra knockback stops its sprint
+    /// (Player.causeExtraKnockback), the client's own `Player.attack` doesn't (a mob's `hurtClient`
+    /// is false), and once the server's flag reaches it LocalPlayer.aiStep starts the sprint again
+    /// while the sprint key is held, with nothing to say: wasSprinting never changed.
+    pub sprinting: bool,
     /// The attacks of the client tick being heard.
     pub attacks: combat::Attacks,
 }

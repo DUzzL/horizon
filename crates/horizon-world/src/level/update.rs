@@ -281,10 +281,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if update_flags & flags::UPDATE_NEIGHBORS != 0 {
                 let old_block = self.block_of(old);
                 self.update_neighbors_at(pos, old_block);
-                if self
-                    .b
-                    .has_flag(state, super::data::state_flags::ANALOG_OUTPUT)
-                {
+                if self.has_analog_output(state) {
                     let block = self.block_of(state);
                     self.update_neighbour_for_output_signal(pos, block);
                 }
@@ -322,7 +319,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // block is already replaced, so only the entity goes away.
             self.remove_moving_piston(pos);
         } else if block_changed
-            && self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+            && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+                || self.level.has_mod_block_entity(pos))
             && !self.keeps_block_entity(state, old)
         {
             // BlockEntity.preRemoveSideEffects (unless UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS)

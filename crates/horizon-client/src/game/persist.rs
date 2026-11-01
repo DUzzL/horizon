@@ -94,7 +94,7 @@ fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
 }
 /// The loaded compound underneath the fields Horizon models: what the entity was
 /// loaded with, with every key of `modelled` replacing its loaded value.
-fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
+pub(super) fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
     let (Some(Tag::Compound(raw)), Tag::Compound(modelled)) = (raw, &modelled) else {
         return modelled;
     };
@@ -305,7 +305,7 @@ impl Game<'_> {
                 if uuid.is_some_and(|u| self.restored_vehicle(u).is_some()) {
                     continue;
                 }
-                if matches!(
+                if (matches!(
                     kind.as_str(),
                     "minecraft:experience_orb"
                         | "minecraft:arrow"
@@ -313,10 +313,14 @@ impl Game<'_> {
                         | "minecraft:small_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
+                        | "minecraft:snowball"
+                        | "minecraft:egg"
+                        | "minecraft:ender_pearl"
                         | "minecraft:falling_block"
                         | "minecraft:end_crystal"
                         | "minecraft:ender_dragon"
-                ) && let Some(at) = entity_nbt::position(&tag)
+                ) || horizon_client::projectiles::thrown_type(&kind).is_some())
+                    && let Some(at) = entity_nbt::position(&tag)
                 {
                     self.persist
                         .anon
@@ -368,6 +372,12 @@ impl Game<'_> {
                             if let Some(a) = p.arrow.as_mut() {
                                 a.last_state = in_block.and_then(|t| self.state_from_nbt(&t));
                             }
+                            self.claim_owner(&mut p);
+                            // An arrow that came through a portal keeps its
+                            // cooldown: it does not go straight back through.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
@@ -375,7 +385,14 @@ impl Game<'_> {
                     | "minecraft:small_fireball"
                     | "minecraft:wind_charge"
                     | "minecraft:breeze_wind_charge" => {
-                        if let Some(p) = entity_nbt::fireball_from_nbt(&tag, player_uuid) {
+                        if let Some(mut p) = entity_nbt::fireball_from_nbt(&tag, player_uuid) {
+                            self.claim_owner(&mut p);
+                            self.add_projectile(p);
+                        }
+                    }
+                    id if entity_nbt::throwable_kind(id).is_some() => {
+                        if let Some(mut p) = entity_nbt::throwable_from_nbt(&tag, player_uuid) {
+                            self.claim_owner(&mut p);
                             self.add_projectile(p);
                         }
                     }
@@ -395,6 +412,14 @@ impl Game<'_> {
                                 velocity,
                                 age,
                                 no_gravity,
+                                portal: horizon_client::nether_portal::PortalState {
+                                    cooldown: horizon_client::save::number(
+                                        tag.get("PortalCooldown"),
+                                    )
+                                    .unwrap_or(0)
+                                        as i32,
+                                    process: None,
+                                },
                                 drop_item,
                                 fall_distance,
                                 stuck: Vec3::ZERO,
@@ -412,20 +437,32 @@ impl Game<'_> {
                         }
                     }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
+                    // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
                     "minecraft:tnt" => {
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         if let Some(position) = entity_nbt::position(&tag) {
+                            self.next_entity += 1;
+                            let id = self.next_entity;
                             let fuse = match tag.get("fuse") {
                                 Some(Tag::Short(f)) => i32::from(*f),
                                 _ => 80,
                             };
                             self.tnts.push(super::tnt::PrimedTnt {
-                                id: 0,
+                                id,
                                 position,
                                 previous: position,
                                 velocity: entity_nbt::motion(&tag),
                                 fuse,
                                 on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                                owner: None,
+                                guest: None,
                             });
+                            // `Entity.load`: the `PortalCooldown` of one that just came through.
+                            self.remember(id, uuid, tag);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     k if super::boats::any_boat_wood(k)
@@ -793,6 +830,9 @@ impl Game<'_> {
             .collect();
         let gone = vehicle_tree(root, &mounts);
         self.mobs.retain(|m| !gone.contains(&m.id));
+        for &id in &gone {
+            self.release_vehicle_container(id);
+        }
         self.boats.retain(|b| !gone.contains(&b.id));
         self.carts.retain(|c| !gone.contains(&c.id));
         for g in gone {
@@ -999,7 +1039,6 @@ impl Game<'_> {
     ) -> Vec<((i32, i32), Vec<Tag>)> {
         let mut out: HashMap<(i32, i32), Vec<Tag>> =
             keys.iter().map(|k| (*k, Vec::new())).collect();
-        let player_uuid = self.level.player_uuid;
         // A rider is saved inside its root vehicle, in the root's chunk; a
         // boat's passengers inside the boat.
         let mobs: Vec<usize> = (0..self.mobs.len())
@@ -1047,14 +1086,10 @@ impl Game<'_> {
             }
         }
         for p in &self.creatures.projectiles {
-            if !keys.contains(&chunk_of(p.position)) {
+            if !keys.contains(&chunk_of(p.position)) || !entity_nbt::saved_with_chunk(p) {
                 continue;
             }
-            let owner = if p.owner == Some(Who::Player) {
-                player_uuid
-            } else {
-                None
-            };
+            let owner = p.owner_uuid;
             let (uuid, raw) = anon(&self.persist, p.kind.id(), p.position);
             let in_block = p
                 .arrow
@@ -1062,7 +1097,8 @@ impl Game<'_> {
                 .and_then(|a| a.last_state)
                 .map(|s| self.state_to_nbt(s));
             let tag = entity_nbt::arrow_to_nbt(p, uuid, owner, in_block, raw.as_ref())
-                .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw.as_ref()));
+                .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw.as_ref()))
+                .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw.as_ref()));
             if let Some(tag) = tag {
                 out.entry(chunk_of(p.position)).or_default().push(tag);
             }
@@ -1083,9 +1119,11 @@ impl Game<'_> {
                     f.fall_distance,
                     uuid,
                 );
-                out.entry(chunk_of(f.position))
-                    .or_default()
-                    .push(with_raw(tag, raw.as_ref()));
+                let mut tag = with_raw(tag, raw.as_ref());
+                if let Tag::Compound(fields) = &mut tag {
+                    fields.insert("PortalCooldown".into(), Tag::Int(f.portal.cooldown));
+                }
+                out.entry(chunk_of(f.position)).or_default().push(tag);
             }
         }
         let boats: Vec<usize> = (0..self.boats.len())
@@ -1331,9 +1369,11 @@ impl Game<'_> {
             // Unloaded with their chunk: PersistentEntitySectionManager.stopTracking.
             self.native_items_left_since(&items_before);
             self.native_orbs_left_since(&orbs_before);
-            self.creatures
-                .projectiles
-                .retain(|p| p.arrow.is_none() || !gone(p.position));
+            // the ones saved with the chunk go with it (a trident too, unsaved).
+            self.creatures.projectiles.retain(|p| {
+                let leaves = entity_nbt::saved_with_chunk(p) || p.arrow.is_some();
+                !leaves || !gone(p.position)
+            });
             self.falling.retain(|f| !gone(f.position));
             self.persist
                 .anon
@@ -1377,6 +1417,25 @@ impl Game<'_> {
             .collect();
         self.persist.uuids.retain(|id, _| alive.contains(id));
         self.persist.raw.retain(|id, _| alive.contains(id));
+    }
+    /// A loaded projectile's `Owner`: a connected guest, else a mob by UUID.
+    fn claim_owner(&self, p: &mut horizon_client::projectiles::Projectile) {
+        let Some(uuid) = p.owner_uuid else {
+            return;
+        };
+        let guest = self.lan.as_ref().and_then(|host| {
+            let ints = horizon_client::lan::playerdata::uuid_ints;
+            host.hub
+                .guests
+                .iter()
+                .find(|g| ints(g.uuid) == uuid)
+                .map(|g| g.conn)
+        });
+        if guest.is_some() {
+            (p.owner, p.guest) = (Some(Who::Player), guest);
+        } else if p.owner.is_none() {
+            p.owner = self.mob_by_uuid(uuid).map(Who::Mob);
+        }
     }
     /// Save and remove the entities of chunks that unloaded.
     pub(super) fn unload_entities(&mut self, unloaded: &[Arc<Chunk>]) {

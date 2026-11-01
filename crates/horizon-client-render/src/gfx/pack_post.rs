@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use glam::{DMat4, DVec3};
 use horizon_shaders::{Format, Group, Kind, Post, Val};
 
 use super::pack_draw::DrawUniforms;
@@ -434,9 +435,33 @@ pub(super) struct Weather {
     pub generation: u64,
 }
 
+/// Shadow cache: the key of the shadow map the shadow targets hold. Only the
+/// shadow passes write those targets, so while the key matches they still hold
+/// it and the pass is skipped.
+#[derive(Default)]
+struct ShadowCache {
+    key: Option<ShadowCacheKey>,
+}
+
+/// Key for validating the shadow cache.
+/// Must match the cache state exactly to be considered valid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShadowCacheKey {
+    sun_angle: f32,
+    moon_angle: f32,
+    snapped_camera: Option<DVec3>,
+    shadow_settings_hash: u64,
+    shadow_scene_revision: (u64, u64),
+    ticks: u64,
+    day_time: i64,
+    shadow_uniforms_hash: u64,
+}
+
 pub struct PackPost {
     pub notes: Vec<String>,
     passes: Vec<Pass>,
+    /// Shadow cache for temporal reprojection.
+    shadow_cache: ShadowCache,
     /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`.
     terrain: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
@@ -2330,6 +2355,7 @@ impl PackPost {
                 u.shadow = shadow_config;
                 u
             },
+            shadow_cache: Default::default(),
         }
     }
 
@@ -3091,8 +3117,7 @@ impl PackPost {
 
     /// What the shadow camera draws of the terrain this frame, when the pack draws it.
     pub fn shadow_view(&self, frame: &super::Frame) -> Option<ShadowView> {
-        self.shadow_targets.as_ref()?;
-        if self.shadow_terrain.is_none() && self.shadow_water.is_none() {
+        if !self.has_shadow() {
             return None;
         }
         let shadow = &self.uniforms.shadow;
@@ -3111,6 +3136,12 @@ impl PackPost {
     /// Whether the pack draws terrain itself.
     pub fn has_terrain(&self) -> bool {
         self.terrain.is_some()
+    }
+
+    /// Whether the pack's shadow pass draws terrain (`shadow_view`).
+    pub fn has_shadow(&self) -> bool {
+        self.shadow_targets.is_some()
+            && (self.shadow_terrain.is_some() || self.shadow_water.is_some())
     }
 
     /// Whether the pack draws the sky (disc, sunset, stars, void) itself.
@@ -3322,6 +3353,45 @@ impl PackPost {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         terrain: &mut TerrainDraw<'_>,
+        frame: &super::Frame,
+    ) {
+        // Opt-in only (`horizon-graphics.txt` shadowCache). Off: always redraw, drop any cache.
+        if !frame.shadow_cache {
+            self.shadow_cache = ShadowCache::default();
+            self.draw_shadow_pass(device, queue, encoder, terrain);
+            return;
+        }
+
+        // Compute the current frame's cache key before borrowing shadow_targets mutably.
+        let cache_key = self.compute_shadow_cache_key(frame);
+
+        // Entity vertices are interpolated each frame, so their shadows cannot be reused.
+        let has_shadow_entities = self
+            .entities
+            .as_ref()
+            .is_some_and(|entities| entities.geometry.draws.iter().any(|draw| draw.shadow));
+        // Custom images are cleared each frame (`pack_images::clear`) before the
+        // shadow pass writes them, so a pack with any redraws it too.
+        let cache_hit = !has_shadow_entities
+            && self.images.is_empty()
+            && self.shadow_cache.key == Some(cache_key)
+            && self.shadow_targets.is_some();
+        if cache_hit {
+            // The targets still hold this map (and `main`, the A/B side
+            // `shadowcomp` left current).
+            return;
+        }
+        self.draw_shadow_pass(device, queue, encoder, terrain);
+        self.shadow_cache.key = self.shadow_targets.is_some().then_some(cache_key);
+    }
+
+    /// The shadow pass body: terrain, entities, clears, and `shadowcomp`.
+    fn draw_shadow_pass(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        terrain: &mut TerrainDraw<'_>,
     ) {
         let Some(t) = &mut self.shadow_targets else {
             return;
@@ -3397,6 +3467,106 @@ impl PackPost {
         self.shadow_comp = comp;
     }
 
+    /// Computes the cache key for the current frame.
+    fn compute_shadow_cache_key(&self, frame: &super::Frame) -> ShadowCacheKey {
+        let shadow = &self.uniforms.shadow;
+        // Use the same logic as shadow_camera to compute the light direction and snapped camera.
+        // Use the public shadow_light function which returns the normalized light direction.
+        let light = super::pack_uniforms::shadow_light(frame, shadow);
+        let light = light.as_dvec3();
+        let up = if light.z.abs() > 0.99 {
+            DVec3::Y
+        } else {
+            DVec3::Z
+        };
+        let rotation = DMat4::look_to_rh(DVec3::ZERO, -light, up);
+        let at = rotation.transform_vector3(frame.camera);
+        let step = f64::from(shadow.interval);
+        let snapped_camera = if step > 0.0 {
+            Some((at / step).floor() * step)
+        } else {
+            Some(at)
+        };
+
+        // Hash the shadow settings that affect the shadow map.
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        shadow.resolution.hash(&mut hasher);
+        shadow.distance.to_bits().hash(&mut hasher);
+        shadow.render_mul.to_bits().hash(&mut hasher);
+        shadow.interval.to_bits().hash(&mut hasher);
+        shadow.sun_path_rotation.to_bits().hash(&mut hasher);
+        shadow.fov.map(|f| f.to_bits()).hash(&mut hasher);
+        shadow.near.to_bits().hash(&mut hasher);
+        shadow.far.to_bits().hash(&mut hasher);
+        for hf in &shadow.hardware_filtering {
+            hf.hash(&mut hasher);
+        }
+        for color in &shadow.colors {
+            format!("{:?}", color.format).hash(&mut hasher);
+            color.clear.hash(&mut hasher);
+            if let Some(cc) = color.clear_color {
+                for c in cc {
+                    c.to_bits().hash(&mut hasher);
+                }
+            }
+            color.mipmap.hash(&mut hasher);
+        }
+        let shadow_settings_hash = hasher.finish();
+        let shadow_uniforms_hash = self.shadow_uniforms_hash();
+
+        ShadowCacheKey {
+            sun_angle: frame.sky.sun_angle,
+            moon_angle: frame.sky.moon_angle,
+            snapped_camera,
+            shadow_settings_hash,
+            shadow_scene_revision: frame.shadow_scene_revision,
+            ticks: frame.ticks,
+            day_time: frame.pack.day_time,
+            shadow_uniforms_hash,
+        }
+    }
+
+    fn shadow_uniforms_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let passes = self
+            .shadow_terrain
+            .iter()
+            .chain(self.shadow_water.iter())
+            .chain(self.shadow_comp.iter())
+            .chain(
+                self.entities
+                    .iter()
+                    .flat_map(|entities| entities.shadow.iter().flatten()),
+            );
+        for pass in passes {
+            pass.name.hash(&mut hasher);
+            for (index, ty, offset) in &pass.uniforms {
+                index.hash(&mut hasher);
+                ty.hash(&mut hasher);
+                offset.hash(&mut hasher);
+                let Some(value) = index.and_then(|index| self.uniforms.values.get(index)) else {
+                    continue;
+                };
+                match value {
+                    pack_uniforms::Value::F(values) => {
+                        0u8.hash(&mut hasher);
+                        for value in values {
+                            value.to_bits().hash(&mut hasher);
+                        }
+                    }
+                    pack_uniforms::Value::I(values) => {
+                        1u8.hash(&mut hasher);
+                        values.hash(&mut hasher);
+                    }
+                }
+            }
+        }
+        hasher.finish()
+    }
+
     /// Runs the pack over the world drawn into `world` (colour) and `world_depth`, then draws
     /// the result onto `screen`.
     #[allow(clippy::too_many_arguments)]
@@ -3464,7 +3634,7 @@ impl PackPost {
             self.gpu.clear,
             &mut self.zeros,
         );
-        self.run_shadow(device, queue, encoder, terrain);
+        self.run_shadow(device, queue, encoder, terrain, frame);
         let Some(targets) = &self.targets else { return };
         let main = |m: u16, i: usize| usize::from(m & 1 << i != 0);
         let view = |m: u16, i: usize, alt: bool| {
@@ -3719,6 +3889,36 @@ impl PackPost {
 mod tests {
     use super::*;
     use wgpu::TextureFormat as T;
+
+    #[test]
+    fn shadow_cache_key_tracks_world_and_time_changes() {
+        let key = ShadowCacheKey {
+            sun_angle: 0.0,
+            moon_angle: 180.0,
+            snapped_camera: Some(DVec3::ZERO),
+            shadow_settings_hash: 1,
+            shadow_scene_revision: (2, 3),
+            ticks: 4,
+            day_time: 5,
+            shadow_uniforms_hash: 6,
+        };
+
+        assert_ne!(
+            key,
+            ShadowCacheKey {
+                shadow_scene_revision: (8, 3),
+                ..key
+            }
+        );
+        assert_ne!(key, ShadowCacheKey { day_time: 9, ..key });
+        assert_ne!(
+            key,
+            ShadowCacheKey {
+                shadow_uniforms_hash: 10,
+                ..key
+            }
+        );
+    }
 
     /// Two textures with a sampler each become two textures sharing one sampler variable.
     #[test]

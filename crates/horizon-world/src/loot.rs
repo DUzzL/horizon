@@ -8,10 +8,11 @@
 //! maps are kept as found (structure search is not run); conditions that
 //! need an entity, tool or damage source fail when the context has none, as
 //! they do for containers.
+use crate::lazy_json::LazyJson;
 use horizon_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs, io,
     path::Path,
     sync::{Arc, Mutex, Weak},
@@ -171,7 +172,7 @@ impl Enchantment {
 
 /// Loot tables, items, enchantments and the tags they reference.
 pub struct LootData {
-    tables: Arc<HashMap<String, Value>>,
+    tables: Arc<LootTables>,
     modifiers: HashMap<String, Value>,
     predicates: HashMap<String, Value>,
     items: HashMap<String, ItemFacts>,
@@ -344,16 +345,53 @@ fn overlay_map(overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Valu
     }
 }
 
+/// Loot tables by id. Each is kept as its JSON text and read into a [`Value`]
+/// the first time it is rolled: of vanilla's ~1,450 tables a game rolls a
+/// few, and as `Value`s they took ~7 MB for 0.6 MB of JSON. Every table was
+/// read whole when it loaded, so reading it again cannot fail.
+#[derive(Debug, Default)]
+pub struct LootTables(HashMap<String, LazyJson>);
+impl LootTables {
+    /// The table `id`.
+    pub fn get(&self, id: &str) -> Option<&Value> {
+        self.0.get(id).map(LazyJson::get)
+    }
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+/// Each table kept as its JSON, the last of an id winning as in a map.
+impl FromIterator<(String, Value)> for LootTables {
+    fn from_iter<I: IntoIterator<Item = (String, Value)>>(tables: I) -> Self {
+        Self(
+            tables
+                .into_iter()
+                .map(|(id, table)| (id, LazyJson::new(&table)))
+                .collect(),
+        )
+    }
+}
+impl std::ops::Index<&str> for LootTables {
+    type Output = Value;
+    /// As a map indexes: panics on a missing table.
+    fn index(&self, id: &str) -> &Value {
+        self.get(id).unwrap_or_else(|| panic!("no loot table {id}"))
+    }
+}
+
 /// The loot tables of every namespace in `root`'s `data/`, with `overlay`'s
 /// over them. Shared while one is alive: `Items` and [`LootData`] of the
 /// same root and packs hold one map, not a copy each (7 MB). The key holds
 /// the packs' bytes and each root file's size and modification time, so a
 /// table changed on disk is read again rather than taken from a held map.
-pub fn shared_tables(
-    root: &Path,
-    overlay: &PackOverlay,
-) -> io::Result<Arc<HashMap<String, Value>>> {
-    static LOADED: Mutex<Vec<(u64, Weak<HashMap<String, Value>>)>> = Mutex::new(Vec::new());
+pub fn shared_tables(root: &Path, overlay: &PackOverlay) -> io::Result<Arc<LootTables>> {
+    static LOADED: Mutex<Vec<(u64, Weak<LootTables>)>> = Mutex::new(Vec::new());
     let key = {
         use std::hash::{DefaultHasher, Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -374,21 +412,53 @@ pub fn shared_tables(
             .for_each(|file| file.hash(&mut hasher));
         hasher.finish()
     };
-    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
-    loaded.retain(|(_, tables)| tables.strong_count() > 0);
-    if let Some(tables) = loaded
-        .iter()
-        .find(|(k, _)| *k == key)
-        .and_then(|(_, tables)| tables.upgrade())
-    {
+    let held = |loaded: &mut Vec<(u64, Weak<LootTables>)>| {
+        loaded.retain(|(_, tables)| tables.strong_count() > 0);
+        loaded
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, tables)| tables.upgrade())
+    };
+    if let Some(tables) = held(&mut LOADED.lock().unwrap_or_else(|e| e.into_inner())) {
         return Ok(tables);
     }
     let mut tables = HashMap::new();
     load_kind(&root.join("data"), "loot_table", &mut tables)?;
     overlay_map(overlay, "loot_table", &mut tables);
+    // The mods' hooks run outside the lock.
+    let mut each: Vec<_> = tables.into_iter().collect();
+    each.sort_by(|a, b| a.0.cmp(&b.0));
+    let tables: LootTables = each
+        .into_iter()
+        .map(|(id, mut table)| {
+            native_loot_table_load(&id, &mut table);
+            (id, table)
+        })
+        .collect();
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread may have loaded the same tables meanwhile: keep one.
+    if let Some(tables) = held(&mut loaded) {
+        return Ok(tables);
+    }
     let tables = Arc::new(tables);
     loaded.push((key, Arc::downgrade(&tables)));
     Ok(tables)
+}
+
+/// A native mod's hook point (docs/native-mods.md), listed in `native-hooks.json` with the game's:
+/// the loot table `id` (`minecraft:chests/simple_dungeon`, `minecraft:blocks/stone`,
+/// `minecraft:entities/zombie`) as it loads, its JSON after the data packs', before anything
+/// rolls it (NeoForge's `LootTableLoadEvent`, Fabric's `LootTableEvents.MODIFY`). Add pools to
+/// `table["pools"]` or entries to a pool's `entries`, change or replace it (no pools: it drops
+/// nothing; keep its `random_sequence` when replacing it, as a mob's table without one drops
+/// nothing). Called once per table and load, in id order, wherever the tables load: the server,
+/// and a client too, so make the same change each time, and don't load loot tables from here.
+/// Two loads may run at once on two threads. A `/reload` or a world opened with other packs
+/// may load them again, or keep the tables already loaded from the same files. API
+/// 75.
+#[inline(never)]
+pub fn native_loot_table_load(id: &str, table: &mut Value) {
+    let _ = (id, table);
 }
 
 fn load_kind(data: &Path, kind: &str, out: &mut HashMap<String, Value>) -> io::Result<()> {
@@ -475,8 +545,7 @@ impl LootData {
         let mut predicates = HashMap::new();
         load_kind(&all, "predicate", &mut predicates)?;
         overlay_map(overlay, "predicate", &mut predicates);
-        let raw: BTreeMap<String, Value> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let raw = crate::item_defaults::read(root)?;
         let items = raw
             .iter()
             .map(|(name, c)| {
@@ -1729,6 +1798,32 @@ mod namespace_tests {
                 .is_some()
         );
         assert!(first["minecraft:chests/a"].get("random_sequence").is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A table kept as its text reads back as the file's JSON (floats, big
+    /// integers, nesting, key order); a file that is not JSON still fails
+    /// the load.
+    #[test]
+    fn loot_tables_read_back_as_loaded() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-text-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("data/minecraft/loot_table/blocks");
+        fs::create_dir_all(&dir).unwrap();
+        let table = r#"{"type": "minecraft:block", "pools": [{"rolls": 1.5,
+            "bonus_rolls": 0.1, "entries": [{"type": "minecraft:item", "name": "minecraft:stone",
+            "weight": 9007199254740993, "functions": [{"function": "minecraft:set_count",
+            "count": {"type": "minecraft:uniform", "min": -2.25e-7, "max": 1e300}}]}]}],
+            "z": null, "a": [true, false, "\u00e9\n"]}"#;
+        fs::write(dir.join("stone.json"), table).unwrap();
+        let tables = shared_tables(&root, &PackOverlay::NONE).unwrap();
+        let expected: Value = serde_json::from_str(table).unwrap();
+        assert_eq!(tables.get("minecraft:blocks/stone"), Some(&expected));
+        assert_eq!(tables.len(), 1);
+        assert!(tables.get("minecraft:blocks/dirt").is_none());
+        drop(tables);
+        fs::write(dir.join("dirt.json"), r#"{"pools": [}"#).unwrap();
+        assert!(shared_tables(&root, &PackOverlay::NONE).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 

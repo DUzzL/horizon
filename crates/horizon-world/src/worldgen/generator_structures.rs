@@ -39,6 +39,10 @@ pub(super) struct StructureState {
     rings: Arc<OnceLock<Rings>>,
     /// Their biome searches while they are computed.
     ring_work: OnceLock<RingWork>,
+    /// The seed the rings are searched with when it is not the world's (a superflat world's 0).
+    pub(super) ring_seed: Option<i64>,
+    /// The biome source is a `FixedBiomeSource` (a single-biome world, a superflat one).
+    pub(super) fixed_biome: bool,
     /// `StructureRegistry::zone_reach`.
     zone_reach: i32,
 }
@@ -49,6 +53,8 @@ pub(super) struct StructureState {
 /// ones others took. Done by the first thread alone, the 128 stronghold
 /// searches kept every other worker blocked for seconds after each world load.
 struct RingWork {
+    /// The biome source is a `FixedBiomeSource`, which has its own horizontal search.
+    fixed: bool,
     /// The concentric-ring sets, some with no positions.
     sets: Vec<usize>,
     /// Set index and search, sets in `possible_sets` order.
@@ -66,6 +72,7 @@ impl RingWork {
             .flat_map(|(set, searches)| searches.into_iter().map(move |s| (set, s)))
             .collect();
         Self {
+            fixed: false,
             sets: indices,
             next: AtomicUsize::new(0),
             found: (0..searches.len()).map(|_| OnceLock::new()).collect(),
@@ -85,7 +92,12 @@ impl RingWork {
             let Some((set, search)) = self.searches.get(i) else {
                 break;
             };
-            let _ = self.found[i].set(search.find(preferred(*set), biomes));
+            let found = if self.fixed {
+                search.find_fixed(preferred(*set), biomes)
+            } else {
+                search.find(preferred(*set), biomes)
+            };
+            let _ = self.found[i].set(found);
             let mut left = self.left.lock().unwrap();
             *left -= 1;
             if *left == 0 {
@@ -222,7 +234,34 @@ impl StructureState {
             start_work: ChunkWork::new(),
             rings,
             ring_work: OnceLock::new(),
+            ring_seed: None,
+            fixed_biome: false,
         }))
+    }
+    /// `FlatLevelGeneratorSettings.structureOverrides`: only the structure sets named
+    /// (`minecraft:villages`) may generate.
+    pub(super) fn restrict_to(&mut self, names: &[String]) {
+        let registry = &self.registry;
+        let bare = |name: &str| name.strip_prefix("minecraft:").unwrap_or(name).to_owned();
+        // `lenientOptionalFieldOf`: a list naming a set that does not exist fails to decode,
+        // which counts as the key being absent: every set generates.
+        if names.iter().any(|name| {
+            !registry
+                .sets
+                .iter()
+                .any(|set| bare(&set.name) == bare(name))
+        }) {
+            return;
+        }
+        self.possible_sets.retain(|&set| {
+            names.iter().any(|name| {
+                name.strip_prefix("minecraft:").unwrap_or(name)
+                    == registry.sets[set]
+                        .name
+                        .strip_prefix("minecraft:")
+                        .unwrap_or(&registry.sets[set].name)
+            })
+        });
     }
     /// Concentric ring positions of a structure set (vanilla's
     /// getRingPositionsFor), computed now if no lookup needed them yet.
@@ -235,10 +274,12 @@ impl StructureState {
     }
     fn ring_work(&self, context: &impl StartContext) -> &RingWork {
         self.ring_work.get_or_init(|| {
-            RingWork::new(
-                self.registry
-                    .ring_searches(&self.possible_sets, context.seed()),
-            )
+            let mut work = RingWork::new(self.registry.ring_searches(
+                &self.possible_sets,
+                self.ring_seed.unwrap_or_else(|| context.seed()),
+            ));
+            work.fixed = self.fixed_biome;
+            work
         })
     }
     /// The concentric ring positions, computing them with the threads that

@@ -48,7 +48,7 @@ ShulkerBullet.readAdditionalSaveData	missing		minor: the final target and move d
 ShulkerBullet.canHitEntity	missing		minor: no-physics entities are not skipped by the bullet's target search; Projectile::tick checks owner and boxes only
 ShulkerBullet.onHitBlock	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	shulker bullet block hit: hit sound and two explosion particles at the bullet
 ShulkerBullet.destroy	inline	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	the bullet is dropped from the flight list on any hit; the game event is not sent
-ShulkerBullet.hurtServer	missing		player: a hit on a shulker bullet does not pop it (no hurt path for projectiles), so it keeps flying until it hits something else
+ShulkerBullet.hurtServer	port	crates/horizon-client/src/game/deflect.rs::Game::hit_shulker_bullet	
 ThrowableProjectile.applyInertia	port	crates/horizon-client/src/projectiles.rs::Projectile::tick	default arm: gravity, then drag 0.8 in water and 0.99 in air; gap: minor: no bubble particles in water
 ThrowableProjectile.handleFirstTickBubbleColumn	missing		minor: a thrown item that spawns inside a bubble column is not pushed on its first tick
 AbstractArrow.<init>	port	crates/horizon-client/src/arrows.rs::ArrowState::new	arrow defaults: pickup, pickup item, shake, pierce; the owner and drawn ammo come from set_owner and set_item

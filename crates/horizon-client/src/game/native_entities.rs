@@ -5,7 +5,10 @@
 //! `item_display` showing an item model from the mod's assets. They act where
 //! the world is simulated, in the level in place, which each names by its
 //! `dimension` (`minecraft:overworld`) as `native_set_block` does.
-use super::{Game, commands::Target};
+use super::{
+    Game,
+    commands::{Target, place_summoned},
+};
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::{Compound, Tag};
 
@@ -86,6 +89,16 @@ fn position_ok(pos: [f64; 3]) -> bool {
         && (-20_000_000.0..20_000_000.0).contains(&pos[1])
 }
 
+/// The id of a summoned stack's root: its command target's, else `first`,
+/// the first id handed out, when an entity no command target stands for
+/// (`live`) holds it.
+fn root_id(target: Option<Target>, first: u32, live: impl Fn(u32) -> bool) -> Option<u32> {
+    match target {
+        Some(t) => target_id(t),
+        None => live(first).then_some(first),
+    }
+}
+
 /// The entity id a summoned stack's root is known by.
 fn target_id(t: Target) -> Option<u32> {
     match t {
@@ -100,7 +113,8 @@ fn target_id(t: Target) -> Option<u32> {
         | Target::Cart(id)
         | Target::Other(id)
         | Target::Crystal(id)
-        | Target::Dragon(id) => Some(id),
+        | Target::Dragon(id)
+        | Target::Tnt(id) => Some(id),
         Target::Player | Target::Guest(_) => None,
     }
 }
@@ -134,14 +148,35 @@ impl Game<'_> {
         }
         let mut tag = nbt;
         tag.insert("id".into(), Tag::String(kind.into()));
-        tag.insert(
-            "Pos".into(),
-            Tag::List(pos.map(|v| Tag::Double(v.to_bits())).to_vec()),
-        );
+        // As `/summon` does: every entity of the stack, passengers included,
+        // stands at `pos`.
+        let mut tag = Tag::Compound(tag);
+        place_summoned(&mut tag, pos);
         let from = self.mobs.len();
-        let target = self.spawn_entity_from_nbt(Tag::Compound(tag));
+        let first = self.next_entity + 1;
+        let deferred = (self.tnts.len(), self.falling.len(), self.rockets.len());
+        let target = self.spawn_entity_from_nbt(tag);
+        // These roots load with id 0 and have no command Target variant.
+        // Select the newly appended root, never an older waiting entity.
+        let root = match kind {
+            "minecraft:tnt" => self.tnts.get_mut(deferred.0).map(|e| &mut e.id),
+            "minecraft:falling_block" => self.falling.get_mut(deferred.1).map(|e| &mut e.id),
+            "minecraft:firework_rocket" => self.rockets.get_mut(deferred.2).map(|e| &mut e.id),
+            _ => None,
+        };
+        let root = root.map(|id| super::lan_entities::assign_entity_id(&mut self.next_entity, id));
         self.native_mobs_joined(from, false);
-        target.and_then(target_id)
+        // Otherwise the root is the first entity spawned, also for kinds no
+        // command target stands for (experience orbs, end crystals, cushions). An id handed out to an
+        // entity a mod then kept out is not given back, so the root must be
+        // there.
+        root.or_else(|| {
+            root_id(target, first, |id| {
+                self.orbs.iter().any(|o| o.id == id)
+                    || self.crystals.iter().any(|c| c.id == id)
+                    || self.cushions.iter().any(|c| c.id == id)
+            })
+        })
     }
     /// Moves entity `id`, one Horizon keeps without simulating (a display, a
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;
@@ -279,6 +314,42 @@ mod tests {
             }
             .valid()
         );
+    }
+
+    #[test]
+    fn a_passenger_without_a_position_stands_where_the_stack_is_summoned() {
+        let mut rider = Compound::new();
+        rider.insert("id".into(), Tag::String("minecraft:pig".into()));
+        let mut root = Compound::new();
+        root.insert("id".into(), Tag::String("minecraft:pig".into()));
+        root.insert("Passengers".into(), Tag::List(vec![Tag::Compound(rider)]));
+        let mut tag = Tag::Compound(root);
+        place_summoned(&mut tag, [1.5, 70.0, -2.5]);
+        let pos = Tag::List(
+            [1.5, 70.0, -2.5]
+                .map(|v: f64| Tag::Double(v.to_bits()))
+                .to_vec(),
+        );
+        let Tag::Compound(root) = &tag else { panic!() };
+        assert_eq!(root.get(&"Pos".into()), Some(&pos));
+        let Some(Tag::List(riders)) = root.get(&"Passengers".into()) else {
+            panic!("no passengers");
+        };
+        let Tag::Compound(rider) = &riders[0] else {
+            panic!()
+        };
+        assert_eq!(rider.get(&"Pos".into()), Some(&pos));
+    }
+
+    #[test]
+    fn an_orb_root_has_an_id_only_while_it_is_in_the_level() {
+        // Spawned: the orb holds the first id.
+        assert_eq!(root_id(None, 36, |id| id == 36), Some(36));
+        // A mod kept it out: id 36 was handed out, but no entity holds it.
+        assert_eq!(root_id(None, 36, |_| false), None);
+        // A command target answers for itself.
+        assert_eq!(root_id(Some(Target::Mob(40)), 36, |_| false), Some(40));
+        assert_eq!(root_id(Some(Target::Player), 36, |_| true), None);
     }
 
     #[test]

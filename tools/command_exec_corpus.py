@@ -3,7 +3,8 @@
 Each group is a list of operations: `cmd` runs a command as the player and
 records its messages and results (`record: false` runs setup silently),
 `tick` advances the game, `settle` loads the terrain and entities around the
-player and `portal` sends the player through the nether portal it stands in.
+player, `portal` sends the player through the nether portal it stands in,
+and `falling` counts physical falling blocks by dimension, state and gravity.
 Everything happens high above the terrain (y 200 and up, where both worlds
 are air) after the world's entities are removed, so the results do not
 depend on world generation.
@@ -344,6 +345,16 @@ def entities():
         cmd('/execute if entity @e[type=minecraft:ender_dragon]'),
         cmd('/data get entity @e[type=minecraft:ender_dragon,limit=1] Pos'),
         cmd('/kill @e[type=minecraft:ender_dragon]'),
+        # A primed TNT is an entity too: a type selector finds, tags, reads,
+        # moves and kills it.
+        cmd('/summon minecraft:tnt 4.5 210 8.5 {fuse:2000s,Tags:["t"]}'),
+        cmd('/execute if entity @e[type=minecraft:tnt]'),
+        cmd('/tag @e[type=minecraft:tnt,limit=1] list'),
+        cmd('/execute if entity @e[type=minecraft:tnt,tag=t]'),
+        cmd('/data get entity @e[type=minecraft:tnt,limit=1] Tags'),
+        cmd('/tp @e[type=minecraft:tnt] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:tnt]'),
+        cmd('/execute if entity @e[type=minecraft:tnt]'),
         *setup('/kill @e[type=minecraft:armor_stand]'),
         {'op': 'tick', 'n': 25},
         cmd('/execute if entity @e[tag=h]'),
@@ -657,6 +668,46 @@ def levels():
     ]
 
 
+def end_portal_entities():
+    """Non-player exit travel with two ticking levels, and a falling block
+    crossing the portal's inside shape on the tick it reaches the floor."""
+    end = '/execute in minecraft:the_end run'
+    local = 'distance=..1000000'
+    return [
+        *setup('/forceload add 0 0', '/setblock 8 229 8 minecraft:stone', '/setworldspawn 8 230 8',
+               f'{end} tp @s 8.5 230 8.5'),
+        {'op': 'settle'},
+        *setup(f'{end} forceload add 0 0',
+               f'{end} fill 2 209 2 6 209 6 minecraft:stone',
+               f'{end} fill 2 210 2 6 215 6 minecraft:air',
+               f'{end} setblock 4 210 4 minecraft:end_portal',
+               f'{end} summon minecraft:pig 4.5 210.5 4.5 {{NoAI:1b,NoGravity:1b,Tags:["end_portal_mob"]}}'),
+        {'op': 'tick', 'n': 10},
+        cmd(f'{end} execute if entity @e[tag=end_portal_mob,{local}]'),
+        cmd(f'/execute in minecraft:overworld if entity @e[tag=end_portal_mob,{local}]'),
+        *setup(f'{end} summon minecraft:falling_block 4.5 213 4.5 {{BlockState:{{id:"minecraft:sand"}},Time:1,Motion:[0.0d,-2.0d,0.0d],Tags:["end_portal_falling"]}}'),
+        {'op': 'tick', 'n': 10},
+        cmd('/execute in minecraft:overworld if block 8 230 8 minecraft:sand'),
+        cmd(f'{end} execute if block 4 210 4 minecraft:end_portal'),
+        *setup('/execute in minecraft:overworld run setblock 8 230 8 minecraft:air',
+               f'{end} summon minecraft:falling_block 4.5 210.5 4.5 {{BlockState:{{id:"minecraft:gravel"}},Time:1,NoGravity:1b,Tags:["end_portal_float"]}}'),
+        {'op': 'tick', 'n': 5},
+        {'op': 'falling', 'dimension': 'minecraft:the_end', 'block': 'minecraft:gravel', 'no_gravity': True},
+        {'op': 'falling', 'dimension': 'minecraft:overworld', 'block': 'minecraft:gravel', 'no_gravity': True, 'discard': True},
+        # FallingBlock.isFree(end_portal) is false: a placed egg above it
+        # stays a block in vanilla, despite the portal's empty collision shape.
+        *setup(f'{end} setblock 4 211 4 minecraft:dragon_egg'),
+        {'op': 'tick', 'n': 5},
+        cmd(f'{end} execute if block 4 211 4 minecraft:dragon_egg'),
+        *setup('/kill @e[tag=end_portal_mob]',
+               f'{end} fill 2 209 2 6 215 6 minecraft:air',
+               f'{end} forceload remove 0 0',
+               '/execute in minecraft:overworld run fill 8 229 8 8 231 8 minecraft:air',
+               '/execute in minecraft:overworld run tp @s 8.5 230 8.5'),
+        {'op': 'settle'},
+    ]
+
+
 def items_and_loot():
     return [
         *setup('/clear @s', '/gamemode survival'),
@@ -724,6 +775,20 @@ def items_and_loot():
         cmd('/clear @s #minecraft:logs'),
         cmd('/clear @s *[minecraft:custom_data]'),
         cmd('/clear @s'),
+        # A chest or hopper minecart's slots (ContainerEntity.getChestVehicleSlot): container.N below its size.
+        *setup('/summon minecraft:chest_minecart 4.5 210 4.5 {NoGravity:1b,Tags:["c"]}',
+               '/summon minecraft:hopper_minecart 6.5 210 4.5 {NoGravity:1b,Tags:["h"]}'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.0 with minecraft:diamond 3'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.26 with minecraft:emerald 2'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.27 with minecraft:emerald 2'),
+        cmd('/item replace entity @e[tag=h,limit=1] container.4 with minecraft:gold_ingot 5'),
+        cmd('/item replace entity @e[tag=h,limit=1] container.5 with minecraft:gold_ingot 5'),
+        cmd('/item modify entity @e[tag=c,limit=1] container.0 {type:"minecraft:set_count",count:2}'),
+        cmd('/item replace entity @s hotbar.0 from entity @e[tag=c,limit=1] container.26'),
+        cmd('/data get entity @e[tag=c,limit=1] Items'),
+        cmd('/execute if items entity @e[tag=h,limit=1] container.* minecraft:gold_ingot'),
+        cmd('/clear @s'),
+        *setup('/kill @e[tag=c]', '/kill @e[tag=h]'),
         *setup('/setblock 3 206 3 minecraft:air', '/setblock 2 205 2 minecraft:air', '/kill @e[type=minecraft:item]', '/gamemode creative'),
     ]
 
@@ -1322,6 +1387,139 @@ def tame_wolf_kills():
     ]
 
 
+def experience_orb_fall():
+    """`ExperienceOrb.tick`'s fall and landing (the dragon-death XP rain, #4781):
+    gravity 0.03 (skipped while the orb is inside blocks), one drag of
+    `getAirDrag()` times the ground's friction scaled over every axis, and a
+    landing bounce of `-fallSpeed * 0.4` gated on `fallSpeed < -getGravity()` —
+    not a fixed restitution. The orb spawns 16 blocks from the player, out of
+    the 8 block follow radius, 45 blocks above a stone platform; the track
+    draws no random, so both games compare to the digit."""
+    return [
+        *setup('/fill 20 214 20 28 214 28 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 24.5 260 24.5 {Value:1s}'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        {'op': 'tick', 'n': 1},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 64},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 20},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 35},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 20 214 20 28 214 28 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
+def creative_shulker_drops():
+    """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
+    even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
+    colors = ('white orange magenta light_blue yellow lime pink gray light_gray cyan '
+              'purple blue brown green red black').split()
+    blocks = ['shulker_box', *(f'{color}_shulker_box' for color in colors)]
+    item = '@e[type=minecraft:item,limit=1]'
+    contents = ('Items:[{Slot:0b,id:"minecraft:diamond_sword",count:1,components:{'
+                '"minecraft:custom_name":"Blade","minecraft:enchantments":{"minecraft:sharpness":5}}},'
+                '{Slot:26b,id:"minecraft:apple",count:16}],')
+    out = []
+    for block in blocks:
+        for mode, filled, drops in [('creative', True, True), ('creative', False, True),
+                                    ('creative', True, False), ('survival', True, True),
+                                    ('survival', False, True), ('survival', True, False)]:
+            out += setup('/kill @e[type=minecraft:item]', f'/gamemode {mode}',
+                         f'/gamerule block_drops {str(drops).lower()}',
+                         f'/setblock 4 210 4 minecraft:{block}'
+                         '{' + (contents if filled else '') + 'TestOnly:7}')
+            out += [{'op': 'break', 'pos': [4, 210, 4]},
+                    cmd('/execute if block 4 210 4 minecraft:air'),
+                    cmd('/execute if entity @e[type=minecraft:item]')]
+            if (mode == 'creative' and filled) or (mode == 'survival' and drops):
+                out += [cmd(f'/data get entity {item} Item'),
+                        cmd(f'/execute if data entity {item} Item.components."minecraft:block_entity_data"')]
+                if mode == 'creative':
+                    out += [cmd(f'/data get entity {item} Pos'), cmd(f'/data get entity {item} PickupDelay')]
+    out += setup('/kill @e[type=minecraft:item]', '/gamemode creative', '/gamerule block_drops true')
+    return out
+
+
+def piglin_pickups():
+    """PiglinAi.pickUpItem/stopHoldingOffHandItem: babies keep admired gold, adults barter it."""
+    ops = [*setup('/fill 2 209 2 6 212 6 minecraft:glass hollow',
+                  '/fill 3 209 3 5 209 5 minecraft:stone')]
+    for baby, held in ((False, "crossbow"), (True, None), (True, "golden_sword"),
+                       (True, "crossbow")):
+        # NoAI would skip admiration expiry. A small pen keeps both the piglin
+        # and its item together without suppressing the server's normal ticks.
+        # Finish the previous corpse's death ticks before clearing its drops.
+        ops += [
+            *setup('/kill @e[type=!player]'),
+            {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]',
+                   '/summon minecraft:piglin 4.5 210 4.5 '
+                   '{Tags:["barter"],IsImmuneToZombification:1b,PersistenceRequired:1b,drop_chances:{mainhand:0.0f},IsBaby:'
+                   + ('1b' if baby else '0b')
+                   + (',equipment:{mainhand:{id:"minecraft:' + held + '",count:1}}' if held else '') + '}'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand *'),
+            *setup('/summon minecraft:item 4.5 210 4.5 '
+                   '{PickupDelay:0s,Item:{id:"minecraft:gold_ingot",count:1}}'),
+            {'op': 'tick', 'n': 40},
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand minecraft:gold_ingot'),
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            {'op': 'tick', 'n': 140},
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand *'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:gold_ingot'),
+            cmd('/execute if entity @e[type=minecraft:item]'),
+        ]
+        if baby:
+            ops.append(cmd('/execute if data entity @e[tag=barter,limit=1] Inventory[{id:"minecraft:golden_sword"}]'))
+    # IGNORED_BY_PIGLIN_BABIES contains leather: adults take it, babies leave it.
+    for baby in (False, True):
+        ops += [
+            *setup('/kill @e[type=!player]'),
+            {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]',
+                   '/summon minecraft:piglin 4.5 210 4.5 '
+                   '{Tags:["barter"],IsImmuneToZombification:1b,IsBaby:' + ('1b' if baby else '0b') + '}',
+                   '/summon minecraft:item 4.5 210 4.5 '
+                   '{PickupDelay:0s,Item:{id:"minecraft:leather",count:1}}'),
+            {'op': 'tick', 'n': 40},
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:leather'),
+        ]
+    ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]', '/fill 2 209 2 6 212 6 minecraft:air')]
+    return ops
+
+
+def experience_orb_stuck():
+    """`ExperienceOrb.tick`'s push out of a block, the one path of the tick that
+    draws a random: a 3x3 block placed over a settled orb leaves it colliding
+    with its only free side the top, and with no player within the 8 block
+    follow radius the server nudges it up, `nextFloat() * 0.2 + 0.1` at a time,
+    gravity skipped while its box is inside blocks. The draw's magnitude only
+    decides how many ticks the escape takes, so the settled orb is the same
+    either way; an orb that is never pushed stays boxed in at y 215 instead of
+    resting on top of the block at 216. 25 blocks from the player, out of the
+    follow radius."""
+    return [
+        *setup('/fill 30 214 20 36 214 26 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 33.5 215 23.5 {Value:1s}'),
+        {'op': 'tick', 'n': 2},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        *setup('/fill 32 215 22 34 215 24 minecraft:stone'),
+        {'op': 'tick', 'n': 60},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 30 214 20 36 215 26 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1338,6 +1536,7 @@ def groups():
         ('scores, teams and bossbars', scores()),
         ('execute', execute()),
         ('levels', levels()),
+        ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
         ('world', world_misc()),
         ('progression', progression()),
@@ -1348,7 +1547,11 @@ def groups():
         ('test', test_command()),
         ('wither breaks', wither_breaks()),
         ('tnt minecart rails', tnt_minecart_rails()),
+        ('creative shulker drops', creative_shulker_drops()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('experience orb fall', experience_orb_fall()),
+        ('piglin pickups', piglin_pickups()),
+        ('experience orb stuck', experience_orb_stuck()),
     ]

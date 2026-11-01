@@ -1,4 +1,4 @@
-//! Far meshes share the terrain arena and passes, with their actual bounds
+//! Far meshes share the terrain arenas and passes, with their actual bounds
 //! rather than the 16³ boxes used by the near-section residency walk.
 use super::{Frustum, Renderer, SectionGpu};
 use crate::{
@@ -151,6 +151,10 @@ impl Tile {
             Some((mesh, _)) => mesh,
             None => &mut self.mesh,
         }
+    }
+    /// Both meshes it holds in the arena: its own and the stand-in, if any.
+    pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
+        std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
     }
     pub fn visible(
         &self,

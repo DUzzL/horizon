@@ -91,7 +91,7 @@ not tick cost, so it is in scope here (see section 9).
 | Secure chat | **Works** (`SignedMessageChain`, `LastSeenMessagesValidator`, `MessageSignatureCache`): the chat session update and its profile key, checked against the services' `playerCertificateKeys`; signed chat, `say`, `me` and `msg`, relayed with their signatures and last-seen lists; `enforce-secure-profile` (with `online-mode`) refuses unsigned chat; and vanilla's log lines (`[Not Secure]`, the decoder's warnings, the kicks). Offline servers and players without a chat session chat unsigned, as on vanilla. `test_secure_chat_parity.py` runs the same signed and unsigned players against vanilla's server and Horizon's, with test keys and a mock services server. |
 | Nether and End | **Works**: the server holds a level per dimension, and each player is in its own (portals, `execute in … tp`, respawn). `test_server_dimension_players_parity.py` checks it against vanilla. How it works, its cost and what's left: [server-levels.md](server-levels.md). |
 | Refused logins | Logged as vanilla does: `Disconnecting <name> (/address): <reason>`, then `<name> (/address) lost connection: <reason>`, and the session errors (`Username '<name>' tried to join with an invalid session`, `Couldn't verify username because servers are unavailable`). |
-| Gameplay for remote players | Checked against vanilla's server with a vanilla-codec client (#484, `tools/test_dedicated_server_parity.py`): a right click with an item on a block uses it once, a dead player's commands run, players on a team without friendly fire don't hurt each other, and a player's projectiles are theirs (their ender pearl takes them). The recipe book, status effects and block sync while digging (#500) work. Left: a player's projectiles don't hit other players (no bow PvP between guests), and a mob a guest kills counts in the host's statistics and advancements, not the guest's (`mob_died` runs as the host). |
+| Gameplay for remote players | Checked against vanilla's server with a vanilla-codec client (#484, `tools/test_dedicated_server_parity.py`): a right click with an item on a block uses it once, a dead player's commands run, players on a team without friendly fire don't hurt each other, and a player's projectiles are theirs (their ender pearl takes them). A player's arrow, snowball or egg hits other players like vanilla's, refused by the `pvp` game rule and by teams without friendly fire (`tools/lan_e2e.py` `arrows`; also checked on a dedicated server with two protocol clients, #5785). The recipe book, status effects and block sync while digging (#500) work. Left: a mob a guest kills counts in the host's statistics and advancements, not the guest's (`mob_died` runs as the host). |
 | Defaults that surprise owners | `white-list=true` is vanilla 26.3's default, so a fresh server refuses everyone until they are added. That matches vanilla, so the first-run flow (section 3) asks about the whitelist up front. |
 | Management | Only stdin. There is no service, no backups, no status beyond `list`, no restart after a crash, and a server can't be managed while it runs in the background. |
 | Packaging | The server is the full game client. Resources come from `horizon-prepare`, which needs a JDK and the official launcher's client install, both awkward on a headless VPS. |
@@ -469,6 +469,25 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `set_config`, `start`, `restart` and `stop` (needs `confirm: true`). Tools that send someone away or can't be
   undone carry MCP's `destructiveHint`. It's the same idea as the game's `horizon-ctl`
   (docs/agent-control.md): an AI can run and diagnose a server, and every action it takes shows in the log.
+- **RCON.** `enable-rcon`, `rcon.port` and `rcon.password` turn on vanilla's remote console, for the hosting panels,
+  Discord bridges and scripts written for it. The supervisor serves it (`rcon.rs`, std only like `http.rs`), so it
+  answers while the game restarts (a command then says the game isn't running), and it reads its settings as
+  `RconThread.create` does: no password or a port outside 1 to 65535 leaves it off with vanilla's warning. The
+  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 characters, `-1` for a refused
+  login, `Unknown request <hex>` for another type, `Error executing: <command> (<reason>)` for a command that failed.
+  A command goes to the game as `horizon-server cmd` sends it (`console <line>` on the control endpoint), so the
+  output is what the console prints, its messages joined as `RconConsoleSource` joins them. Differences, each one
+  named in `rcon.rs`: the packets are read from the stream, the password is compared in constant time, a
+  connection that hasn't logged in within 30 seconds is closed and at most 16 are open. Not yet: the sender
+  `Rcon` and `broadcast-rcon-to-ops` (a command shows as the console's).
+- **GS4 query.** `enable-query` and `query.port` turn on vanilla's UDP query, which server lists, status pages and
+  monitoring tools read the MOTD, the version and the players from. The supervisor serves it (`query.rs`, std
+  only), reads its settings as `QueryThreadGs4.create` does (a port outside 1 to 65535 leaves it off with
+  vanilla's warning) and speaks `QueryThreadGs4`'s protocol: the handshake (type 9, a token below 2^24 as text),
+  the basic stat and the full stat (a request of 15 bytes), each only with the token. The players come from the
+  game's `server-status`, read at most once a second, and a full stat is kept 5 seconds, as in vanilla. Differences,
+  each one named in `query.rs`: nothing answers while the game isn't running, and a session id outside ASCII is
+  echoed as lossy UTF-8.
 - **Vanilla's own management protocol.** Vanilla 26.3 has a server management protocol: JSON-RPC over a
   WebSocket, set up by the `management-server-*` keys in server.properties, so tools written for vanilla can
   manage a Horizon server too. The supervisor serves it (`management.rs`, the WebSocket in `websocket.rs`, std

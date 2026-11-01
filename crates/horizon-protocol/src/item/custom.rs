@@ -14,8 +14,21 @@ static TYPES: OnceLock<Types> = OnceLock::new();
 pub enum InstallError {
     InvalidRange,
     DuplicateName,
+    InvalidName,
     AlreadyInstalled,
 }
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidRange => "invalid component ID range",
+            Self::DuplicateName => "duplicate component name",
+            Self::InvalidName => "invalid component name",
+            Self::AlreadyInstalled => "component types already installed",
+        })
+    }
+}
+impl std::error::Error for InstallError {}
 
 /// Install sorted component names after the built-in component IDs.
 /// This is an internal transport seam, not a native-mod API.
@@ -29,6 +42,12 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
     {
         return Err(InstallError::InvalidRange);
     }
+    if names.iter().any(|name| {
+        horizon_world::identifier::Identifier::parse_namespaced(name)
+            .is_none_or(|id| id.namespace() == "minecraft")
+    }) {
+        return Err(InstallError::InvalidName);
+    }
     names.sort();
     if names.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(InstallError::DuplicateName);
@@ -36,6 +55,42 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
     TYPES
         .set(Types { first, names })
         .map_err(|_| InstallError::AlreadyInstalled)
+}
+
+/// Validate an opaque value against the same limits used by the network reader.
+pub fn validate(value: &horizon_world::nbt::Tag) -> crate::Result<()> {
+    if matches!(value, horizon_world::nbt::Tag::End) {
+        return Err(crate::Error::new("a component value cannot be NBT End"));
+    }
+    let bytes = horizon_world::nbt::write_network(
+        value,
+        horizon_world::nbt::Limits {
+            max_bytes: crate::buf::NBT_QUOTA,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| crate::Error::new(error.to_string()))?;
+    Reader::new(&bytes).nbt()?;
+    // Disk NBT canonicalizes NaNs, and its reader normalizes negative zero.
+    // Reject values that would change when saved and reloaded.
+    let limits = horizon_world::nbt::Limits {
+        max_bytes: crate::buf::NBT_QUOTA + 2,
+        ..Default::default()
+    };
+    let named = horizon_world::nbt::NamedTag {
+        name: "".into(),
+        tag: value.clone(),
+    };
+    let saved = horizon_world::nbt::write_named(&named, limits)
+        .map_err(|error| crate::Error::new(error.to_string()))?;
+    let (loaded, _) = horizon_world::nbt::read_named(&saved, limits)
+        .map_err(|error| crate::Error::new(error.to_string()))?;
+    if loaded.tag != *value {
+        return Err(crate::Error::new(
+            "component value changes on save and reload",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn contains(id: i32) -> bool {

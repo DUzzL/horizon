@@ -531,7 +531,7 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::OpenModFolder => {
-                    let dir = Game::options_path().with_file_name(horizon_client::mod_list::DIR);
+                    let dir = Game::game_dir().join(horizon_client::mod_list::DIR);
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
@@ -550,6 +550,11 @@ impl Loading {
                 Event::ShaderOptions => {
                     if let Some(options) = self.settings.shader_options.take() {
                         super::shader_packs::write_shader_options(&options);
+                    }
+                }
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Game::shader_packs_dir());
                     }
                 }
                 Event::OpenShaderPackFolder => {

@@ -157,7 +157,7 @@ impl Hub {
         };
         if ac.config.runs(Check::Prediction) {
             let g = &mut self.guests[i];
-            let (input, sprinting) = (g.input, g.sprinting);
+            let (input, sprinting) = (g.input, g.anticheat.sprinting);
             g.anticheat
                 .record
                 .get_or_insert_default()
@@ -297,9 +297,10 @@ impl Hub {
     }
 
     /// `ground`, for a move from guest `i` that says it ends on the ground at `to` (`stands`: the move
-    /// itself was stopped by something below): None when the claim stands (or isn't judged), else whether
-    /// the player was sent back. A false claim is dropped either way, unless the check only logs
-    /// (`setback = 0`). A claim at the height where the
+    /// itself was stopped by something below): None when the claim stands (or isn't judged, or the check
+    /// only logs: `setback = 0`), else whether the move is refused because the player was kicked. A
+    /// false claim is dropped (vanilla's fall damage follows); the player is never sent back, and the
+    /// move doesn't count toward vanilla's floating kick. A claim at the height where the
     /// ground last held the player, within half a second, isn't judged: the block may have gone
     /// server-side (broken, pushed) before the client heard.
     pub(super) fn anticheat_ground(
@@ -319,7 +320,12 @@ impl Hub {
             return None;
         }
         let ticks = self.ticks;
-        if stands || self.ground_holds(i, to, ctx)? {
+        // Entity.move resolves Y first, where the body starts, then X and Z: on the tick a player
+        // walks off an edge (or lands on one and slides off it), the client stands on what is under
+        // the move's start. A vanilla client did that once a step down every slope and staircase.
+        let from = self.guests[i].position;
+        let held_at_start = || self.ground_holds(i, [from[0], to[1], from[2]], ctx) != Some(false);
+        if stands || self.ground_holds(i, to, ctx)? || held_at_start() {
             self.guests[i].anticheat.ground = Some((ticks, to[1]));
             return None;
         }
@@ -341,9 +347,14 @@ impl Hub {
             "claims the ground {below} at {:.1} {:.1} {:.1}",
             to[0], to[1], to[2]
         );
-        let back = self.flag(i, Check::Ground, 1.0, &detail, events);
-        let logs_only = self.anticheat.as_deref()?.config.ground.setback == 0.0;
-        (!logs_only).then_some(back)
+        self.flag(i, Check::Ground, 1.0, &detail, events);
+        if self.anticheat.as_deref()?.config.ground.setback == 0.0 {
+            return None;
+        }
+        // The correction is the dropped claim, never a setback: sent back into the air it claimed to
+        // stand in, an honest player (on a block the server doesn't have) claims it again and again,
+        // and hovers there until vanilla's floating kick. Only the anticheat's own kick ends it.
+        Some(!self.guests[i].left_reason.is_empty())
     }
 
     /// Whether something at `to` can hold guest `i` up; None: not judged. Only blocks that can't hold
@@ -424,8 +435,12 @@ impl Hub {
         let mut events = Vec::new();
         if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
             let ticks = if over.ticks == 1 { "tick" } else { "ticks" };
+            // The worst tick as played, so the log tells a lag, a glide or a ladder from a cheat.
+            let worst = over
+                .at_worst
+                .map_or(String::new(), |p| format!("; {}", p.describe()));
             let detail = format!(
-                "moved up to {:.3} blocks off what its keys allow ({} {ticks})",
+                "moved up to {:.3} blocks off what its keys allow ({} {ticks}{worst})",
                 over.worst, over.ticks
             );
             let weight = over.weight;
@@ -479,6 +494,8 @@ impl Hub {
             ", kicked"
         } else if v.setback && check == Check::Combat {
             ", attacks dropped"
+        } else if v.setback && check == Check::Ground {
+            ", claim dropped"
         } else if v.setback {
             ", sent back"
         } else {
@@ -524,9 +541,12 @@ impl Hub {
             });
         } else if v.kick {
             self.anticheat_kick(self.guests[i].conn);
-        } else if v.setback && check != Check::Combat && self.guests[i].awaiting_teleport.is_none()
+        } else if v.setback
+            && !matches!(check, Check::Combat | Check::Ground)
+            && self.guests[i].awaiting_teleport.is_none()
         {
-            // A combat setback drops the attack (`anticheat_attack`); the others send the player back.
+            // A combat setback drops the attack (`anticheat_attack`), a ground one the claim
+            // (`anticheat_ground`); the others send the player back.
             self.resend_teleport(i, back);
         }
         v.setback || v.kick

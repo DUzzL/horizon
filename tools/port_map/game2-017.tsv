@@ -8,7 +8,7 @@ BlockEntity.saveCustomOnly	port	crates/horizon-client/src/block_entity_item.rs::
 BlockEntity.loadStatic	port	crates/horizon-client/src/save.rs::decode_block_entity	creates the block entity from its saved tag
 BlockEntity.fillCrashReportCategory	skip:debug		crash report detail
 BlockEntity.applyComponents	inline	crates/horizon-client/src/block_entity_item.rs::place	implicit components applied as part of placing the item's data
-BlockEntity.collectComponents	port	crates/horizon-client/src/block_entity_item.rs::pick	component patch built when a block entity is picked
+BlockEntity.collectComponents	port	crates/horizon-client/src/block_entity_item.rs::collected_components	explicit plus implicit components for picked items and creative shulker drops
 BrewingStandBlockEntity.getPotionBits	inline	crates/horizon-client-render/src/brewing.rs::BrewingStand::tick	bottle occupancy sent as out.bottles
 BrewingStandBlockEntity.isBrewable	port	crates/horizon-client-render/src/brewing.rs::BrewingStand::brewable	
 BrewingStandBlockEntity.doBrew	port	crates/horizon-client-render/src/brewing.rs::BrewingStand::brew	
@@ -78,7 +78,7 @@ HopperBlockEntity.canTakeItemFromContainer	port	crates/horizon-client/src/game/m
 HopperBlockEntity.getSourceContainer	port	crates/horizon-client/src/game/machines.rs::Game::suck_from_container	container above the hopper
 HopperBlockEntity.getItemsAtAndAbove	port	crates/horizon-client/src/game/machines.rs::Game::suck_item_entities	item entities in the suck box
 HopperBlockEntity.entityInside	inline	crates/horizon-client/src/game/machines.rs::Game::suck_item_entities	item entering the hopper is polled each tick instead
-JigsawBlockEntity.generate	missing		player: creative: the Jigsaw block's Generate button and structure growth do not exist; no jigsaw screen or block-driven generation found (/place only places templates)
+JigsawBlockEntity.generate	port	crates/horizon-client/src/game/jigsaw_blocks.rs::Game::generate_jigsaw_block	
 JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/horizon-client/src/game/jukebox.rs::Game::set_has_record	gap: minor: no BLOCK_CHANGE game event
 JukeboxBlockEntity.getComparatorOutput	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	comparator value of the song
 JukeboxBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	RecordItem and ticks

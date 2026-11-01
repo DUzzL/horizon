@@ -61,6 +61,9 @@ impl<T> Resident<T> {
     pub fn values(&self) -> impl Iterator<Item = &T> {
         self.items.iter().map(|(_, v)| v)
     }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.items.iter_mut().map(|(_, v)| v)
+    }
     /// `key`'s value, when it is resident.
     pub fn find(&self, key: SectionKey) -> Option<&T> {
         self.slots.get(&key).map(|&slot| self.get(slot))

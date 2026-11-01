@@ -272,9 +272,7 @@ impl Enchantments {
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
         let mut props = HashMap::new();
-        if let Ok(bytes) = fs::read(root.join("items.json"))
-            && let Ok(raw) = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
-        {
+        if let Ok(raw) = horizon_world::item_defaults::read(root) {
             for (id, c) in raw {
                 props.insert(
                     Arc::from(id.as_str()),
@@ -362,7 +360,7 @@ impl Enchantments {
         let language = horizon_client_core::lang::current();
         self.full_name_in(language.as_deref(), id, level)
     }
-    /// `full_name` against `language`; `None` (no language loaded: a
+    /// `Enchantment.getFullname` against `language`; `None` (no language loaded: a
     /// dedicated server, the probes) keeps the English names loaded above.
     pub fn full_name_in(
         &self,
@@ -377,9 +375,17 @@ impl Enchantments {
         let mut name = tr(&e.description_key).unwrap_or_else(|| e.description.clone());
         if level != 1 || e.max_level != 1 {
             name.push(' ');
-            name.push_str(
-                &tr(&format!("enchantment.level.{level}")).unwrap_or_else(|| level_name(level)),
-            );
+            let key = format!("enchantment.level.{level}");
+            let suffix = tr(&key)
+                .or_else(|| self.lang.get(&key).cloned())
+                .unwrap_or_else(|| {
+                    if (1..=10).contains(&level) {
+                        level_name(level)
+                    } else {
+                        key
+                    }
+                });
+            name.push_str(&suffix);
         }
         (name, self.is_curse(id))
     }
@@ -1154,6 +1160,22 @@ pub mod tests {
         assert_eq!(lines, ["sharpness II", "unbreaking III", "mending"]);
         assert!(!e.compatible("minecraft:sharpness", "minecraft:smite"));
         assert!(e.compatible("minecraft:sharpness", "minecraft:unbreaking"));
+    }
+
+    #[test]
+    fn high_enchantment_names_keep_the_untranslated_key() {
+        let mut e = sample();
+        assert_eq!(
+            e.full_name_in(None, "minecraft:sharpness", 255).0,
+            "sharpness enchantment.level.255"
+        );
+        // A pack may supply names beyond vanilla's I through X, including
+        // the English fallback used when no client language is loaded.
+        e.lang.insert("enchantment.level.11".into(), "XI".into());
+        assert_eq!(
+            e.full_name_in(None, "minecraft:sharpness", 11).0,
+            "sharpness XI"
+        );
     }
 
     /// The enchantment's name and its level come from the selected language,

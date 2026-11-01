@@ -83,7 +83,9 @@ possible; the launcher just doesn't offer it on its own.
   the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
   and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
 - **The answer lives with the tokens.** Each account's keychain item keeps the last answer
-  (`owns`), so no plain file can say yes. With no network (or a sign-in that can't be renewed) the
+  (`owns`), so accounts.json can't say yes. Where there is no keychain the answer sits in the
+  secrets file with the tokens; a player can edit that file, as they can write keychain items with
+  `secret-tool` or Keychain Access. With no network (or a sign-in that can't be renewed) the
   last answer stands: being offline never blocks a player who passed before, and the game starts
   without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
 - **Offline names play behind an owner.** They can be added and played only while an owning
@@ -134,11 +136,90 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   other apps' items.
 - `accounts.json` in the launcher's data folder keeps only public data: UUID, name, skin URL, which
   account is selected. Never a token.
-- No keychain available (a Linux box without a Secret Service, a locked keychain): sign-in still
-  works for the session but nothing is saved, and the launcher says "No keychain available: you will
-  have to sign in again next time" (it never falls back to a plain file).
+- Linux and FreeBSD with no keychain answering (no Secret Service, a locked keychain, #5095): the
+  secrets the keychain refuses go to `account-secrets.json` in the launcher's data folder instead,
+  readable and writable by the player only (0600 on Unix) and never in plain text: the file is
+  encrypted (ChaCha20-Poly1305) with a key derived from the computer's identity (`/etc/machine-id`,
+  `/etc/hostid`), so a copy taken off the computer (a backup, a synced home folder) can't be read
+  elsewhere. On the computer itself the file's mode is what keeps other users out. A file that
+  doesn't open (another computer's, or changed) is never written over: remove it and sign in again. The
+  launcher never picks one store for a run: every read takes the file's copy first (it was written
+  while the keychain was away, so it is the newer one) and the keychain's otherwise, and every write
+  goes to the keychain and to the file only when it refuses. Each change to the file holds
+  `account-secrets.lock` across its read and replace, and each write goes through a temporary file
+  of its own, so launcher and CLI processes running at once lose nothing. The lock is never held
+  while the keychain is asked (it can wait on an unlock prompt): a file entry the keychain took is
+  removed only if it still holds what was read before, so another process's newer write stays and
+  is read first. Writes to the keychain hold `account-secrets.keychain.lock` instead, with what they
+  write read under it, so a hand-over never puts back a token another process renewed or signed out
+  meanwhile; only keychain writes wait on a prompt, as they would on the keychain itself. Once the keychain refuses or doesn't answer (a dismissed prompt), the run stops
+  asking it and keeps new sign-ins in the file, until it finds that another process handed the
+  keychain a secret it saw in the file (one it put there, read there, or found there at its start). Every start
+  hands the keychain what the file kept, one secret at a time up to the first it refuses; the rest
+  stays in the file, which goes once it is empty. Signing out while the keychain is away leaves an empty entry for the
+  account, which hides the keychain's copy until it can be deleted. A broken file is an error naming
+  only its line and column, never what it holds. Only sign-ins go there: the Tailscale access token
+  (Internet servers) administers the player's whole tailnet, so without a keychain it stays in
+  memory for the run (`account::keychain`). MCP's `account_list` says `secrets_file: true` while
+  the file holds a sign-in (sign-out marks alone, or a file that can't be read, don't count).
+- No keychain on macOS or Windows, or `HORIZON_NO_KEYCHAIN` (the launcher's own tests): secrets
+  stay in memory for the run, and the launcher says "No keychain available: you are signed in until
+  the launcher closes".
 - Tokens never appear in logs, errors, `horizon-launcher` CLI output, MCP results or crash reports.
   Requests are logged by endpoint name only.
+
+## Account status and renewal
+
+Settings shows each account's current authentication status. “Ready for online play” means
+its saved access token is not near expiry and its last ownership check succeeded; service
+revocation can only be discovered by a later request. “Needs refresh” means its access token
+has an hour or less left. On launcher startup these due sessions are renewed in the background;
+Play also keeps its existing ownership and renewal checks. Fresh tokens are not renewed on a
+startup status check.
+
+**Refresh** explicitly renews an account even when its access token is fresh. Microsoft
+rejecting the refresh credential marks the account **Sign in again** until a successful browser
+sign-in replaces it. A network outage offers retry rather than discarding the account or
+claiming it requires a full login. Unreadable keychain data is never overwritten by refresh.
+If Microsoft rotates its refresh credential before Xbox/Minecraft fails, the rotated credential
+is still saved so another attempt can recover.
+
+`horizon-launcher account refresh NAME_OR_UUID` exposes the same operation (MCP:
+`account_refresh`). `account list --json` includes public authentication status and token
+expiry, never tokens. `account refresh --json` returns a status object, including when renewal
+needs attention; callers inspect `state` rather than treating transport success as an online
+session. Inspection, refresh and sign-out run off the window's drawing thread. Credential
+operations are serialized in-process and between launchers using the same launcher data folder.
+
+The reusable `account::session` API has no GPUI dependency. Keychain reads and browser sign-in
+remain owned by the launcher. A running game asks it for a renewed session through the CLI:
+the launcher passes its own path to the game as `HORIZON_LAUNCHER_EXE`, and
+`account session NAME_OR_UUID --json` renews that account and returns a new read-once session
+file (`{"session_file"}`), or the public status (`{"authentication"}`) when the account needs a
+browser sign-in or a retry. `account sign-in --for NAME_OR_UUID` is the targeted sign-in below,
+from the command line: it prints the link and code, refuses another Microsoft account, and
+leaves who plays unchanged. `account session` is not an MCP tool: its file holds a token, and
+only the game reads it. Renewing in the launcher does not change the token a running game
+already holds until the game asks.
+
+### Profile heads, progress, and targeted re-sign-in
+
+Microsoft accounts show their public Minecraft profile head in Settings, the selected-account
+chip, and the account switcher. Skins are fetched on workers and cached by their texture URL
+under `profile-heads/` in launcher data. Changing the skin invalidates that image; an unavailable
+image uses the UUID's default skin from installed resources, or a neutral placeholder when
+those resources are absent. The cache contains public images, never authentication tokens.
+
+Account operations report the actual stage: waiting for account access, reading the keychain,
+renewing the Microsoft sign-in, Xbox Live, getting a Minecraft session, checking ownership,
+loading the profile, and saving. A browser flow separately says it is waiting for the player.
+Progress is public metadata and does not expose credentials through the UI or MCP.
+
+**Sign in again** on an account row targets that exact Minecraft UUID. The browser instructions
+name the expected player. Signing in to a different account is rejected before storing its
+credentials or adding/selecting that identity. Retry keeps the same target; Cancel leaves the
+saved account alone. Successful re-sign-in restores that account without changing the player
+or offline name currently selected for Play. Adding a new account remains a separate action.
 
 ## Handing the session to the game
 
@@ -228,7 +309,17 @@ To chat on such servers the game (`auth.rs`, `game/remote_chat.rs`, `horizon_pro
 `tools/secure_chat_client_e2e.py` checks it against vanilla 26.3's server with a mock of the services
 that issues certificates: online mode with `enforce-secure-profile=true` (signed chat logged as secure,
 a `/msg` whisper delivered, a message flushed from Chat Delay still counted as seen, nothing refused) and
-offline mode (unsigned chat, as before). Other players' signatures are not verified yet.
+offline mode (unsigned chat, as before). Both also click commands: `sendUnattendedCommand`'s confirmations
+(`game/remote_chat.rs`) ask before anything but a plain command, and a clicked command with a message argument
+only reaches the chat box, for the player to send.
+
+Chat from other players is checked as vanilla's client does (`ClientPacketListener.handlePlayerChat`,
+`game/remote.rs`, `secure_chat::MessageValidator`): a wrong global chat index disconnects, and a sender
+with no list entry or a message its validator refuses shows the red, italic `chat.validation_error`. A
+chat session the services' profile-key keys vouch for makes a keyed validator (the key not past its
+expiry plus 8 hours, the signature, the chain); anything else makes the fallback, which accepts unsigned
+messages, or none where the server enforces secure chat. The unit tests in `secure_chat.rs` cover the
+validators; the script above doesn't send another player's chat.
 
 ## Harnesses
 

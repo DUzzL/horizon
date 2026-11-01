@@ -56,17 +56,17 @@ Panda.PandaAvoidGoal.canUse	port	crates/horizon-client/src/mobs/panda.rs::When::
 Parrot.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	random one of five variants, ageable group without babies
 Parrot.createAttributes	skip:data		attributes (health 6, flying speed 0.4) come from the entity type table
 Parrot.createNavigation	port	crates/horizon-client/src/mobs/parrot.rs::register	flying navigation and a flying move control, no doors, floats
-Parrot.calculateFlapping	missing		player: flap and flap_speed are only updated for chickens, so a parrot's wings never flap and a falling one does not glide (no 0.6 fall damping)
+Parrot.calculateFlapping	port	crates/horizon-client/src/mobs/parrot.rs::calculate_flapping	
 Parrot.checkParrotSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Parrot arm: parrots_spawnable_on below and bright enough
 Parrot.onFlap	port	crates/horizon-client/src/mobs/parrot.rs::process_flapping	the wing-beat sound at 0.15 and nextFlap
-Parrot.hurtServer	missing		player: a hit does not stand a sitting tame parrot up (only wolves reset sitting in tame::after_hurt)
+Parrot.hurtServer	port	crates/horizon-client/src/mobs/tame.rs::stand_when_hurt	
 Parrot.get	skip:other		reads the variant as a data component for predicates; Horizon has no entity component view
 Parrot.applyImplicitComponent	missing		minor: a spawn egg's parrot_variant component is not applied (only bucketed mobs read item components)
 Parrot.defineSynchedData	skip:other		synched variant id; Horizon keeps it in extra.variant (remote_mob_data.rs reads index 20)
 Parrot.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	Variant clamped to 0 to 4, red and blue when absent
 Parrot.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	gap: minor: no parrot arm, the lead attaches at the full eye height instead of 0.5 times it
-Parrot.ParrotWanderGoal.getPosition	missing		player: parrots wander with a ground stroll (Stroll::avoiding_water in tame.rs::register_parrot), so they never pick a flying position or one of the tree perches
-Parrot.ParrotWanderGoal.getTreePos	missing		player: parrots never fly to settle on leaves or logs nearby
+Parrot.ParrotWanderGoal.getPosition	port	crates/horizon-client/src/mobs/parrot.rs::wander_pos	
+Parrot.ParrotWanderGoal.getTreePos	port	crates/horizon-client/src/mobs/parrot.rs::tree_pos	
 ShoulderRidingEntity.setEntityOnShoulder	port	crates/horizon-client/src/game/shoulders.rs::Game::parrot_to_shoulder	saved into the first free ShoulderEntityLeft or ShoulderEntityRight slot, the parrot removed from the world
 Pig.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	Species::Pig arm: float, panic 1.25, breed, two temptations (stick and food), follow parent, stroll, look
 Pig.getControllingPassenger	port	crates/horizon-client/src/mobs/equine.rs::controlled	saddled and the rider holds the carrot on a stick (r.steer)

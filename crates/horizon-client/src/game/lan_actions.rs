@@ -42,6 +42,8 @@ pub(super) struct GuestPlay {
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
+    use_duration: i32,
+    use_ticks_set: bool,
     use_delay: u32,
     /// The shield's ItemCooldowns entry: an axe disabled it for this many ticks.
     pub(super) shield_cooldown: u32,
@@ -172,6 +174,8 @@ pub(super) struct GuestSwap {
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
+    use_duration: i32,
+    use_ticks_set: bool,
     use_delay: u32,
     pub(super) shield_cooldown: u32,
     /// The guest's item cooldowns (`Game::cooldowns` for its turn).
@@ -295,7 +299,12 @@ impl Game<'_> {
         f: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
         let swap = self.enter_guest(host, conn)?;
-        let result = f(self);
+        super::dedicated::crash_fixture("guest", || {
+            host.hub.guests.iter().any(|g| g.conn == conn && g.placed)
+        });
+        let dimension =
+            (self.serving.is_some() || self.options.dedicated.is_some()).then_some(self.dim.id());
+        let result = horizon_client::block_contact::in_level(dimension, || f(self));
         self.leave_guest(host, swap);
         Some(result)
     }
@@ -410,6 +419,7 @@ impl Game<'_> {
         motion.sprinting = g.sprinting;
         motion.may_fly = g.creative() || g.game_mode == SPECTATOR;
         motion.flying = g.flying;
+        motion.flying_speed = g.flying_speed;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
         motion.invulnerable = motion.may_fly;
@@ -464,6 +474,8 @@ impl Game<'_> {
         let mining = std::mem::replace(&mut self.mining, play.mining.take());
         let destroy_delay = std::mem::replace(&mut self.destroy_delay, play.destroy_delay);
         let using = std::mem::replace(&mut self.using, play.using.take());
+        let use_duration = std::mem::replace(&mut self.use_duration, play.use_duration);
+        let use_ticks_set = std::mem::replace(&mut self.use_ticks_set, play.use_ticks_set);
         let use_delay = std::mem::replace(&mut self.use_delay, play.use_delay);
         let shield_cooldown = std::mem::replace(&mut self.shield_cooldown, play.shield_cooldown);
         let cooldowns = std::mem::replace(&mut self.cooldowns, std::mem::take(&mut play.cooldowns));
@@ -482,6 +494,9 @@ impl Game<'_> {
         if let Some(p) = self.player.as_mut() {
             p.is_passenger = g.vehicle.is_some();
         }
+        // Entity.collide: the guest's body collides with the level's world
+        // border too, as it is this turn (it moves with /worldborder).
+        self.player_border();
         let host_station = self.station.take();
         // The guest's bed, sleep counter and respawn point; the host's
         // respawn point, anchor and action bar stay theirs.
@@ -574,6 +589,8 @@ impl Game<'_> {
             mining,
             destroy_delay,
             using,
+            use_duration,
+            use_ticks_set,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -649,6 +666,8 @@ impl Game<'_> {
             mining,
             destroy_delay,
             using,
+            use_duration,
+            use_ticks_set,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -766,6 +785,8 @@ impl Game<'_> {
         play.mining = std::mem::replace(&mut self.mining, mining);
         play.destroy_delay = std::mem::replace(&mut self.destroy_delay, destroy_delay);
         play.using = std::mem::replace(&mut self.using, using);
+        play.use_duration = std::mem::replace(&mut self.use_duration, use_duration);
+        play.use_ticks_set = std::mem::replace(&mut self.use_ticks_set, use_ticks_set);
         play.use_delay = std::mem::replace(&mut self.use_delay, use_delay);
         play.shield_cooldown = std::mem::replace(&mut self.shield_cooldown, shield_cooldown);
         play.cooldowns = std::mem::replace(&mut self.cooldowns, cooldowns);
@@ -1178,9 +1199,14 @@ impl Game<'_> {
             );
             return false;
         }
+        // A mod menu type only for a client that has it: as
+        // `ServerPlayer.openMenu` with no menu, nothing opens.
+        let brand = host.hub.guest(conn).map_or("", |g| g.brand.as_str());
+        if !horizon_client::containers::menu_reaches(brand, menu) {
+            return false;
+        }
         // ServerPlayer.openMenu closes the menu that was open.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        self.guest_close_all(host, conn);
         let hidden = self.native_hidden_slots(pos, items.len());
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
@@ -1228,8 +1254,7 @@ impl Game<'_> {
             return false;
         };
         // ServerPlayer.openMenu closes the menu that was open.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        self.guest_close_all(host, conn);
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
         true
@@ -1248,6 +1273,38 @@ impl Game<'_> {
         {
             self.container_edge_sound(pos, false);
         }
+    }
+
+    /// Closes whatever menu the guest has open, the way each `ContainerClose`
+    /// does (`ServerPlayer.doCloseContainer`, `AbstractContainerMenu.removed`):
+    /// the container's lid, a vehicle's stand-in (its items go back to the
+    /// vehicle), the trade (written back to the villager), the crafting table,
+    /// station and mount menus, and the cursor stack back to the inventory.
+    /// Nothing is sent to the client: this is for a guest who is leaving or
+    /// whose server is closing. The guest must be in `host.hub.guests` and the
+    /// level they are in must be the one in place.
+    pub(super) fn guest_close_all(&mut self, host: &mut LanHost, conn: u32) {
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        if let Some((window, slots)) = host.hub.guests[gi]
+            .menu
+            .as_ref()
+            .map(|m| (m.window, m.slots))
+        {
+            self.guest_container_closed(host, conn);
+            if let Slots::Block(key) = slots
+                && key.1 == super::minecarts::CART_KEY_Y
+            {
+                self.close_guest_vehicle_menu(host, conn, key);
+            }
+            host.hub.container_closed(conn, window);
+        }
+        self.lan_merchant_closed(host, conn, None);
+        self.lan_crafting_closed(host, conn, None);
+        self.lan_station_closed(host, conn, None);
+        self.lan_mount_closed(host, conn, None);
+        self.guest_carried_back(host, gi);
     }
 
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
@@ -1294,15 +1351,7 @@ impl Game<'_> {
             .guests
             .iter()
             .filter(|g| host.hub.here(g))
-            .filter(|g| {
-                g.menu.as_ref().is_some_and(|m| {
-                    (m.slots.valid(&self.world) && !m.slots.still_valid(&self.world, g, m.pos))
-                        || m.pos.is_some_and(|k| {
-                            k.1 == super::minecarts::CART_KEY_Y
-                                && !self.chest_vehicle_still_valid(k.2, g)
-                        })
-                })
-            })
+            .filter(|g| !self.container_menu_valid(g))
             .map(|g| {
                 let vehicle = g.menu.as_ref().and_then(|m| match m.slots {
                     Slots::Block(key) if key.1 == super::minecarts::CART_KEY_Y => Some(key),
@@ -1320,6 +1369,78 @@ impl Game<'_> {
             if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
                 self.guest_carried_back(host, gi);
             }
+        }
+    }
+
+    /// `stillValid` of the guest's open container: its blocks are still there
+    /// and in reach, or its vehicle exists and is in reach. True with none open.
+    fn container_menu_valid(&self, g: &horizon_client::lan::guest::Guest) -> bool {
+        g.menu.as_ref().is_none_or(|m| {
+            !(m.slots.valid(&self.world) && !m.slots.still_valid(&self.world, g, m.pos))
+                && !m.pos.is_some_and(|k| {
+                    k.1 == super::minecarts::CART_KEY_Y && !self.chest_vehicle_still_valid(k.2, g)
+                })
+        })
+    }
+
+    /// `AbstractContainerMenu.stillValid` of whatever menu the guest has open
+    /// (a container or vehicle, a trade, the crafting table, a station, a
+    /// lectern, a mount's inventory). True when none is open.
+    fn guest_menu_still_valid(&self, host: &LanHost, conn: u32) -> bool {
+        let Some(g) = host.hub.guest(conn) else {
+            return true;
+        };
+        if !self.container_menu_valid(g) {
+            return false;
+        }
+        let Some(p) = host.play.get(&conn) else {
+            return true;
+        };
+        p.crafting
+            .table
+            .as_ref()
+            .is_none_or(|t| self.lan_table_valid(g, t.3))
+            && p.station
+                .as_ref()
+                .is_none_or(|s| self.lan_station_valid(g, s))
+            && p.lectern
+                .as_ref()
+                .is_none_or(|l| self.lan_lectern_valid(g, l.key))
+            && p.merchant
+                .as_ref()
+                .and_then(|m| m.merchant.mob)
+                .is_none_or(|id| self.lan_merchant_valid(g, id))
+            && p.mount_window
+                .as_ref()
+                .is_none_or(|m| self.lan_mount_valid(g, m.mob))
+    }
+
+    /// The check before a menu click: a menu that is no longer valid closes
+    /// (returning what it held, as `ContainerClose` does) and the client's
+    /// window with it, so the click lands on nothing
+    /// (`ServerGamePacketListenerImpl.handleContainerClick` and the others
+    /// ask `stillValid` first).
+    fn guest_validate_menu(&mut self, host: &mut LanHost, conn: u32) {
+        if self.guest_menu_still_valid(host, conn) {
+            return;
+        }
+        let mut windows: Vec<i32> = host
+            .hub
+            .guest(conn)
+            .and_then(|g| g.menu.as_ref().map(|m| m.window))
+            .into_iter()
+            .collect();
+        if let Some(p) = host.play.get(&conn) {
+            windows.extend(p.crafting.table.as_ref().map(|t| t.0));
+            windows.extend(p.station.as_ref().map(|s| s.window));
+            windows.extend(p.lectern.as_ref().map(|l| l.window));
+            windows.extend(p.merchant.as_ref().map(|m| m.window));
+            windows.extend(p.mount_window.as_ref().map(|m| m.window));
+        }
+        self.guest_close_all(host, conn);
+        for container in windows {
+            host.hub
+                .send_to(conn, &C::ContainerClose(play::ContainerClose { container }));
         }
     }
 
@@ -1433,6 +1554,19 @@ impl Game<'_> {
             )
         {
             return;
+        }
+        if matches!(
+            packet,
+            S::ContainerClick(_)
+                | S::ContainerButtonClick(_)
+                | S::ContainerSlotStateChanged(_)
+                | S::RenameItem(_)
+                | S::SetBeacon(_)
+                | S::SelectTrade(_)
+                | S::SelectBundleItem(_)
+                | S::PlaceRecipe(_)
+        ) {
+            self.guest_validate_menu(host, conn);
         }
         let spectator = host.hub.guests[gi].spectator();
         match packet {
@@ -1744,6 +1878,23 @@ impl Game<'_> {
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
+                // SpawnEggItem.use calls ServerLevel.mayInteract at its own
+                // fluid ray's position, unlike useOn's packet-supplied block.
+                let held = if hand == Hand::Off {
+                    g.offhand.as_ref()
+                } else {
+                    g.inventory.get(g.selected).and_then(Option::as_ref)
+                };
+                if held.is_some_and(|s| s.item.ends_with("_spawn_egg")) {
+                    let hit = self
+                        .as_guest(host, conn, |g| {
+                            g.with_hand(hand, |g| g.spawn_egg_fluid_hit())
+                        })
+                        .flatten();
+                    if hit.is_some_and(|h| self.under_spawn_protection(host, gi, h.pos)) {
+                        return;
+                    }
+                }
                 let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                 let used = self.as_guest(host, conn, |g| {
                     // A horn's sound, inline instruments included.
@@ -1970,6 +2121,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
+                self.guest_far_terrain(host, conn, &p.data)
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
@@ -2350,6 +2504,25 @@ impl Game<'_> {
         }
     }
 
+    /// Whether a block outline occludes the straight line from `eye` to `point`.
+    fn block_between(&self, eye: [f64; 3], point: [f64; 3]) -> bool {
+        let d = [point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]];
+        let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if dist < 1e-9 {
+            return false;
+        }
+        let dir = [d[0] / dist, d[1] / dist, d[2] / dist];
+        self.clip_ray(eye, dir, dist).is_some_and(|h| {
+            let hd = [
+                h.point[0] - eye[0],
+                h.point[1] - eye[1],
+                h.point[2] - eye[2],
+            ];
+            let hit_dist = (hd[0] * hd[0] + hd[1] * hd[1] + hd[2] * hd[2]).sqrt();
+            hit_dist < dist - 1e-6
+        })
+    }
+
     /// Aim the swapped-in player at an entity; returns where it aims and the
     /// eye. A boat, minecart, armor stand, item frame or painting is aimed at
     /// the point the client hit (the interact packet's location) when that
@@ -2390,12 +2563,13 @@ impl Game<'_> {
             let on = (0..3).all(|k| (point[k] - inside[k]).abs() < 0.1);
             Some(if on { inside } else { middle })
         };
-        let centre = match self.mobs.iter().find(|m| m.id as i32 == id) {
-            Some(m) => [
-                m.position.x,
-                m.position.y + m.kind.height * 0.5,
-                m.position.z,
-            ],
+        let mob_box = self.mobs.iter().find(|m| m.id as i32 == id).map(|m| {
+            let b = m.bounds();
+            let (mn, mx) = (b.min_position(), b.max_position());
+            ([mn.x, mn.y, mn.z], [mx.x, mx.y, mx.z])
+        });
+        let centre = match mob_box {
+            Some((lo, hi)) => visible_aim_point(eye, lo, hi, |p| self.block_between(eye, p)),
             None if self.object_target(id).is_some() => object()?,
             // A dragon part or an end crystal (game/dragon.rs).
             None => {
@@ -2638,6 +2812,30 @@ impl Game<'_> {
         command: &str,
         signed: Option<Vec<(String, horizon_client::lan::hub::chat::ChatMessage)>>,
     ) {
+        // The mods hear every command first, and may stop it.
+        let mut canceled = false;
+        let mut replies = Vec::new();
+        if let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone())) {
+            self.native_player_command(
+                uuid,
+                &name,
+                command.trim_start_matches('/'),
+                &mut canceled,
+                &mut replies,
+            );
+        }
+        for line in replies {
+            host.hub.send_to(
+                conn,
+                &C::SystemChat(play::SystemChat {
+                    content: horizon_client::lan::data::component_nbt(&line.component()),
+                    overlay: false,
+                }),
+            );
+        }
+        if canceled {
+            return;
+        }
         if self.guest_message_command(host, conn, command, signed.as_ref()) {
             return;
         }
@@ -2777,12 +2975,12 @@ impl Game<'_> {
     pub(super) fn send_admin_feedback(&mut self, host: &mut LanHost, source: Option<u32>) {
         // PlayerList.isOp for the host of a world open to LAN: the owner when
         // the world allows commands, everyone when the LAN does.
-        let host_op = source.is_some()
-            && !host.hub.config.dedicated
-            && (self.allow_commands() || host.hub.config.guest_commands);
+        let host_ops =
+            !host.hub.config.dedicated && (self.allow_commands() || host.hub.config.guest_commands);
+        let host_op = source.is_some() && host_ops;
         // server.toml's `admin_feedback_to_ops` off: the console's log only.
         let to_ops = host.hub.admin_feedback_to_ops;
-        for (line, ops, console) in std::mem::take(&mut self.admin_feedback) {
+        for (line, ops, console, no_player) in std::mem::take(&mut self.admin_feedback) {
             if ops && to_ops {
                 let content = horizon_client::lan::data::component_nbt(&line.component());
                 for g in host
@@ -2796,7 +2994,8 @@ impl Game<'_> {
                         overlay: false,
                     }));
                 }
-                if host_op {
+                // A line no player's command made (a command block's) reaches the host too.
+                if host_op || (no_player && host_ops) {
                     self.system_message(line.clone());
                 }
             }
@@ -2974,6 +3173,7 @@ impl Game<'_> {
         // restartClientLoadTimerAfterRespawn.
         g.dead = false;
         g.load_timeout = horizon_client::lan::guest::CLIENT_LOADED_TIMEOUT;
+        g.loading = true;
         g.death_time = 0;
         g.health = 20.0;
         g.food = 20;
@@ -3045,6 +3245,11 @@ impl Game<'_> {
             }
             host.hub.teleport(i, Some(at));
         }
+        // PlayerRespawnEvent, at the end of PlayerList.respawn: the player is
+        // placed, in their respawn level, with their state swapped in so the
+        // helpers reach them (as for native_perform_command).
+        let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
         if away && let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
@@ -3714,6 +3919,24 @@ impl Game<'_> {
                     count,
                     speed,
                 }) => self.landing_dust(Some(host), state, position, count, speed),
+                // A block's own sound names no player: the guest hears it too.
+                MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {
+                    sound,
+                    position: Some(pos),
+                    volume,
+                    pitch,
+                }) if sound.block_sound().is_some() => {
+                    if let Some(name) = sound.block_sound() {
+                        let source = horizon_client::settings::sound_source(name) as i32;
+                        let at = [
+                            f64::from(pos.x) + 0.5,
+                            f64::from(pos.y) + 0.5,
+                            f64::from(pos.z) + 0.5,
+                        ];
+                        self.audio.play_unshared(name, Some(at), volume, pitch);
+                        host.hub.sound(name, at, volume, pitch, source, None);
+                    }
+                }
                 // LivingEntity.causeFallDamage: Player.playSound skips the
                 // guest, whose own client plays it; everyone else hears it.
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {
@@ -3729,6 +3952,15 @@ impl Game<'_> {
                     }
                 }
                 MotionEvent::Fall(event) => self.landing_block_updates(&event),
+                // PowderSnowBlock.entityInside: every player around sees the
+                // snowflake (`ServerLevel.sendParticles`).
+                MotionEvent::Snowflake { position, velocity } => {
+                    super::lan_particles::send_snowflake_particle(
+                        host,
+                        [position.x, position.y, position.z],
+                        [velocity.x, velocity.y, velocity.z],
+                    );
+                }
                 // LivingEntity.baseTick's entity event 67, to every client
                 // around, the guest's own included; this window draws it too.
                 MotionEvent::Drown => {
@@ -3847,15 +4079,8 @@ impl Game<'_> {
             if next % 10 != 0 {
                 return;
             }
-            if (next / 10) % 2 == 0
-                && !creative
-                && let Some(stack) = game.armor[1].clone()
-            {
-                // `ItemStack.hurtAndBreak`: Unbreaking can save the wear.
-                let loss = game.wear(&stack, 1);
-                if let Some(elytra) = game.armor[1].as_mut() {
-                    elytra.damage += loss;
-                }
+            if (next / 10) % 2 == 0 && !creative {
+                game.wear_glider(1);
             }
             let ctx = game.player_context(None);
             game.post_game_event("minecraft:elytra_glide", at, ctx);
@@ -4621,5 +4846,142 @@ mod bundle_slot_tests {
         assert_eq!(bundle_inventory_slot(5, Some(10)), None);
         assert_eq!(bundle_inventory_slot(46, Some(10)), None);
         assert_eq!(bundle_inventory_slot(45, None), Some(45));
+    }
+}
+
+/// Where the server aims a guest's attack or interact on a mob. The packet names only the
+/// entity, so the server picked the mob's centre; a slab, trapdoor, stair or fence between the
+/// eyes and that centre then hid a mob the guest's own crosshair hit through the gap (#5772).
+/// This returns the centre when it is visible, else the visible point of the box nearest to it (the one nearer the eyes when two are equally near)
+/// (`occluded` tells whether a block outline hides a point from the eyes); the centre again
+/// when the whole box is hidden.
+fn visible_aim_point(
+    eye: [f64; 3],
+    lo: [f64; 3],
+    hi: [f64; 3],
+    occluded: impl Fn([f64; 3]) -> bool,
+) -> [f64; 3] {
+    let centre = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
+    if !occluded(centre) {
+        return centre;
+    }
+    let margin = [0, 1, 2].map(|k| ((hi[k] - lo[k]) / 2.0).min(0.02));
+    let across = |k: usize, steps: usize| {
+        (0..=steps)
+            .map(|i| {
+                lo[k] + margin[k] + (hi[k] - lo[k] - 2.0 * margin[k]) * i as f64 / steps as f64
+            })
+            .collect::<Vec<f64>>()
+    };
+    let (xs, ys, zs) = (across(0, 2), across(1, 4), across(2, 2));
+    let mut candidates = Vec::with_capacity(xs.len() * ys.len() * zs.len());
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                candidates.push([x, y, z]);
+            }
+        }
+    }
+    let nearness = |p: &[f64; 3]| (0..3).map(|k| (p[k] - centre[k]).powi(2)).sum::<f64>();
+    let from_eye = |p: &[f64; 3]| (0..3).map(|k| (p[k] - eye[k]).powi(2)).sum::<f64>();
+    candidates.sort_by(|a, b| {
+        nearness(a)
+            .total_cmp(&nearness(b))
+            .then(from_eye(a).total_cmp(&from_eye(b)))
+            .then(a[1].total_cmp(&b[1]))
+            .then(a[0].total_cmp(&b[0]))
+            .then(a[2].total_cmp(&b[2]))
+    });
+    candidates
+        .into_iter()
+        .find(|p| !occluded(*p))
+        .unwrap_or(centre)
+}
+
+#[cfg(test)]
+mod aim_point_tests {
+    use super::visible_aim_point;
+
+    const EYE: [f64; 3] = [-760.7, 70.27, -450.4];
+    // A zombie one block behind a top slab: its centre is above the 0.5 gap under the slab.
+    const LO: [f64; 3] = [-763.0, 70.0, -450.9];
+    const HI: [f64; 3] = [-762.4, 71.95, -450.3];
+
+    /// A top slab filling x in [-762, -761] with its underside at y 70.5: a point is hidden when
+    /// the line from the eyes is above 70.5 anywhere inside that column.
+    fn behind_top_slab(p: [f64; 3]) -> bool {
+        let y_at = |x: f64| EYE[1] + (p[1] - EYE[1]) * (x - EYE[0]) / (p[0] - EYE[0]);
+        p[0] < -762.0 && (y_at(-761.0) > 70.5 || y_at(-762.0) > 70.5)
+    }
+
+    #[test]
+    fn a_visible_centre_is_kept() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        assert_eq!(visible_aim_point(EYE, LO, HI, |_| false), centre);
+    }
+
+    /// A bottom slab hides everything under y 70.9: the aim goes above it, through the gap over the slab.
+    #[test]
+    fn a_mob_behind_a_bottom_slab_is_aimed_at_above_the_slab() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        let p = visible_aim_point(EYE, LO, HI, |pt| pt[1] < 70.9);
+        assert!(p[1] >= 70.9, "{p:?} is still under the slab");
+        assert!(p[1] > centre[1] - 0.5, "{p:?} is far from the centre");
+    }
+
+    /// With only the centre hidden, two equally near candidates go to the one nearer the eyes.
+    #[test]
+    fn an_equally_near_point_on_the_side_of_the_eyes_wins() {
+        let eye = [5.0, 70.5, 0.0];
+        let (lo, hi) = ([-0.3, 70.0, -0.3], [0.3, 71.9, 0.3]);
+        let centre = [
+            (lo[0] + hi[0]) / 2.0,
+            (lo[1] + hi[1]) / 2.0,
+            (lo[2] + hi[2]) / 2.0,
+        ];
+        let p = visible_aim_point(eye, lo, hi, |pt| pt == centre);
+        assert!(p[0] > centre[0], "{p:?} is on the far side from the eyes");
+    }
+
+    #[test]
+    fn a_mob_seen_only_through_a_gap_is_aimed_at_through_the_gap() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        assert!(behind_top_slab(centre), "the slab hides the centre");
+        let p = visible_aim_point(EYE, LO, HI, behind_top_slab);
+        assert!(!behind_top_slab(p), "{p:?} is still hidden");
+        for k in 0..3 {
+            assert!(LO[k] <= p[k] && p[k] <= HI[k], "{p:?} is outside the mob");
+        }
+        assert!(p[1] < centre[1], "{p:?} is not lower than the centre");
+    }
+
+    #[test]
+    fn a_fully_hidden_mob_keeps_the_centre() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        assert_eq!(visible_aim_point(EYE, LO, HI, |_| true), centre);
+    }
+
+    #[test]
+    fn the_choice_is_deterministic() {
+        assert_eq!(
+            visible_aim_point(EYE, LO, HI, behind_top_slab),
+            visible_aim_point(EYE, LO, HI, behind_top_slab)
+        );
     }
 }

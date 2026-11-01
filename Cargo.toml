@@ -30,6 +30,7 @@ members = [
     "crates/cargo-horizon-mod",
     "crates/horizon-port-pack",
     "crates/horizon-shaders",
+    "crates/horizon-optifine",
     "crates/horizon-shader-api",
     "crates/horizon-release-sign",
     "xtask",

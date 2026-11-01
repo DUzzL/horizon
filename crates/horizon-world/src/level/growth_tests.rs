@@ -3,11 +3,7 @@
 //! absent).
 use super::*;
 use crate::{chunk::BlockState, worldgen::generator::GeneratorData, worldgen::live::LiveFeatures};
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::PathBuf,
-    sync::OnceLock,
-};
+use std::{collections::HashMap, path::PathBuf, sync::OnceLock};
 
 struct Fixture {
     registry: &'static BlockRegistry,
@@ -121,7 +117,7 @@ impl World {
             properties: props
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<BTreeMap<_, _>>(),
+                .collect(),
         };
         self.f
             .registry
@@ -272,6 +268,148 @@ fn bone_meal_on_a_client_succeeds_only_where_its_level_can_tell() {
     // The server's growCrop takes the sapling.
     assert!(w.bone_meal(BlockPos::new(0, 64, 0)));
 }
+/// A mod block answers vanilla's three `BonemealableBlock` questions itself,
+/// ahead of the `BonemealableBlock` its template would give it, and the meal
+/// is used up with the growth particles and sound as vanilla's are.
+#[test]
+fn bone_meal_answers_a_mod_blocks_three_questions() {
+    /// A level whose bone meal answers are the test's.
+    struct ModLevel<'a> {
+        inner: &'a mut Level,
+        valid: Option<bool>,
+        success: bool,
+        /// `isBonemealSuccess` was asked, and what it saw.
+        rolls: Vec<(BlockPos, BlockStateId)>,
+        /// `performBonemeal` ran, and what it saw.
+        performed: Vec<(BlockPos, BlockStateId)>,
+    }
+    impl LevelAccess for ModLevel<'_> {
+        fn day_time(&self) -> i64 {
+            self.inner.day_time()
+        }
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn emit(&mut self, event: LevelEvent) {
+            self.inner.emit(event);
+        }
+        fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> Option<bool> {
+            self.valid
+        }
+        fn is_bonemeal_success(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
+            self.rolls.push((pos, state));
+            self.success
+        }
+        fn perform_bonemeal(&mut self, _ticks: &mut Ticks, pos: BlockPos, state: BlockStateId) {
+            self.performed.push((pos, state));
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let mut w = World::new(f, 1);
+    w.floor("stone", 4);
+    let pos = BlockPos::new(0, 64, 0);
+    let stone = w.id("stone", &[]);
+    let crop = w.id("wheat", &[("age", "0")]);
+    // A block nothing in Horizon bonemeals: the level's answers take the meal,
+    // the roll grows it, and the caller fires the growth particles and sound.
+    w.put(pos, stone);
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(true),
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(b.use_bone_meal(&mut level, &mut w.ticks, pos, Direction::Up));
+    assert_eq!(level.rolls, vec![(pos, stone)]);
+    assert_eq!(level.performed, vec![(pos, stone)]);
+    assert!(level.inner.events.iter().any(|e| matches!(
+        e,
+        LevelEvent::LevelEvent { id: 1505, pos: at, data: 15 } if *at == pos
+    )));
+    // A roll that fails still uses the meal up, without growing it.
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(true),
+        success: false,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(b.use_bone_meal(&mut level, &mut w.ticks, pos, Direction::Up));
+    assert!(level.performed.is_empty());
+    // Refused: not a target, no roll, no growth, no meal used.
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(false),
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(!b.use_bone_meal(&mut level, &mut w.ticks, pos, Direction::Up));
+    assert!(level.rolls.is_empty() && level.performed.is_empty());
+    // A block whose template bonemeals (a crop) is the mod's instead: the
+    // block's own growth doesn't run.
+    w.put(pos, crop);
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(true),
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(b.grow_crop(&mut level, &mut w.ticks, pos));
+    assert_eq!(level.performed, vec![(pos, crop)]);
+    assert_eq!(level.inner.block_state(pos), crop);
+    // Refused by the mod: vanilla's growCrop stops, the crop keeps its meal
+    // and doesn't grow.
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(false),
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(!b.grow_crop(&mut level, &mut w.ticks, pos));
+    assert_eq!(level.inner.block_state(pos), crop);
+    // Answered nothing, the crop keeps its own bone meal and grows.
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: None,
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(b.grow_crop(&mut level, &mut w.ticks, pos));
+    assert!(level.rolls.is_empty() && level.performed.is_empty());
+    assert_ne!(level.inner.block_state(pos), crop, "the crop grew");
+    // A client predicts the use with the same answer, where the block itself
+    // takes no bone meal on a client.
+    w.put(pos, stone);
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(true),
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(b.bone_meal_succeeds_on_client(&mut level, pos, Direction::Up));
+    level.valid = Some(false);
+    assert!(!b.bone_meal_succeeds_on_client(&mut level, pos, Direction::Up));
+}
+
 #[test]
 fn azalea_and_mangrove_grow() {
     let Some(f) = fixture() else { return };

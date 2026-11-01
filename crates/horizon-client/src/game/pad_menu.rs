@@ -332,6 +332,14 @@ impl Game<'_> {
         self.pad.menu.synthetic = was;
     }
 
+    /// The event being handled is one the pad or the keyboard's focus made
+    /// up (`pad_synthetic_event`), not the window's. A controller's click or
+    /// a focused widget's is not the mouse, so the native mods' mouse hooks
+    /// skip it.
+    pub(super) fn pad_synthetic_input(&self) -> bool {
+        self.pad.menu.synthetic
+    }
+
     fn pad_click_at(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32), right: bool) {
         self.pad_pointer_to(event_loop, at);
         self.pad_pointer_button(event_loop, right, true);
@@ -447,6 +455,14 @@ impl Game<'_> {
             Button::South | Button::West => {
                 self.pad_take_pointer(event_loop);
                 self.pad_pointer_button(event_loop, button == Button::West, true);
+                // A on a text field in pointer mode opens the keyboard, as
+                // in focus mode (not the right click).
+                if button == Button::South
+                    && !self.pad_focusing()
+                    && field_at(&self.pad_targets(), self.cursor)
+                {
+                    self.pad_open_keyboard();
+                }
             }
             // Y in an inventory: a shift-click (quick move).
             Button::North if matches!(self.screen, Screen::Inventory | Screen::Creative) => {
@@ -1001,7 +1017,8 @@ impl Game<'_> {
     /// (`Screen.keyPressed`): Tab, Shift+Tab and the arrows move the focus,
     /// Enter, Space and keypad Enter press the focused widget; the focused
     /// widget's own keys come first (a text field's caret, a slider's
-    /// value). Whether the key was used; when not, the screen has it.
+    /// value). Whether the key was used; when not, the screen has it (a
+    /// container also has Tab and the arrows once they moved the focus).
     pub(super) fn key_focus_key(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
         let Some(nav) = key_focus::nav_of(key, self.has_shift_down()) else {
             return false;
@@ -1086,7 +1103,9 @@ impl Game<'_> {
                 InputType::KeyboardArrow
             });
         }
-        true
+        let container =
+            self.title.is_none() && matches!(self.screen, Screen::Inventory | Screen::Creative);
+        !key_focus::passes_on(act, container)
     }
 
     /// Which screen is open, as far as the keyboard's focus cares.
@@ -1103,7 +1122,7 @@ impl Game<'_> {
             .hash(&mut hasher);
         (self.sign_edit.is_some(), self.book.is_some()).hash(&mut hasher);
         (
-            self.link_prompt.is_some(),
+            self.link_prompt.is_some() || self.command_prompt.is_some(),
             self.server_packs.prompt.is_some(),
         )
             .hash(&mut hasher);
@@ -1175,8 +1194,7 @@ impl Game<'_> {
 
     /// The real mouse, before the screen takes it: where it is, and a press
     /// or a scroll hands it the pointer back from the keyboard, at the
-    /// place the mouse left it (`setLastInputType(MOUSE)`). A left press
-    /// focuses what it lands on, for the next Tab or arrow.
+    /// place the mouse left it (`setLastInputType(MOUSE)`).
     pub(super) fn key_focus_mouse(&mut self, event_loop: &dyn EventLoopCtl, event: &WindowEvent) {
         if self.pad.menu.synthetic {
             return;
@@ -1187,24 +1205,35 @@ impl Game<'_> {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button,
                 ..
-            } => {
-                self.key_focus_to_mouse(event_loop);
-                if *button == MouseButton::Left && self.pad_in_menu() {
-                    let (cx, cy) = self.cursor;
-                    self.pad.menu.origin = self
-                        .key_targets()
-                        .into_iter()
-                        .find(|t| {
-                            let [x, y, w, h] = t.rect;
-                            cx >= x && cy >= y && cx < x + w && cy < y + h
-                        })
-                        .map(|t| t.rect);
-                }
-            }
+            } => self.key_focus_to_mouse(event_loop),
             WindowEvent::MouseWheel { .. } => self.key_focus_to_mouse(event_loop),
             _ => {}
+        }
+    }
+
+    /// Only a press accepted by ScreenEvent.Pre may focus the widget under it.
+    pub(super) fn key_focus_mouse_press(&mut self, event: &WindowEvent) {
+        if !self.pad.menu.synthetic
+            && self.pad_in_menu()
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            let (cx, cy) = self.cursor;
+            self.pad.menu.origin = self
+                .key_targets()
+                .into_iter()
+                .find(|t| {
+                    let [x, y, w, h] = t.rect;
+                    cx >= x && cy >= y && cx < x + w && cy < y + h
+                })
+                .map(|t| t.rect);
         }
     }
 
@@ -1293,17 +1322,17 @@ impl Game<'_> {
         self.pad.menu.osk = Some(Keyboard::default());
     }
 
-    /// Chat or a sign opened by the pad in focus mode: the keyboard opens
-    /// with it (once per screen; B closes it for good).
+    /// Chat or a sign opened by the pad (either menu mode): the keyboard
+    /// opens with it (once per screen; B closes it for good).
     fn pad_auto_keyboard(&mut self) {
         let menu = &self.pad.menu;
-        if menu.osk.is_none()
-            && !menu.osk_dismissed
-            && self.pad.in_use
-            && menu.open_polls >= 3
-            && self.pad_focus_mode()
-            && (self.screen == Screen::Chat || self.sign_edit.is_some())
-        {
+        if osk_auto_opens(
+            menu.osk.is_some(),
+            menu.osk_dismissed,
+            self.pad.in_use,
+            menu.open_polls,
+            self.screen == Screen::Chat || self.sign_edit.is_some(),
+        ) {
             self.pad.menu.osk_dismissed = true;
             self.pad_open_keyboard();
         }
@@ -1448,5 +1477,56 @@ impl Game<'_> {
     /// `EditBox`'s highlighted border).
     fn draw_pad_focus(&self, batch: &mut HudBatch, focus: Target) {
         key_focus::draw_outline(&self.gui.atlas, batch, focus);
+    }
+}
+
+/// Whether the keyboard opens by itself over chat or a sign: the pad is in
+/// use and the screen has been open for a few polls, and it is neither
+/// open nor dismissed already. Independent of the menu mode.
+fn osk_auto_opens(
+    osk_open: bool,
+    dismissed: bool,
+    pad_in_use: bool,
+    polls: u32,
+    typing_screen: bool,
+) -> bool {
+    !osk_open && !dismissed && pad_in_use && polls >= 3 && typing_screen
+}
+
+/// Whether a text field in `targets` contains the point `at` (GUI pixels).
+fn field_at(targets: &[Target], at: (f32, f32)) -> bool {
+    targets.iter().any(|t| {
+        let [x, y, w, h] = t.rect;
+        t.kind == Kind::Field && at.0 >= x && at.0 < x + w && at.1 >= y && at.1 < y + h
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_auto_opens_for_pad_on_typing_screen() {
+        assert!(osk_auto_opens(false, false, true, 3, true));
+        assert!(!osk_auto_opens(false, false, true, 2, true));
+        assert!(!osk_auto_opens(false, false, false, 5, true));
+        assert!(!osk_auto_opens(false, true, true, 5, true));
+        assert!(!osk_auto_opens(true, false, true, 5, true));
+        assert!(!osk_auto_opens(false, false, true, 5, false));
+    }
+
+    #[test]
+    fn field_hit_test() {
+        let t = |rect, kind| Target { rect, kind };
+        let targets = [
+            t([0.0, 0.0, 50.0, 20.0], Kind::Button),
+            t([10.0, 30.0, 100.0, 20.0], Kind::Field),
+        ];
+        assert!(field_at(&targets, (10.0, 30.0)));
+        assert!(field_at(&targets, (109.0, 49.0)));
+        assert!(!field_at(&targets, (110.0, 40.0)));
+        assert!(!field_at(&targets, (50.0, 29.0)));
+        assert!(!field_at(&targets, (5.0, 5.0)), "a button is not a field");
+        assert!(!field_at(&[], (5.0, 5.0)));
     }
 }

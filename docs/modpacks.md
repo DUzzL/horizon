@@ -178,7 +178,7 @@ using the "Shape" column. What a content pack needs:
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable |
+| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable; thrown item projectiles are already data in 0.2 ([mods.md](mods.md)) |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |
@@ -212,7 +212,7 @@ properties and shapes the new block takes, and overrides what differs:
 ```json
 {
   "template": "minecraft:iron_block",
-  "properties": { "hardness": 5.0, "explosion_resistance": 6.0, "sound": "minecraft:metal",
+  "properties": { "hardness": 5.0, "explosion_resistance": 6.0, "sounds": "minecraft:iron_block",
                   "map_color": 33, "light": 0, "requires_tool": true },
   "item": true
 }
@@ -291,9 +291,10 @@ How the game loads them, without touching vanilla's path:
   and a recipe that does not parse are logged and skipped: the block gets no model or the
   missing model, the recipe is absent, everything else loads. Vanilla's own files never hit
   these paths.
-- Not in 0.2: multiplayer registry sync (single player and the integrated server first), worlds
-  opened without a mod they used (vanilla turns unknown blocks into air; we will ask first),
-  vanilla ids redefined by a mod (refused).
+- Multiplayer works when the server and its players run the same content mods: a client whose
+  mods add different blocks, items, effects, entity types or menus is refused when it joins.
+- Not in 0.2: worlds opened without a mod they used (vanilla turns unknown blocks into air; we
+  will ask first), vanilla ids redefined by a mod (refused).
 
 ## The pipeline: `horizon-port-pack`
 

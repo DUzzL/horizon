@@ -106,11 +106,11 @@ ClientPacketListener.getPlayerInfoIgnoreCase	missing		unsure: a case-insensitive
 ClientPacketListener.markMessageAsProcessed	port	crates/horizon-client/src/game/remote_chat.rs::Game::mark_message_processed	when the chat takes the message, past any Chat Delay
 ClientPacketListener.sendChatAcknowledgement	port	crates/horizon-client/src/game/remote_chat.rs::Game::mark_message_processed	a ChatAck once more than 64 wait
 ClientPacketListener.sendCommand	port	crates/horizon-client/src/game/remote_chat.rs::Game::send_command	message arguments signed with a chat session; the unsigned packet otherwise
-ClientPacketListener.verifyCommand	missing		minor: no parse or permission check before a command is sent, so the confirmation screens never show
-ClientPacketListener.isValidCommand	missing		minor: only used by verifyCommand, which is missing
-ClientPacketListener.openSendConfirmationWindow	missing		minor: the confirmation screen before a command with problems is not shown
-ClientPacketListener.openCommandSendConfirmationWindow	missing		minor: the same confirmation screen for click-to-run commands is not shown
-ClientPacketListener.openSignedCommandSendConfirmationWindow	missing		minor: no confirmation screen for a command that needs a signature
+ClientPacketListener.verifyCommand	port	crates/horizon-client/src/game/remote_chat.rs::verify_command	over the tree the server sent
+ClientPacketListener.isValidCommand	port	crates/horizon-command/src/lib.rs::ParseResults::is_valid	
+ClientPacketListener.openSendConfirmationWindow	port	crates/horizon-client/src/game/remote_chat.rs::Game::send_unattended_command	a clicked book or dialog is already closed: no answer returns to it
+ClientPacketListener.openCommandSendConfirmationWindow	port	crates/horizon-client/src/game/remote_chat.rs::Game::answer_command_prompt	Run Command sends it
+ClientPacketListener.openSignedCommandSendConfirmationWindow	port	crates/horizon-client/src/game/remote_chat.rs::Game::answer_command_prompt	into the chat box, or the clipboard over a screen; a kept chat draft is not put before it
 ClientPacketListener.broadcastClientInformation	port	crates/horizon-client/src/game/remote.rs::Game::tick_remote_level	gap: minor: only view distance and chat visibility are sent, and only when they change
 ClientPacketListener.notifyPlayerLoaded	port	crates/horizon-client/src/game/remote.rs::Game::tick_remote_level	gap: minor: gated on the player's column being lit, not on its sections being compiled
 ClientPacketListener.setKeyPair	port	crates/horizon-client/src/game/remote_chat.rs::Game::update_chat_session	only for the account's own profile id; a new session when the pair changes
