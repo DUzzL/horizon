@@ -18,7 +18,7 @@ use horizon_world::registry::BlockStateId;
 /// `builtin` names the ids of built-in registries.
 fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32) {
     let species = m.species();
-    let baby = super::lan::baby_index(&m.kind.id);
+    let baby = super::lan::baby_index(species);
     if &*m.kind.id == "minecraft:player" {
         player_poses(m, values);
     }
@@ -627,6 +627,35 @@ mod tests {
         assert!(calf.is_baby());
         apply(&mut calf, &[(16, s::BOOLEAN, Value::Bool(false))]);
         assert!(!calf.is_baby());
+    }
+
+    /// #6133: a server's baby happy ghast (a hatched dried ghast) and baby
+    /// nautilus come with AgeableMob.DATA_BABY_ID (16) like any other animal.
+    #[test]
+    fn a_happy_ghast_and_a_nautilus_take_their_babyhood() {
+        use horizon_client::mobs::MobTypes;
+        use std::{fs, sync::Arc};
+
+        let root = std::env::temp_dir().join(format!("horizon-baby-flag-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::write(
+            root.join("entity-types.json"),
+            r#"{"minecraft:happy_ghast": {}, "minecraft:nautilus": {}}"#,
+        )
+        .unwrap();
+        fs::write(root.join("entity-models.json"), "{}").unwrap();
+        let mut types = MobTypes::load(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        for kind in ["minecraft:happy_ghast", "minecraft:nautilus"] {
+            let t = Arc::new(types.types.remove(kind).unwrap());
+            let mut m = Mob::new(1, t, horizon_core::geometry::Vec3::ZERO, 0.0);
+            client_defaults(&mut m);
+            assert!(!m.is_baby(), "{kind}");
+            apply(&mut m, &[(16, s::BOOLEAN, Value::Bool(true))]);
+            assert!(m.is_baby(), "{kind}");
+            apply(&mut m, &[(16, s::BOOLEAN, Value::Bool(false))]);
+            assert!(!m.is_baby(), "{kind}");
+        }
     }
 
     #[test]
