@@ -355,6 +355,7 @@ impl Game<'_> {
                             orb.id = self.next_entity;
                             let (id, p) = (orb.id, orb.position);
                             self.orbs.push(orb);
+                            self.remember_tags(id, &tag);
                             let kind = "minecraft:experience_orb";
                             if !moved
                                 && !self.native_entity_joins(id, kind, [p.x, p.y, p.z], from_disk)
@@ -378,6 +379,7 @@ impl Game<'_> {
                             self.next_entity += 1;
                             p.id = self.next_entity;
                             self.restore_portal_cooldown(p.id, &tag);
+                            self.remember_tags(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
@@ -388,12 +390,14 @@ impl Game<'_> {
                         if let Some(mut p) = entity_nbt::fireball_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
                             self.add_projectile(p);
+                            self.remember_last_projectile_tags(&tag);
                         }
                     }
                     id if entity_nbt::throwable_kind(id).is_some() => {
                         if let Some(mut p) = entity_nbt::throwable_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
                             self.add_projectile(p);
+                            self.remember_last_projectile_tags(&tag);
                         }
                     }
                     "minecraft:falling_block" => {
@@ -527,6 +531,7 @@ impl Game<'_> {
                             // parts' from the entity counter.
                             d.id = self.next_entity + 1;
                             self.next_entity += 9;
+                            self.remember_tags(d.id, &tag);
                             self.dragon = Some(d);
                         }
                     }
@@ -537,6 +542,7 @@ impl Game<'_> {
                             // entity counter.
                             self.next_entity += 1;
                             c.id = self.next_entity;
+                            self.remember_tags(c.id, &tag);
                             self.crystals.push(c);
                         }
                     }
@@ -1003,6 +1009,22 @@ impl Game<'_> {
             &biome,
         ));
     }
+    /// An entity Horizon keeps no compound for (orbs, projectiles, the
+    /// crystals and the dragon) still keeps its `Tags`, by entity id, so
+    /// `@e[tag=]`, `/tag` and `/data get` see them.
+    pub(super) fn remember_tags(&mut self, id: u32, tag: &Tag) {
+        if let Some(tags @ Tag::List(_)) = tag.get("Tags") {
+            let mut map = horizon_world::nbt::Compound::new();
+            map.insert("Tags".into(), tags.clone());
+            self.persist.raw.insert(id, Tag::Compound(map));
+        }
+    }
+    /// The `Tags` of the projectile `add_projectile` just pushed.
+    fn remember_last_projectile_tags(&mut self, tag: &Tag) {
+        if let Some(id) = self.creatures.projectiles.last().map(|p| p.id) {
+            self.remember_tags(id, tag);
+        }
+    }
     fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, tag: Tag) {
         self.restore_portal_cooldown(id, &tag);
         if let Some(u) = uuid {
@@ -1083,9 +1105,10 @@ impl Game<'_> {
         for o in &self.orbs {
             if keys.contains(&chunk_of(o.position)) {
                 let (uuid, raw) = anon(&self.persist, "minecraft:experience_orb", o.position);
-                out.entry(chunk_of(o.position))
-                    .or_default()
-                    .push(with_raw(entity_nbt::orb_to_nbt(o, uuid), raw.as_ref()));
+                out.entry(chunk_of(o.position)).or_default().push(with_raw(
+                    with_raw(entity_nbt::orb_to_nbt(o, uuid), raw.as_ref()),
+                    self.persist.raw.get(&o.id),
+                ));
             }
         }
         for p in &self.creatures.projectiles {
@@ -1103,6 +1126,7 @@ impl Game<'_> {
                 .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw.as_ref()))
                 .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw.as_ref()));
             if let Some(tag) = tag {
+                let tag = with_raw(tag, self.persist.raw.get(&p.id));
                 out.entry(chunk_of(p.position)).or_default().push(tag);
             }
         }
@@ -1417,6 +1441,11 @@ impl Game<'_> {
             .chain(self.item_frames.iter().map(|e| e.id))
             .chain(self.paintings.iter().map(|e| e.id))
             .chain(self.others.iter().map(|e| e.id))
+            .chain(self.orbs.iter().map(|e| e.id))
+            .chain(self.creatures.projectiles.iter().map(|e| e.id))
+            .chain(self.crystals.iter().map(|e| e.id))
+            .chain(self.dragon.iter().map(|e| e.id))
+            .chain(self.tnts.iter().map(|e| e.id))
             .collect();
         self.persist.uuids.retain(|id, _| alive.contains(id));
         self.persist.raw.retain(|id, _| alive.contains(id));

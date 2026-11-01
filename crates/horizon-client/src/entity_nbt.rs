@@ -2304,7 +2304,9 @@ pub fn fireball_to_nbt(
 ) -> Option<Tag> {
     let power = match p.kind {
         ProjectileKind::LargeFireball { power } => Some(power),
-        ProjectileKind::SmallFireball => None,
+        ProjectileKind::SmallFireball
+        | ProjectileKind::WindCharge
+        | ProjectileKind::BreezeWindCharge => None,
         _ => return None,
     };
     let base = Base {
