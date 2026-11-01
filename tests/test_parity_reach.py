@@ -157,6 +157,25 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(graph.targets(self.root / "crates/b"),
                          {"client_probe": ("example", "crates/a/examples/probe/main.rs")})
 
+    def test_old_broad_client_records_find_moved_ctl_and_probes(self):
+        workspace(self.root, {
+            "crates/horizon-client/Cargo.toml": '[package]\nname = "horizon-client"\nautobins = false\nautoexamples = false\n'
+            '[[bin]]\nname = "horizon-client"\npath = "src/main.rs"\n',
+            "crates/horizon-client/src/main.rs": "fn main() {}\n",
+            "crates/horizon-client/src/bin/horizon-ctl.rs": "fn main() {}\n",
+            "crates/horizon-client/examples/probe/main.rs": "fn main() {}\n",
+            "crates/horizon-client-lib/Cargo.toml": '[package]\nname = "horizon-client-lib"\nautobins = false\nautoexamples = false\n'
+            '[[bin]]\nname = "horizon-ctl"\npath = "../horizon-client/src/bin/horizon-ctl.rs"\n'
+            '[[example]]\nname = "client_probe"\npath = "../horizon-client/examples/probe/main.rs"\n',
+        })
+        graph = parity_reach.SourceGraph(self.root, parity.rust_code)
+        game, ctl, probe = ("crates/horizon-client/" + path for path in
+                            ["src/main.rs", "src/bin/horizon-ctl.rs", "examples/probe/main.rs"])
+        self.assertEqual(graph.entries([["bins", "", "dev", ["-p", "horizon-client"], False]], {game, ctl, probe}),
+                         {game, ctl})
+        self.assertEqual(graph.entries([["examples", "", "dev", ["-p", "horizon-client"], True]], {game, ctl, probe}),
+                         {probe})
+
     def test_unknown_probes_keep_everything(self):
         self.assertEqual(set(self.narrowed(artifacts=[])), set(self.dependencies))
         self.assertEqual(set(self.narrowed(artifacts=[["example", "missing", "release", ["-p", "a"], True]])),

@@ -646,6 +646,10 @@ def prebuild_commands(artifacts, packages=None):
         kind, name, profile, selection, examples = artifact
         owner = (packages or {}).get((kind, name))
         selected = [value for flag, value in zip(selection, selection[1:]) if flag == "-p"]
+        if not name and kind in ("bins", "examples") and "horizon-client" in selected \
+                and "horizon-client-lib" in (packages or {}).values():
+            # Broad records predate the client package split too.
+            owner = "horizon-client-lib"
         if owner and selected and owner not in selected:
             # A recorded target may have moved packages; retain its feature flags and old selections.
             selection = [*selection, "-p", owner]
