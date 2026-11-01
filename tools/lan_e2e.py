@@ -166,6 +166,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - blast:     primed TNT going off beside a guest in survival hurts the guest and pushes it away
              (ServerExplosion.hurtEntities takes every player); facing it behind a raised shield, the
              guest takes nothing.
+- blast-projectiles: primed TNT going off pushes a flying arrow and a hanging snowball away (ServerExplosion.hurtEntities
+             takes every entity, Entity.pushFromExplosion), while an arrow lying in the floor stays put
+             (AbstractArrow.push does nothing in the ground).
 
 
 - worn:      iron armour the guest puts on in its inventory protects it: a 10-damage blow takes 6
@@ -369,7 +372,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
-          'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
+          'worn', 'blast', 'blast-projectiles', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
           'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
@@ -4865,6 +4868,52 @@ def check_particles(host, guest, out):
     return result
 
 
+def check_blast_projectiles(host, guest, out):
+    host('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    gx, gz = x + 6, z
+    floor = f'fill {gx - 6} {y - 1} {gz - 4} {gx + 6} {y - 1} {gz + 4} minecraft:bedrock'
+    detail = {}
+    try:
+        host('command', command=floor)
+        host('command', command=f'fill {gx - 6} {y} {gz - 4} {gx + 6} {y + 3} {gz + 4} minecraft:air')
+        host('command', command='kill @e[type=minecraft:arrow]')
+        host('command', command='kill @e[type=minecraft:snowball]')
+        # A snowball hanging north of the blast (the host stands west of it), and an arrow that settles into the floor.
+        host('command', command=f'summon minecraft:snowball {gx + 0.5} {y + 1.2} {gz - 1.5} {{NoGravity:1b}}')
+        host('command', command=f'summon minecraft:arrow {gx + 0.5} {y} {gz + 2.5}')
+        host.wait(20)
+        # `entities` lists mobs, items and orbs only: the server's own projectiles come from `simulation`.
+        def flying():
+            return host.raw('simulation')['projectiles']
+
+        def find(kind, near):
+            found = [e for e in flying() if e['kind'] == kind]
+            return min(found, key=lambda e: abs(e['position'][0] - near[0]) + abs(e['position'][2] - near[1]))
+        ball = find('Snowball', (gx + 0.5, gz - 1.5))
+        stuck = find('Arrow', (gx + 0.5, gz + 2.5))
+        # Arrows ignore NoGravity (arrow_from_nbt), so the flying one is summoned beside the fuse it shares.
+        host('command', command=f'summon minecraft:arrow {gx + 2.5} {y + 2.2} {gz + 0.5}')
+        host('command', command=f'summon minecraft:tnt {gx + 0.5} {y + 1} {gz + 0.5} {{fuse:5s}}')
+        air = find('Arrow', (gx + 2.5, gz + 0.5))
+        before = {'air': air['position'], 'ball': ball['position'], 'stuck': stuck['position']}
+        host.wait(8)  # the fuse is 5 ticks; a snowball that flies on would soon hit the wall and vanish
+        left = {e['id']: e['position'] for e in flying()}
+        after = {name: left.get(e['id']) for name, e in (('air', air), ('ball', ball), ('stuck', stuck))}
+        detail = {name: (None if after[name] is None else
+                         [round(after[name][i] - before[name][i], 2) for i in range(3)]) for name in before}
+        host.shot(out, 'blast-projectiles')
+    finally:
+        host('command', command='kill @e[type=minecraft:arrow]')
+        host('command', command='kill @e[type=minecraft:snowball]')
+        host('command', command=floor)
+        host('command', command='gamemode survival')
+    assert detail['air'] and detail['air'][0] > 0.5, f'the blast never pushed the flying arrow east: {detail}'
+    assert detail['ball'] and detail['ball'][2] < -0.5, f'the blast never pushed the snowball north: {detail}'
+    assert detail['stuck'] and max(abs(v) for v in detail['stuck']) < 0.05, f'an arrow in the floor moved: {detail}'
+    return detail
+
+
 def check_blast(host, guest, out):
     guest('command', command='gamemode survival')
     guest('command', command='clear @s')
@@ -6464,7 +6513,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
              'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
-             'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast,
+             'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'blast-projectiles': check_blast_projectiles,
              'light': check_light, 'plates': check_plates, 'plate-projectiles': check_plate_projectiles, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
              'flight': check_flight, 'fireball': check_fireball, 'deflect': check_deflect,
