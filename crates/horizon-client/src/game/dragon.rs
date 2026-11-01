@@ -3624,11 +3624,9 @@ impl Game<'_> {
     /// `handleHurtAnimation` and `handleDamageEvent`: the red flash.
     pub(super) fn remote_dragon_hurt(&mut self, id: i32) {
         if let Some(d) = self.remote_dragon_mut(id) {
+            // `LivingEntity.handleDamageEvent`: the red flash. Its sound is the
+            // server's (`playHurtSound`); a client plays one only for its own player.
             d.hurt_time = 10;
-            let at = [d.position.x, d.position.y, d.position.z];
-            let pitch = 0.8 + self.world.random.next_float() * 0.3;
-            self.audio
-                .play("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
         }
     }
     /// `handleRemoveEntities`, or a crystal removed: the healing beam
