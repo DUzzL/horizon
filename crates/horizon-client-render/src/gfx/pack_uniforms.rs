@@ -51,6 +51,12 @@ pub struct PackInputs {
     pub cloud_height: f32,
     /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
     pub mod_params: [[f32; 4]; 8],
+    /// The player's state, for Iris's status uniforms.
+    pub status: PlayerStatus,
+    /// The End flash: its intensity, 0..1 (0 outside the End), and its direction from the
+    /// camera in world space, of length 100 (`endFlashIntensity`, `endFlashPosition`).
+    pub end_flash: f32,
+    pub end_flash_direction: Vec3,
 }
 
 /// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
@@ -63,6 +69,35 @@ pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
         f32::NAN
     }
 }
+
+/// The local player's state behind Iris's status uniforms (`currentPlayerHealth`,
+/// `isSpectator`, `is_burning`...).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerStatus {
+    /// Survival or adventure: the vitals are -1 in creative and spectator.
+    pub survival: bool,
+    pub health: f32,
+    pub max_health: f32,
+    pub food: f32,
+    /// Air supply ticks, of 300.
+    pub air: f32,
+    /// Armor points (the `armor` attribute).
+    pub armor: f32,
+    pub spectator: bool,
+    pub riding: bool,
+    pub feet_in_water: bool,
+    pub swimming: bool,
+    pub burning: bool,
+    pub hurt: bool,
+    pub invisible: bool,
+    pub sneaking: bool,
+    pub sprinting: bool,
+}
+
+/// `maxPlayerHunger`, `maxPlayerAir` and `maxPlayerArmor`: Minecraft's own maximums.
+const MAX_HUNGER: f32 = 20.0;
+const MAX_AIR: f32 = 300.0;
+const MAX_ARMOR: f32 = 50.0;
 
 /// One uniform's value: up to 16 floats or 3 integers.
 #[derive(Clone, Copy, Debug)]
@@ -198,6 +233,25 @@ pub const NAMES: &[&str] = &[
     "playerLookVector",
     "playerBodyVector",
     "firstPersonCamera",
+    "currentPlayerHealth",
+    "maxPlayerHealth",
+    "currentPlayerHunger",
+    "maxPlayerHunger",
+    "currentPlayerAir",
+    "maxPlayerAir",
+    "currentPlayerArmor",
+    "maxPlayerArmor",
+    "isSpectator",
+    "isRiding",
+    "feetInWater",
+    "inSwimmingAnimation",
+    "is_burning",
+    "is_hurt",
+    "is_invisible",
+    "is_sneaking",
+    "is_sprinting",
+    "endFlashIntensity",
+    "endFlashPosition",
     "centerDepthSmooth",
     "isRightHanded",
     "is_on_ground",
@@ -439,6 +493,7 @@ impl FrameUniforms {
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),
+                "endFlashPosition" => v3(to_view(inputs.end_flash_direction)),
                 "centerDepthSmooth" => Value::f(&[center_depth]),
                 "moonPosition" => v3(moon),
                 "shadowLightPosition" => v3(if day { sun } else { moon }),
@@ -499,7 +554,7 @@ impl FrameUniforms {
                 "isElytraFlying" => Value::i(&[inputs.elytra_flying as i32]),
                 "cloudHeight" => Value::f(&[inputs.cloud_height]),
                 // renderStage is NONE outside gbuffers draws.
-                _ => Value::i(&[0]),
+                _ => status_value(name, inputs).unwrap_or(Value::i(&[0])),
             }
         };
         self.values.clear();
@@ -545,6 +600,46 @@ impl FrameUniforms {
     }
 }
 
+/// Iris's player status and dimension uniforms, from `inputs`: the vitals are fractions of
+/// their maximum, and -1 (with the maximums of health and air) in creative and spectator.
+fn status_value(name: &str, inputs: &PackInputs) -> Option<Value> {
+    let status = inputs.status;
+    let vital = |v: f32| {
+        Value::f(&[if status.survival {
+            v.clamp(0.0, 1.0)
+        } else {
+            -1.0
+        }])
+    };
+    let flag = |b: bool| Value::i(&[i32::from(b)]);
+    Some(match name {
+        "currentPlayerHealth" => vital(status.health / status.max_health.max(1.0)),
+        "maxPlayerHealth" => Value::f(&[if status.survival {
+            status.max_health
+        } else {
+            -1.0
+        }]),
+        "currentPlayerHunger" => vital(status.food / MAX_HUNGER),
+        "maxPlayerHunger" => Value::f(&[MAX_HUNGER]),
+        "currentPlayerAir" => vital(status.air / MAX_AIR),
+        "maxPlayerAir" => Value::f(&[if status.survival { MAX_AIR } else { -1.0 }]),
+        "currentPlayerArmor" => vital(status.armor / MAX_ARMOR),
+        "maxPlayerArmor" => Value::f(&[MAX_ARMOR]),
+        "isSpectator" => flag(status.spectator),
+        "isRiding" => flag(status.riding),
+        "feetInWater" => flag(status.feet_in_water),
+        "inSwimmingAnimation" => flag(status.swimming),
+        "is_burning" => flag(status.burning),
+        "is_hurt" => flag(status.hurt),
+        // Spectators count as invisible.
+        "is_invisible" => flag(status.invisible || status.spectator),
+        "is_sneaking" => flag(status.sneaking),
+        "is_sprinting" => flag(status.sprinting),
+        "endFlashIntensity" => Value::f(&[inputs.end_flash]),
+        _ => return None,
+    })
+}
+
 /// How many components the uniform `name` has (16 for a matrix).
 fn components(name: &str) -> usize {
     match name {
@@ -563,7 +658,8 @@ fn components(name: &str) -> usize {
         | "moonPosition"
         | "shadowLightPosition"
         | "fogColor"
-        | "skyColor" => 3,
+        | "skyColor"
+        | "endFlashPosition" => 3,
         "eyeBrightness" | "eyeBrightnessSmooth" | "atlasSize" => 2,
         n if n.starts_with("gbuffer") || n.starts_with("shadow") && n != "shadowAngle" => 16,
         _ => 1,
@@ -590,6 +686,77 @@ mod tests {
         assert_eq!(i32::from_ne_bytes(out[16..20].try_into().unwrap()), 1);
         Value::f(&[1.0; 16]).write("mat4", &mut out, 60);
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
+    }
+
+    /// Iris's status uniforms as its documentation defines them (shaders.properties, "Status").
+    #[test]
+    fn status_uniforms_follow_iris() {
+        let float = |name: &str, inputs: &PackInputs| match status_value(name, inputs) {
+            Some(Value::F(f)) => f[0],
+            other => panic!("{name}: {other:?}"),
+        };
+        let int = |name: &str, inputs: &PackInputs| match status_value(name, inputs) {
+            Some(Value::I(i)) => i[0],
+            other => panic!("{name}: {other:?}"),
+        };
+        let mut inputs = PackInputs {
+            status: PlayerStatus {
+                survival: true,
+                health: 15.0,
+                max_health: 20.0,
+                food: 10.0,
+                air: 150.0,
+                armor: 20.0,
+                sneaking: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // The vitals are fractions of their maximums.
+        assert_eq!(float("currentPlayerHealth", &inputs), 0.75);
+        assert_eq!(float("maxPlayerHealth", &inputs), 20.0);
+        assert_eq!(float("currentPlayerHunger", &inputs), 0.5);
+        assert_eq!(float("maxPlayerHunger", &inputs), 20.0);
+        assert_eq!(float("currentPlayerAir", &inputs), 0.5);
+        assert_eq!(float("maxPlayerAir", &inputs), 300.0);
+        assert_eq!(float("currentPlayerArmor", &inputs), 0.4);
+        assert_eq!(float("maxPlayerArmor", &inputs), 50.0);
+        assert_eq!(int("is_sneaking", &inputs), 1);
+        assert_eq!(int("is_invisible", &inputs), 0);
+        // Creative and spectator: -1 for the vitals and the maximums of health and air;
+        // spectators are invisible.
+        inputs.status.survival = false;
+        inputs.status.spectator = true;
+        for name in [
+            "currentPlayerHealth",
+            "maxPlayerHealth",
+            "currentPlayerHunger",
+            "currentPlayerAir",
+            "maxPlayerAir",
+            "currentPlayerArmor",
+        ] {
+            assert_eq!(float(name, &inputs), -1.0, "{name}");
+        }
+        assert_eq!(float("maxPlayerHunger", &inputs), 20.0);
+        assert_eq!(float("maxPlayerArmor", &inputs), 50.0);
+        assert_eq!(int("isSpectator", &inputs), 1);
+        assert_eq!(int("is_invisible", &inputs), 1);
+        // Each is provided, not left at zero for the pack.
+        for name in [
+            "currentPlayerHealth",
+            "isSpectator",
+            "is_sprinting",
+            "bedrockLevel",
+        ] {
+            assert!(index(name).is_some(), "{name} is not provided");
+        }
+        assert!(
+            NAMES
+                .iter()
+                .filter(|n| status_value(n, &inputs).is_some())
+                .count()
+                == 18
+        );
     }
 
     #[test]

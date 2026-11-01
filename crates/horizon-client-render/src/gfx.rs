@@ -4080,14 +4080,18 @@ impl Renderer {
                 .iter()
                 .take_while(|&&p| p == (page, index_page))
                 .count();
-            // Translucent draws, and only they, have sorted indices.
-            let vertices = match &self.translucent_arena {
-                Some(arena) if index_page.is_some() => arena.buffer(page),
-                _ => self.arena.buffer(page),
+            // Translucent draws, and only they, have sorted indices; split, their large
+            // pages are bound up to their last range in use (`Arena::binding`).
+            let (vertices, indices) = match (&self.translucent_arena, index_page) {
+                (Some(arena), Some(p)) => (arena.binding(page), self.sorted_indices.binding(p)),
+                (_, p) => (
+                    self.arena.buffer(page).slice(..),
+                    p.map_or(&self.indices, |p| self.sorted_indices.buffer(p))
+                        .slice(..),
+                ),
             };
-            pass.set_vertex_buffer(0, vertices.slice(..));
-            let indices = index_page.map_or(&self.indices, |p| self.sorted_indices.buffer(p));
-            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, vertices);
+            pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
             if self.multi_draw {
                 let offset = (i - base as usize) as u64 * 20;
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);

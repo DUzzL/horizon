@@ -11208,7 +11208,7 @@ impl Game<'_> {
         if landed {
             if knockback > 0.0 {
                 let (xd, zd) = self.extra_knockback_direction();
-                self.mobs[index].knockback(f64::from(knockback), xd, zd, &source);
+                self.mobs[index].knockback_effect(f64::from(knockback), xd, zd, &source, amount);
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
@@ -11777,6 +11777,8 @@ impl Game<'_> {
         self.streaming.sky_light = dim != Dim::Nether;
         self.streaming.nether_shading = dim == Dim::Nether;
         self.load_world_state();
+        // The level the world opens in, before any of its chunks.
+        self.native_level_opened(dim);
         Ok(())
     }
     /// Streaming and region storage for one dimension of a world.

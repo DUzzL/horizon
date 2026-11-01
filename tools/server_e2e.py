@@ -214,7 +214,7 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '--bins'],
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bins'],
                        cwd=ROOT, check=True)
         bins = ROOT / 'target/fast'
     out = Path(args.out)
