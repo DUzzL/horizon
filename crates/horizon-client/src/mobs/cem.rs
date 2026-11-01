@@ -814,11 +814,20 @@ mod tests {
             // EMF's file is broken: OptiFine's stands.
             ("emf/cem/cow.jem", "{"),
             ("optifine/cem/cow.jem", replace.as_str()),
+            // The baby's own file is broken: the adult's falls back onto it.
+            ("optifine/cem/zombie_baby.jem", "{"),
+            ("optifine/cem/zombie.jem", attach.as_str()),
         ];
         let tree = plane("root", vec![plane("body", vec![])]);
-        let models = models("broken", &files, &["llama#decor", "cow#main"], &tree);
+        let models = models(
+            "broken",
+            &files,
+            &["llama#decor", "cow#main", "zombie_baby#main"],
+            &tree,
+        );
         assert_eq!(attached(&models, "llama#decor", "body"), Some(true));
         assert_eq!(attached(&models, "cow#main", "body"), Some(false));
+        assert_eq!(attached(&models, "zombie_baby#main", "body"), Some(true));
     }
 
     #[test]
