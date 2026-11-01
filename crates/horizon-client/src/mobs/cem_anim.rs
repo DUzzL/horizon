@@ -978,14 +978,14 @@ mod tests {
         let (m, s) = (mob(), still());
         let model = bone("root", vec![]);
         let animation = animate(&model, &[("root.tx", "is_in_gui"), ("root.ty", "time")]);
-        let mut run = || {
+        let run = || {
             let mut poses = Poses::new(&model);
             animation.run(&m, &s, &mut poses);
             let p = *poses.get("root");
             [p[0], p[1]]
         };
         assert_eq!(run(), [0.0, 77.0]);
-        assert_eq!(in_gui(&mut run), [1.0, 77.0]);
+        assert_eq!(in_gui(run), [1.0, 77.0]);
         assert_eq!(run(), [0.0, 77.0]);
     }
 
