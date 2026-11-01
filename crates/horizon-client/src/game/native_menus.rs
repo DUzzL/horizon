@@ -235,7 +235,7 @@ const MOUNT_MENU: &str = "horizon:mount_inventory";
 /// The menu `conn` has open, whichever way the game keeps it: a block's
 /// container, a trade, a crafting table, a workstation, a lectern or a
 /// mount's inventory. Not the player's own inventory menu.
-fn open_menu_of(host: &LanHost, conn: u32) -> Option<HeardMenu> {
+fn open_menu_of(host: &LanHost, conn: u32) -> Option<(i32, &str, Option<[i32; 3]>)> {
     let g = host.hub.guest(conn)?;
     let play = host.play.get(&conn);
     if let Some(m) = &g.menu {
@@ -245,11 +245,7 @@ fn open_menu_of(host: &LanHost, conn: u32) -> Option<HeardMenu> {
             .pos
             .filter(|p| p.1 != horizon_client::lan::menu::VEHICLE_KEY_Y)
             .map(|p| [p.0, p.1, p.2]);
-        return Some(HeardMenu {
-            window: m.window,
-            menu: menu.to_owned(),
-            pos,
-        });
+        return Some((m.window, menu, pos));
     }
     let play = play?;
     let (window, menu, pos) = if let Some(gm) = &play.merchant {
@@ -273,11 +269,7 @@ fn open_menu_of(host: &LanHost, conn: u32) -> Option<HeardMenu> {
     } else {
         return None;
     };
-    Some(HeardMenu {
-        window,
-        menu: menu.to_owned(),
-        pos,
-    })
+    Some((window, menu, pos))
 }
 
 /// Where the game calls the menu hook points.
@@ -295,11 +287,18 @@ impl Game<'_> {
             .map(|g| g.conn)
             .collect();
         for conn in conns {
+            // Compared as borrowed: nothing is built each tick while it stays open.
             let now = open_menu_of(host, conn);
-            let heard = host.play.get(&conn).and_then(|p| p.menu_heard.clone());
-            if now == heard {
+            let heard = host.play.get(&conn).and_then(|p| p.menu_heard.as_ref());
+            if now == heard.map(|h| (h.window, h.menu.as_str(), h.pos)) {
                 continue;
             }
+            let now = now.map(|(window, menu, pos)| HeardMenu {
+                window,
+                menu: menu.to_owned(),
+                pos,
+            });
+            let heard = host.play.get(&conn).and_then(|p| p.menu_heard.clone());
             // Remembered first: a hook can run commands that close menus.
             if let Some(p) = host.play.get_mut(&conn) {
                 p.menu_heard.clone_from(&now);
