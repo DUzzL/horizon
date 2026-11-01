@@ -1682,6 +1682,10 @@ async fn open_backend(
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
+        // Video memory in blocks of 8-64 MiB instead of 128-256 MiB (Vulkan and DirectX 12):
+        // with the larger blocks a few small buffers kept whole blocks the arena's pages had
+        // left, and over half the video memory reserved was unused (1,344 MiB for 500).
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]
