@@ -583,7 +583,7 @@ mod tests {
         }
         world.set(20, 4, 20, water).unwrap();
         world.set(21, 4, 20, flowing).unwrap();
-        let at = Vec3::new(20.5, 4.0, 20.5);
+        let at = Vec3::new(20.5, 6.0, 20.5);
         let mut tnt = PrimedTnt {
             id: 0,
             position: at,
@@ -670,9 +670,9 @@ mod tests {
         }
         world.set(20, 2, 20, soul_sand).unwrap();
         world.set(20, 9, 20, water).unwrap();
-        // Inside the column, below the surface: the upward push is +0.06 a tick
-        // (Entity.handleOnInsideBubbleColumn), capped at 0.7.
-        let at = Vec3::new(20.5, 4.0, 20.5);
+        // BubbleColumnBlock.entityInside: the columns its box touches lift it
+        // (Entity.handleOnInsideBubbleColumn / handleOnAboveBubbleColumn).
+        let at = Vec3::new(20.5, 6.0, 20.5);
         let mut tnt = PrimedTnt {
             id: 0,
             position: at,
@@ -683,15 +683,32 @@ mod tests {
             owner: None,
             guest: None,
         };
-        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        for _ in 0..10 {
+            tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        }
         assert!(
             tnt.velocity.y > 0.0,
             "soul sand lifts primed TNT, got {:?}",
             tnt.velocity
         );
         assert!(
-            tnt.position.y >= at.y,
-            "the lift must not let it sink, got {}",
+            tnt.position.y > at.y,
+            "the column carries it up, got {}",
+            tnt.position.y
+        );
+        // Without the column the same TNT only falls.
+        for y in 3..=8 {
+            world.set(20, y, 20, water).unwrap();
+        }
+        tnt.position = at;
+        tnt.velocity = Vec3::ZERO;
+        tnt.on_ground = false;
+        for _ in 0..4 {
+            tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        }
+        assert!(
+            tnt.position.y < at.y,
+            "water alone does not lift it, got {}",
             tnt.position.y
         );
     }
