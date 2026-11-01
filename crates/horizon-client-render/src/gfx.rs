@@ -6,7 +6,7 @@ use crate::{
     environment::Sky,
     graphics::GraphicsApi,
     hud::{HudBatch, HudRenderer},
-    mesher::{SectionMesh, Sides, TerrainVertex, Vertex},
+    mesher::{Part as Quads, SectionMesh, Sides, TerrainVertex, Vertex},
     section_mask::SectionMask,
     sprites::SpriteAnimation,
 };
@@ -2128,7 +2128,7 @@ impl Renderer {
             true,
             None,
         );
-        // `solid` in two passes over the same draws (terrain.wgsl's `opaque_quad`), for the
+        // `solid` in two passes (terrain.wgsl's `opaque_quad`, `mesher::Part`), for the
         // world pass without a shader pack: no cutout first, through a shader that never
         // discards, then the rest.
         let solid_opaque = pipeline(
@@ -3408,6 +3408,9 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let flat_wanted = flat::wanted(&adapter, &device);
+        // Metal draws solid terrain in two passes (`split_solid`): meshes put all
+        // their opaque quads first, so each pass draws its part in a run or two.
+        crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
             &device,
@@ -5887,6 +5890,18 @@ impl Renderer {
         self.phase2_pages.clear();
         self.solid_runs.clear();
         self.phase2_runs.clear();
+        // On Metal, phase 1 goes the opaque quads of every list, then the cutout
+        // ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
+        // then the rest. A fading list's quads all draw in the cutout pass.
+        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let parts = |fading: bool| -> &'static [(u8, Quads)] {
+            match (split_solid, fading) {
+                (false, _) => &[(0, Quads::All)],
+                (true, false) => &[(0, Quads::Opaque), (1, Quads::Cutout)],
+                (true, true) => &[(1, Quads::All)],
+            }
+        };
+        let mut opaque_draws = 0;
         for (i, v) in visible.iter().enumerate() {
             let s = self.sections.get(v.slot);
             let first_phase = cull.as_ref().is_none_or(|c| c.first(v.slot));
@@ -5895,35 +5910,47 @@ impl Renderer {
             } else {
                 (&mut self.phase2_draws, &mut self.phase2_pages)
             };
-            let start = draws.len();
             let instances = u32::from(first_phase);
             let mut indices = 0;
-            facing_runs_from(&s.sides, eye, mirror_low, v.origin, |first, quads| {
-                indices += quads * 6;
-                let base = s.start as u32 + first * 4;
-                draws.push([quads * 6, instances, 0, base, i as u32]);
-                pages.push((s.page, None));
-            });
-            let runs = if first_phase {
-                &mut self.solid_runs
+            // Phase 2 draws every quad, in both passes.
+            let parts = if first_phase {
+                parts(fade_code(s, &v.key) != 0)
             } else {
-                &mut self.phase2_runs
+                &[(0, Quads::All)]
             };
-            runs.push(
-                v.distance,
-                s.page,
-                start,
-                draws.len() - start,
-                [i as u32, v.slot, indices],
-            );
+            let whole = draws.len();
+            for &(group, part) in parts {
+                let start = draws.len();
+                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
+                    indices += quads * 6;
+                    let base = s.start as u32 + first * 4;
+                    draws.push([quads * 6, instances, 0, base, i as u32]);
+                    pages.push((s.page, None));
+                });
+                let len = draws.len() - start;
+                if first_phase {
+                    if group == 0 {
+                        opaque_draws += len;
+                    }
+                    self.solid_runs
+                        .push_in(group, v.distance, s.page, start, len, [0; 3]);
+                }
+            }
+            if !first_phase {
+                self.phase2_runs.push(
+                    v.distance,
+                    s.page,
+                    whole,
+                    draws.len() - whole,
+                    [i as u32, v.slot, indices],
+                );
+            }
             if let Some(c) = &mut cull
                 && first_phase
             {
                 c.drawn(i, v.slot, indices);
             }
         }
-        self.solid_runs
-            .regroup(&mut self.draws, &mut self.draw_pages, 0);
         // Phase 2's draws are tested where grouping left them.
         let runs = self
             .phase2_runs
@@ -5935,23 +5962,33 @@ impl Renderer {
             }
         }
         // Distant terrain tiles are never occlusion tested: phase 1.
-        let tiles = self.draws.len();
-        self.solid_runs.clear();
         for (i, v) in visible_lods.iter().enumerate() {
             let s = self.lods[&v.key].drawn();
-            let start = self.draws.len();
             let instance = (visible.len() + i) as u32;
-            facing_runs_from(&s.sides, eye, mirror_low, v.origin, |first, quads| {
-                let base = s.start as u32 + first * 4;
-                self.draws.push([quads * 6, 1, 0, base, instance]);
-                self.draw_pages.push((s.page, None));
-            });
-            self.solid_runs
-                .push(v.distance, s.page, start, self.draws.len() - start, [0; 3]);
+            for &(group, part) in parts(v.fade != 0) {
+                let start = self.draws.len();
+                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
+                    let base = s.start as u32 + first * 4;
+                    self.draws.push([quads * 6, 1, 0, base, instance]);
+                    self.draw_pages.push((s.page, None));
+                });
+                let len = self.draws.len() - start;
+                if group == 0 {
+                    opaque_draws += len;
+                }
+                self.solid_runs
+                    .push_in(group, v.distance, s.page, start, len, [0; 3]);
+            }
         }
         self.solid_runs
-            .regroup(&mut self.draws, &mut self.draw_pages, tiles);
+            .regroup(&mut self.draws, &mut self.draw_pages, 0);
         let phase1_draws = self.draws.len() as u32;
+        // Draws `[..opaque_end]` hold opaque quads, `[cutout_start..phase1_draws]` cutout ones.
+        let (opaque_end, cutout_start) = if split_solid {
+            (opaque_draws, opaque_draws)
+        } else {
+            (phase1_draws as usize, 0)
+        };
         self.draws.extend_from_slice(&self.phase2_draws);
         self.draw_pages.extend_from_slice(&self.phase2_pages);
         let culling = cull.is_some();
@@ -6487,6 +6524,7 @@ impl Renderer {
                         phase1_draws as usize,
                         solid_draws as usize,
                         [shadow_first, shadow_first + shadow_solid].map(|d| d as usize),
+                        [opaque_end, cutout_start],
                         phase2,
                         visible
                             .iter()
@@ -7105,24 +7143,30 @@ impl Renderer {
                 }
                 Some(flat) => {
                     let vertices = |p| self.arena.buffer(p);
-                    // Without a pack, on Metal, each list draws twice: the opaque
-                    // pass, then the cutout one (terrain.wgsl's `opaque_quad`).
-                    let passes: &[&wgpu::RenderPipeline] = match pack_flat {
-                        Some(p) => &[&p.0],
-                        None if split_solid => &[&flat.solid_opaque, &flat.solid_cutout],
-                        None => &[&flat.solid],
+                    // Without a pack, on Metal, the opaque pass, then the cutout one
+                    // (terrain.wgsl's `opaque_quad`), each over phase 1's lists with
+                    // quads for it, and over all of phase 2's.
+                    let [opaque, cutout] = flat.pass_calls;
+                    let passes: &[(&wgpu::RenderPipeline, std::ops::Range<usize>)] = match pack_flat
+                    {
+                        Some(p) => &[(&p.0, 0..flat.phase1_calls)],
+                        None if split_solid => &[
+                            (&flat.solid_opaque, 0..opaque),
+                            (&flat.solid_cutout, cutout..flat.phase1_calls),
+                        ],
+                        None => &[(&flat.solid, 0..flat.phase1_calls)],
                     };
-                    let draw = |pass: &mut wgpu::RenderPass<'_>, calls: &[flat::Call]| {
-                        for &pipeline in passes {
+                    let draw = |pass: &mut wgpu::RenderPass<'_>| {
+                        for (pipeline, calls) in passes {
                             pass.set_pipeline(pipeline);
-                            flat.draw(pass, calls, vertices);
+                            flat.draw(pass, &flat.calls[calls.clone()], vertices);
                         }
                     };
                     match cull {
                         // As below: phase 1, the test, then phase 2's draws
                         // that the test saw, copied after it.
                         Some(cull) => {
-                            draw(&mut pass, &flat.calls[..flat.phase1_calls]);
+                            draw(&mut pass);
                             if surface.is_some() {
                                 drop(pass);
                                 pass = plain_pass(&mut encoder);
@@ -7144,22 +7188,28 @@ impl Renderer {
                             };
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
-                            for &pipeline in passes {
+                            for (pipeline, _) in passes {
                                 pass.set_pipeline(pipeline);
                                 flat.draw_phase2(&mut pass, vertices);
                             }
                         }
-                        None => draw(&mut pass, &flat.calls[..flat.solid_calls]),
+                        // Without culling, phase 1 is all the solid calls.
+                        None => draw(&mut pass),
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    // Without a native material, on Metal, each list draws twice:
-                    // the opaque pass, then the cutout one (terrain.wgsl's `opaque_quad`).
-                    let passes: &[&wgpu::RenderPipeline] = match material {
-                        None if split_solid => &[&self.solid_opaque, &self.solid_cutout],
-                        _ => &[solid_pipeline],
+                    // Without a native material, on Metal, the opaque pass, then the
+                    // cutout one (terrain.wgsl's `opaque_quad`), each over phase 1's
+                    // lists with quads for it, and over all of phase 2's.
+                    let (opaque, cutout) = (opaque_end as u32, cutout_start as u32);
+                    let passes: &[(&wgpu::RenderPipeline, std::ops::Range<u32>)] = match material {
+                        None if split_solid => &[
+                            (&self.solid_opaque, 0..opaque),
+                            (&self.solid_cutout, cutout..phase1_draws),
+                        ],
+                        _ => &[(solid_pipeline, 0..phase1_draws)],
                     };
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -7169,9 +7219,15 @@ impl Renderer {
                             // its pass, or one of their own on Metal), then
                             // what they found in sight, in a pass that loads
                             // both targets (it reads the test's results).
-                            for &pipeline in passes {
+                            for (pipeline, draws) in passes {
                                 pass.set_pipeline(pipeline);
-                                self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
+                                self.draw_sections(
+                                    &mut pass,
+                                    &self.indirect,
+                                    0,
+                                    draws.start,
+                                    draws.len() as u32,
+                                );
                             }
                             if surface.is_some() {
                                 drop(pass);
@@ -7198,7 +7254,7 @@ impl Renderer {
                                 wgpu::IndexFormat::Uint32,
                             );
                             pass.set_vertex_buffer(1, self.instances.slice(..));
-                            for &pipeline in passes {
+                            for (pipeline, _) in passes {
                                 pass.set_pipeline(pipeline);
                                 self.draw_sections(
                                     &mut pass,
@@ -7209,10 +7265,17 @@ impl Renderer {
                                 );
                             }
                         }
+                        // Without culling, phase 1 is all the solid draws.
                         None => {
-                            for &pipeline in passes {
+                            for (pipeline, draws) in passes {
                                 pass.set_pipeline(pipeline);
-                                self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
+                                self.draw_sections(
+                                    &mut pass,
+                                    &self.indirect,
+                                    0,
+                                    draws.start,
+                                    draws.len() as u32,
+                                );
                             }
                         }
                     }
@@ -8678,7 +8741,7 @@ fn projection_center(view_proj: Mat4) -> Option<Vec3> {
 /// face `eye` (`projection_center`), the mesh at the camera-relative
 /// `origin`; all of them when there is no eye.
 fn facing_runs(sides: &Sides, eye: Option<Vec3>, origin: [f32; 3], draw: impl FnMut(u32, u32)) {
-    facing_runs_from(sides, eye, None, origin, draw)
+    facing_runs_from(sides, eye, None, origin, Quads::All, draw)
 }
 /// `facing_runs` for the eye and, with `low`, every eye straight below it down to that
 /// camera-relative height (the water mirror's eye).
@@ -8687,16 +8750,16 @@ fn facing_runs_from(
     eye: Option<Vec3>,
     low: Option<f32>,
     origin: [f32; 3],
-    mut draw: impl FnMut(u32, u32),
+    part: Quads,
+    draw: impl FnMut(u32, u32),
 ) {
     match eye {
         Some(eye) => {
             let eye = eye - Vec3::from(origin);
             let low = low.map_or(eye.y, |y| (y - origin[1]).min(eye.y));
-            sides.visible_from(eye.to_array(), low, draw)
+            sides.visible_from(eye.to_array(), low, part, draw)
         }
-        None if sides.quads() > 0 => draw(0, sides.quads()),
-        None => {}
+        None => sides.every(part, draw),
     }
 }
 fn frustum(m: Mat4) -> [Vec4; 6] {
