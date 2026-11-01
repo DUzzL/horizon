@@ -2670,6 +2670,24 @@ fn content_block_state_properties_are_validated() {
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 
+    // A declared name that sorts before the template's `axis` would make the state table
+    // disagree with vanilla's order and stop the game at load: refused, naming the block.
+    let (base, mods) = block_base(
+        "block-name-order",
+        &[r#"{"template":"minecraft:test","state_properties":{"alpha":{"type":"boolean"}}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a property sorting before the template's was accepted"),
+    };
+    assert!(
+        error.contains("testmod:") || error.contains("alpha sorts before axis"),
+        "{error}"
+    );
+    assert!(error.contains("alpha sorts before axis"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
     // A default is one of the values the block declared.
     let (base, mods) = block_base(
         "block-bad-default",
