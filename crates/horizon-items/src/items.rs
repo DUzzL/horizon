@@ -1571,6 +1571,7 @@ impl LootContext<'_> {
                     luck: 0.0,
                     biome: None,
                     seed: random.next_long(),
+                    place: horizon_world::loot::current_native_loot_place(),
                 };
                 let mut holds = false;
                 horizon_world::loot::native_loot_condition(k, c, &ctx, &mut holds);
