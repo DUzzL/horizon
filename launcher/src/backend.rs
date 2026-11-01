@@ -141,7 +141,7 @@ pub(crate) const CLIENT: &str = if cfg!(windows) {
 
 /// The agent `url` is fetched with: the launcher's own user agent, through the player's proxy when
 /// one is set (`proxy`).
-fn agent(url: &str) -> ureq::Agent {
+pub(crate) fn agent(url: &str) -> ureq::Agent {
     crate::proxy::agent(
         ureq::AgentBuilder::new()
             .user_agent(&format!("horizon-launcher/{VERSION}"))
@@ -175,7 +175,10 @@ pub(crate) fn get(url: &str) -> Result<ureq::Response, String> {
         }
     }
     request.call().map_err(|e| match e {
-        ureq::Error::Status(403, _) => {
+        ureq::Error::Status(code, r)
+            if url.starts_with("https://api.github.com/")
+                && crate::github::rate_limited(code, |h| r.header(h).map(str::to_owned)) =>
+        {
             "GitHub's rate limit was reached. Try again in a few minutes.".into()
         }
         ureq::Error::Status(code, _) => format!("{url} answered {code}"),
@@ -311,10 +314,12 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     release_order(a).cmp(&release_order(b))
 }
 
-/// Every published release of the repository, both kinds, as GitHub's JSON.
+/// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
+/// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=100");
-    get(&url)?.into_json().map_err(|e| e.to_string())
+    crate::github::json(&format!(
+        "https://api.github.com/repos/{REPO}/releases?per_page=100"
+    ))
 }
 
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.
@@ -391,9 +396,7 @@ pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
 /// `launcher@` and `launcher-v` tags are looked up one by one (a draft's tag is skipped: it has no
 /// public release).
 fn launcher_releases_in(list: &serde_json::Value) -> Vec<Release> {
-    launcher_releases_in_with(list, |url| {
-        get(&url)?.into_json().map_err(|e| e.to_string())
-    })
+    launcher_releases_in_with(list, |url| crate::github::json(&url))
 }
 
 fn launcher_releases_in_with(
