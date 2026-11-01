@@ -96,6 +96,7 @@ Helpers:
 - `fn block_specular_map(uv: vec2<f32>) -> vec4<f32>`: its LabPBR specular map (r smoothness, g F0 or a metal, b porosity or subsurface, a emission, 1 none); (0, 0, 0, 0) without one.
 - `fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`, `fn block_specular_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`: the same at the block texture's mip level `lod`.
 - `fn block_pbr_size() -> vec2<f32>`: the LabPBR maps' size in texels.
+- `fn set_surface(normal: vec3<f32>, smoothness: f32, data: f32)`: what the post stage's `surface_at` reads for this point of solid terrain (`data` the pack's own; the face's normal and 0, 0 unset).
 - `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
   stored in the shadow map, for `textureSampleCompareLevel`.
 - `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.
@@ -157,12 +158,14 @@ Resources (bind group 3):
 | 8 | `var history: texture_2d<f32>` | Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame, after a gap of over half a second, and with a single pass. |
 | 9 | `var shadow_map_translucent: texture_depth_2d` | `shadow_map` with the translucent terrain (water, stained glass, ice) the light passes through drawn in too, read with `shadow_sampler` the same way: a point lit in `shadow_map` but not here lies under such a surface, which `shadow_color` gives the colour of. |
 | 10 | `var shadow_color: texture_2d<f32>` | The texture colour times the vertex colour (rgb: the tint, the face's directional shade and ambient occlusion) of the nearest translucent surface the light passes through at each texel of `shadow_map_translucent`, white where there is none; alpha is 1 on a fluid (water) and the texture's alpha, at most 0.99, on anything else. Read it with `textureLoad` at `shadow_position`'s xy times `textureDimensions(shadow_color)`. |
+| 11 | `var scene_surface: texture_2d<f32>` | What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`. |
 
 Helpers:
 
 - `fn depth_at(uv: vec2<f32>) -> f32`: the world's depth at `uv`.
 - `fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32>`: the camera-relative position, in blocks, of
   the point at `uv` and `depth`.
+- `fn surface_at(texel: vec2<i32>) -> SurfaceData`: the solid terrain's surface at a pixel, as the material stage's `set_surface` left it: `present` (false where the sky, an entity, water, glass or a particle shows instead), `normal` (world axes), `smoothness` and `data`.
 - `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
   stored in the shadow map, for `textureSampleCompareLevel`.
 - `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.
