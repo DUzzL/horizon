@@ -441,7 +441,12 @@ impl Game<'_> {
         }
         self.combat.forget_noted(outcome.canceled);
         if raised {
-            self.after_block(outcome, None, false);
+            let source = horizon_client::health::HurtSource {
+                damage_type,
+                causing: attacker.map_or(0, |(id, _)| *id as i32),
+                direct: 0,
+            };
+            self.after_block(outcome, (None, false), source);
         }
         pushed
     }
@@ -670,9 +675,18 @@ impl Game<'_> {
             );
         }
         self.tnts = tnts;
+        // `VehicleEntity.ignoreExplosion`: a mob's blast (not a primed TNT's)
+        // spares boats and minecarts while mob griefing is off.
+        let vehicles_ignore = self.combat.blast_owner.is_none()
+            && self.blast_attacker().is_some()
+            && !self.ui.rules.bool("mob_griefing");
         // Minecarts: VehicleEntity.hurtServer (explosions ignite TNT carts),
         // then the push from their eyes (0.85 of their height).
-        let ids: Vec<u32> = self.carts.iter().map(|c| c.id).collect();
+        let ids: Vec<u32> = if vehicles_ignore {
+            Vec::new()
+        } else {
+            self.carts.iter().map(|c| c.id).collect()
+        };
         for id in ids {
             let Some(i) = self.carts.iter().position(|c| c.id == id) else {
                 continue;
@@ -698,6 +712,130 @@ impl Game<'_> {
                 c.velocity.z + dir[2] * power,
             );
         }
+        // Boats: `VehicleEntity.hurtServer` (damage * 10, broken past 40), then the
+        // push from their eyes (`EntityType.OAK_BOAT & co`: the full 0.5625).
+        let ids: Vec<u32> = if vehicles_ignore {
+            Vec::new()
+        } else {
+            self.boats.iter().map(|b| b.id).collect()
+        };
+        for id in ids {
+            let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+                continue;
+            };
+            let bounds = self.boats[i].bounds();
+            let feet = self.boats[i].position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let (lo, hi) = (bounds.min_position(), bounds.max_position());
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            self.hurt_boat(i, damage(dist, exposure), false);
+            let Some(b) = self.boats.iter_mut().find(|b| b.id == id) else {
+                continue;
+            };
+            let dir = direction([feet.x, feet.y + 0.5625, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            b.velocity = Vec3::new(
+                b.velocity.x + dir[0] * power,
+                b.velocity.y + dir[1] * power,
+                b.velocity.z + dir[2] * power,
+            );
+        }
+        // Falling blocks: `Entity.hurtServer` does nothing, `pushFromExplosion`
+        // moves them from their eyes (0.85 of the 0.98 box).
+        let mut falling = std::mem::take(&mut self.falling);
+        for f in &mut falling {
+            let feet = f.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let b = horizon_client::falling_block::bounds(feet);
+            let (lo, hi) = (b.min_position(), b.max_position());
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            let eye = f64::from((hi.y - lo.y) as f32 * 0.85f32);
+            let dir = direction([feet.x, feet.y + eye, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            f.velocity = Vec3::new(
+                f.velocity.x + dir[0] * power,
+                f.velocity.y + dir[1] * power,
+                f.velocity.z + dir[2] * power,
+            );
+        }
+        self.falling = falling;
+        // Arrows, fire charges, snowballs and the rest: `Entity.pushFromExplosion`
+        // (`push`) from their eyes (0.85 of their height). `AbstractArrow.push`
+        // does nothing while it is in the ground; `hurtServer` never hurts them.
+        let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        for p in projectiles
+            .iter_mut()
+            .filter(|p| !p.stuck && !p.kind.ignores_blast())
+        {
+            let (lo, hi) = (p.bounds().min_position(), p.bounds().max_position());
+            let dist = distance([p.position.x, p.position.y, p.position.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            let eye_height = p.kind.eye_height();
+            let dir = direction([p.position.x, p.position.y + eye_height, p.position.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            p.velocity = Vec3::new(
+                p.velocity.x + dir[0] * power,
+                p.velocity.y + dir[1] * power,
+                p.velocity.z + dir[2] * power,
+            );
+            p.needs_sync = true;
+        }
+        self.creatures.projectiles = projectiles;
+        // Firework rockets (0.25 wide, so 0.2125 to the eyes).
+        let mut rockets = std::mem::take(&mut self.rockets);
+        for r in &mut rockets {
+            let feet = r.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(
+                center,
+                [feet.x - 0.125, feet.y, feet.z - 0.125],
+                [feet.x + 0.125, feet.y + 0.25, feet.z + 0.125],
+            );
+            let dir = direction([feet.x, feet.y + 0.2125, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            r.velocity = Vec3::new(
+                r.velocity.x + dir[0] * power,
+                r.velocity.y + dir[1] * power,
+                r.velocity.z + dir[2] * power,
+            );
+        }
+        self.rockets = rockets;
+        // Thrown tridents live apart from the other projectiles (`game/trident.rs`): 0.5
+        // wide and high, eyes at 0.13 (`EntityType.TRIDENT`), and like any arrow
+        // (`AbstractArrow.push`) not pushed while in the ground.
+        let mut tridents = std::mem::take(&mut self.tridents);
+        for t in tridents.iter_mut().filter(|t| !t.in_ground) {
+            let feet = t.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(
+                center,
+                [feet.x - 0.25, feet.y, feet.z - 0.25],
+                [feet.x + 0.25, feet.y + 0.5, feet.z + 0.25],
+            );
+            let dir = direction([feet.x, feet.y + f64::from(0.13_f32), feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            t.velocity = Vec3::new(
+                t.velocity.x + dir[0] * power,
+                t.velocity.y + dir[1] * power,
+                t.velocity.z + dir[2] * power,
+            );
+        }
+        self.tridents = tridents;
         // Frames, paintings, cushions and armour stands last: vanilla lists
         // the entities in reach before hurting any, so the items they drop
         // here are neither destroyed nor pushed by the same blast.

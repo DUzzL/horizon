@@ -56,9 +56,51 @@ fn cpu() -> Option<String> {
         read("/proc/cpuinfo").and_then(|t| field(&t, "model name"))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
+    } else if cfg!(windows) {
+        windows_cpu()
     } else {
-        std::env::var("PROCESSOR_IDENTIFIER").ok()
+        None
     }
+}
+
+/// The CPU's brand string on Windows (`AMD Ryzen 7 7700X 8-Core Processor`), from the registry's
+/// `ProcessorNameString`. `PROCESSOR_IDENTIFIER` is only the fallback: it always holds the family,
+/// model and stepping (`AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD`), which neither names the
+/// chip nor tells two chips of one family apart. The game, its crash report, the benchmark report
+/// and telemetry all read the CPU through this. Read once: every telemetry item and benchmark
+/// report would run `reg` again.
+pub fn windows_cpu() -> Option<String> {
+    static CPU: OnceLock<Option<String>> = OnceLock::new();
+    CPU.get_or_init(|| {
+        command_output(
+            "reg",
+            &[
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "ProcessorNameString",
+            ],
+        )
+        .and_then(|query| processor_name_from_reg_query(&query))
+        .or_else(|| {
+            std::env::var("PROCESSOR_IDENTIFIER")
+                .ok()
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty())
+        })
+    })
+    .clone()
+}
+
+/// The value of `ProcessorNameString` in `reg query ... /v ProcessorNameString` output
+/// (`    ProcessorNameString    REG_SZ    AMD Ryzen 7 7700X 8-Core Processor  `), trimmed: the
+/// registry pads some names with spaces. Lines end in `\r\n`, and the key's own line has no value.
+fn processor_name_from_reg_query(query: &str) -> Option<String> {
+    query.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("ProcessorNameString")?;
+        let value = rest.trim_start().strip_prefix("REG_SZ")?.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 fn ram_bytes() -> Option<u64> {
@@ -588,6 +630,111 @@ mod tests {
         );
         assert_eq!(size_mb(" 8 GB"), Some(8192));
         assert_eq!(size_mb(" 1536 MB"), Some(1536));
+    }
+
+    #[test]
+    fn the_registry_cpu_name_is_read_from_reg_query() {
+        let name = "AMD Ryzen 7 7700X 8-Core Processor";
+        let key = r"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0";
+        let query = format!("\r\n{key}\r\n    ProcessorNameString    REG_SZ    {name}\r\n\r\n");
+        // CRLF line endings, as `reg query` prints them.
+        assert_eq!(processor_name_from_reg_query(&query).as_deref(), Some(name));
+        // The same with LF only.
+        assert_eq!(
+            processor_name_from_reg_query(&query.replace("\r\n", "\n")).as_deref(),
+            Some(name)
+        );
+        // The registry pads some names with spaces; the name comes without them.
+        let padded = format!("{key}\n    ProcessorNameString    REG_SZ        {name}      \n");
+        assert_eq!(
+            processor_name_from_reg_query(&padded).as_deref(),
+            Some(name)
+        );
+        assert_eq!(
+            processor_name_from_reg_query(&format!(
+                "
+{key}
+    ProcessorNameString    REG_SZ    13th Gen Intel(R) Core(TM) i7-13700F
+"
+            ))
+            .as_deref(),
+            Some("13th Gen Intel(R) Core(TM) i7-13700F")
+        );
+        // Spaces inside the name stay as they are, runs of them too (older Intel names).
+        assert_eq!(
+            processor_name_from_reg_query(
+                "    ProcessorNameString    REG_SZ    Intel(R) Core(TM) i7 CPU         920  @ 2.67GHz\r\n"
+            )
+            .as_deref(),
+            Some("Intel(R) Core(TM) i7 CPU         920  @ 2.67GHz")
+        );
+        // Columns split by tabs.
+        assert_eq!(
+            processor_name_from_reg_query(&format!("\tProcessorNameString\tREG_SZ\t{name}\r\n"))
+                .as_deref(),
+            Some(name)
+        );
+    }
+
+    #[test]
+    fn a_reg_query_without_a_name_gives_none() {
+        // The value is missing: `reg query` prints an error and nothing on stdout, or only the key.
+        assert_eq!(processor_name_from_reg_query(""), None);
+        assert_eq!(
+            processor_name_from_reg_query(
+                "HKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\r\n"
+            ),
+            None
+        );
+        // Present but empty.
+        assert_eq!(
+            processor_name_from_reg_query("    ProcessorNameString    REG_SZ    \r\n"),
+            None
+        );
+        assert_eq!(
+            processor_name_from_reg_query("    ProcessorNameString    REG_SZ"),
+            None
+        );
+        // Another value, or another type, is not the name.
+        assert_eq!(
+            processor_name_from_reg_query(
+                "    Identifier    REG_SZ    AMD64 Family 25 Model 97 Stepping 2\r\n"
+            ),
+            None
+        );
+        assert_eq!(
+            processor_name_from_reg_query("    ProcessorNameString    REG_DWORD    0x1\r\n"),
+            None
+        );
+        // Garbage.
+        assert_eq!(processor_name_from_reg_query("REG_SZ\n\n   \n"), None);
+        assert_eq!(
+            processor_name_from_reg_query("\u{0}\u{fffd}\u{fffd}REG_SZ"),
+            None
+        );
+        assert_eq!(
+            processor_name_from_reg_query(
+                "ERROR: The system was unable to find the specified registry key or value."
+            ),
+            None
+        );
+    }
+
+    /// The CPU is the registry's name for it, as PowerShell reads it (not through `reg`), trimmed;
+    /// `PROCESSOR_IDENTIFIER`'s family and model only where the registry has no name, as on some
+    /// VMs. No CI runner tests this crate on Windows: it runs on a contributor's machine.
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_the_cpu_by_its_brand() {
+        let registry = powershell(
+            r"(Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0').ProcessorNameString",
+        );
+        let expected = registry.or_else(|| {
+            std::env::var("PROCESSOR_IDENTIFIER")
+                .ok()
+                .map(|id| id.trim().to_owned())
+        });
+        assert_eq!(cpu(), expected);
     }
 
     #[test]

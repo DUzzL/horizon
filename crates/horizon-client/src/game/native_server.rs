@@ -628,7 +628,8 @@ fn add_to(
 /// screen as any change to their inventory does.
 #[allow(dead_code)]
 impl Game<'_> {
-    /// The main hand's stack: its item, count, and whether it is plain.
+    /// The main hand's stack: its item, count, and whether it is plain. On a
+    /// client, the player's own.
     pub(super) fn native_held(&self) -> Option<(String, u32, bool)> {
         let s = self.inventory.get(self.selected)?.as_ref()?;
         Some((s.item.to_string(), s.count, plain(s)))
@@ -815,6 +816,34 @@ impl Game<'_> {
             })
             .filter(|o| orb_meets(o.position, min, max))
             .collect()
+    }
+    /// Writes the experience orb `id`'s `value` (the points a pickup gives), `count`
+    /// (orbs merged into it, each worth `value`) and `age` (ticks lived; an orb
+    /// despawns at 6000); a `None` is left as it is. API @API:experience_orb_merge@.
+    /// False, and nothing written, for an orb not in the server level `dimension`, a
+    /// `value` or `count` of 0, and on a client of a server.
+    pub(super) fn native_set_experience_orb(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        value: Option<u32>,
+        count: Option<u32>,
+        age: Option<u32>,
+    ) -> bool {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+            || value == Some(0)
+            || count == Some(0)
+        {
+            return false;
+        }
+        let Some(orb) = self.orbs.iter_mut().find(|o| o.id == id) else {
+            return false;
+        };
+        orb.value = value.unwrap_or(orb.value);
+        orb.count = count.unwrap_or(orb.count);
+        orb.age = age.unwrap_or(orb.age);
+        true
     }
     /// Gives `points` of experience to the player `uuid` as an orb they touch
     /// does (`ExperienceOrb.playerTouch`): Mending repairs their damaged items

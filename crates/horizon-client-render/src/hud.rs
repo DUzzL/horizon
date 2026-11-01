@@ -83,6 +83,8 @@ pub struct HudAtlas {
     /// A resource pack's own `core/text` shader for the GUI's text, translated;
     /// none draws the text natively.
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
+    /// The packs' OptiFine random entity textures, whose variants this atlas packs.
+    pub random_textures: horizon_optifine::random_textures::RandomTextures,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -118,6 +120,7 @@ pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
@@ -212,6 +215,28 @@ fn wrap_border((name, w, h, data): &PackedImage) -> PackedImage {
     }
     (name.clone(), bw, bh, out)
 }
+/// Folders of `assets/minecraft/textures/` that [`HudAtlas::pack`] walks for
+/// the full atlas. A pack may add others through `atlases/blocks.json`.
+const WALKED_TEXTURE_FOLDERS: &[&str] = &[
+    "gui",
+    "item",
+    "block",
+    "font",
+    "environment",
+    "misc",
+    "painting",
+    "entity",
+    "particle",
+    "mob_effect",
+    "map",
+];
+
+fn walked_minecraft_texture(name: &str) -> bool {
+    WALKED_TEXTURE_FOLDERS
+        .iter()
+        .any(|folder| name.starts_with(folder) && name.as_bytes().get(folder.len()) == Some(&b'/'))
+}
+
 /// Sprites the atlas definitions (`atlases/*.json`) add beyond the texture
 /// files already packed: generated ones (`paletted_permutations` such as the
 /// armour trim sprites, `unstitch` regions) and files listed under another id,
@@ -239,11 +264,13 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
             if have.contains(name.as_str()) {
                 continue;
             }
-            // A vanilla file is packed under its own name already: only a
-            // renamed one is new. Other namespaces' files (content mods) are
-            // never in the walked directories.
+            // A file under a walked folder is packed under its own name already:
+            // only a renamed one is new. Other namespaces' files (content mods)
+            // are never in those folders, nor are extra directories a pack adds
+            // to the blocks atlas (`custom/...`).
             if let SpriteOrigin::File(texture) = &origin
                 && texture.strip_prefix("minecraft:") == Some(name.as_str())
+                && walked_minecraft_texture(name.as_str())
             {
                 continue;
             }
@@ -346,24 +373,7 @@ impl HudAtlas {
     /// The atlas of a resource root that layers packs over `defaults` (the
     /// game's own resources), whose textures give the sprites' GUI sizes.
     pub fn build_over(root: &Path, defaults: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(
-            root,
-            defaults,
-            &[
-                "gui",
-                "item",
-                "block",
-                "font",
-                "environment",
-                "misc",
-                "painting",
-                "entity",
-                "particle",
-                "mob_effect",
-                "map",
-            ],
-            true,
-        )?;
+        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true)?;
         atlas.text_shader = pack_text::load(root, defaults);
         Ok(atlas)
     }
@@ -479,6 +489,7 @@ impl HudAtlas {
             glint_armor: (vec![0; 4], 1, 1),
             white,
             text_shader: None,
+            random_textures: Default::default(),
         }
     }
     /// Shelf placements of `images` (tallest first) in the narrowest atlas
@@ -567,15 +578,41 @@ impl HudAtlas {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
         });
+        // OptiFine random entity variants, under the names their scan gives them (those
+        // outside `textures/` are `<ns>:optifine/random/...`).
+        let random_textures = if folders.contains(&"entity") {
+            horizon_optifine::random_textures::RandomTextures::scan(root)
+        } else {
+            Default::default()
+        };
+        let mut named: HashMap<PathBuf, String> = HashMap::new();
+        for (file, name) in random_textures.files() {
+            named.insert(root.join(file), name.to_owned());
+        }
+        if !named.is_empty() {
+            // Those beside their texture are walked already.
+            let walked: HashSet<&PathBuf> = files.iter().collect();
+            let mut extra: Vec<PathBuf> = named
+                .keys()
+                .filter(|p| !walked.contains(p))
+                .cloned()
+                .collect();
+            extra.sort();
+            files.extend(extra);
+        }
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = match path.strip_prefix(&textures) {
-                Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
-                Err(_) => {
-                    let rel = path.strip_prefix(&assets).ok()?.with_extension("");
-                    let rel = rel.to_string_lossy().replace('\\', "/");
-                    let (namespace, rest) = rel.split_once("/textures/")?;
-                    format!("{namespace}:{rest}")
+            let name = if let Some(name) = named.get(path) {
+                name.clone()
+            } else {
+                match path.strip_prefix(&textures) {
+                    Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
+                    Err(_) => {
+                        let rel = path.strip_prefix(&assets).ok()?.with_extension("");
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        let (namespace, rest) = rel.split_once("/textures/")?;
+                        format!("{namespace}:{rest}")
+                    }
                 }
             };
             // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
@@ -777,6 +814,7 @@ impl HudAtlas {
             glint,
             glint_armor,
             text_shader: None,
+            random_textures,
             font,
             white,
         })
@@ -2122,6 +2160,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decode_bytes_ignores_crc_checksum_error() {
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ])
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        let idat_pos = encoded
+            .windows(4)
+            .position(|w| w == b"IDAT")
+            .expect("IDAT chunk");
+        let len = u32::from_be_bytes([
+            encoded[idat_pos - 4],
+            encoded[idat_pos - 3],
+            encoded[idat_pos - 2],
+            encoded[idat_pos - 1],
+        ]) as usize;
+        let crc_pos = idat_pos + 4 + len;
+        encoded[crc_pos] ^= 0xFF;
+
+        let (w, h, rgba) = decode_bytes(&encoded).expect("should decode despite bad CRC");
+        assert_eq!(w, 2);
+        assert_eq!(h, 2);
+        assert_eq!(rgba.len(), 16);
+    }
+
+    #[test]
     fn clip_since_keeps_the_visible_part_of_a_straddling_triangle() {
         let mut batch = HudBatch::new([320, 240]);
         let start = batch.vertices.len();
@@ -2331,6 +2403,33 @@ mod tests {
         // The first frame is the left 16x16, not the whole row.
         assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
         assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 255, 0, 255]);
+    }
+    #[test]
+    fn a_pack_directory_outside_the_walked_folders_still_packs() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-custom-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let atlases = root.join("assets/minecraft/atlases");
+        let custom = root.join("assets/minecraft/textures/custom");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::create_dir_all(&custom).unwrap();
+        fs::write(
+            atlases.join("blocks.json"),
+            r#"{"sources":[{"type":"directory","source":"custom","prefix":"custom/"}]}"#,
+        )
+        .unwrap();
+        write_strip(
+            &custom.join("test.png"),
+            16,
+            16,
+            &[[40, 180, 80, 255]],
+            None,
+        );
+        let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["custom/test"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [40, 180, 80, 255]);
+        let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn another_namespaces_animated_item_texture_packs_its_first_frame_and_animates() {

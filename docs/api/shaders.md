@@ -60,6 +60,9 @@ file = "material.wgsl"
 files = ["pbr.wgsl"]       # optional, on any stage: WGSL put after `shared`, before this stage's file
 fog = false                # optional: the pack fogs its surfaces itself (Horizon does when absent or true)
 
+[vertex]                   # needs [material]: where corners of terrain are drawn, for the world and the shadow map; shares the material's module
+file = "vertex.wgsl"
+
 [weather]                  # the colour of rain and snow streaks
 file = "weather.wgsl"
 
@@ -86,6 +89,8 @@ step = 0.05
 [[materials]]              # 1024 at most: MaterialInput.material, the first entry that matches
 id = 10                    # 1 to 65535; 0 is a sprite no entry names
 sprites = ["block/*_leaves"]   # sprite names, any number of * each
+blocks = ["oak_log", "grass_block:snowy=true"]   # optional: the sprites these blocks' models draw with, where no entry's sprites name them
+translucent = false        # optional: this id's sprites draw in the translucent pass, clear texels and all
 
 [[pages]]                  # optional: the options page's layout, the first the one it opens on
 id = "main"
@@ -197,3 +202,6 @@ stages.
 - 2026-11-01: API 0.1 (additions): the material stage reads the resource packs' LabPBR maps (`_n`, `_s`): `block_pbr_maps`, `block_normal_map`, `block_specular_map`, their `_level` forms and `block_pbr_size`. The maps load only while a native pack is picked: without one they cost nothing, and the first pick reloads the resources once.
 - 2026-11-01: API 0.1 (additions): `[[post]] output` and `scale`, targets of a pack's own at the world's size, half or a quarter of it.
 - 2026-11-01: API 0.1 (additions): the material stage's `block_texture`, `block_texture_level`, `block_texture_size` and `block_texture_lod`, the surface's own sprite anywhere on it. The LabPBR `_level` functions now count the block texture's mip levels, the same footprint where a map is smaller.
+- 2026-11-01: API 0.1 (additions): the material stage's `set_surface` and the post stage's `surface_at` and `scene_surface`: a normal, a smoothness and a value of the pack's own per pixel of solid terrain. Only a material stage that calls `set_surface` pays for the target.
+- 2026-11-01: API 0.1 (additions): `[[materials]] blocks`, ids by block, and `translucent`, moving an id's sprites into the translucent pass. `sprites` may be left out when `blocks` is there.
+- 2026-11-01: API 0.1 (additions): the `[vertex]` stage, `fn vertex(input: VertexInput) -> vec3<f32>`: waving plants and rolling water, in the world and the shadow map.

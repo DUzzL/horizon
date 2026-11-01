@@ -133,8 +133,9 @@ impl Game<'_> {
             let b = &mut self.boats[i];
             b.hurt_time = (b.hurt_time - 1).max(0);
             b.damage = (b.damage - 1.0).max(0.0);
-            // AbstractBoat.tickBubbleColumn: a down column ejects the rider.
-            ejected = std::mem::take(&mut b.eject_riders);
+            // `Entity.ejectPassengers`: every player in the boat must see
+            // the request; the common boat tick clears it once nobody rides.
+            ejected = b.eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)

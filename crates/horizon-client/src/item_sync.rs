@@ -42,10 +42,16 @@ pub fn can_glide_using(stack: &ItemStack, slot: &str, items: &crate::items::Item
     let Some(info) = items.get(&stack.item) else {
         return false;
     };
+    if info.max_damage != 0 && stack.damage + 1 >= info.max_damage {
+        return false;
+    }
+    // Asked every tick for each slot: a stack with no components of its own
+    // answers from its item, with nothing to copy or decode.
+    if stack.data().is_none() {
+        return info.glider && info.equip_slot.as_deref() == Some(slot);
+    }
     let (glider, equip_slot) = glider_and_slot(stack, info.glider, info.equip_slot.clone());
-    glider
-        && equip_slot.as_deref() == Some(slot)
-        && (info.max_damage == 0 || stack.damage + 1 < info.max_damage)
+    glider && equip_slot.as_deref() == Some(slot)
 }
 
 /// The `glider` and `equippable` slot `stack` has, from its item's own: the

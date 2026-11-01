@@ -6,6 +6,19 @@
 use super::Vertex;
 use super::pack_draw::EntitySpan;
 use glam::{DVec3, Mat4};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static MODS_BUILT_IN: AtomicBool = AtomicBool::new(false);
+
+/// The game was built with native mods (the game sets it at start): one of them may draw in
+/// [`native_world_drawn`], so the first-person hand keeps its own pass after it.
+pub fn set_mods_built_in(on: bool) {
+    MODS_BUILT_IN.store(on, Ordering::Relaxed);
+}
+/// Whether [`native_world_drawn`] may draw ([`set_mods_built_in`]).
+pub fn world_drawn_hooked() -> bool {
+    MODS_BUILT_IN.load(Ordering::Relaxed)
+}
 
 /// What a mod can draw with once the world is drawn: after the sky, terrain, entities,
 /// particles, weather and the world post pass, before the first-person hand, the HUD and the

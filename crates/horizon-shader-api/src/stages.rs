@@ -2,7 +2,9 @@
 //! that Horizon calls inside its own passes, and the WGSL put around a
 //! pack's files to build a stage: the prelude before (the inputs and the
 //! resources), the entry points after.
-use crate::inputs::{Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct, WEATHER_INPUT};
+use crate::inputs::{
+    Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct, VERTEX_INPUT, WEATHER_INPUT,
+};
 use crate::package::Pack;
 
 /// The bind group of a pack's resources; groups 0 to 2 are the renderer's.
@@ -14,6 +16,9 @@ pub enum StageKind {
     Sky,
     /// The colour of block surfaces (terrain), before the alpha test and fog.
     Material,
+    /// Where each corner of a block's surface is drawn (waving plants, rolling water), for
+    /// the world and the shadow map.
+    Vertex,
     /// The colour of rain and snow streaks.
     Weather,
     /// A full-screen pass over the world's picture, under the hand and HUD.
@@ -93,7 +98,7 @@ fn shadow_position(position: vec3<f32>) -> vec3<f32> {
 }
 ";
 
-const POST_RESOURCES: [Resource; 11] = [
+const POST_RESOURCES: [Resource; 12] = [
     FRAME,
     Resource {
         binding: 1,
@@ -135,6 +140,12 @@ const POST_RESOURCES: [Resource; 11] = [
     },
     shadow_map_translucent(9),
     shadow_color(10),
+    Resource {
+        binding: 11,
+        name: "scene_surface",
+        ty: "var scene_surface: texture_2d<f32>",
+        doc: "What the material stage's `set_surface` stored for the solid terrain at each pixel, unfiltered (`textureLoad`): read it through the prelude's `surface_at`, which knows its layout and where it no longer shows. Blank without a material stage that calls `set_surface`.",
+    },
 ];
 
 /// The material stage's resources: the frame, and the world as it was before translucent
@@ -213,6 +224,20 @@ fn block_light_color(position: vec3<f32>) -> vec4<f32> {
     }
     let c = textureSampleLevel(block_light_colors, reflection_sampler, uvw, 0.0);
     return vec4<f32>(c.rgb * 4.0, c.a);
+}
+// What the post stage's `surface_at` reads for this point of solid terrain: its `normal` (a
+// unit vector in world axes), `smoothness` (0..1, say for reflections) and `data`, a value of
+// the pack's own passed through. Unset, the point keeps the face's own normal and 0 for both;
+// translucent terrain stores none.
+var<private> horizon_surface: vec4<f32>;
+fn set_surface(normal: vec3<f32>, smoothness: f32, data: f32) {
+    // Octahedral, y up: the upper half folds onto xz, the lower half unfolds around it.
+    let n = normal / (abs(normal.x) + abs(normal.y) + abs(normal.z));
+    var e = n.xz;
+    if n.y < 0.0 {
+        e = (1.0 - abs(n.zx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), n.xz >= vec2<f32>(0.0));
+    }
+    horizon_surface = vec4<f32>(bitcast<f32>(pack2x16snorm(e)), smoothness, data, 1.0);
 }
 // The point being shaded: its sprite's layer and mip level (the entries set them).
 var<private> horizon_block_layer: u32;
@@ -296,6 +321,36 @@ fn horizon_material_tangent(position: vec3<f32>, uv: vec2<f32>, normal: vec3<f32
     }
     let tangent = normalize(t - normal * dot(normal, t));
     return vec4<f32>(tangent, select(-1.0, 1.0, dot(cross(normal, tangent), b) >= 0.0));
+}
+";
+
+/// The post prelude's `surface_at`, for the post helpers' end.
+const POST_SURFACE: &str = "\
+// The solid terrain's surface at a pixel, as the material stage's `set_surface` left it.
+struct SurfaceData {
+    // False where the sky, an entity, water, glass or a particle shows instead.
+    present: bool,
+    // A unit vector in world axes.
+    normal: vec3<f32>,
+    smoothness: f32,
+    // The pack's own value, passed through.
+    data: f32,
+}
+fn surface_at(texel: vec2<i32>) -> SurfaceData {
+    let size = vec2<i32>(textureDimensions(scene_surface));
+    let t = clamp(texel, vec2<i32>(0), size - 1);
+    let s = textureLoad(scene_surface, t, 0);
+    let depth_size = vec2<i32>(textureDimensions(scene_depth));
+    let depth = textureLoad(scene_depth, clamp(texel, vec2<i32>(0), depth_size - 1), 0);
+    // The terrain's own depth is stored with it: anything drawn nearer since hides it.
+    let present = s.w > 0.0 && abs(s.w - depth) <= s.w * 1e-5;
+    let e = unpack2x16snorm(bitcast<u32>(s.x));
+    var n = vec3<f32>(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    if n.y < 0.0 {
+        n = vec3<f32>((1.0 - abs(n.z)) * sign(n.x), n.y, (1.0 - abs(n.x)) * sign(n.z));
+    }
+    return SurfaceData(present, select(vec3<f32>(0.0), normalize(n), present),
+        select(0.0, s.y, present), select(0.0, s.z, present));
 }
 ";
 
@@ -389,6 +444,16 @@ struct HorizonSkyIn {
 
 /// An entry point with the weather stage's inputs: the renderer calls `weather` from its own
 /// weather shader in the same way.
+const VERTEX_ENTRIES: &str = "\
+@vertex fn horizon_vs_vertex(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) light: vec2<f32>,
+    @location(3) tint: vec4<f32>, @location(4) material: u32, @location(5) flags: u32,
+) -> @builtin(position) vec4<f32> {
+    let input = VertexInput(position, uv, material, light, tint, flags & 7u, flags >> 31u);
+    return frame.projection * frame.view * vec4<f32>(vertex(input), 1.0);
+}
+";
+
 const WEATHER_ENTRIES: &str = "\
 struct HorizonWeatherIn {
     @builtin(position) position: vec4<f32>,
@@ -403,18 +468,20 @@ struct HorizonWeatherIn {
 ";
 
 impl StageKind {
-    pub const ALL: [StageKind; 4] = [
+    pub const ALL: [StageKind; 5] = [
         StageKind::Sky,
+        StageKind::Vertex,
         StageKind::Material,
         StageKind::Weather,
         StageKind::Post,
     ];
 
-    /// The manifest's name for the stage (`[sky]`, `[material]`, `[weather]`, `[[post]]`).
+    /// The manifest's name for the stage (`[sky]`, `[vertex]`, `[material]`, `[weather]`, `[[post]]`).
     pub fn name(self) -> &'static str {
         match self {
             StageKind::Sky => "sky",
             StageKind::Material => "material",
+            StageKind::Vertex => "vertex",
             StageKind::Weather => "weather",
             StageKind::Post => "post",
         }
@@ -429,6 +496,7 @@ impl StageKind {
         match self {
             StageKind::Sky => &SKY_INPUT,
             StageKind::Material => &MATERIAL_INPUT,
+            StageKind::Vertex => &VERTEX_INPUT,
             StageKind::Weather => &WEATHER_INPUT,
             StageKind::Post => &POST_INPUT,
         }
@@ -438,6 +506,7 @@ impl StageKind {
     pub fn output(self) -> &'static str {
         match self {
             StageKind::Material => SURFACE.name,
+            StageKind::Vertex => "vec3<f32>",
             StageKind::Sky | StageKind::Weather | StageKind::Post => "vec4<f32>",
         }
     }
@@ -455,7 +524,7 @@ impl StageKind {
     pub fn resources(self) -> &'static [Resource] {
         match self {
             StageKind::Post => &POST_RESOURCES,
-            StageKind::Sky | StageKind::Weather => std::slice::from_ref(&FRAME),
+            StageKind::Sky | StageKind::Vertex | StageKind::Weather => std::slice::from_ref(&FRAME),
             StageKind::Material => &MATERIAL_RESOURCES,
         }
     }
@@ -468,6 +537,8 @@ impl StageKind {
         out += &self.input().wgsl();
         if self == StageKind::Material {
             out += &SURFACE.wgsl();
+            // The vertex stage's file joins the material's module (`compose`).
+            out += &VERTEX_INPUT.wgsl();
         }
         for r in self.resources() {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
@@ -475,12 +546,14 @@ impl StageKind {
         match self {
             StageKind::Post => {
                 out += POST_HELPERS;
+                out += POST_SURFACE;
                 out += SHADOW_HELPERS;
             }
             StageKind::Material => {
                 out += MATERIAL_HELPERS;
                 out += SHADOW_HELPERS;
             }
+            StageKind::Vertex => out += SHADOW_HELPERS,
             StageKind::Sky | StageKind::Weather => {}
         }
         out
@@ -491,6 +564,7 @@ impl StageKind {
         match self {
             StageKind::Sky => SKY_ENTRIES,
             StageKind::Material => MATERIAL_ENTRIES,
+            StageKind::Vertex => VERTEX_ENTRIES,
             StageKind::Weather => WEATHER_ENTRIES,
             StageKind::Post => POST_ENTRIES,
         }
@@ -590,6 +664,7 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
     let stage = match kind {
         StageKind::Sky => m.sky.as_ref(),
         StageKind::Material => m.material.as_ref(),
+        StageKind::Vertex => m.vertex.as_ref(),
         StageKind::Weather => m.weather.as_ref(),
         StageKind::Post => m.post.iter().find(|s| s.file == file),
     };
@@ -599,6 +674,24 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
         }
     }
     push(file, pack.source(file).unwrap_or_default());
+    // They draw terrain together: the vertex stage's function is in the material's module.
+    if kind == StageKind::Material
+        && let Some(vertex) = &m.vertex
+    {
+        for extra in vertex.files.iter().chain(std::iter::once(&vertex.file)) {
+            let own = stage.is_some_and(|s| s.files.contains(extra));
+            if !own && !m.shared.contains(extra) {
+                push(extra, pack.source(extra).unwrap_or_default());
+            }
+        }
+    }
     push("<entries>", kind.entries());
     composed
+}
+
+/// Whether a material stage's `source` (with its prelude) calls `set_surface` itself, and so
+/// needs the surface target, which a pack without it doesn't pay for.
+pub fn calls_set_surface(source: &str) -> bool {
+    let call = "set_surface(";
+    source.matches(call).count() > MATERIAL_HELPERS.matches(call).count()
 }

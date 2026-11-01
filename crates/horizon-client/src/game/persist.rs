@@ -373,6 +373,11 @@ impl Game<'_> {
                                 a.last_state = in_block.and_then(|t| self.state_from_nbt(&t));
                             }
                             self.claim_owner(&mut p);
+                            // An arrow that came through a portal keeps its
+                            // cooldown: it does not go straight back through.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
@@ -453,6 +458,8 @@ impl Game<'_> {
                                 owner: None,
                                 guest: None,
                             });
+                            // `Entity.load`: the `PortalCooldown` of one that just came through.
+                            self.remember(id, uuid, tag);
                             for rider in riders {
                                 self.load_mob(rider, Some(id));
                             }

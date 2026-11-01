@@ -50,22 +50,17 @@ impl Game<'_> {
         // hears it, and the replay follows, but nothing counts.
         let waiting = g.awaiting_teleport.is_some();
         // The server's copy of a guest doesn't follow its armor (Game.glider_worn).
-        let hands = [
-            (
+        let hand = |stack: Option<&horizon_client::items::ItemStack>, slot: &str| {
+            stack.is_some_and(|s| {
+                horizon_client::item_sync::can_glide_using(s, slot, self.res.items())
+            })
+        };
+        let glider = super::gliding_pieces(self.res.items(), &g.armor).contains(&true)
+            || hand(
                 g.inventory.get(g.selected).and_then(Option::as_ref),
                 "mainhand",
-            ),
-            (g.offhand.as_ref(), "offhand"),
-        ];
-        let armor = g.armor.iter().map(Option::as_ref);
-        let glider = hands
-            .into_iter()
-            .chain(armor.zip(["head", "chest", "legs", "feet"]))
-            .any(|(stack, slot)| {
-                stack.is_some_and(|s| {
-                    horizon_client::item_sync::can_glide_using(s, slot, self.res.items())
-                })
-            });
+            )
+            || hand(g.offhand.as_ref(), "offhand");
         if let Some(motion) = g.motion.as_deref_mut() {
             motion.glider = glider;
             motion.item_use_speed = item_use.map(|(speed, _)| speed);
