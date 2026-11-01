@@ -196,6 +196,7 @@ mod native_block_entity_draw;
 mod native_claimed_items;
 mod native_components;
 mod native_criteria;
+mod native_data_maps;
 mod native_entities;
 mod native_explosions;
 mod native_falling;
@@ -1792,6 +1793,9 @@ struct WorldTables {
     items: Items,
     recipes: Recipes,
     stations: horizon_client::stations::StationData,
+    /// The values of the data map types native mods registered
+    /// (`native_data_map_types`).
+    data_maps: native_data_maps::DataMaps,
 }
 
 impl Resources {
@@ -18636,11 +18640,20 @@ impl Game<'_> {
             }
         };
         let stations = horizon_client::stations::StationData::load(root, &items, &overlay);
+        let mut data_map_types = Vec::new();
+        self.native_data_map_types(&mut data_map_types);
+        let data_maps = native_data_maps::DataMaps::load(
+            &data_map_types,
+            &files,
+            &items.item_tags,
+            &items.block_tags,
+        );
         Some(WorldTables {
             files,
             items,
             recipes,
             stations,
+            data_maps,
         })
     }
     /// Reload the content tables with the world's packs, as

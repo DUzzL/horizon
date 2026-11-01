@@ -272,6 +272,7 @@
 //! that would break such a bundle is not made.
 //! Bodies have no `cfg` and no macros: horizon-mixins refuses a target with
 //! either (`tests::hook_points_stay_hookable`).
+use super::native_data_maps::NativeDataMapType;
 use super::native_lifecycle::{NativeLifecycleContext, ServerTickPhase, WorldPhase};
 use super::{
     Game, GameLevel, LevelDimension, Screen,
@@ -1266,6 +1267,22 @@ impl Game<'_> {
     /// player's integrated server included). API @API:data_pack_files@.
     pub(super) fn native_data_pack_files(&self, files: &mut Vec<(String, Vec<u8>)>) {
         let _ = files;
+    }
+    /// The server is assembling its data tables, as for
+    /// `native_data_pack_files` (a world's first open and every `/reload`):
+    /// push the data map types your mod registers (NeoForge's
+    /// `RegisterDataMapTypesEvent`). A type is an `id` (`mod_id:name`, not in
+    /// `minecraft`) for a `registry`, `minecraft:item` or `minecraft:block`
+    /// so far. Its values come from the world's data packs'
+    /// `data/<mod_id>/data_maps/<registry path>/<name>.json`, and from files
+    /// you push through `native_data_pack_files` under the key
+    /// `data_maps/<mod_id>:<registry path>/<name>`: `replace`, `values`
+    /// (entry ids and `#tags` to JSON values) and `remove`, a newer value
+    /// overriding an older. Read them with `native_data_map` and
+    /// `native_data_map_entries`, in `native_data_maps.rs`. Server-side, not
+    /// synced to clients. API @API:data_map_types@.
+    pub(super) fn native_data_map_types(&self, types: &mut Vec<NativeDataMapType>) {
+        let _ = types;
     }
     /// The server is about to open its worlds: nothing of the world is
     /// loaded yet (NeoForge's `ServerAboutToStartEvent`, "called before the
