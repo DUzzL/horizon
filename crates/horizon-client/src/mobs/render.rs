@@ -1661,11 +1661,31 @@ fn render_visible(
     let overlay = u32::from(red_overlay(m));
     let s = anim::state(m, alpha);
     let (model_key, texture) = body(m);
-    let model = m
-        .kind
-        .layer(&model_key)
-        .cloned()
-        .unwrap_or_else(|| m.kind.model.clone());
+    // The packs' custom entity models replace a layer's parts and maybe its texture.
+    let cem = data
+        .cem
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    // `main` is the wide player model, `kind.model`.
+    let cem_key = if model_key == "main" {
+        "player#main"
+    } else {
+        model_key.as_str()
+    };
+    let (model, texture) = match cem.layer(cem_key) {
+        Some(custom) => (
+            custom.model.clone(),
+            custom.texture.clone().unwrap_or(texture),
+        ),
+        None => (
+            m.kind
+                .layer(&model_key)
+                .cloned()
+                .unwrap_or_else(|| m.kind.model.clone()),
+            texture,
+        ),
+    };
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
     let draw_body = |out: &mut Vec<Vertex>| {
@@ -1721,9 +1741,18 @@ fn render_visible(
     // One Poses refilled for every layer (armour draws up to seven): it keeps
     // its maps' capacity.
     let mut layer_poses = Poses::default();
-    for layer in all_layers {
-        let Some(part) = m.kind.layer(&layer.model).cloned() else {
-            continue;
+    for mut layer in all_layers {
+        let part = match cem.layer(&layer.model) {
+            Some(custom) => {
+                if let Some(texture) = &custom.texture {
+                    layer.texture.clone_from(texture);
+                }
+                custom.model.clone()
+            }
+            None => match m.kind.layer(&layer.model) {
+                Some(part) => part.clone(),
+                None => continue,
+            },
         };
         let Some(uv) = atlas(&layer.texture) else {
             continue;
@@ -2399,6 +2428,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2488,6 +2518,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2541,6 +2572,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2650,6 +2682,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };

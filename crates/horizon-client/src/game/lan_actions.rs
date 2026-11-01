@@ -2096,6 +2096,9 @@ impl Game<'_> {
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(host, conn, &p.data)
             }
+            S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
+                self.guest_far_terrain(host, conn, &p.data)
+            }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
                 if !self.level.difficulty_locked && (0..=3).contains(&p.difficulty) {
@@ -3215,6 +3218,11 @@ impl Game<'_> {
             }
             host.hub.teleport(i, Some(at));
         }
+        // PlayerRespawnEvent, at the end of PlayerList.respawn: the player is
+        // placed, in their respawn level, with their state swapped in so the
+        // helpers reach them (as for native_perform_command).
+        let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
         if away && let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }

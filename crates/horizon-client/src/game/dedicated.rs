@@ -877,6 +877,9 @@ impl Game<'_> {
                 .raw
                 .get(horizon_client::lan::HORIZON_CLIENTS_ONLY)
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+            lod_distance: horizon_client::lod_net::distance_property(
+                props.raw.get(horizon_client::lod_net::PROPERTY),
+            ),
             server_links: if props.bug_report_link.is_empty() {
                 Vec::new()
             } else if super::server_links::valid_untrusted_uri(&props.bug_report_link) {
