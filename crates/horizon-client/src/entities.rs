@@ -1915,6 +1915,53 @@ mod honey_slide_tests {
         );
     }
 
+    /// `Entity.sendBubbleColumnParticles` is for the top of a column only: an item
+    /// inside the column shows nothing, one in its surface block shows the block.
+    #[test]
+    fn an_item_at_the_top_of_a_bubble_column_is_at_its_surface() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let mut column = assets
+            .registry
+            .state(
+                assets
+                    .registry
+                    .default_state("minecraft:bubble_column")
+                    .unwrap(),
+            )
+            .unwrap()
+            .clone();
+        column.properties.insert("drag".into(), "false".into());
+        let column = assets.registry.resolve(&column).unwrap();
+        for y in 4..=8 {
+            world.set(20, y, 20, column).unwrap();
+        }
+        let surfaces = |y: f64| {
+            let item = falling_item(20.5, y, 20.5, 0.0, 0.0, 0.0);
+            crate::motion::bubble_column_surfaces(
+                &world,
+                assets.registry,
+                &facts,
+                &collision,
+                item.bounds(),
+            )
+        };
+        assert_eq!(surfaces(8.2), vec![BlockPos::new(20, 8, 20)]);
+        assert_eq!(surfaces(5.0), Vec::new());
+        // Straddling the two top blocks, it is still at the top of one column.
+        assert_eq!(surfaces(7.9), vec![BlockPos::new(20, 8, 20)]);
+        assert_eq!(surfaces(9.0), Vec::new());
+    }
+
     pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
