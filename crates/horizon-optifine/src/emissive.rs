@@ -8,9 +8,10 @@
 //! `zombie3`, never over `zombie`.
 //!
 //! This pairs entity textures, those under `textures/entity/` (mobs' and block entities'), by
-//! the entity atlas's names ([`crate::random_textures`]); the game draws them over mobs and
-//! block entities.
-//! Blocks and items have their own atlas.
+//! the entity atlas's names ([`crate::random_textures`]), and through [`Emissive::pair_beside`]
+//! random variants and their blink frames wherever they are. A blink frame glows with its own
+//! overlay only: the texture's would paint its open eyes over the shut ones. Blocks and items
+//! have their own atlas.
 //!
 //! Written from OptiFine's `emissive.properties` and ETF's `EMISSIVE_GUIDE.md` and
 //! `emissive.properties`; no mod's source was read.
@@ -103,17 +104,6 @@ impl Emissive {
                 }
             }
         }
-    }
-
-    /// The overlay drawn over `drawn`: its own, or for a blink frame without one, the overlay of
-    /// the texture it blinks (so the glow doesn't go out with every blink).
-    pub fn overlay_of(&self, drawn: &str) -> Option<&str> {
-        self.overlay(drawn).or_else(|| {
-            let texture = drawn
-                .strip_suffix("_blink2")
-                .or_else(|| drawn.strip_suffix("_blink"))?;
-            self.overlay(texture)
-        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -272,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn blink_frames_glow_with_their_own_overlay_or_their_textures() {
+    fn blink_frames_glow_with_their_own_overlay_only() {
         let (root, mut e) = pack(
             "blink",
             &[
@@ -289,18 +279,10 @@ mod tests {
         let blinks = crate::blink::Blinks::scan(&root, &RandomTextures::scan(&root));
         e.pair_beside(&root, blinks.files());
         let frame = "minecraft:optifine/random/entity/zombie/zombie3_blink";
-        assert_eq!(e.overlay_of(frame), Some(format!("{frame}_e").as_str()));
+        assert_eq!(e.overlay(frame), Some(format!("{frame}_e").as_str()));
         assert!(e.files().any(|(_, name)| name == format!("{frame}_e")));
-        // No pig_blink_e: the shut eye keeps the pig's glow.
-        assert_eq!(
-            e.overlay_of("entity/pig/pig_blink"),
-            Some("entity/pig/pig_e")
-        );
-        assert_eq!(
-            e.overlay_of("entity/pig/pig_blink2"),
-            Some("entity/pig/pig_e")
-        );
-        assert_eq!(e.overlay_of("entity/cow/cow_blink"), None);
+        // No pig_blink_e: the shut eye doesn't take the pig's glow (its open eyes, mostly).
+        assert_eq!(e.overlay("entity/pig/pig_blink"), None);
         let _ = fs::remove_dir_all(root);
     }
 
