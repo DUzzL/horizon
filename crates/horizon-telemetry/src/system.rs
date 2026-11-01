@@ -56,8 +56,10 @@ fn cpu() -> Option<String> {
         read("/proc/cpuinfo").and_then(|t| field(&t, "model name"))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
-    } else {
+    } else if cfg!(windows) {
         windows_cpu()
+    } else {
+        None
     }
 }
 
@@ -65,24 +67,29 @@ fn cpu() -> Option<String> {
 /// `ProcessorNameString`. `PROCESSOR_IDENTIFIER` is only the fallback: it always holds the family,
 /// model and stepping (`AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD`), which neither names the
 /// chip nor tells two chips of one family apart. The game, its crash report, the benchmark report
-/// and telemetry all read the CPU through this.
+/// and telemetry all read the CPU through this. Read once: every telemetry item and benchmark
+/// report would run `reg` again.
 pub fn windows_cpu() -> Option<String> {
-    command_output(
-        "reg",
-        &[
-            "query",
-            r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
-            "/v",
-            "ProcessorNameString",
-        ],
-    )
-    .and_then(|query| processor_name_from_reg_query(&query))
-    .or_else(|| {
-        std::env::var("PROCESSOR_IDENTIFIER")
-            .ok()
-            .map(|id| id.trim().to_owned())
-            .filter(|id| !id.is_empty())
+    static CPU: OnceLock<Option<String>> = OnceLock::new();
+    CPU.get_or_init(|| {
+        command_output(
+            "reg",
+            &[
+                "query",
+                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                "/v",
+                "ProcessorNameString",
+            ],
+        )
+        .and_then(|query| processor_name_from_reg_query(&query))
+        .or_else(|| {
+            std::env::var("PROCESSOR_IDENTIFIER")
+                .ok()
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty())
+        })
     })
+    .clone()
 }
 
 /// The value of `ProcessorNameString` in `reg query ... /v ProcessorNameString` output
@@ -637,7 +644,7 @@ mod tests {
             processor_name_from_reg_query(&query.replace("\r\n", "\n")).as_deref(),
             Some(name)
         );
-        // The registry pads some names with spaces; the value keeps them.
+        // The registry pads some names with spaces; the name comes without them.
         let padded = format!("{key}\n    ProcessorNameString    REG_SZ        {name}      \n");
         assert_eq!(
             processor_name_from_reg_query(&padded).as_deref(),
@@ -653,13 +660,19 @@ mod tests {
             .as_deref(),
             Some("13th Gen Intel(R) Core(TM) i7-13700F")
         );
-        // Spaces inside the name stay as they are.
+        // Spaces inside the name stay as they are, runs of them too (older Intel names).
         assert_eq!(
             processor_name_from_reg_query(
-                "    ProcessorNameString    REG_SZ    Intel(R) Xeon(R) CPU E5-2670 0 @ 2.60GHz\r\n"
+                "    ProcessorNameString    REG_SZ    Intel(R) Core(TM) i7 CPU         920  @ 2.67GHz\r\n"
             )
             .as_deref(),
-            Some("Intel(R) Xeon(R) CPU E5-2670 0 @ 2.60GHz")
+            Some("Intel(R) Core(TM) i7 CPU         920  @ 2.67GHz")
+        );
+        // Columns split by tabs.
+        assert_eq!(
+            processor_name_from_reg_query(&format!("\tProcessorNameString\tREG_SZ\t{name}\r\n"))
+                .as_deref(),
+            Some(name)
         );
     }
 
@@ -707,22 +720,21 @@ mod tests {
         );
     }
 
-    /// The CPU is named, not described by family and model: `PROCESSOR_IDENTIFIER` is only the
-    /// fallback. Windows always has the registry value (and so does a CI runner).
+    /// The CPU is the registry's name for it, as PowerShell reads it (not through `reg`), trimmed;
+    /// `PROCESSOR_IDENTIFIER`'s family and model only where the registry has no name, as on some
+    /// VMs. No CI runner tests this crate on Windows: it runs on a contributor's machine.
     #[cfg(windows)]
     #[test]
     fn windows_names_the_cpu_by_its_brand() {
-        let cpu = System::detect().cpu;
-        assert!(!cpu.is_empty());
-        assert_eq!(cpu, cpu.trim());
-        assert!(
-            !cpu.contains(" Family ") && !cpu.contains("Stepping"),
-            "family and model, not a name: {cpu:?}"
+        let registry = powershell(
+            r"(Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0').ProcessorNameString",
         );
-        if let Ok(id) = std::env::var("PROCESSOR_IDENTIFIER") {
-            assert_ne!(cpu, id.trim());
-        }
-        assert_eq!(windows_cpu().as_deref(), Some(cpu.as_str()));
+        let expected = registry.or_else(|| {
+            std::env::var("PROCESSOR_IDENTIFIER")
+                .ok()
+                .map(|id| id.trim().to_owned())
+        });
+        assert_eq!(cpu(), expected);
     }
 
     #[test]
