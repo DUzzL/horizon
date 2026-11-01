@@ -1,7 +1,7 @@
 //! Repository tasks, run with `cargo run -p xtask -- TASK`.
 //!
 //! `package BINARY OUTDIR`: a playable Horizon folder with the game binary, horizon-ctl,
-//! horizon-prepare and horizon-server (built beside it: cargo build --release -p horizon-client
+//! horizon-prepare and horizon-server (built beside it: cargo build --release -p horizon-client -p horizon-client-lib
 //! --bins -p horizon-prepare -p horizon-server), the exporters horizon-prepare compiles, its sources (the launcher compares
 //! them to its own), and PLAY.txt. It holds none of Minecraft's files: players prepare those
 //! from their own copy. .github/workflows/release.yml makes the release folders with it.
