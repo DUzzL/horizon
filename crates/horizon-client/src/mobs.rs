@@ -1552,6 +1552,14 @@ pub enum MobEvent {
         count: u32,
         at: [f64; 3],
     },
+    /// `new ItemEntity(.., stack)` thrown by `mob` (`setThrower`): `Dolphin.ItemGoal.drop`.
+    ThrowItem {
+        mob: u32,
+        stack: crate::items::ItemStack,
+        at: [f64; 3],
+        motion: [f64; 3],
+        pickup_delay: u32,
+    },
     /// `Goat.dropHorn`: a horn from goat `mob` (`Goat.createHorn` picks the
     /// instrument from its UUID), thrown with `motion` as
     /// `new ItemEntity(.., deltaX, deltaY, deltaZ)`.

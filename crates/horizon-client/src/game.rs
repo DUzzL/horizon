@@ -125,6 +125,7 @@ mod fangs;
 mod fireworks;
 mod fishing;
 mod fov;
+mod foxes;
 mod frames;
 mod friends;
 mod functions;
