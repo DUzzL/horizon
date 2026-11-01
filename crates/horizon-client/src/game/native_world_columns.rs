@@ -1,20 +1,12 @@
-//! Column reads for server mods: the WebAssembly mod API's `world.surface-height` and `world.read-columns` from the
-//! Stink-O/horizon fork, as helpers on the level being ticked.
+//! Column reads for server mods, as helpers on the level being ticked: many columns' heights, and the blocks round
+//! them, in one call.
 use super::Game;
 use super::native_world_edit::NativeHeightmap;
 
-/// `world.surface-heights`: the heights asked under `tag`, a column each (none where it isn't loaded).
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NativeSurfaceHeights {
-    pub(crate) tag: u32,
-    pub(crate) heights: Vec<Option<i32>>,
-}
-/// `world.column-blocks`: the blocks round each column's height (`bases`, none where it isn't loaded), as
-/// indexes into `palette`, and three biome tints a column (grass, foliage, water).
+/// What `native_read_columns` read: the blocks round each column's height (`bases`, none where it isn't loaded),
+/// as indexes into `palette`, a column after another, and three biome tints a column (grass, foliage, water).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub(crate) struct NativeColumnBlocks {
-    pub(crate) tag: u32,
     pub(crate) palette: Vec<String>,
     pub(crate) bases: Vec<Option<i32>>,
     pub(crate) blocks: Vec<u16>,
@@ -23,7 +15,7 @@ pub(crate) struct NativeColumnBlocks {
 
 #[allow(dead_code)]
 impl Game<'_> {
-    /// `world.surface-height`, for a server mod: each column's height by `heightmap` in the authoritative level
+    /// For a server mod: each column's height by `heightmap` in the authoritative level
     /// `dimension` (the one being ticked), none for a column not loaded; none at all for another dimension or a
     /// client of a server. API @API:native_read_columns@.
     pub(super) fn native_surface_heights(
@@ -40,9 +32,11 @@ impl Game<'_> {
         self.native_read_logged(started, "height query", columns.len());
         Some(out)
     }
-    /// `world.read-columns`, for a server mod: `below` blocks under and `above` blocks from each column's height by
-    /// `heightmap`, as a palette and indexes, with the biome's grass, foliage and water tints; none for another
-    /// dimension or a client of a server. API @API:native_read_columns@.
+    /// For a server mod: `below` blocks under and `above` blocks from each column's height by `heightmap`, as a
+    /// palette and indexes, with the biome's grass, foliage and water tints (air outside the column and in columns
+    /// not loaded); none for another dimension or a client of a server, and none, reading nothing, when
+    /// `below + above` is more than the level's height or the read more than 16,777,216 blocks (`MAX_READ`).
+    /// API @API:native_read_columns@.
     pub(super) fn native_read_columns(
         &self,
         dimension: &str,
@@ -54,7 +48,7 @@ impl Game<'_> {
             return None;
         }
         let started = std::time::Instant::now();
-        let out = self.read_columns(columns, heightmap, below, above);
+        let out = self.read_columns(columns, heightmap, below, above)?;
         self.native_read_logged(started, "column read", columns.len());
         Some(out)
     }

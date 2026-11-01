@@ -7,7 +7,7 @@ use super::native_world_columns::NativeColumnBlocks as ColumnBlocks;
 use super::native_world_edit::{NativeBlockEdit as BlockEdit, NativeHeightmap as Heightmap};
 use horizon_client::{
     block_edit::Run,
-    chunk::MIN_Y,
+    chunk::ColumnLayout,
     command::{Reader, args::BlockInput, block},
     containers::BlockEntity,
     fast_hash::FxHashMap,
@@ -113,58 +113,29 @@ impl Game<'_> {
         Ok(out.changed)
     }
 
-    /// `world.surface-height`: each column's height on `h` as `edit_height` reads it, none where its chunk is not
-    /// loaded. (A chunk read is looked up once for a run of columns in it.)
+    /// Each column's height on `h` as `edit_height` reads it, none where its chunk is not loaded.
     pub(super) fn surface_heights(&self, columns: &[(i32, i32)], h: Heightmap) -> Vec<Option<i32>> {
-        let mut last: Option<((i32, i32), bool)> = None;
-        columns
-            .iter()
-            .map(|&(x, z)| {
-                let key = (x >> 4, z >> 4);
-                let loaded = match last {
-                    Some((k, l)) if k == key => l,
-                    _ => {
-                        let l = self.world.chunks.get(&key).is_some();
-                        last = Some((key, l));
-                        l
-                    }
-                };
-                loaded.then(|| self.edit_height(h, x, z))
-            })
-            .collect()
+        loaded_heights(&self.world, columns, |x, z| self.edit_height(h, x, z))
     }
 
-    /// `world.read-columns`: each column's height on `h` (none where its chunk is not loaded) and its blocks from `below`
-    /// under it to `above` - 1 over it, bottom first (air outside the world's height and where it is not loaded), the
-    /// blocks as indices into the names seen (the tag is the caller's).
+    /// Each column's height on `h` (none where its chunk is not loaded) and its blocks from `below` under it to
+    /// `above` - 1 over it, bottom first (air outside the column and where it is not loaded), as indices into the
+    /// names seen, with the biome's grass, foliage and water tints at the column's top (0 where it is not loaded).
+    /// None, reading nothing, when `below + above` is more than the level's height, or the read would be more than
+    /// `MAX_READ` blocks.
     pub(super) fn read_columns(
         &self,
         columns: &[(i32, i32)],
         h: Heightmap,
         below: u32,
         above: u32,
-    ) -> ColumnBlocks {
+    ) -> Option<ColumnBlocks> {
+        read_size(columns.len(), below, above, self.world.layout().height())?;
         let bases = self.surface_heights(columns, h);
-        let per = (below + above) as usize;
-        let mut blocks = Vec::with_capacity(columns.len() * per);
-        let mut palette: Vec<String> = Vec::new();
-        // (a state's index into the names, worked out once a state)
-        let mut seen: FxHashMap<u32, u16> = FxHashMap::default();
         let facts = self.res.facts();
-        let mut index = |s: BlockStateId| -> u16 {
-            *seen.entry(s.0).or_insert_with(|| {
-                let name = &facts.get(s).name;
-                let i = palette
-                    .iter()
-                    .position(|n| **n == **name)
-                    .unwrap_or_else(|| {
-                        palette.push(name.to_string());
-                        palette.len() - 1
-                    });
-                i as u16
-            })
-        };
-        let top = MIN_Y + horizon_client::chunk::HEIGHT - 1;
+        let (palette, blocks) = column_blocks(&self.world, columns, &bases, below, above, |s| {
+            facts.get(s).name.clone()
+        })?;
         let biomes = self.res.biomes();
         let mut tints = Vec::with_capacity(columns.len() * 3);
         for (&(x, z), base) in columns.iter().zip(&bases) {
@@ -185,63 +156,157 @@ impl Game<'_> {
                 }
                 None => tints.extend([0, 0, 0]),
             }
-            match base {
-                Some(b) => {
-                    let y0 = b - below as i32;
-                    for y in y0..y0 + per as i32 {
-                        let s = if (MIN_Y..=top).contains(&y) {
-                            self.world.block(x, y, z)
-                        } else {
-                            self.world.air
-                        };
-                        blocks.push(index(s));
-                    }
-                }
-                None => {
-                    let air = index(self.world.air);
-                    blocks.extend(std::iter::repeat_n(air, per));
-                }
-            }
         }
-        ColumnBlocks {
-            tag: 0,
+        Some(ColumnBlocks {
             palette,
             bases,
             blocks,
             tints,
-        }
+        })
     }
 
     /// One above the highest block of column (x, z) that counts on heightmap `h`, or the bottom of the column (also
     /// where it is not loaded).
     fn edit_height(&self, h: Heightmap, x: i32, z: i32) -> i32 {
-        if h == Heightmap::WorldSurface {
-            return self
-                .world
-                .world_surface(x, z, |s| self.res.facts().is_air(s));
-        }
         let properties = &self.pack.assets.properties;
-        let counts = |t: HeightmapType, s: BlockStateId| t.is_opaque(properties.heightmap_state(s));
-        // (as `rain_height` reads it: both others count only blocks that block motion, so they are at or under it)
-        let top = self
-            .world
-            .motion_blocking(x, z, |s| counts(HeightmapType::MotionBlocking, s));
-        let kind = match h {
-            Heightmap::MotionBlockingNoLeaves => HeightmapType::MotionBlockingNoLeaves,
-            Heightmap::OceanFloor => HeightmapType::OceanFloor,
-            _ => return top,
-        };
-        let bottom = self
-            .world
-            .chunks
-            .get(&(x >> 4, z >> 4))
-            .map_or(self.world.layout().min_y(), |c| c.min_y());
-        let mut y = top;
-        while y > bottom && !counts(kind, self.world.block(x, y - 1, z)) {
-            y -= 1;
-        }
-        y
+        column_height(
+            &self.world,
+            h,
+            (x, z),
+            |s| self.res.facts().is_air(s),
+            |t, s| t.is_opaque(properties.heightmap_state(s)),
+        )
     }
+}
+
+/// The most blocks one `read_columns` reads (32 MiB of indices).
+pub(super) const MAX_READ: usize = 1 << 24;
+
+/// The blocks a column read of `columns` columns, `below` + `above` each,
+/// reads: None when a column's span is more than `height` (the level's) or
+/// the whole more than `MAX_READ`.
+fn read_size(columns: usize, below: u32, above: u32, height: i32) -> Option<usize> {
+    let per = below.checked_add(above)?;
+    if i64::from(per) > i64::from(height) {
+        return None;
+    }
+    columns.checked_mul(per as usize).filter(|&n| n <= MAX_READ)
+}
+
+/// One above the highest block of column `(x, z)` on heightmap `h`, or the
+/// bottom of the column (also where it is not loaded): `air` says which
+/// blocks the world surface passes over, and `counts(kind, state)` which
+/// count on the other heightmaps.
+fn column_height(
+    world: &World,
+    h: Heightmap,
+    (x, z): (i32, i32),
+    air: impl Fn(BlockStateId) -> bool,
+    counts: impl Fn(HeightmapType, BlockStateId) -> bool,
+) -> i32 {
+    if h == Heightmap::WorldSurface {
+        return world.world_surface(x, z, air);
+    }
+    // (as `rain_height` reads it: both others count only blocks that block motion, so they are at or under it)
+    let top = world.motion_blocking(x, z, |s| counts(HeightmapType::MotionBlocking, s));
+    let kind = match h {
+        Heightmap::MotionBlockingNoLeaves => HeightmapType::MotionBlockingNoLeaves,
+        Heightmap::OceanFloor => HeightmapType::OceanFloor,
+        _ => return top,
+    };
+    let bottom = world
+        .chunks
+        .get(&(x >> 4, z >> 4))
+        .map_or(world.layout().min_y(), |c| c.min_y());
+    let mut y = top;
+    while y > bottom && !counts(kind, world.block(x, y - 1, z)) {
+        y -= 1;
+    }
+    y
+}
+
+/// `height(x, z)` of each column, none where its chunk is not loaded. (A
+/// chunk is looked up once for a run of columns in it.)
+fn loaded_heights(
+    world: &World,
+    columns: &[(i32, i32)],
+    height: impl Fn(i32, i32) -> i32,
+) -> Vec<Option<i32>> {
+    let mut last: Option<((i32, i32), bool)> = None;
+    columns
+        .iter()
+        .map(|&(x, z)| {
+            let key = (x >> 4, z >> 4);
+            let loaded = match last {
+                Some((k, l)) if k == key => l,
+                _ => {
+                    let l = world.chunks.get(&key).is_some();
+                    last = Some((key, l));
+                    l
+                }
+            };
+            loaded.then(|| height(x, z))
+        })
+        .collect()
+}
+
+/// The blocks of each column from `below` under its base to `above` - 1 over
+/// it, bottom first, as indices into the names (`name`) seen: air outside the
+/// column's chunk's own height and where there is no base. None, reading
+/// nothing, past `read_size`'s bound.
+fn column_blocks(
+    world: &World,
+    columns: &[(i32, i32)],
+    bases: &[Option<i32>],
+    below: u32,
+    above: u32,
+    name: impl Fn(BlockStateId) -> Arc<str>,
+) -> Option<(Vec<String>, Vec<u16>)> {
+    let total = read_size(
+        columns.len(),
+        below,
+        above,
+        ColumnLayout::HIGHEST_Y + 1 - ColumnLayout::LOWEST_Y,
+    )?;
+    let per = (below + above) as usize;
+    let mut blocks = Vec::with_capacity(total);
+    let mut palette: Vec<String> = Vec::new();
+    // (a state's index into the names, worked out once a state)
+    let mut seen: FxHashMap<u32, u16> = FxHashMap::default();
+    let mut index = |s: BlockStateId| -> u16 {
+        *seen.entry(s.0).or_insert_with(|| {
+            let name = name(s);
+            let i = palette
+                .iter()
+                .position(|n| **n == *name)
+                .unwrap_or_else(|| {
+                    palette.push(name.to_string());
+                    palette.len() - 1
+                });
+            i as u16
+        })
+    };
+    for (&(x, z), base) in columns.iter().zip(bases) {
+        let chunk = world.chunks.get(&(x >> 4, z >> 4));
+        match (base, chunk) {
+            (Some(b), Some(chunk)) => {
+                let (bottom, top) = (chunk.min_y(), chunk.max_y());
+                let y0 = i64::from(*b) - i64::from(below);
+                for y in y0..y0 + per as i64 {
+                    let s = match i32::try_from(y) {
+                        Ok(y) if (bottom..top).contains(&y) => chunk.block(x & 15, y, z & 15),
+                        _ => world.air,
+                    };
+                    blocks.push(index(s));
+                }
+            }
+            _ => {
+                let air = index(world.air);
+                blocks.extend(std::iter::repeat_n(air, per));
+            }
+        }
+    }
+    Some((palette, blocks))
 }
 
 /// `edit`'s runs as `World::edit_runs` takes them: each palette entry `block`
@@ -478,5 +543,98 @@ mod tests {
             w.block_entities.get(&(3, 10, 3)),
             Some(BlockEntity::Mod(e)) if e.id == "machines:press"
         ));
+    }
+
+    /// air 0, stone 1, leaves 2, water 3: column (1, 1) stone to 60, water, then leaves to 64; column (2, 2)
+    /// stone to 60, leaves, then water to 64; at (3, 3) stone at the top of the world.
+    fn columns_world() -> World {
+        let mut w = world();
+        for (x, z, low, high) in [(1, 1, 3, 2), (2, 2, 2, 3)] {
+            for y in -64..=64 {
+                let s = match y {
+                    ..=60 => 1,
+                    61..=62 => low,
+                    _ => high,
+                };
+                w.set(x, y, z, BlockStateId(s)).unwrap();
+            }
+        }
+        w.set(3, 319, 3, BlockStateId(1)).unwrap();
+        w
+    }
+    fn height(w: &World, h: Heightmap, x: i32, z: i32) -> i32 {
+        column_height(
+            w,
+            h,
+            (x, z),
+            |s| s.0 == 0,
+            |kind, s| match kind {
+                HeightmapType::MotionBlockingNoLeaves => matches!(s.0, 1 | 3),
+                HeightmapType::OceanFloor => matches!(s.0, 1 | 2),
+                _ => s.0 != 0,
+            },
+        )
+    }
+
+    #[test]
+    fn each_heightmap_has_its_own_height() {
+        let w = columns_world();
+        assert_eq!(height(&w, Heightmap::WorldSurface, 1, 1), 65);
+        assert_eq!(height(&w, Heightmap::MotionBlocking, 1, 1), 65);
+        assert_eq!(height(&w, Heightmap::MotionBlockingNoLeaves, 1, 1), 63);
+        assert_eq!(height(&w, Heightmap::OceanFloor, 1, 1), 65);
+        assert_eq!(height(&w, Heightmap::OceanFloor, 2, 2), 63);
+        assert_eq!(height(&w, Heightmap::MotionBlockingNoLeaves, 2, 2), 65);
+        // an empty column, and one not loaded: the bottom
+        assert_eq!(height(&w, Heightmap::OceanFloor, 5, 5), -64);
+        assert_eq!(height(&w, Heightmap::WorldSurface, 100, 100), -64);
+    }
+
+    #[test]
+    fn columns_not_loaded_have_no_height() {
+        let w = columns_world();
+        let heights = loaded_heights(&w, &[(1, 1), (100, 100), (2, 2), (-1, 0)], |x, z| {
+            height(&w, Heightmap::OceanFloor, x, z)
+        });
+        assert_eq!(heights, [Some(65), None, Some(63), None]);
+    }
+
+    #[test]
+    fn column_blocks_read_air_past_the_column_and_where_not_loaded() {
+        let w = columns_world();
+        let (palette, blocks) = column_blocks(
+            &w,
+            &[(1, 1), (3, 3), (100, 100)],
+            &[Some(65), Some(319), None],
+            2,
+            3,
+            |s| names(s.0),
+        )
+        .unwrap();
+        let read: Vec<&str> = blocks.iter().map(|&i| &*palette[i as usize]).collect();
+        // (`names` calls state 2 a chest: here it stands for leaves)
+        let (leaves, stone, air) = ("minecraft:chest", "minecraft:stone", "minecraft:air");
+        assert_eq!(
+            read,
+            [
+                leaves, leaves, air, air, air, // (1, 1) from 63
+                air, air, stone, air, air, // (3, 3) from 317: stone at 319, nothing over 319
+                air, air, air, air, air, // not loaded
+            ]
+        );
+        // names once each
+        assert_eq!(palette.len(), 3);
+    }
+
+    #[test]
+    fn a_read_is_bounded() {
+        assert_eq!(read_size(10, 200, 184, 384), Some(3840));
+        assert_eq!(read_size(1, 200, 185, 384), None);
+        assert_eq!(read_size(1, u32::MAX, 1, 4064), None);
+        assert_eq!(read_size(1 << 20, 100, 0, 384), None);
+        assert_eq!(read_size(usize::MAX, 2, 0, 384), None);
+        assert_eq!(read_size(1 << 16, 256, 0, 384), Some(MAX_READ));
+        let w = columns_world();
+        assert!(column_blocks(&w, &[(1, 1)], &[Some(0)], u32::MAX, 2, |s| names(s.0)).is_none());
     }
 }
