@@ -1801,7 +1801,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
     };
     let mut tip = None;
     if let Act::Extra(item) = act {
-        tip = Some(Text::literal(item.description()));
+        tip = Some(Text::literal(item.description_text()));
     }
     if let Act::Push(page) = act
         && let Some(text) = horizon_page_tooltip(*page)
@@ -1976,7 +1976,7 @@ fn pairs(opts: &[Opt]) -> Vec<Row> {
 impl OptionsUi {
     /// A switch of `horizon-extras.txt` as the Extras page draws it: "Caption: On".
     fn extra_button(&self, s: &Settings, item: crate::extras::Item) -> Widget {
-        let label = format!("{}: {}", item.caption(), item.value(&s.extras));
+        let label = format!("{}: {}", item.caption_text(), item.value(&s.extras));
         button(0.0, 0.0, 150.0, Text::literal(label), Act::Extra(item))
     }
     fn settings_search_active(&self) -> bool {
@@ -2274,7 +2274,7 @@ impl OptionsUi {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
                 let extra = |item: crate::extras::Item| {
-                    let value = format!("{}: {}", item.caption(), item.value(&s.extras));
+                    let value = format!("{}: {}", item.caption_text(), item.value(&s.extras));
                     let label = if item.key_name().is_some() && self.selected_key == item.key_name()
                     {
                         Text::literal(format!("> {value} <")).with_color(text::YELLOW)

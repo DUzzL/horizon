@@ -113,7 +113,9 @@ fn target_id(t: Target) -> Option<u32> {
         | Target::Cart(id)
         | Target::Other(id)
         | Target::Crystal(id)
-        | Target::Dragon(id) => Some(id),
+        | Target::Dragon(id)
+        | Target::Tnt(id)
+        | Target::Falling(id) => Some(id),
         Target::Player | Target::Guest(_) => None,
     }
 }

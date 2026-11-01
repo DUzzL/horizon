@@ -27,7 +27,7 @@ use horizon_world::nbt::Tag;
 /// Mob ids from here on are dragon parts (`SPECIAL + part`) and crystals
 /// (`SPECIAL + 16 + crystal`), so projectiles can target them.
 pub(super) const SPECIAL: u32 = u32::MAX - 4096;
-const CRYSTAL_IDS: u32 = SPECIAL + 16;
+pub(super) const CRYSTAL_IDS: u32 = SPECIAL + 16;
 const FIGHT_FILE: &str = "data/minecraft/ender_dragon_fight.dat";
 const MAX_HEALTH: f32 = 200.0;
 /// `Mob.getAmbientSoundInterval`.
@@ -278,6 +278,7 @@ pub(super) struct Dragon {
     /// `lastHurtByPlayer` with its 100 tick memory: the player credited with
     /// the kill, and the dragon tick of their last hit.
     hurt_by_player: Option<(FightWho, i32)>,
+    pub last_source: Option<(&'static str, Option<i32>, Option<i32>)>,
     pub death_time: i32,
     pub flap: f32,
     pub old_flap: f32,
@@ -406,6 +407,7 @@ impl Dragon {
             invulnerable: 0,
             last_hurt: 0.0,
             hurt_by_player: None,
+            last_source: None,
             death_time: 0,
             flap: 0.0,
             old_flap: 0.0,
@@ -1182,6 +1184,15 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
             self.audio
                 .play("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
+            if let Some(s) = source {
+                d.last_source = Some((
+                    s.damage_type,
+                    (s.causing != 0).then_some(s.causing),
+                    (s.direct != 0).then_some(s.direct),
+                ));
+            } else {
+                d.last_source = Some(("minecraft:generic", None, None));
+            }
         }
         hurt
     }
@@ -3587,9 +3598,14 @@ impl Game<'_> {
             }
         }
     }
-    /// The remote dragon, if `id` is it.
+    /// The remote dragon, if `id` is it or one of its parts.
     fn remote_dragon_mut(&mut self, id: i32) -> Option<&mut Dragon> {
-        self.dragon.as_mut().filter(|d| d.id as i32 == id)
+        let Ok(uid) = u32::try_from(id) else {
+            return None;
+        };
+        self.dragon
+            .as_mut()
+            .filter(|d| d.id == uid || (d.id != 0 && (d.id + 1..=d.id + 8).contains(&uid)))
     }
     /// `handleSetEntityData`: LivingEntity.DATA_HEALTH_ID and
     /// EnderDragon.DATA_PHASE (`onSyncedDataUpdated` sets the phase).
@@ -3614,13 +3630,15 @@ impl Game<'_> {
     /// `handleHurtAnimation` and `handleDamageEvent`: the red flash.
     pub(super) fn remote_dragon_hurt(&mut self, id: i32) {
         if let Some(d) = self.remote_dragon_mut(id) {
+            // `LivingEntity.handleDamageEvent`: the red flash. Its sound is the
+            // server's (`playHurtSound`); a client plays one only for its own player.
             d.hurt_time = 10;
         }
     }
     /// `handleRemoveEntities`, or a crystal removed: the healing beam
     /// keeps pointing at the same crystal.
     pub(super) fn remove_remote_dragon(&mut self, id: i32) {
-        if self.remote_dragon_mut(id).is_some() {
+        if self.dragon.as_ref().is_some_and(|d| d.id as i32 == id) {
             self.dragon = None;
             return;
         }
@@ -4376,5 +4394,13 @@ mod tests {
         assert_eq!(t.map(|p| p.who), Some(FightWho::Guest(8)));
         let t = nearest_enemy(&players, false, Vec3::new(9.0, 64.0, 0.0), None, |_| true);
         assert_eq!(t.map(|p| p.who), Some(FightWho::Host));
+    }
+    #[test]
+    fn a_landed_hurt_sets_the_dragon_hurt_flash_time() {
+        let mut d = dragon_as(42);
+        assert_eq!(d.hurt_time, 0);
+        let hurt = d.hurt(0, 5.0, HIT, false);
+        assert_eq!(hurt, Hurt::Landed { full: true });
+        assert_eq!(d.hurt_time, 10);
     }
 }

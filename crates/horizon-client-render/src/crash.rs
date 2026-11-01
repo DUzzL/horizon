@@ -212,7 +212,7 @@ fn operating_system() -> String {
     } else if cfg!(target_os = "macos") {
         command_output("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}"))
     } else if cfg!(windows) {
-        command_output("cmd", &["/C", "ver"])
+        horizon_telemetry::system::windows_version()
     } else {
         None
     };
@@ -227,12 +227,7 @@ fn operating_system() -> String {
 pub fn cpu() -> String {
     let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
     let name = if cfg!(target_os = "linux") {
-        read("/proc/cpuinfo").and_then(|t| {
-            t.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split_once(':'))
-                .map(|(_, v)| v.trim().to_owned())
-        })
+        read("/proc/cpuinfo").and_then(|t| horizon_telemetry::system::linux_cpu_name(&t))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
     } else if cfg!(windows) {

@@ -167,8 +167,10 @@ impl Game<'_> {
             f64::from(pos.y),
             f64::from(pos.z) + 0.5,
         );
+        // An id from the entity counter at once, so a command can name it.
+        self.next_entity += 1;
         self.tnts.push(PrimedTnt {
-            id: 0,
+            id: self.next_entity,
             position,
             previous: position,
             velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
@@ -622,7 +624,7 @@ mod tests {
         }
         world.set(20, 4, 20, water).unwrap();
         world.set(21, 4, 20, flowing).unwrap();
-        let at = Vec3::new(20.5, 6.0, 20.5);
+        let at = Vec3::new(20.5, 4.0, 20.5);
         let mut tnt = PrimedTnt {
             id: 0,
             position: at,
@@ -700,10 +702,15 @@ mod tests {
             .registry
             .default_state("minecraft:soul_sand")
             .unwrap();
-        let column = assets
+        // Soul sand makes an up-pushing column (`drag=false`); the block's
+        // default state is the down-dragging one.
+        let drag_down = assets
             .registry
             .default_state("minecraft:bubble_column")
             .unwrap();
+        let mut up = assets.registry.state(drag_down).unwrap().clone();
+        up.properties.insert("drag".into(), "false".into());
+        let column = assets.registry.resolve(&up).unwrap();
         for y in 3..=8 {
             world.set(20, y, 20, column).unwrap();
         }

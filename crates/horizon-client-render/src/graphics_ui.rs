@@ -3,8 +3,8 @@
 //! input. How they look comes from `graphics_style`.
 use crate::{
     graphics::{
-        EntityCullingMode, FarDetail, GraphicsApi, LeafCullingMode, Overlay, Pacing, PresentMode,
-        Preset, Upscaling,
+        EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
+        Pacing, PresentMode, Preset, Upscaling,
     },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
@@ -46,6 +46,7 @@ pub enum H {
     Antialiasing,
     Upscaling,
     ScreenshotQuality,
+    FrameGeneration,
     Hdr,
     /// Opens `Level::Hdr`.
     HdrSettings,
@@ -300,6 +301,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::ScreenshotQuality,
                 None,
                 "F2 screenshots at this many times the game's resolution. Higher takes longer.",
+            ),
+            h(
+                H::FrameGeneration,
+                Medium,
+                "Shows a made-up frame between each two real ones: smoother, a little more lag.",
             ),
             h(
                 H::HdrSettings,
@@ -581,6 +587,7 @@ impl H {
             H::ScreenshotQuality => {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
+            H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrSettings => Text::literal(lang::get("HDR Settings...")),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
@@ -611,7 +618,7 @@ impl H {
             ),
             H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
             H::HdrKey => {
-                Text::literal("Shortcut: ").append(crate::keybinds::display_name(&g.hdr_key))
+                Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
@@ -703,6 +710,9 @@ impl H {
                     g.screenshot_quality,
                     back,
                 )
+            }
+            H::FrameGeneration => {
+                g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
@@ -829,6 +839,7 @@ impl Item {
                     | H::Pacing
                     | H::PresentMode
                     | H::Workers
+                    | H::FrameGeneration
                     | H::BatteryMode
                     | H::ShadowCache
                     | H::GraphicsApi
@@ -1064,9 +1075,12 @@ impl GraphicsUi {
                     let mut label = item.label(s);
                     if item == Item::Horizon(H::HdrKey) && self.binding.is_some() {
                         // KeyBindsScreen: "> key <" while it waits.
-                        label = Text::literal("Shortcut: > ")
-                            .append(crate::keybinds::display_name(&s.horizon.hdr_key))
-                            .append(" <");
+                        label = Text::translate(
+                            "Shortcut: %s",
+                            &[Text::literal("> ")
+                                .append(crate::keybinds::display_name(&s.horizon.hdr_key))
+                                .append(" <")],
+                        );
                     }
                     let blocked = item.blocked(s);
                     let live = blocked.is_none();
