@@ -611,7 +611,7 @@ impl H {
             ),
             H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
             H::HdrKey => {
-                Text::literal("Shortcut: ").append(crate::keybinds::display_name(&g.hdr_key))
+                Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
@@ -1064,9 +1064,12 @@ impl GraphicsUi {
                     let mut label = item.label(s);
                     if item == Item::Horizon(H::HdrKey) && self.binding.is_some() {
                         // KeyBindsScreen: "> key <" while it waits.
-                        label = Text::literal("Shortcut: > ")
-                            .append(crate::keybinds::display_name(&s.horizon.hdr_key))
-                            .append(" <");
+                        label = Text::translate(
+                            "Shortcut: %s",
+                            &[Text::literal("> ")
+                                .append(crate::keybinds::display_name(&s.horizon.hdr_key))
+                                .append(" <")],
+                        );
                     }
                     let blocked = item.blocked(s);
                     let live = blocked.is_none();
