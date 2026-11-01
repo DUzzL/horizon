@@ -1,7 +1,7 @@
 # Horizon extras
 
-Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, auto-reconnect,
-Mouse Tweaks-style inventory controls and inventory sorting. **Every one is off by default**: a fresh
+Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
+Mouse Tweaks-style inventory controls, inventory sorting and a smooth chat. **Every one is off by default**: a fresh
 install looks and behaves exactly like vanilla 26.3, and turning an extra off
 again restores vanilla's behaviour completely.
 
@@ -88,6 +88,13 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
   whenever the team's name tag visibility would hide it, exactly as the other
   players' tags (`game/names.rs`, `own_name_tag`). Client-only: nothing is sent.
 
+### Hide block-break particles (`hideBlockParticles`, default off)
+- Hides the debris particles that burst from a block when it breaks
+  (`ClientLevel.addDestroyBlockEffect`) and the crumbs off the face you mine
+  (`addBreakingParticles`). Other particles (critical hits, smoke, rain...) are
+  unchanged, and the block still breaks and drops as usual. Client-only:
+  nothing is sent (`game.rs`, `destroy_particles` and `crack_particle`).
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection
@@ -157,6 +164,17 @@ and the container screen tests are unchanged).
 - Done with ordinary left clicks planned by `inv_sort::plan`, so a vanilla
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
+
+### Smooth chat (`chatAnimation`, default off; `chatIndicator`, default on)
+- A new chat line slides in from the left while it fades in over a quarter of
+  a second (5 ticks, `INTRO_TICKS`/`INTRO_WIDTH` in `Chat::layout`), instead of
+  appearing whole on the tick it arrives. Its background and its indicator bar
+  move with it, and the fractional tick from `Game::clock` drives the motion, so
+  it moves every frame and not 20 times a second.
+- Only the unfocused chat (the HUD's) animates: with the chat screen open the
+  history is drawn as vanilla draws it, so clicking a line lands on its text.
+- `chatIndicator` off removes the coloured bar at the left of a line. It hides
+  the bar only, never the message.
 
 ### Splitscreen (`splitscreen`, default off)
 

@@ -27,7 +27,15 @@ fn zombie_kind(s: Species) -> bool {
 impl Game<'_> {
     /// `Entity.startRiding` for two mobs.
     pub(super) fn mount_mob(&mut self, rider: u32, vehicle: u32) {
+        self.try_mount_mob(rider, vehicle);
+    }
+    /// `Entity.startRiding` for two mobs: false when a mod canceled it.
+    pub(super) fn try_mount_mob(&mut self, rider: u32, vehicle: u32) -> bool {
+        if !self.native_mob_may_ride(rider, vehicle, true) {
+            return false;
+        }
         riders::link(&mut self.mobs, rider, vehicle);
+        true
     }
     /// Riders sit on their vehicles (`Entity.positionRider`), mobs or boats,
     /// and let go when the vehicle dies or is gone.
@@ -40,6 +48,12 @@ impl Game<'_> {
         }
         let boats: std::collections::HashSet<u32> = self.boats.iter().map(|b| b.id).collect();
         let carts: std::collections::HashSet<u32> = self.carts.iter().map(|c| c.id).collect();
+        let tnts: std::collections::HashSet<u32> = self
+            .tnts
+            .iter()
+            .map(|t| t.id)
+            .filter(|&id| id != 0)
+            .collect();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()
@@ -57,6 +71,7 @@ impl Game<'_> {
                 && !self.mobs[i].removed
                 && (boats.contains(&v)
                     || carts.contains(&v)
+                    || tnts.contains(&v)
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -79,6 +94,7 @@ impl Game<'_> {
     pub(super) fn position_riders(&mut self) {
         self.seat_boat_mobs();
         self.seat_cart_mobs();
+        self.seat_tnt_mobs();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()

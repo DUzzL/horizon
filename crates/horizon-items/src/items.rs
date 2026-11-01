@@ -374,7 +374,7 @@ pub struct Items {
     /// Item tags in vanilla's order (`TagLoader`: file order, nested tags in
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
-    loot: Arc<HashMap<String, Value>>,
+    loot: Arc<horizon_world::loot::LootTables>,
     /// The `jukebox_song` registry.
     pub songs: HashMap<String, Song>,
     /// The `instrument` registry (goat horns).
@@ -1551,6 +1551,31 @@ impl LootContext<'_> {
             // does not have: held true (a double plant's other half is taken
             // as there). Unknown types fail, as in loot.rs.
             "minecraft:location_check" => true,
+            // A mod's own kind: the condition hook answers. This engine
+            // (block drops, entity drops, loot_table, interact_loot) has
+            // no LootStack, so the function hook isn't here yet.
+            k if !c.is_null() && k.contains(':') && !k.starts_with("minecraft:") => {
+                let ctx = horizon_world::loot::NativeLootContext {
+                    entity: None,
+                    damage: None,
+                    player: None,
+                    block: (!self.block.is_empty()).then_some(self.block),
+                    tool: self.held.map(|h| horizon_world::loot::NativeLootTool {
+                        item: h.item.to_string(),
+                        enchantments: h
+                            .enchantments()
+                            .iter()
+                            .map(|(id, lvl)| (id.to_string(), *lvl as i32))
+                            .collect(),
+                    }),
+                    luck: 0.0,
+                    biome: None,
+                    seed: random.next_long(),
+                };
+                let mut holds = false;
+                horizon_world::loot::native_loot_condition(k, c, &ctx, &mut holds);
+                holds
+            }
             _ => false,
         }
     }
@@ -2109,6 +2134,28 @@ mod tests {
             explosion_radius: None,
             this_entity: false,
         }
+    }
+
+    /// A mod's kind nobody claims fails; a reference by name isn't a kind,
+    /// and fails too.
+    #[test]
+    fn an_unclaimed_condition_of_a_mods_kind_fails() {
+        let items = Items::for_tests(HashMap::new());
+        let props = horizon_world::chunk::BlockProperties::new();
+        let table = |condition: Value| {
+            json!({"pools":[{"rolls":1,"entries":[
+                {"type":"minecraft:item","name":"minecraft:stone","condition":condition}]}]})
+        };
+        let mut random = LegacyRandom::new(7);
+        let mut drops = |condition: Value, block: &str| {
+            ctx(&items, None, &props, block)
+                .evaluate(&table(condition), &mut random)
+                .len()
+        };
+        assert_eq!(drops(json!({"type":"mymod:always"}), "minecraft:stone"), 0);
+        assert_eq!(drops(json!({"type":"mymod:always"}), ""), 0);
+        assert_eq!(drops(json!("mymod:always"), "minecraft:stone"), 0);
+        assert_eq!(drops(Value::Null, "minecraft:stone"), 1);
     }
 
     #[test]

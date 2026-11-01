@@ -12,11 +12,13 @@
 //! this thread's CPU time in `Mesher::mesh`, the best of `--rounds`, so other
 //! work on the machine changes it less. The checksum of the meshes shows that an
 //! A/B pair of builds made the same ones.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     assets::Assets,
     biome::Biomes,
     blocks::BlockFacts,
     chunk::HEIGHT,
+    graphics::LeafCullingMode,
     light::LightTables,
     mesher::{MeshTables, Mesher, Region, borrow},
     models,
@@ -139,6 +141,8 @@ fn main() -> Result<(), Error> {
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
             assets: &context.assets,
             render: &context.render,
             tables: &context.tables,

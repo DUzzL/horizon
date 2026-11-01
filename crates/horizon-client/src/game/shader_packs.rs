@@ -5,7 +5,7 @@
 //! dimension changes (spec 1.2).
 
 use horizon_client::camera::CameraFluid;
-use horizon_client::gfx::pack_uniforms::PackInputs;
+use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
 use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
 use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder, load_post};
@@ -68,6 +68,33 @@ pub(super) fn write_shader_options(options: &ShaderOptions) {
     }
 }
 
+/// The pack that runs over the world ("": none): `HORIZON_SHADER_PACK`, else the pick
+/// (`active_pack`).
+fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
+    static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
+    active_pack(
+        dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
+        &settings.mods,
+    )
+}
+
+/// Whether the pack picked (`picked_pack`) draws flat where the device can (`pack_draws_flat`):
+/// a renderer made now lays the sections out for it before the first world frame loads it
+/// (`Renderer::new`).
+pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settings) -> bool {
+    let picked = picked_pack(settings);
+    !picked.is_empty() && pack_draws_flat(&Game::shader_packs_dir().join(picked))
+}
+
+/// Whether the pack at `path` has passes that draw the terrain flat where the device can,
+/// reading translucent quads beside their section's solid ones: a `shaders/` pack, taken to
+/// draw terrain, or one of Horizon's own with a `[shadow]` pass.
+fn pack_draws_flat(path: &std::path::Path) -> bool {
+    !horizon_shader_api::package::is_pack(path)
+        || horizon_shader_api::Pack::read(path).is_ok_and(|p| p.manifest.shadow.is_some())
+}
+
 // A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
 fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
     if picked.strip_prefix("native-").is_some_and(|id| {
@@ -109,6 +136,8 @@ pub(super) struct PackIds {
     missing_item: i32,
     /// `oldHandLight` (3.2): the first held item and light are those of the brighter hand.
     old_hand_light: bool,
+    /// `vignette`: `false` hides the game's vignette over the pack's image.
+    vignette: bool,
     /// `oldLighting`: `true` keeps the game's face shading in the block colours.
     old_lighting: bool,
 }
@@ -116,7 +145,12 @@ pub(super) struct PackIds {
 impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
-    pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
+    pub(super) fn shader_pack_inputs(
+        &mut self,
+        camera: glam::DVec3,
+        partial: f32,
+        sky: &horizon_client::environment::Sky,
+    ) -> PackInputs {
         // A `shaders/` pack lights the faces itself unless `oldLighting=true`: sections mesh
         // without the game's face shading (the pack loaded or dropped below shows next frame).
         let pack_lighting = self.pack_ids.as_ref().is_some_and(|ids| !ids.old_lighting);
@@ -124,15 +158,11 @@ impl Game<'_> {
             self.streaming.shader_pack_lighting = pack_lighting;
             self.all_sections_changed();
         }
-        static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
-        let picked = active_pack(
-            dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack),
-            &self.settings.mods,
-        );
+        let picked = picked_pack(&self.settings).to_owned();
         if self.native_shaders.picked != picked {
             // Another pack, or none: drop what ran.
-            self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
+            self.native_shaders = super::native_shaders::NativeShaders::picking(&picked);
+            self.set_translucent_layers(Vec::new());
             self.pack_ids = None;
             if let Some(renderer) = &mut self.renderer {
                 renderer.drop_shader_packs();
@@ -141,7 +171,7 @@ impl Game<'_> {
         if picked.is_empty() {
             return PackInputs::default();
         }
-        let name = picked.to_owned();
+        let name = picked;
         let dimension = match self.dim {
             Dim::Overworld => 0,
             Dim::Nether => -1,
@@ -208,6 +238,10 @@ impl Game<'_> {
                             old_hand_light: properties
                                 .get("oldHandLight")
                                 .is_none_or(|v| v.trim() != "false"),
+                            // On unless the pack turns it off (`vignette=false`).
+                            vignette: properties
+                                .get("vignette")
+                                .is_none_or(|v| v.trim() != "false"),
                             // Off unless the pack turns it on (Iris shades no faces by default).
                             old_lighting: properties
                                 .get("oldLighting")
@@ -260,6 +294,8 @@ impl Game<'_> {
             .get(&(at.x >> 4, at.z >> 4))
             .map(|c| c.biome(at.x, at.y, at.z));
         let (held_items, held_light) = self.held_for_pack();
+        let status = self.pack_player_status();
+        let (end_flash, end_flash_direction) = self.end_flash_for_pack(partial);
         let info = biome.map(|b| world_biomes!(self).get(b));
         PackInputs {
             day_time: self.world.day_time,
@@ -292,7 +328,46 @@ impl Game<'_> {
             logical_height: self.world.shape.logical_height,
             has_skylight: self.world.shape.sky_light,
             has_ceiling: self.dim == Dim::Nether,
+            elytra_flying: self.player.as_ref().is_some_and(|p| p.fall_flying),
+            cloud_height: horizon_client::gfx::pack_uniforms::cloud_height(
+                sky.cloud_color[3],
+                sky.cloud_height,
+            ),
             mod_params: self.native_shader_params_now(partial),
+            status,
+            end_flash,
+            end_flash_direction,
+        }
+    }
+
+    /// The local player's state for Iris's status uniforms, read as the HUD reads it.
+    fn pack_player_status(&mut self) -> PlayerStatus {
+        let spectator = self.spectator();
+        let survival = !self.creative && !spectator;
+        let invisible = self.own_invisible();
+        let riding = self.riding.is_some();
+        let Some(p) = &mut self.player else {
+            return PlayerStatus::default();
+        };
+        PlayerStatus {
+            survival,
+            health: p.health.health(),
+            max_health: p.attribute("minecraft:max_health").unwrap_or(20.0) as f32,
+            food: p.health.food.food as f32,
+            air: p.air as f32,
+            armor: p
+                .attribute("minecraft:armor")
+                .or_else(|_| p.attribute("armor"))
+                .unwrap_or(0.0) as f32,
+            spectator,
+            riding,
+            feet_in_water: p.fluids.was_touching_water,
+            swimming: p.pose == horizon_client::pose::Pose::Swimming,
+            burning: p.fire_ticks > 0 && !spectator,
+            hurt: p.health.hurt_animation_time > 0,
+            invisible,
+            sneaking: p.pose == horizon_client::pose::Pose::Crouching,
+            sprinting: p.sprinting,
         }
     }
 
@@ -335,6 +410,11 @@ impl Game<'_> {
             format!("Shader pack {name} could not be loaded and was turned off"),
             0xFF5555,
         ));
+    }
+
+    /// Whether the game's vignette draws: the option, unless the loaded pack turns it off.
+    pub(super) fn vignette_shown(&self) -> bool {
+        self.settings.vignette && self.pack_ids.as_ref().is_none_or(|ids| ids.vignette)
     }
 
     /// `heldItemId(2)` and `heldBlockLightValue(2)`: main hand, then off hand (5.2, 5.3).
@@ -490,7 +570,7 @@ fn name_id(name: &str) -> i32 {
 /// their sprite layer, not their block. A layer takes the id of the block named like its sprite
 /// (`block/oak_leaves` for `oak_leaves`), else the id most blocks drawing it share (ties: the
 /// lowest); -1 when no block drawing it has one. y is 1 for the fluid sprites, -1 otherwise.
-fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
+pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
     use std::collections::{BTreeMap, BTreeSet};
     let layers = pack
         .render
@@ -569,8 +649,32 @@ fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
 
 #[cfg(test)]
 mod native_pack_tests {
-    use super::active_pack;
+    use super::{active_pack, pack_draws_flat};
     use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn shaders_packs_and_packs_with_a_shadow_pass_draw_flat() {
+        let root = std::env::temp_dir().join(format!("horizon-flat-packs-{}", std::process::id()));
+        // A folder without a manifest is a `shaders/` pack; with one, a pack of Horizon's own.
+        let pack = |name: &str, manifest: Option<&str>| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(extra) = manifest {
+                std::fs::write(dir.join("material.wgsl"), "").unwrap();
+                let text = format!(
+                    "schema = 1\nid = \"{name}\"\nname = \"{name}\"\nversion = \"1\"\napi = \"{}\"\n\
+                     [material]\nfile = \"material.wgsl\"\n{extra}",
+                    horizon_shader_api::API
+                );
+                std::fs::write(dir.join(horizon_shader_api::MANIFEST), text).unwrap();
+            }
+            dir
+        };
+        assert!(pack_draws_flat(&pack("shaders_pack", None)));
+        assert!(!pack_draws_flat(&pack("unshadowed", Some(""))));
+        assert!(pack_draws_flat(&pack("shadowed", Some("[shadow]\n"))));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn native_shader_follows_its_mod_without_affecting_other_packs() {

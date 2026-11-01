@@ -338,6 +338,9 @@ impl Game<'_> {
         }
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
+        if !self.native_may_board(id) {
+            return true;
+        }
         self.stop_riding();
         self.riding = Some(id);
         let p = self.cushions[i].position;
@@ -359,8 +362,10 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        // `skipAttackInteraction` when `mayInteract` is false.
+        // `Cushion.hurtServer` refuses a player who may not build, so
+        // skipAttackInteraction is false and Player.attack goes on to onAttack.
         if !self.may_build() {
+            self.attack_ticks = 0;
             return true;
         }
         self.break_cushion(i, true);
@@ -452,6 +457,9 @@ impl Game<'_> {
     /// and `Cushion.removePassenger`'s get-up sound for a rider that left
     /// rather than one whose cushion was killed.
     pub(super) fn get_up_from_cushion(&mut self, c: &Cushion) {
+        if self.riding == Some(c.id) && !self.native_may_leave(c.id) {
+            return;
+        }
         let at = c.dismount();
         self.riding = None;
         if let Some(p) = self.player.as_mut() {

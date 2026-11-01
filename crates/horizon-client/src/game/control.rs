@@ -183,6 +183,10 @@ impl Game<'_> {
                     self.mod_browser_text(None, true);
                     return Ok(());
                 }
+                Screen::Social => {
+                    self.social_backspace();
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -205,6 +209,7 @@ impl Game<'_> {
         match self.screen {
             Screen::Chat => self.chat_type(text),
             Screen::CommandBlock => self.command_block_type(text),
+            Screen::Social => self.social_type(text),
             Screen::BlockEditor => self.block_editor_type(text),
             Screen::DebugOptions => self.debug_options_type(text),
             Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
@@ -401,6 +406,13 @@ impl Game<'_> {
                         "key action must be down, up, tap or repeat, not {action}"
                     )
                     .into());
+                }
+                // ConfirmScreen.keyPressed: Escape answers no, nothing else goes past it.
+                if self.command_prompt.is_some() {
+                    if key == KeyCode::Escape && arg(2)? != "up" {
+                        self.answer_command_prompt(false);
+                    }
+                    return ok();
                 }
                 // A server's dialog takes the keys, in configuration too.
                 if self.dialog_open() {
@@ -1052,6 +1064,7 @@ impl Game<'_> {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
             Screen::Friends => "friends",
+            Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
@@ -1059,6 +1072,7 @@ impl Game<'_> {
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
+            Screen::Mod => "mod",
         }
     }
 
@@ -1171,7 +1185,7 @@ impl Game<'_> {
             "distance": self.settings.horizon.lod_distance,
             "effective_distance": self.lod_distance(),
             "terrain_distance": self.terrain_distance(),
-            "source": if self.lod.is_none() { "none" } else if self.integrated.is_some() { "integrated" } else { "local" },
+            "source": if self.lod.is_none() { "none" } else if self.integrated.is_some() { "integrated" } else if self.server_far_terrain().is_some() { "server" } else { "local" },
             "source_attempted": self.lod_source_attempted,
             "active_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().0),
             "cached_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().1),

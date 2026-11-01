@@ -43,6 +43,16 @@ impl Stage<'_> {
         if self.inverse {
             p.push_str(INVERSE);
         }
+        if self.gather_offsets {
+            p.push_str(&gather_offsets());
+        }
+        // GLSL's scalar `dot` and `normalize` (genType includes `float`); naga's are vector only.
+        if self.scalar_dot {
+            p.push_str("float dot(float a, float b) { return a * b; }\n");
+        }
+        if self.scalar_normalize {
+            p.push_str("float normalize(float x) { return sign(x); }\n");
+        }
         if self.gbuffers {
             // Set by our `main` from the frame's matrices (gbuffers.rs).
             p.push_str(
@@ -97,13 +107,28 @@ impl Stage<'_> {
         // Sampler parameters of the function being written: name → type.
         let mut params: HashMap<String, String> = HashMap::new();
         // Names of samplers a local variable or parameter of the function hides.
-        let mut hidden: Vec<&str> = Vec::new();
+        let mut hidden: Vec<(&str, usize)> = Vec::new();
         let mut depth = 0;
         let mut skip_until = 0;
+        // The `;` that closes a statement we rewrite, and what is written in its place.
+        let mut statement_close: Option<(usize, &str)> = None;
+        // The type the function being written returns, when GLSL converts to it implicitly.
+        let mut returns: Option<&str> = None;
         let next = |i: usize| (i + 1..self.tokens.len()).find(|&j| significant(self.tokens[j]));
         let prev = |i: usize| (0..i).rev().find(|&j| significant(self.tokens[j]));
+        let structs: Vec<&str> = (self.tokens.iter().enumerate())
+            .filter(|&(_, &t)| t == "struct")
+            .filter_map(|(i, _)| next(i).map(|j| self.tokens[j]))
+            .collect();
         for (i, &t) in self.tokens.iter().enumerate() {
             if i < skip_until {
+                continue;
+            }
+            if let Some((end, close)) = statement_close
+                && end == i
+            {
+                out.push_str(close);
+                statement_close = None;
                 continue;
             }
             if let Some(text) = self.replaced.get(&i) {
@@ -115,6 +140,21 @@ impl Stage<'_> {
                 if t.contains(' ') && !t.contains('\n') {
                     out.push(' ');
                 }
+                continue;
+            }
+            // Dimensions naga reads in reverse (`T x[A][B]`): written reversed, read as GL does.
+            if t == "["
+                && let Some(groups) = self.type_dimensions(i, &structs)
+            {
+                for &(open, close) in groups.iter().rev() {
+                    out.extend(self.tokens[open..=close].iter().copied());
+                }
+                for pair in groups.windows(2) {
+                    for &gap in &self.tokens[pair[0].1 + 1..pair[1].0] {
+                        out.extend(gap.chars().filter(|&c| c == '\n'));
+                    }
+                }
+                skip_until = groups.last().map_or(i, |g| g.1) + 1;
                 continue;
             }
             // `sqrt(-1.0)`: GL's NaN at run time, which naga would fold and refuse.
@@ -139,14 +179,56 @@ impl Stage<'_> {
                 skip_until = j + 1;
                 continue;
             }
+            // naga's frontend leaves the code after an unconditional `discard` or `return`
+            // unreachable but half-built (a module that fails validation): behind an `if` it
+            // stays reachable as far as naga knows. The braces keep a pack's `else` with the
+            // pack's `if` (`if (c) discard; else ...`). A `return` with a value is guarded only
+            // as a statement of its own with code after it in its block: as an `if`'s branch
+            // the code after it is reachable already, and naga would end our guard's empty
+            // `else` with a `return;` of its own where the function returns a value.
+            // GLSL converts a returned value to the function's type (`return 1;` in a `float`
+            // function); naga does not, so the conversion is written out: `return float(1);`.
+            if matches!(t, "discard" | "return")
+                && let Some(end) = self.statement_end(i)
+            {
+                let value = t == "return" && next(i) != Some(end);
+                let guard = !value
+                    || (prev(i).is_none_or(|j| matches!(self.tokens[j], ";" | "{" | "}"))
+                        && next(end).is_some_and(|j| self.tokens[j] != "}"));
+                let wrap = returns.filter(|_| value && !self.top_level_comma(i, end));
+                if guard || wrap.is_some() {
+                    if guard {
+                        out.push_str("{ if (true) ");
+                    }
+                    out.push_str(t);
+                    if let Some(ty) = wrap {
+                        write!(out, " {ty}(").unwrap();
+                    }
+                    statement_close = Some((
+                        end,
+                        match (wrap.is_some(), guard) {
+                            (true, true) => "); }",
+                            (true, false) => ");",
+                            (false, _) => "; }",
+                        },
+                    ));
+                    continue;
+                }
+            }
             let called = next(i).is_some_and(|j| self.tokens[j] == "(");
             match t {
-                "{" => depth += 1,
+                "{" => {
+                    if depth == 0 {
+                        returns = self.converted_return(i);
+                    }
+                    depth += 1;
+                }
                 "}" => {
                     depth -= 1;
                     if depth == 0 {
                         params.clear();
                         hidden.clear();
+                        returns = None;
                     }
                 }
                 "(" => {
@@ -188,6 +270,11 @@ impl Stage<'_> {
             if t == "const" && depth > 0 && self.calls_not_constant(i) {
                 continue;
             }
+            // A parameter's `const` (`const in float x`, which naga's parser refuses): it only
+            // promises the function does not write the parameter.
+            if t == "const" && depth == 0 && !calls.is_empty() {
+                continue;
+            }
             // A function definition's sampler parameters: `sampler2D s` → `texture2D s, sampler hz_s_s`.
             if depth == 0 && is_sampler_type(t) && calls.len() == 1 {
                 if let Some(n) = next(i).filter(|&n| is_ident(self.tokens[n])) {
@@ -199,26 +286,30 @@ impl Stage<'_> {
                     continue;
                 }
             }
-            // `float specular`: a variable of the same name as a sampler, from here to the
-            // function's end; `.specular` a member.
-            if sampler_ty.contains_key(t) && !params.contains_key(t) {
+            // `float specular`: a variable of the same name as a sampler or a sampler parameter,
+            // from the end of its initializer to the function's end; `.specular` a member.
+            if sampler_ty.contains_key(t) || params.contains_key(t) {
                 let before = prev(i).map(|j| self.tokens[j]);
                 if before == Some(".") {
                     out.push_str(t);
                     continue;
                 }
                 if before.is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else")) {
-                    hidden.push(t);
+                    hidden.push((t, self.scope_start(i)));
+                    out.push_str(t);
+                    continue;
                 }
             }
-            if hidden.contains(&t) {
+            if hidden.iter().any(|&(h, from)| h == t && i >= from) {
                 out.push_str(t);
                 continue;
             }
+            // A sampler named like a function (`texture(texture, uv)`) is the function when called.
             let sampler = params
                 .get(t)
                 .map(String::as_str)
-                .or_else(|| sampler_ty.get(t).copied());
+                .or_else(|| sampler_ty.get(t).copied())
+                .filter(|_| !called);
             if let Some(ty) = sampler {
                 let as_argument = calls.last().is_some_and(|(callee, _, arg)| {
                     self.sampler_functions
@@ -239,15 +330,9 @@ impl Stage<'_> {
             }
             let replaced: Option<String> = match t {
                 "main" if depth == 0 && called => Some("hz_main".into()),
-                // naga's frontend leaves the code after an unconditional `discard` or `return;`
-                // unreachable but half-built (a module that fails validation): behind an `if`
-                // it stays reachable as far as naga knows.
-                "discard" => Some("if (true) discard".into()),
-                "return" if next(i).is_some_and(|j| self.tokens[j] == ";") => {
-                    Some("if (true) return".into())
-                }
                 // GLSL's `modf`, which naga's frontend lacks.
                 "modf" if called => Some("hz_modf".into()),
+                "textureGatherOffsets" if called => Some("hz_textureGatherOffsets".into()),
                 // Matrix inverse, which naga writes for neither Metal nor WGSL.
                 "inverse" if called && self.inverse => Some("hz_inverse".into()),
                 "texture2D" | "texture1D" | "texture3D" | "textureCube" if called => {
@@ -288,8 +373,8 @@ impl Stage<'_> {
                 "gl_FragCoord" if !fragment => None,
                 "gl_FragCoord" => Some("hz_FragCoord".into()),
                 "gl_FrontColor" => Some("hz_FrontColor".into()),
-                "gl_Fog" => Some("hz_Fog".into()),
                 "gl_FogFragCoord" => Some("hz_FogFragCoord".into()),
+                "gl_Fog" => Some("hz_Fog".into()),
                 // Before the compatibility inputs, of which `gl_Vertex` is a prefix.
                 "gl_VertexID" => Some("gl_VertexIndex".into()),
                 "gl_InstanceID" => Some("gl_InstanceIndex".into()),
@@ -311,6 +396,74 @@ impl Stage<'_> {
 
 impl Stage<'_> {
     /// Whether the declaration after token `i` calls a built-in in `NOT_CONSTANT` before its `;`.
+    /// The return type of the function whose body opens at token `brace`, when it is one GLSL
+    /// converts returned values to (a scalar or vector of `float`, `int` or `uint`).
+    pub(super) fn converted_return(&self, brace: usize) -> Option<&str> {
+        let prev = |i: usize| (0..i).rev().find(|&j| significant(self.tokens[j]));
+        let close = prev(brace).filter(|&j| self.tokens[j] == ")")?;
+        let mut depth = 0usize;
+        let open = (0..=close).rev().find(|&j| match self.tokens[j] {
+            ")" => {
+                depth += 1;
+                false
+            }
+            "(" => {
+                depth -= 1;
+                depth == 0
+            }
+            _ => false,
+        })?;
+        let ty = self.tokens[prev(prev(open)?)?];
+        matches!(
+            ty,
+            "float"
+                | "vec2"
+                | "vec3"
+                | "vec4"
+                | "int"
+                | "ivec2"
+                | "ivec3"
+                | "ivec4"
+                | "uint"
+                | "uvec2"
+                | "uvec3"
+                | "uvec4"
+        )
+        .then_some(ty)
+    }
+
+    /// Whether tokens `i..end` hold a comma outside brackets (GLSL's comma operator).
+    pub(super) fn top_level_comma(&self, i: usize, end: usize) -> bool {
+        let mut depth = 0usize;
+        self.tokens[i..end].iter().any(|&t| match t {
+            "(" | "[" => {
+                depth += 1;
+                false
+            }
+            ")" | "]" => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            "," => depth == 0,
+            _ => false,
+        })
+    }
+
+    /// The `;` that ends the statement starting at token `i` (outside brackets).
+    pub(super) fn statement_end(&self, i: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for j in i + 1..self.tokens.len() {
+            match self.tokens[j] {
+                "(" | "[" => depth += 1,
+                ")" | "]" => depth = depth.saturating_sub(1),
+                ";" if depth == 0 => return Some(j),
+                "{" | "}" => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
     pub(super) fn calls_not_constant(&self, i: usize) -> bool {
         for (j, &t) in self.tokens.iter().enumerate().skip(i + 1) {
             if matches!(t, ";" | "{" | "}") {
@@ -323,6 +476,69 @@ impl Stage<'_> {
             }
         }
         false
+    }
+
+    /// When the `[` at token `i` begins two or more array dimensions of a type (after a type
+    /// name, `float[2][3]`, or after the name a type declares, `float x[2][3]`), each one's
+    /// first and last token. naga's frontend nests such dimensions the other way round.
+    fn type_dimensions(&self, i: usize, structs: &[&str]) -> Option<Vec<(usize, usize)>> {
+        let prev = |k: usize| (0..k).rev().find(|&j| significant(self.tokens[j]));
+        let is_type = |t: &str| TYPE_NAMES.contains(&t) || structs.contains(&t);
+        let p = prev(i)?;
+        let declared = is_ident(self.tokens[p])
+            && prev(p).is_some_and(|q| is_type(self.tokens[q]) || self.tokens[q] == "]");
+        if !is_type(self.tokens[p]) && !declared {
+            return None;
+        }
+        let mut groups = Vec::new();
+        let mut open = i;
+        loop {
+            let mut level = 0;
+            let mut close = None;
+            for j in open..self.tokens.len() {
+                match self.tokens[j] {
+                    "[" => level += 1,
+                    "]" => {
+                        level -= 1;
+                        if level == 0 {
+                            close = Some(j);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let close = close?;
+            // `[]` keeps its own handling (the constructor's count).
+            if (open + 1..close).all(|j| !significant(self.tokens[j])) {
+                return None;
+            }
+            groups.push((open, close));
+            match (close + 1..self.tokens.len()).find(|&j| significant(self.tokens[j])) {
+                Some(j) if self.tokens[j] == "[" => open = j,
+                _ => break,
+            }
+        }
+        (groups.len() > 1).then_some(groups)
+    }
+
+    /// Where the scope of the name declared at token `i` begins: after its initializer (GLSL 4.60
+    /// 4.2.2: `float depth = texture(depth, uv).x` still reads the outer `depth`), else after it.
+    fn scope_start(&self, i: usize) -> usize {
+        let after = (i + 1..self.tokens.len()).find(|&j| significant(self.tokens[j]));
+        if after.is_none_or(|j| self.tokens[j] != "=") {
+            return i + 1;
+        }
+        let mut level = 0i32;
+        for j in i + 1..self.tokens.len() {
+            match self.tokens[j] {
+                "(" | "[" | "{" => level += 1,
+                ")" | "]" | "}" => level -= 1,
+                "," | ";" if level <= 0 => return j,
+                _ => {}
+            }
+        }
+        self.tokens.len()
     }
 
     /// The element count of an unsized array whose `[]` ends at `close`: the arguments of the
@@ -355,7 +571,52 @@ impl Stage<'_> {
 }
 
 /// What our vertex `main` gives a vertex input of a composite-style program.
+/// GLSL's scalar, vector and matrix type names.
+const TYPE_NAMES: [&str; 35] = [
+    "float", "int", "uint", "bool", "double", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+    "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4", "dvec2", "dvec3", "dvec4", "mat2",
+    "mat3", "mat4", "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4", "mat4x2", "mat4x3",
+    "mat4x4", "dmat2", "dmat3", "dmat4",
+];
+
 /// `0.0`, `0.`, `.0`, `0.0f`: a floating-point literal zero.
+/// `textureGatherOffsets` (GLSL 4.60, 8.9.4), which naga's frontend lacks: texel `i` of the
+/// result is texel `i` of the footprint `offsets[i]` texels away. WGSL takes only constant
+/// offsets, so each footprint is gathered at `P` moved by its offset over the texture's size,
+/// which picks the same four texels; the component, a constant in GLSL, picks one of four
+/// gathers.
+fn gather_offsets() -> String {
+    let mut p = String::new();
+    for prefix in ["", "i", "u"] {
+        let (tex, smp) = (format!("{prefix}texture2D"), format!("{prefix}sampler2D"));
+        let vec = format!("{prefix}vec4");
+        write!(
+            p,
+            "{vec} hz_gather({tex} t, sampler s, vec2 p, int c) {{\n\
+             \x20   if (c == 1) return textureGather({smp}(t, s), p, 1);\n\
+             \x20   if (c == 2) return textureGather({smp}(t, s), p, 2);\n\
+             \x20   if (c == 3) return textureGather({smp}(t, s), p, 3);\n\
+             \x20   return textureGather({smp}(t, s), p, 0);\n}}\n\
+             {vec} hz_textureGatherOffsets({tex} t, sampler s, vec2 p, ivec2 o[4], int c) {{\n\
+             \x20   vec2 px = 1.0 / vec2(textureSize({smp}(t, s), 0));\n\
+             \x20   return {vec}(hz_gather(t, s, p + vec2(o[0]) * px, c).x, hz_gather(t, s, p + vec2(o[1]) * px, c).y,\n\
+             \x20       hz_gather(t, s, p + vec2(o[2]) * px, c).z, hz_gather(t, s, p + vec2(o[3]) * px, c).w);\n}}\n\
+             {vec} hz_textureGatherOffsets({tex} t, sampler s, vec2 p, ivec2 o[4]) {{\n\
+             \x20   return hz_textureGatherOffsets(t, s, p, o, 0);\n}}\n"
+        )
+        .unwrap();
+    }
+    p.push_str(
+        "vec4 hz_textureGatherOffsets(texture2D t, samplerShadow s, vec2 p, float r, ivec2 o[4]) {\n\
+         \x20   vec2 px = 1.0 / vec2(textureSize(sampler2DShadow(t, s), 0));\n\
+         \x20   return vec4(textureGather(sampler2DShadow(t, s), p + vec2(o[0]) * px, r).x,\n\
+         \x20       textureGather(sampler2DShadow(t, s), p + vec2(o[1]) * px, r).y,\n\
+         \x20       textureGather(sampler2DShadow(t, s), p + vec2(o[2]) * px, r).z,\n\
+         \x20       textureGather(sampler2DShadow(t, s), p + vec2(o[3]) * px, r).w);\n}\n",
+    );
+    p
+}
+
 fn is_zero_literal(t: &str) -> bool {
     let t = t.trim_end_matches(['f', 'F']);
     t.contains('.') && !t.contains(['e', 'E']) && t.chars().all(|c| c == '0' || c == '.')

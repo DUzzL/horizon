@@ -187,6 +187,9 @@ pub(super) struct LanHost {
     pub commands: Vec<super::lan_actions::GuestCommand>,
     /// Mods' quiet commands waiting to run a few a tick (game/lan_quiet.rs).
     pub quiet: std::collections::VecDeque<super::lan_quiet::QuietBatch>,
+    /// Far terrain sampled for Horizon clients (game/lan_far.rs); None when
+    /// `horizon-lod-distance` is 0.
+    pub far: Option<horizon_client::lod_net::Service>,
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
@@ -1110,53 +1113,10 @@ fn mob_equipment(
     hub: &mut Hub,
     out: &mut Vec<(u8, Option<horizon_protocol::item::Stack>)>,
 ) {
-    let e = &m.extra;
-    // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
-    // slot's item (6) in `head`.
-    let body = horizon_client::mobs::drops::head_is_body(m.species());
-    let slots = [
-        (0u8, &e.main_hand, e.main_hand_stack()),
-        (1, &e.off_hand, None),
-        (2, &e.feet, e.armor[3].as_ref()),
-        (3, &e.legs, e.armor[2].as_ref()),
-        (4, &e.chest, e.armor[1].as_ref()),
-        // The body slot's item is no worn armour.
-        (
-            if body { 6 } else { 5 },
-            &e.head,
-            e.armor[0].as_ref().filter(|_| !body),
-        ),
-    ];
-    for (slot, item, worn) in slots {
-        if let Some(item) = item {
-            // The worn armour keeps its stack: a dyed leather piece keeps
-            // its colour.
-            let stack = worn.cloned().unwrap_or_else(|| ItemStack {
-                item: item.clone(),
-                count: 1,
-                // A wolf's armor shows its cracks.
-                damage: if slot == 6 && m.species() == horizon_client::mobs::Species::Wolf {
-                    e.body_damage.max(0) as u32
-                } else {
-                    0
-                },
-                extra: if slot == 6 && m.species() == horizon_client::mobs::Species::Wolf {
-                    e.body_extra.clone()
-                } else {
-                    None
-                },
-            });
-            out.push((slot, hub.stack(&Some(stack))));
+    for (slot, stack) in m.equipment_stacks().into_iter().enumerate() {
+        if stack.is_some() {
+            out.push((slot as u8, hub.stack(&stack)));
         }
-    }
-    if e.saddled {
-        let stack = e.saddle_stack.clone().unwrap_or(ItemStack {
-            item: Arc::from("minecraft:saddle"),
-            count: 1,
-            damage: 0,
-            extra: None,
-        });
-        out.push((7, hub.stack(&Some(stack))));
     }
 }
 
@@ -1395,6 +1355,8 @@ impl Game<'_> {
             Game::native_block_entity_update_tag(pos, entity, &mut tag);
             tag
         });
+        let far = (net.lod_distance > 0)
+            .then(|| horizon_client::lod_net::Service::new(net.lod_distance, biome_names.clone()));
         let lan = Lan::start_with(sync.clone(), net)?;
         if let Some(uuid) = host {
             lan.reserve(uuid);
@@ -1429,6 +1391,7 @@ impl Game<'_> {
             border_sent: None,
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
+            far,
             native_commands: None,
             sleep_ignored: Default::default(),
             states: Default::default(),
@@ -2213,6 +2176,13 @@ impl Game<'_> {
             for d in &mut self.dropped {
                 d.needs_sync = false;
             }
+            // The step command reaches clients before the events its tick
+            // generated, as ServerTickRateManager.updateStepTicks does.
+            host.hub.sync_ticking(
+                self.clock.rate(),
+                self.clock.frozen(),
+                self.clock.step_state(),
+            );
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
             // guest re-runs a piston's `triggerEvent` while its level still
@@ -2321,6 +2291,15 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
+        host.hub.collect_tracking();
+        if !host.hub.native_tracking.is_empty() {
+            self.lan = Some(host);
+            self.run_native_tracking();
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the tracking events");
+        }
         if !paused {
             self.tick_guests(&mut host);
         }
@@ -2351,6 +2330,7 @@ impl Game<'_> {
         host.hub.anticheat_ping();
         drop(holding);
         self.flush_native_net(&mut host);
+        self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
         self.flush_native_sounds();
@@ -2710,6 +2690,22 @@ impl Game<'_> {
                 host.hub.swing(m.id as i32, 0, at, None);
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
+        }
+        if let Some(d) = self.dragon.as_ref().filter(|d| d.id != 0) {
+            let id = d.id;
+            let dead = !d.alive();
+            let old = host
+                .mob_state
+                .get(&self.dim)
+                .and_then(|s| s.get(&id))
+                .copied();
+            let at = [d.position.x, d.position.y, d.position.z];
+            if d.hurt_time > old.map_or(0, |o| o.0) && !dead {
+                let (kind, cause, direct) =
+                    d.last_source.unwrap_or(("minecraft:generic", None, None));
+                host.hub.damage_event(id as i32, kind, cause, direct, at);
+            }
+            seen.insert(id, (d.hurt_time, dead, None));
         }
         // LivingEntity.hurtServer for the in-frame LAN host's player (guests
         // broadcast directly from HealthEvent::DamageBroadcast): a hit that

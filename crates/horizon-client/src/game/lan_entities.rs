@@ -83,6 +83,42 @@ fn stand_poses(a: &horizon_client::entities::ArmorStand) -> Vec<(u8, i32, Value)
 }
 
 impl Game<'_> {
+    /// The entities players started and stopped tracking since the last
+    /// tick, told to the mods in order with the hub back in `self.lan` and
+    /// no player's state swapped in (`ServerEntity.addPairing` and
+    /// `removePairing`).
+    pub(super) fn run_native_tracking(&mut self) {
+        let batches = match self.lan.as_mut() {
+            Some(host) => std::mem::take(&mut host.hub.native_tracking),
+            None => return,
+        };
+        if self.remote.is_some() || self.options.execution_role.is_client() {
+            return;
+        }
+        for batch in batches {
+            for e in batch.events {
+                let (id, kind) = (e.entity as u32, &*e.tracked.kind);
+                if e.start {
+                    self.native_player_start_tracking(
+                        batch.player,
+                        &batch.name,
+                        id,
+                        e.tracked.uuid,
+                        kind,
+                    );
+                } else {
+                    self.native_player_stop_tracking(
+                        batch.player,
+                        &batch.name,
+                        id,
+                        e.tracked.uuid,
+                        kind,
+                    );
+                }
+            }
+        }
+    }
+
     /// Who rides what (`Entity.getPassengers`): mobs on mobs, and the
     /// host in its boat or minecart.
     pub(super) fn lan_riding(
@@ -128,7 +164,11 @@ impl Game<'_> {
             e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
             e.meta = vehicle_meta(b.hurt_time, b.hurt_dir, b.damage);
             // AbstractBoat.DATA_ID_PADDLE_LEFT and DATA_ID_PADDLE_RIGHT.
+            // Omitted false values must reset clients that saw a true value,
+            // including when the controlling passenger dismounts mid-stroke.
             for (k, paddling) in b.paddling.iter().enumerate() {
+                e.defaults
+                    .push((11 + k as u8, serializer::BOOLEAN, Value::Bool(false)));
                 if *paddling {
                     e.meta
                         .push((11 + k as u8, serializer::BOOLEAN, Value::Bool(true)));

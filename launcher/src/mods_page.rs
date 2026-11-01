@@ -828,7 +828,7 @@ impl Launcher {
                 focused,
                 false,
                 false,
-                "Search, then Enter",
+                tr("Search, then Enter"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.mods.focus, cx);

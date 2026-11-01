@@ -3,5 +3,7 @@
 //! `cem_animation.txt`, OptiDocs' CEM pages and EMF's `FEATURES.md` and `emf_*.txt` docs; no
 //! mod's source was read.
 
+mod curves;
+pub mod expr;
 pub mod json;
 pub mod model;

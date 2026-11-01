@@ -1646,6 +1646,27 @@ pub fn render_posed(
     let base = base_transform_at(m, alpha, origin);
     render_visible(m, alpha, base, atlas, light, data, &[], true, out);
 }
+/// The texture a model drawn as `custom` takes: the `.jem`'s when the atlas has it, else
+/// `vanilla` (a texture the atlas lacks would hide the model).
+fn cem_texture<'a>(
+    custom: Option<&'a super::cem::CemLayer>,
+    vanilla: &'a str,
+    atlas: Atlas<'_>,
+) -> &'a str {
+    custom
+        .and_then(|c| c.texture.as_deref())
+        .filter(|t| atlas(t).is_some())
+        .unwrap_or(vanilla)
+}
+/// Whether `layers[i]` is the layer its model's `.jem` was made for, so the `.jem`'s texture
+/// paints it: the first drawn with that model (`sheep#wool`, a wolf's armour). Later layers
+/// on the same model are overlays (the armour's cracks), like those on the body's model
+/// (`body`: eyes, collars, a villager's type and profession), and keep their own textures
+/// over the new geometry.
+fn paints_with_jem(layers: &[Layer], i: usize, body: [&str; 2]) -> bool {
+    let key = layers[i].model.as_str();
+    !body.contains(&key) && layers[..i].iter().all(|l| l.model != key)
+}
 #[allow(clippy::too_many_arguments)]
 fn render_visible(
     m: &Mob,
@@ -1661,17 +1682,50 @@ fn render_visible(
     let overlay = u32::from(red_overlay(m));
     let s = anim::state(m, alpha);
     let (model_key, texture) = body(m);
-    let model = m
-        .kind
-        .layer(&model_key)
-        .cloned()
-        .unwrap_or_else(|| m.kind.model.clone());
+    // The packs' custom entity models replace a layer's parts and maybe its texture. The read
+    // guard, not a clone of the Arc: one uncontended lock per mob, nothing else without a pack.
+    let cem = data
+        .cem
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // `main` is the wide player model, `kind.model`.
+    let cem_key = if model_key == "main" {
+        "player#main"
+    } else {
+        model_key.as_str()
+    };
+    let custom_body = cem.layer(cem_key);
+    let body_animation = custom_body.and_then(|c| c.animation.as_ref());
+    let model = match custom_body {
+        Some(custom) => custom.model.clone(),
+        None => m
+            .kind
+            .layer(&model_key)
+            .cloned()
+            .unwrap_or_else(|| m.kind.model.clone()),
+    };
+    let texture = cem_texture(custom_body, &texture, atlas);
+    // OptiFine random textures: the sprite of the variant the mob wears for a texture, when
+    // the atlas has it. The texture keeps its name for everything else.
+    let random = data
+        .random_textures
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let random_uv = |texture: &str| {
+        if random.is_empty() {
+            return None;
+        }
+        atlas(super::random_textures::texture(m, &random, texture)?)
+    };
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
+    if let Some(animation) = body_animation {
+        animation.run(m, &s, &mut poses);
+    }
     let draw_body = |out: &mut Vec<Vertex>| {
         // A player or mannequin whose skin has no atlas sprite (an evicted or
         // never stored download) draws with its default skin, not invisibly.
-        let uv = atlas(&texture).or_else(|| {
+        let uv = random_uv(texture).or_else(|| atlas(texture)).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
             } else {
@@ -1721,15 +1775,31 @@ fn render_visible(
     // One Poses refilled for every layer (armour draws up to seven): it keeps
     // its maps' capacity.
     let mut layer_poses = Poses::default();
-    for layer in all_layers {
-        let Some(part) = m.kind.layer(&layer.model).cloned() else {
-            continue;
+    let body_keys = [model_key.as_str(), cem_key];
+    for (i, layer) in all_layers.iter().enumerate() {
+        let custom = cem.layer(&layer.model);
+        // `layer.texture` stays the vanilla name (the villager hats below look for its
+        // `/type/` folder).
+        let texture = cem_texture(
+            custom.filter(|_| paints_with_jem(&all_layers, i, body_keys)),
+            &layer.texture,
+            atlas,
+        );
+        let part = match custom {
+            Some(custom) => custom.model.clone(),
+            None => match m.kind.layer(&layer.model) {
+                Some(part) => part.clone(),
+                None => continue,
+            },
         };
-        let Some(uv) = atlas(&layer.texture) else {
+        let Some(uv) = random_uv(texture).or_else(|| atlas(texture)) else {
             continue;
         };
         layer_poses.reset(&part);
         anim::setup(m, &s, &mut layer_poses, &data.animations);
+        if let Some(animation) = custom.and_then(|c| c.animation.as_ref()) {
+            animation.run(m, &s, &mut layer_poses);
+        }
         if matches!(m.species(), Species::Villager | Species::ZombieVillager)
             && let Some((folder, variant)) = layer
                 .texture
@@ -1766,7 +1836,7 @@ fn render_visible(
             overlay,
             out,
         );
-        if translucent_layer(m, &layer) {
+        if translucent_layer(m, layer) {
             mark_oit(&mut out[start..]);
         }
         // The eyes render type's glowing eyes also shine in HDR output, at
@@ -1878,7 +1948,8 @@ pub fn part_matrix(
         .iter()
         .find_map(|c| part_matrix(c, m, poses, name, x_offset))
 }
-fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
+/// The first part named `name`, depth first.
+pub(super) fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
     if part.name == name {
         return Some(part);
     }
@@ -2210,6 +2281,17 @@ mod tests {
                 .custom_name()
                 .is_none()
         );
+        // An admiring piglin holds gold beside its crossbow. Both the item
+        // id and the model components must come from the appropriate hand.
+        extra.off_hand = Some("minecraft:gold_ingot".into());
+        assert_eq!(
+            &*held_item_stack(&extra, true).unwrap().item,
+            "minecraft:gold_ingot"
+        );
+        assert_eq!(
+            &*held_item_stack(&extra, false).unwrap().item,
+            "minecraft:crossbow"
+        );
         extra.off_hand = None;
         assert!(held_item_stack(&extra, true).is_none());
     }
@@ -2399,6 +2481,8 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2488,6 +2572,8 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2541,6 +2627,8 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2650,6 +2738,8 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };

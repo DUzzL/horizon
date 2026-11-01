@@ -11,8 +11,9 @@
 //! is teleported where the player lands (`ServerPlayer.dismountTo`).
 use super::{Game, Keys, lan::LanHost, minecarts::SEAT};
 use horizon_client::collisions::SceneCollisions;
+use horizon_client::lan::hub::no_blocks_in;
 use horizon_client::mobs::equine;
-use horizon_core::geometry::{Aabb, Vec3};
+use horizon_core::geometry::{Aabb, Axis, Vec3};
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     text::translatable,
@@ -133,8 +134,9 @@ impl Game<'_> {
             let b = &mut self.boats[i];
             b.hurt_time = (b.hurt_time - 1).max(0);
             b.damage = (b.damage - 1.0).max(0.0);
-            // AbstractBoat.tickBubbleColumn: a down column ejects the rider.
-            ejected = std::mem::take(&mut b.eject_riders);
+            // `Entity.ejectPassengers`: every player in the boat must see
+            // the request; the common boat tick clears it once nobody rides.
+            ejected = b.eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)
@@ -366,7 +368,31 @@ impl Game<'_> {
             back(host, old, yaw);
             return;
         }
-        host.hub.guests[gi].vehicle_good = Some([target.x, target.y, target.z]);
+        // clientVehicleIsFloating: the move didn't go down a step, the vehicle hadn't come down onto
+        // something on its last move (`verticalCollisionBelow` before this one), and nothing but air is
+        // around its box grown by 0.0625 and stretched 0.55 down (water holds a boat up). A flying or
+        // no-gravity mount, and a server that allows flight, never float.
+        let (gravity, no_gravity) = match mount {
+            Some(i) => (0.08, self.mobs[i].no_gravity),
+            None => (0.04, false),
+        };
+        let around = moved_box
+            .inflate(Vec3::new(0.0625, 0.0625, 0.0625))
+            .expand_towards(Vec3::new(0.0, -0.55, 0.0));
+        let corner = |max: bool| {
+            [Axis::X, Axis::Y, Axis::Z].map(|a| if max { around.max(a) } else { around.min(a) })
+        };
+        let no_blocks = no_blocks_in(&self.world, corner(false), corner(true));
+        let allow_flight = host.hub.config.allow_flight;
+        let g = &mut host.hub.guests[gi];
+        g.vehicle_good = Some([target.x, target.y, target.z]);
+        let rested = std::mem::replace(
+            &mut g.vehicle_rests,
+            wanted.y < 0.0 && resolved.y != wanted.y,
+        );
+        g.vehicle_floating =
+            wanted.y >= -0.03125 && !rested && !allow_flight && !no_gravity && no_blocks;
+        g.vehicle_gravity = gravity;
         if let Some(i) = mount {
             // absSnapTo: where and how its rider's client turned it; the
             // rider sits on it from its own ride tick.

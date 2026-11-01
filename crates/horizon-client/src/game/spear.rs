@@ -227,9 +227,10 @@ impl Game<'_> {
         // causeExtraKnockback: a push of 0.4, then the weapon's Knockback.
         if deals_knockback {
             let (xd, zd) = self.extra_knockback_direction();
-            self.mobs[index].knockback(0.4, xd, zd);
+            let source = Damage::spear(from);
+            self.mobs[index].knockback(0.4, xd, zd, &source);
             let (strength, _) = self.extra_knockback(&kind, 0.0);
-            self.mobs[index].knockback(f64::from(strength), xd, zd);
+            self.mobs[index].knockback(f64::from(strength), xd, zd, &source);
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
@@ -275,6 +276,17 @@ impl Game<'_> {
                 0.2,
                 (actual * 0.5) as u32,
             );
+            // The players a server serves are sent them too (the window of the server thread).
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options: indicator,
+                state: None,
+                at: [feet[0], feet[1] + height * 0.5, feet[2]],
+                spread: [0.1, 0.0, 0.1],
+                speed: 0.2,
+                count: (actual * 0.5) as u32 as i32,
+                randomization: 0,
+            });
         }
         if hurt {
             self.last_hurt_by_player.insert(id, self.lan_acting);

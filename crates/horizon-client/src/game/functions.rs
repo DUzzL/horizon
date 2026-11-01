@@ -928,11 +928,14 @@ impl Game<'_> {
             }
         }
     }
-    /// `ReloadCommand.reloadPacks`: no message of its own.
+    /// `ReloadCommand.reloadPacks`: no message of its own. It reloads the
+    /// server's data as `/reload` does (`reload_datapacks`), the content
+    /// tables with the functions.
     fn apply_pack_change(&mut self) {
         self.save_datapack_settings();
         self.rebuild_store();
         self.fns.load_pending = true;
+        self.reload_world_tables();
     }
 
     // ---- predicates -------------------------------------------------------------------
