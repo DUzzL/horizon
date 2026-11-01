@@ -1179,6 +1179,15 @@ impl Audio {
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
     }
+    /// The `uiSoundReserve` extra: positional sounds leave
+    /// `sound_engine::HEARD_RESERVE` static channels free (off: vanilla's pool).
+    pub fn set_listener_reserve(&mut self, on: bool) {
+        self.engine.listener_reserve = if on {
+            crate::sound_engine::HEARD_RESERVE
+        } else {
+            0
+        };
+    }
     /// `SoundManager.pauseAllExcept(MUSIC, UI)`.
     pub fn pause(&mut self) {
         self.engine.pause_all_except(

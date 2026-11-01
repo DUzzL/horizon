@@ -127,6 +127,12 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if water {
         p.velocity = p.velocity.scale(0.6);
     }
+    let (movement_x, movement_y, movement_z) = (p.velocity.x, p.velocity.y, p.velocity.z);
+    let sd = (movement_x * movement_x + movement_z * movement_z).sqrt();
+    let y_rot = horizon_core::geometry::trig::atan2_degrees(movement_x, movement_z);
+    let x_rot = horizon_core::geometry::trig::atan2_degrees(movement_y, sd);
+    p.pitch = horizon_client::arrows::lerp_rotation(p.pitch, x_rot);
+    p.yaw = horizon_client::arrows::lerp_rotation(p.yaw, y_rot);
     let to = p.position.add_vector(p.velocity);
     if let Some((at, _, _)) = w.clip(p.position, to) {
         p.position = at;
@@ -286,6 +292,8 @@ impl Game<'_> {
                 velocity,
                 fuse: 80,
                 on_ground: false,
+                owner: None,
+                guest: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
@@ -743,7 +751,13 @@ impl Game<'_> {
             out.push(json!({"id": t.id, "kind": "minecraft:tnt", "position": at(t.position), "fuse": t.fuse}));
         }
         for f in &self.falling {
-            out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "state": f.state.0}));
+            out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "velocity": at(f.velocity), "state": f.state.0}));
+        }
+        for b in &self.boats {
+            out.push(json!({"id": b.id, "kind": "minecraft:boat", "position": at(b.position), "velocity": at(b.velocity)}));
+        }
+        for c in &self.carts {
+            out.push(json!({"id": c.id, "kind": "minecraft:minecart", "position": at(c.position), "velocity": at(c.velocity)}));
         }
         for c in &self.crystals {
             out.push(json!({"id": c.id, "kind": "minecraft:end_crystal", "position": at(c.position), "show_bottom": c.show_bottom}));

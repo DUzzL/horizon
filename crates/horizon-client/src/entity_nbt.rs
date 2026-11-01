@@ -2019,6 +2019,28 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
     }
     tag
 }
+/// `PrimedTnt.addAdditionalSaveData`: its `fuse`.
+pub fn tnt_to_nbt(
+    position: Vec3,
+    motion: Vec3,
+    on_ground: bool,
+    fuse: i32,
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+) -> Tag {
+    let mut tag = Base {
+        id: "minecraft:tnt",
+        uuid,
+        position,
+        motion,
+        rotation: [0.0, 0.0],
+        on_ground,
+        fall_distance: 0.0,
+    }
+    .tag(raw);
+    put(&mut tag, "fuse", Tag::Short(fuse as i16));
+    tag
+}
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
