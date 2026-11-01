@@ -6395,9 +6395,15 @@ impl Game<'_> {
                 let Some(r) = atlas.sprites.get(texture).copied() else {
                     continue;
                 };
+                // ArrowRenderer: `Mth.lerp(partialTick, state.yRotO, state.yRot)`
+                // and the same for the pitch, so a turning arrow is drawn
+                // between the two ticks it turned over.
+                let alpha32 = alpha as f32;
+                let yaw = a.previous_yaw + alpha32 * (a.yaw - a.previous_yaw);
+                let pitch = a.previous_pitch + alpha32 * (a.pitch - a.previous_pitch);
                 let m = glam::Mat4::from_translation(c)
-                    * glam::Mat4::from_rotation_y((a.yaw - 90.0).to_radians())
-                    * glam::Mat4::from_rotation_z(a.pitch.to_radians());
+                    * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
+                    * glam::Mat4::from_rotation_z(pitch.to_radians());
                 // ArrowRenderer: `state.shake = shakeTime - partialTicks`; ArrowModel.setupAnim
                 // rolls the root while the shake timer runs.
                 let shake = a
