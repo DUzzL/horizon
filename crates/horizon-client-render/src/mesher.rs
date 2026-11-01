@@ -1403,9 +1403,16 @@ impl Mesher<'_> {
         };
         // Vanilla's pane models mirror some faces' textures; OptiFine's don't, so a tile's borders
         // land where the neighbours are: on a pane, tiles take the cube's own UVs.
-        let standard = q.positions.map(|p| standard_uv(q.facing, p));
+        let standard = || q.positions.map(|p| standard_uv(q.facing, p));
         let tiled = !matches!(pick, Pick::Keep);
-        let corners = vertices(tint, if state.pane && tiled { standard } else { q.uv });
+        let corners = vertices(
+            tint,
+            if state.pane && tiled {
+                standard()
+            } else {
+                q.uv
+            },
+        );
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
@@ -1474,7 +1481,7 @@ impl Mesher<'_> {
                 translucent: overlay.translucent || face_translucent,
                 opaque: false,
             };
-            let whole = vertices(tint, standard);
+            let whole = vertices(tint, standard());
             for s in cuts.windows(2) {
                 for t in cuts.windows(2) {
                     let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]

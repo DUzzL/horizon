@@ -1050,8 +1050,12 @@ mod tests {
         let (post, north, east) = ([0.5, 0.5], [0.5, 0.2], [0.8, 0.5]);
         assert!(ctm.stacked_pane_hides(0, 1, post));
         assert!(ctm.stacked_pane_hides(0, 1, north));
-        // The pane above has no east arm: the strip shows.
+        // The pane above has no east arm: the strip shows; one with it hides it.
         assert!(!ctm.stacked_pane_hides(0, 1, east));
+        assert!(ctm.stacked_pane_hides(1, 0, east));
+        let (south, west) = ([0.5, 0.8], [0.2, 0.5]);
+        assert!(!ctm.stacked_pane_hides(1, 0, south));
+        assert!(!ctm.stacked_pane_hides(1, 0, west));
         assert!(ctm.stacked_pane_hides(1, 0, north));
         // Another block, or a pane without rules, hides nothing.
         assert!(!ctm.stacked_pane_hides(1, 2, post));
