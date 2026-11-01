@@ -445,11 +445,12 @@ pub fn mob_to_nbt(
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
                 let ambient = m.extra.ambient_effects.contains(&effect);
-                let mut e = vec![
-                    ("id", string(crate::brewing::namespaced(effect))),
-                    ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
-                    ("duration", Tag::Int(duration)),
-                ];
+                let mut e = vec![("id", string(crate::brewing::namespaced(effect)))];
+                // The codec leaves out an amplifier of 0 (its default).
+                if amplifier != 0 {
+                    e.push(("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)));
+                }
+                e.push(("duration", Tag::Int(duration)));
                 if ambient {
                     e.push(("ambient", Tag::Byte(1)));
                 }
@@ -795,6 +796,11 @@ pub fn mob_to_nbt(
             put_offers(map, m);
             put_memories(map, m);
             crate::mobs::villager::write_nbt(m, map);
+        }
+        // Dolphin.addAdditionalSaveData: the fish it was fed, and how wet it is.
+        "minecraft:dolphin" => {
+            map.insert("GotFish".into(), Tag::Byte(i8::from(m.extra.flag)));
+            map.insert("Moistness".into(), Tag::Int(m.extra.counter));
         }
         "minecraft:wandering_trader" => {
             put_offers(map, m);
@@ -1761,6 +1767,12 @@ pub fn mob_from_nbt(
         }
         crate::mobs::zombie_villager::read_nbt(&mut m, tag);
     }
+    if m.species() == crate::mobs::Species::Dolphin {
+        // Dolphin.readAdditionalSaveData: a save that names neither field is an
+        // unfed dolphin at full moistness.
+        m.extra.flag = flag(tag, "GotFish");
+        m.extra.counter = number(tag.get("Moistness")).unwrap_or(2400) as i32;
+    }
     if m.species() == crate::mobs::Species::Axolotl {
         restore_axolotl_memories(&mut m, tag);
     }
@@ -2061,6 +2073,10 @@ pub fn tnt_to_nbt(
     }
     .tag(raw);
     put(&mut tag, "fuse", Tag::Short(fuse as i16));
+    // PrimedTnt writes its block state (a summoned `block_state` is kept).
+    if tag.get("block_state").is_none() {
+        put(&mut tag, "block_state", string("minecraft:tnt"));
+    }
     tag
 }
 pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemEntity> {
@@ -2083,6 +2099,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         bob_offset,
         ticks: 0,
         needs_sync: false,
+        stuck: Vec3::ZERO,
     })
 }
 
@@ -2106,7 +2123,14 @@ pub fn ominous_item_spawner_to_nbt(
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
-    put(&mut tag, "item", item_to_nbt(item));
+    // `ItemStack.CODEC` can't encode `ItemStack.EMPTY`, so an empty item
+    // writes no key.
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"item".into());
+    }
+    if &*item.item != "minecraft:air" {
+        put(&mut tag, "item", item_to_nbt(item));
+    }
     put(
         &mut tag,
         "spawn_item_after_ticks",
@@ -2118,7 +2142,11 @@ pub fn ominous_item_spawner_to_nbt(
 /// and `spawn_item_after_ticks` (0 when absent). None without an item:
 /// such a spawner would spawn nothing.
 pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemStack, Vec3, i64)> {
-    let item = tag.get("item").and_then(item_from_nbt)?;
+    // `readAdditionalSaveData`: `ItemStack.EMPTY` when it has none.
+    let item = tag
+        .get("item")
+        .and_then(item_from_nbt)
+        .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:air", 1));
     let after = number(tag.get("spawn_item_after_ticks")).unwrap_or(0);
     Some((item, position(tag)?, after))
 }
@@ -2458,6 +2486,122 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
         angled: flag(tag, "ShotAtAngle"),
         owner: (player.is_some() && owner == player).then_some(Who::Player),
         left_owner: flag(tag, "LeftOwner"),
+    })
+}
+
+/// What `FireworkRocketEntity.addAdditionalSaveData` writes, over `Projectile`'s
+/// Owner and LeftOwner.
+pub struct RocketSave<'a> {
+    pub position: Vec3,
+    pub motion: Vec3,
+    pub life: i32,
+    pub lifetime: i32,
+    pub item: &'a crate::items::ItemStack,
+    pub angled: bool,
+    pub owner: Option<[i32; 4]>,
+    pub left_owner: bool,
+}
+pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    let mut tag = Base {
+        id: "minecraft:firework_rocket",
+        uuid,
+        position: r.position,
+        motion: r.motion,
+        rotation: [0.0, 0.0],
+        on_ground: false,
+        fall_distance: 0.0,
+    }
+    .tag(raw);
+    for (key, value) in [
+        ("Life", Tag::Int(r.life)),
+        ("LifeTime", Tag::Int(r.lifetime)),
+        ("FireworksItem", item_to_nbt(r.item)),
+        ("ShotAtAngle", Tag::Byte(i8::from(r.angled))),
+        ("HasBeenShot", Tag::Byte(1)),
+    ] {
+        put(&mut tag, key, value);
+    }
+    if r.left_owner {
+        put(&mut tag, "LeftOwner", Tag::Byte(1));
+    }
+    if let Some(owner) = r.owner {
+        put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
+    }
+    tag
+}
+
+/// A thrown trident as `AbstractArrow` + `ThrownTrident` save it.
+pub struct TridentSave<'a> {
+    pub position: Vec3,
+    pub motion: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub in_ground: bool,
+    pub life: i32,
+    pub shake: u32,
+    pub dealt_damage: bool,
+    pub creative_only: bool,
+    pub item: &'a crate::items::ItemStack,
+}
+pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    let mut tag = Base {
+        id: "minecraft:trident",
+        uuid,
+        position: t.position,
+        motion: t.motion,
+        rotation: [t.yaw, t.pitch],
+        on_ground: false,
+        fall_distance: 0.0,
+    }
+    .tag(raw);
+    for (key, value) in [
+        ("life", Tag::Short(t.life as i16)),
+        ("shake", Tag::Byte(t.shake as i8)),
+        ("inGround", Tag::Byte(i8::from(t.in_ground))),
+        // AbstractArrow.Pickup: 0 disallowed, 1 allowed, 2 creative only.
+        ("pickup", Tag::Byte(if t.creative_only { 2 } else { 1 })),
+        ("damage", Tag::Double(2.0_f64.to_bits())),
+        ("HasBeenShot", Tag::Byte(1)),
+        ("crit", Tag::Byte(0)),
+        ("PierceLevel", Tag::Byte(0)),
+        ("SoundEvent", string("minecraft:item.trident.hit_ground")),
+        ("item", item_to_nbt(t.item)),
+        ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
+    ] {
+        put(&mut tag, key, value);
+    }
+    tag
+}
+/// (position, motion, yaw, pitch, in ground, life, shake, dealt damage,
+/// creative only, the trident item)
+pub struct TridentNbt {
+    pub position: Vec3,
+    pub motion: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub in_ground: bool,
+    pub life: i32,
+    pub shake: u32,
+    pub dealt_damage: bool,
+    pub creative_only: bool,
+    pub item: crate::items::ItemStack,
+}
+pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
+    let [yaw, pitch] = rotation(tag);
+    Some(TridentNbt {
+        position: position(tag)?,
+        motion: motion(tag),
+        yaw,
+        pitch,
+        in_ground: flag(tag, "inGround"),
+        life: number(tag.get("life")).unwrap_or(0) as i32,
+        shake: number(tag.get("shake")).unwrap_or(0).max(0) as u32,
+        dealt_damage: flag(tag, "DealtDamage"),
+        creative_only: number(tag.get("pickup")) == Some(2),
+        item: tag
+            .get("item")
+            .and_then(item_from_nbt)
+            .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:trident", 1)),
     })
 }
 
@@ -3034,6 +3178,51 @@ mod tests {
     use super::*;
     use crate::items::ItemStack;
 
+    /// A saved rocket and trident come back with their own Life, LifeTime,
+    /// flags and position (the keys vanilla's addAdditionalSaveData writes).
+    #[test]
+    fn rocket_and_trident_round_trip() {
+        let item = ItemStack::new("minecraft:firework_rocket", 1);
+        let tag = firework_rocket_to_nbt(
+            &RocketSave {
+                position: Vec3::new(1.5, 70.0, -3.25),
+                motion: Vec3::new(0.0, 0.5, 0.0),
+                life: 7,
+                lifetime: 31,
+                item: &item,
+                angled: true,
+                owner: None,
+                left_owner: false,
+            },
+            [1, 2, 3, 4],
+            None,
+        );
+        let r = firework_rocket_from_nbt(&tag, None).unwrap();
+        assert_eq!((r.life, r.lifetime, r.angled), (7, 31, true));
+        assert_eq!(r.position, Vec3::new(1.5, 70.0, -3.25));
+        let trident = ItemStack::new("minecraft:trident", 1);
+        let tag = trident_to_nbt(
+            &TridentSave {
+                position: Vec3::new(2.0, 64.0, 2.0),
+                motion: Vec3::new(0.0, -0.25, 0.0),
+                yaw: 10.0,
+                pitch: 20.0,
+                in_ground: true,
+                life: 9,
+                shake: 3,
+                dealt_damage: true,
+                creative_only: true,
+                item: &trident,
+            },
+            [1, 2, 3, 4],
+            None,
+        );
+        let t = trident_from_nbt(&tag).unwrap();
+        assert_eq!((t.in_ground, t.life, t.shake), (true, 9, 3));
+        assert_eq!((t.dealt_damage, t.creative_only), (true, true));
+        assert_eq!((t.yaw, t.pitch), (10.0, 20.0));
+    }
+
     /// The item, the spawn delay and the fields Horizon doesn't model come
     /// back; a compound without an item is no spawner.
     #[test]
@@ -3064,6 +3253,17 @@ mod tests {
         );
         assert_eq!((pos, after), (at, 97));
         assert!(ominous_item_spawner_from_nbt(&raw).is_none());
+        // No item is `ItemStack.EMPTY`, which writes no key back.
+        let empty = ominous_item_spawner_to_nbt(
+            &crate::items::ItemStack::new("minecraft:air", 1),
+            at,
+            0,
+            [1, 2, 3, 4],
+            Some(&tag),
+        );
+        assert!(empty.get("item").is_none());
+        let (back, pos, after) = ominous_item_spawner_from_nbt(&empty).unwrap();
+        assert_eq!((back.item.as_ref(), pos, after), ("minecraft:air", at, 0));
     }
 
     #[test]
@@ -3144,6 +3344,7 @@ mod tests {
             ticks: 0,
             bob_offset: 0.0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -3871,6 +4072,39 @@ mod sheep_nbt_tests {
     }
 
     #[test]
+    fn an_amplifier_of_zero_is_left_out_of_active_effects() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let types: HashMap<String, Arc<MobType>> = crate::mobs::MobTypes::load(&root)
+            .unwrap()
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let mut m = Mob::new(1, types["minecraft:pig"].clone(), Vec3::ZERO, 0.0);
+        let speed = crate::brewing::effect("minecraft:speed").unwrap().id;
+        m.add_effect(speed, 200, 0);
+        m.add_effect(
+            crate::brewing::effect("minecraft:slowness").unwrap().id,
+            200,
+            2,
+        );
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        let Some(Tag::List(saved)) = tag.get("active_effects") else {
+            panic!("no active_effects");
+        };
+        assert!(saved[0].get("amplifier").is_none());
+        assert!(saved[1].get("amplifier").is_some());
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.effects[0].2, 0);
+        assert_eq!(back.extra.effects[1].2, 2);
+    }
+
+    #[test]
     fn farm_animals_keep_their_variant_and_sound_variant() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
@@ -3963,6 +4197,49 @@ mod sheep_nbt_tests {
         assert_eq!(number(tag.get("Age")), Some(-21359));
         assert_eq!(number(tag.get("AgeLocked")), Some(0));
         assert_eq!(number(tag.get("VillagerDataFinalized")), Some(1));
+    }
+
+    /// `Dolphin.addAdditionalSaveData`: a fed dolphin stays fed and a wet one
+    /// stays wet across a reload; a save with neither field reads as an unfed
+    /// dolphin at full moistness.
+    #[test]
+    fn a_dolphins_moistness_and_fish_survive_a_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        // A fresh dolphin starts full, as `Dolphin`'s field does.
+        let mut m = Mob::new(
+            1,
+            types["minecraft:dolphin"].clone(),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        assert_eq!(m.extra.counter, 2400);
+        m.extra.flag = true;
+        m.extra.counter = 123;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Moistness")), Some(123));
+        assert_eq!(number(tag.get("GotFish")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert!(back.extra.flag, "fed");
+        assert_eq!(back.extra.counter, 123);
+        // A save with neither field: unfed, full.
+        let bare = Tag::compound([
+            ("id", string("minecraft:dolphin")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+        ]);
+        let back = mob_from_nbt(&bare, &types, 3, None).unwrap();
+        assert!(!back.extra.flag);
+        assert_eq!(back.extra.counter, 2400);
     }
 
     /// `WanderingTrader.addAdditionalSaveData`: the visit's countdown and the

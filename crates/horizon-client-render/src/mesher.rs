@@ -1333,8 +1333,11 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
-        // OptiFine connected textures: another sprite, or one per quarter.
+        // OptiFine connected textures: another sprite, or one per quarter, and the overlays
+        // drawn over it (a few per face at most; more are dropped).
         let connected = &self.render.connected;
+        let mut overlays = [None; 8];
+        let mut count = 0;
         let pick = if connected.is_empty() {
             Pick::Keep
         } else {
@@ -1346,27 +1349,35 @@ impl Mesher<'_> {
                 [world.x, world.y, world.z],
                 |[dx, dy, dz]| pad.blocks[pi(pos[0] + dx, pos[1] + dy, pos[2] + dz)],
                 || Some(tints.biome(pos[0], pos[1], pos[2])),
+                |overlay| {
+                    if let Some(slot) = overlays.get_mut(count) {
+                        *slot = Some(overlay);
+                        count += 1;
+                    }
+                },
             )
         };
-        let mut corners = [(TerrainVertex::new([0.0; 3], [0.0; 2], 0, 0, 0), [0.0; 2]); 4];
-        for (i, corner) in corners.iter_mut().enumerate() {
-            let g = gray[i] as u32;
-            let rgb = match tint {
-                Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
-                None => [g; 3],
-            };
-            let p = q.positions[i];
-            *corner = (
-                TerrainVertex::new(
-                    [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
-                    q.uv[i],
-                    0,
-                    emitting(pack_rgb(rgb), tier),
-                    pack_coords(lighting::with_emission(coords[i], q.light_emission)),
-                ),
-                q.uv[i],
-            );
-        }
+        let vertices = |tint: Option<u32>, uv: [[f32; 2]; 4]| {
+            std::array::from_fn::<_, 4, _>(|i| {
+                let g = gray[i] as u32;
+                let rgb = match tint {
+                    Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
+                    None => [g; 3],
+                };
+                let p = q.positions[i];
+                (
+                    TerrainVertex::new(
+                        [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+                        uv[i],
+                        0,
+                        emitting(pack_rgb(rgb), tier),
+                        pack_coords(lighting::with_emission(coords[i], q.light_emission)),
+                    ),
+                    uv[i],
+                )
+            })
+        };
+        let corners = vertices(tint, q.uv);
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
@@ -1403,6 +1414,48 @@ impl Mesher<'_> {
                 }
             }
         }
+        // Overlays: the face again, after it (equal depth passes), tinted as their rule says.
+        // `layer=cutout` is an alpha cutout whatever the tile's alpha, but over a translucent
+        // face it must be in the translucent pass too, or the face would draw over it.
+        // Most faces have none: nothing below runs for them.
+        if count == 0 {
+            return;
+        }
+        let face_translucent = match pick {
+            Pick::Keep => self.translucent(own),
+            Pick::Tile(t) => self.translucent(tile(t)),
+            Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
+        };
+        // Overlay tiles face the standard way (Continuity: "overlay textures always have the
+        // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
+        // rotations): the cube's UVs at the quad's corners.
+        let standard = q.positions.map(|p| standard_uv(q.facing, p));
+        // Over a `ctm_compact` face, the same pieces: the same depths and sort centres.
+        let cuts = match pick {
+            Pick::Quarters(_) => cuts(&corners),
+            _ => Cuts([0.0, 1.0, 1.0, 1.0], 2),
+        };
+        for overlay in overlays[..count].iter().flatten().copied() {
+            let tint = overlay.tint.and_then(|(index, block)| {
+                let info = block
+                    .and_then(|b| self.tables.info.get(b as usize))
+                    .unwrap_or(state);
+                Self::tint(info, index, tints, pos)
+            });
+            let tile = TileLayer::Layer {
+                layer: overlay.layer,
+                translucent: overlay.translucent || face_translucent,
+                opaque: false,
+            };
+            let whole = vertices(tint, standard);
+            for s in cuts.windows(2) {
+                for t in cuts.windows(2) {
+                    let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
+                        .map(|(s, t)| bilinear(&whole, s, t).0);
+                    self.quad_as(out, false, tile, piece, false);
+                }
+            }
+        }
     }
     /// One terrain quad with sprite `tile`, in the pass its alpha needs (`solid_leaves`: no
     /// alpha cutout whatever the sprite).
@@ -1411,7 +1464,35 @@ impl Mesher<'_> {
         out: &mut SectionMesh,
         solid_leaves: bool,
         tile: TileLayer,
+        v: [TerrainVertex; 4],
+    ) {
+        self.quad_as(out, solid_leaves, tile, v, true);
+    }
+    /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
+    fn translucent(&self, tile: TileLayer) -> bool {
+        match tile {
+            TileLayer::Layer {
+                layer, translucent, ..
+            } => {
+                translucent
+                    || self
+                        .translucent_layers
+                        .get(usize::from(layer))
+                        .copied()
+                        .unwrap_or(false)
+            }
+            TileLayer::Skip | TileLayer::Default => false,
+        }
+    }
+    /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
+    /// when `by_sprite`: an overlay's pass is its rule's.
+    fn quad_as(
+        &self,
+        out: &mut SectionMesh,
+        solid_leaves: bool,
+        tile: TileLayer,
         mut v: [TerrainVertex; 4],
+        by_sprite: bool,
     ) {
         let TileLayer::Layer {
             layer,
@@ -1424,12 +1505,11 @@ impl Mesher<'_> {
         if self.tables.is_animated(layer) {
             out.note_sprite_layer(layer);
         }
-        let translucent = translucent
-            || self
-                .translucent_layers
-                .get(usize::from(layer))
-                .copied()
-                .unwrap_or(false);
+        let translucent = if by_sprite {
+            self.translucent(tile)
+        } else {
+            translucent
+        };
         // Quads over opaque texels draw in the solid layer: no alpha cutout (a dirt path's side
         // skips its clear top row). All four vertices share the layer.
         let layer = if opaque && !translucent || solid_leaves {
@@ -1483,6 +1563,19 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
         }
     }
     out
+}
+/// The UV a vanilla cube's face gives the block-local point `p` (`BlockElement`'s default UVs),
+/// in sprite units: up is north on the top face, south on the bottom one, and up on the sides.
+fn standard_uv(facing: horizon_assets::model::Direction, [x, y, z]: [f32; 3]) -> [f32; 2] {
+    use horizon_assets::model::Direction as D;
+    match facing {
+        D::Down => [x, 1.0 - z],
+        D::Up => [x, z],
+        D::North => [1.0 - x, 1.0 - y],
+        D::South => [x, 1.0 - y],
+        D::West => [z, 1.0 - y],
+        D::East => [1.0 - z, 1.0 - y],
+    }
 }
 /// The quarter of the sprite (top-left, top-right, bottom-left, bottom-right) a piece of a
 /// quad lies in, by its UV centre (v grows downward).
@@ -1593,5 +1686,18 @@ mod quarter_tests {
             .map(|p| quarter_of(&p)),
             [0, 1, 2, 3]
         );
+    }
+
+    #[test]
+    fn overlays_take_the_cubes_own_uvs() {
+        use horizon_assets::model::Direction as D;
+        // A top face: the north-west corner is the sprite's top-left, so a tile's top edge is
+        // north whatever the model's turn.
+        assert_eq!(standard_uv(D::Up, [0.0, 1.0, 0.0]), [0.0, 0.0]);
+        assert_eq!(standard_uv(D::Up, [1.0, 1.0, 1.0]), [1.0, 1.0]);
+        // A north face seen from the north: its top-left is the east top corner.
+        assert_eq!(standard_uv(D::North, [1.0, 1.0, 0.0]), [0.0, 0.0]);
+        assert_eq!(standard_uv(D::East, [1.0, 0.0, 1.0]), [0.0, 1.0]);
+        assert_eq!(standard_uv(D::Down, [0.0, 0.0, 1.0]), [0.0, 0.0]);
     }
 }

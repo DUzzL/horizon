@@ -20,6 +20,7 @@ pub mod chat;
 pub mod chunk;
 pub mod chunk_map;
 pub mod cit;
+pub mod cit_assets;
 pub mod clouds;
 pub mod collisions;
 pub mod command_block;

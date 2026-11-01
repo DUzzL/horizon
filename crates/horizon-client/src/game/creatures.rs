@@ -2,7 +2,10 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, InteractTarget, dispenser, native_projectiles::Impact, view_vector};
+use super::{
+    Dim, Game, InteractTarget, dispenser, native_mob_draw::NativePlayerRender,
+    native_projectiles::Impact, view_vector,
+};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -56,6 +59,9 @@ pub(super) struct NativeSound {
 #[derive(Default)]
 pub(super) struct Creatures {
     pub projectiles: Vec<Projectile>,
+    /// The entities a family tells the mods ticked, kept between ticks
+    /// (game/native_ticks.rs).
+    pub tick_buffer: Vec<(u32, super::native_ticks::TickKind)>,
     /// Wind bursts from a guest's turn, waiting for it to end (game/wind.rs).
     pub wind_bursts: Vec<super::wind::Burst>,
     /// The players a fishing hook can catch, taken as the hooks tick, and
@@ -858,7 +864,10 @@ impl Game<'_> {
             self.tick_village_siege();
         }
         self.tick_raids();
-        horizon_client::spans::time("tick_creature_entities", || self.tick_creature_entities())
+        let ticked =
+            horizon_client::spans::time("tick_creature_entities", || self.tick_creature_entities());
+        self.dismount_underwater_mob_riders();
+        ticked
     }
     /// `DistanceManager.inEntityTickingRange` in an entity-ticking chunk
     /// (block coordinates), from every player's tickets (`update_chunk_tickets`).
@@ -885,6 +894,20 @@ impl Game<'_> {
         // waiting any more.
         self.combat.charged_exploders.clear();
         self.combat.exploded.clear();
+        // EntityTickEvent.Pre for the mobs about to tick, before the loop holds them.
+        let mut round = self.native_tick_round();
+        if round.listening() {
+            let ticking = self.entity_ticking_area();
+            let mut i = 0;
+            while let Some(m) = self.mobs.get(i) {
+                let (x, z) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                if self.world.loaded(x, z) && ticking(x, z) {
+                    let (id, kind) = (m.id, super::native_ticks::TickKind::Mob(m.kind.clone()));
+                    self.native_tick_pre_batch(&mut round, id, kind);
+                }
+                i += 1;
+            }
+        }
         let uuid = self.level.player_uuid;
         let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
         let mut events = Vec::new();
@@ -997,6 +1020,11 @@ impl Game<'_> {
                     keep.push(kept);
                     continue;
                 }
+                // A mod canceled its tick: it stays as it is.
+                if round.canceled(m.id) {
+                    keep.push(true);
+                    continue;
+                }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
@@ -1077,6 +1105,7 @@ impl Game<'_> {
             self.mobs.append(&mut mobs);
         }
         self.died = died;
+        self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {
             let at = [at.x, at.y, at.z];
@@ -1437,7 +1466,11 @@ impl Game<'_> {
             mob_drops: self.ui.rules.bool("mob_drops"),
             world_seed: self.level.seed,
         };
-        let (items, skulls) = drops::die(m, &death, &mut self.rand_sequences);
+        // LootContextParams.ORIGIN of a death: the mob's position.
+        let place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None);
+        let (items, skulls) = horizon_world::loot::with_native_loot_place(place, || {
+            drops::die(m, &death, &mut self.rand_sequences)
+        });
         if skulls && let Some(Who::Mob(id)) = m.last_damage.and_then(|(d, _)| d.attacker) {
             // Creeper.droppedSkulls: one head per charged explosion.
             self.combat.charged_exploders.retain(|c| *c != id);
@@ -2308,19 +2341,17 @@ impl Game<'_> {
                     flags,
                 } => {
                     if effect {
+                        // EatBlockGoal passes the block's default state constant
+                        // (Blocks.GRASS_BLOCK.defaultBlockState()), not the live state
+                        // (which could be snowy).
                         let old = self.world.block(pos[0], pos[1], pos[2]);
-                        self.destroy_particles(pos, old);
-                        let s = self.res.facts().get(old).sounds.break_sound.clone();
-                        self.audio.play(
-                            &s,
-                            Some([
-                                f64::from(pos[0]) + 0.5,
-                                f64::from(pos[1]) + 0.5,
-                                f64::from(pos[2]) + 0.5,
-                            ]),
-                            1.0,
-                            0.8,
-                        );
+                        let state = self
+                            .pack
+                            .assets
+                            .registry
+                            .default_state(&self.res.facts().get(old).name)
+                            .unwrap_or(old);
+                        self.level_event_at(2001, pos, state.0 as i32);
                     }
                     if let Some(state) = self.pack.assets.registry.default_state(name) {
                         self.level_set_with_flags(pos, state, flags)?;
@@ -2372,7 +2403,7 @@ impl Game<'_> {
                     }
                     // Block.spawnDestroyParticles: fire breaks leave nothing.
                     if !self.res.facts().get(old).has_class("BaseFireBlock") {
-                        self.destroy_particles(pos, old);
+                        self.level_event_at(2001, pos, old.0 as i32);
                     }
                     if drop {
                         let mut drops = world_items!(self).block_drops_in(
@@ -3197,6 +3228,9 @@ impl Game<'_> {
         let owner = owner.filter(|_| projectile);
         let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
+        // The hit's own push, held back until after the shield's (`hurtServer`
+        // runs `applyItemBlocking` before `dealDefaultKnockback`).
+        let mut default_push: Option<([f64; 2], HurtSource<'_>)> = None;
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
             && let Ok(o) = player.hurt_caused_by(
@@ -3229,12 +3263,7 @@ impl Game<'_> {
                     causing,
                     direct: 0,
                 };
-                self.knock_back_player(f64::from(0.4_f32), xd, zd, source);
-                if let Some(p) = self.player.as_mut()
-                    && let Some(r) = p.hurt_log.last_mut()
-                {
-                    r.knockback = Some([p.velocity.x, p.velocity.y, p.velocity.z]);
-                }
+                default_push = Some(([xd, zd], source));
             }
             // The thorns hurt the entity that caused the hit, if there is one.
             let killed = self.player.as_ref().is_some_and(|p| {
@@ -3282,6 +3311,16 @@ impl Game<'_> {
                 direct: 0,
             };
             self.after_block(outcome, (attacker, projectile), source);
+        }
+        // `LivingEntity.dealDefaultKnockback`: after the item's block push, so
+        // a half-blocked hit pushes the defender back the way vanilla does.
+        if let Some(([xd, zd], source)) = default_push {
+            self.knock_back_player(f64::from(0.4_f32), xd, zd, source);
+            if let Some(p) = self.player.as_mut()
+                && let Some(r) = p.hurt_log.last_mut()
+            {
+                r.knockback = Some([p.velocity.x, p.velocity.y, p.velocity.z]);
+            }
         }
         outcome.hurt
     }
@@ -6092,6 +6131,10 @@ impl Game<'_> {
                 [p.position.x, p.position.y, p.position.z]
             }),
             player_rot: [self.pitch, self.yaw],
+            paused: self.pause,
+            first_person: self.camera_type.first_person(),
+            third_person_reversed: self.camera_type
+                == super::perspective::CameraType::ThirdPersonFront,
             ..Default::default()
         });
         for mob in &self.mobs {
@@ -6173,10 +6216,20 @@ impl Game<'_> {
             // A native mod's own model in place of the vanilla one
             // (`native_mob_submit`), before any of the vanilla model's parts
             // (a sulfur cube's swallowed block) are drawn.
-            if !is_player
-                && !layers_only
-                && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
-            {
+            // A player's own hook (`native_player_submit`) is asked for the
+            // other players in view.
+            let who = is_player
+                .then(|| self.remote_player_name(mob.id))
+                .flatten()
+                .map(|name| NativePlayerRender { name, local: false });
+            let modded = if layers_only {
+                false
+            } else if let Some(who) = who {
+                self.mod_player_geometry(mob, who, alpha as f32, camera, packed, out)
+            } else {
+                !is_player && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
+            };
+            if modded {
                 if let Some(rgb) = outline {
                     self.mark_outline(&out[entity_start..], rgb);
                     if mob.invisible {
@@ -6255,6 +6308,8 @@ impl Game<'_> {
             }
             // CustomHeadLayer (a pumpkin, skull or head item) included.
             self.mob_block_geometry(mob, camera, alpha, packed, out);
+            // `native_mob_layer`: a native mod's layer, over the vanilla ones.
+            self.mod_mob_layer_geometry(mob, who, alpha as f32, camera, packed, out);
             if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if mob.invisible {
@@ -6344,9 +6399,15 @@ impl Game<'_> {
                 let Some(r) = atlas.sprites.get(texture).copied() else {
                     continue;
                 };
+                // ArrowRenderer: `Mth.lerp(partialTick, state.yRotO, state.yRot)`
+                // and the same for the pitch, so a turning arrow is drawn
+                // between the two ticks it turned over.
+                let alpha32 = alpha as f32;
+                let yaw = a.previous_yaw + alpha32 * (a.yaw - a.previous_yaw);
+                let pitch = a.previous_pitch + alpha32 * (a.pitch - a.previous_pitch);
                 let m = glam::Mat4::from_translation(c)
-                    * glam::Mat4::from_rotation_y((a.yaw - 90.0).to_radians())
-                    * glam::Mat4::from_rotation_z(a.pitch.to_radians());
+                    * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
+                    * glam::Mat4::from_rotation_z(pitch.to_radians());
                 // ArrowRenderer: `state.shake = shakeTime - partialTicks`; ArrowModel.setupAnim
                 // rolls the root while the shake timer runs.
                 let shake = a

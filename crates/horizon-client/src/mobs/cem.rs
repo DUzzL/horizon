@@ -892,6 +892,8 @@ mod tests {
             villager_hats: Default::default(),
             cem: std::sync::RwLock::new(models.clone()),
             random_textures: Default::default(),
+            emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
