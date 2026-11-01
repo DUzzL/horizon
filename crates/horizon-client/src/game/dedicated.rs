@@ -561,7 +561,9 @@ impl Game<'_> {
             structures: props.generate_structures,
             bonus_chest: false,
         };
-        horizon_client::save::write_world_gen_settings_with(dir, props.seed, options, settings)
+        horizon_client::save::write_world_gen_settings_with(
+            dir, props.seed, options, settings, None,
+        )
     }
 }
 
