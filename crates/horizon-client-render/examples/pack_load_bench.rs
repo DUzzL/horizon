@@ -358,7 +358,12 @@ fn main() {
         ),
     );
     let sprite_cache = root.join("horizon-sprites.cache");
-    let sprites = |cold: bool| {
+    // OptiFine connected-texture tiles, inserted by their path as `ConnectedTextures` does.
+    let tiles: Vec<String> = (0..1100 * scale)
+        .step_by(4)
+        .flat_map(|i| (0..12).map(move |t| format!("assets/minecraft/optifine/ctm/b{i}/{t}.png")))
+        .collect();
+    let sprites = |cold: bool, prefetch: bool, names: &[String], files: bool| {
         time(
             runs,
             || {
@@ -368,8 +373,15 @@ fn main() {
             },
             || {
                 let mut sprites = Sprites::with_disk_cache(&root);
-                for name in &blocks {
-                    sprites.insert(&root, name).unwrap();
+                if prefetch {
+                    sprites.prefetch(&root, names.iter().map(String::as_str));
+                }
+                for name in names {
+                    if files {
+                        sprites.insert_file(&root, name).unwrap();
+                    } else {
+                        sprites.insert(&root, name).unwrap();
+                    }
                 }
                 sprites.save_disk_cache();
                 sprites.finish();
@@ -378,10 +390,19 @@ fn main() {
         )
     };
     row(
-        "block sprites: decode and lay out (no cache)",
-        sprites(true),
+        "block sprites: one by one (no cache)",
+        sprites(true, false, &blocks, false),
     );
-    row("block sprites: decode and lay out (cached)", sprites(false));
+    row(
+        "block sprites: prefetched (no cache)",
+        sprites(true, true, &blocks, false),
+    );
+    row(
+        "block sprites: from the disk cache",
+        sprites(false, false, &blocks, false),
+    );
+    row("CTM tiles: one by one", sprites(false, false, &tiles, true));
+    row("CTM tiles: prefetched", sprites(false, true, &tiles, true));
     row(
         "GUI atlas: decode and stitch, both packs",
         time(
