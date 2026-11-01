@@ -11111,5 +11111,63 @@ CHECKS += ['shulker_lift']
 CHECK_FNS['shulker_lift'] = check_shulker_lift
 
 
+def check_blast_bystanders(host, guest, out):
+    """Primed TNT pushes a falling block and a boat, and breaks a boat in reach
+    (ServerExplosion.hurtEntities -> VehicleEntity.hurtServer, Entity.pushFromExplosion). Run on the real
+    26.3 server (`tick freeze`, `tick step 8` after the fuse): the falling block moved (+1.795, +1.235, 0),
+    the far boat (+0.071, 0, 0, tracker-lagged here); the near boat broke and dropped one item."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    x, y, z = hx + 6, hy, hz
+    for g in (host, guest):
+        g('command', command='gamemode spectator')
+    tx = x - 4.5
+    steps = [f'fill {x - 8} {y - 1} {z - 8} {x + 8} {y - 1} {z + 8} minecraft:bedrock',
+             f'fill {x - 8} {y} {z - 8} {x + 8} {y + 5} {z + 8} minecraft:air',
+             'kill @e[type=!player]', 'tick freeze',
+             f'summon minecraft:falling_block {x - 2.5} {y + 1.02} {z + 0.5} {{BlockState:{{Name:"minecraft:sand"}},Time:1,NoGravity:1b}}',
+             f'summon minecraft:oak_boat {tx} {y} {z + 3.5}',
+             f'summon minecraft:oak_boat {x + 3.0} {y} {z + 0.5}']
+
+    def scene():
+        found = {}
+        status = host('status')
+        # `simulation` has the server's own positions; `status` follows the trackers, which lag.
+        for p in host.raw('simulation')['projectiles'] + status['projectiles'] + status['objects']:
+            k = p['kind']
+            kind = {'minecraft:falling_block': 'fall', }.get(k, 'boat' if k.endswith('_boat') else None)
+            if kind and abs(p['position'][0] - x) < 8 and abs(p['position'][2] - z) < 8:
+                found.setdefault(kind, []).append(p['position'])
+        return found
+    try:
+        host('command', command='tick unfreeze')
+        for c in steps:
+            host('command', command=c)
+        host.wait(10)
+        before = scene()
+        host('command', command=f'summon minecraft:tnt {tx} {y + 1} {z + 0.5} {{fuse:5s}}')
+        host('command', command='tick step 8')
+        host.wait(10)
+        after = scene()
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=!player]')
+        for g in (host, guest):
+            g('command', command='gamemode creative')
+    assert len(before.get('boat', [])) == 2 and len(after.get('boat', [])) == 1, f'the near boat was not broken: {before} {after}'
+    moved = {k: [round(a - b, 3) for a, b in zip(after[k][0], before[k][0])] for k in ('fall',) if k in before and k in after}
+    assert set(moved) == {'fall'}, f'missing entities: {before} {after}'
+    far = [round(a - b, 3) for a, b in zip(after['boat'][0], next(p for p in before['boat'] if p[0] > x))]
+    for kind, want in (('fall', [1.795, 1.235, 0.0]),):
+        assert all(abs(a - b) < 0.05 for a, b in zip(moved[kind], want)), f'{kind} moved {moved[kind]}, vanilla {want}'
+    # A boat's position here follows its tracker, so only the direction is asserted (sbs.py blast_bystanders
+    # matches the vanilla boat to 1e-9: Pos x 3.0712677).
+    assert far[0] > 0.01 and abs(far[2]) < 0.02, f'the far boat was not pushed east: {far}'
+    return {'moved': moved, 'far_boat': far}
+
+
+CHECKS += ['blast-bystanders']
+CHECK_FNS['blast-bystanders'] = check_blast_bystanders
+
+
 if __name__ == '__main__':
     main()
