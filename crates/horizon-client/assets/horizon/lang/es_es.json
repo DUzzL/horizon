@@ -203,5 +203,11 @@
   "horizon.multiplayer.not_signed_in": "Este servidor está en modo en línea. Inicia sesión con tu cuenta de Microsoft en el launcher de Horizon para unirte.",
   "horizon.multiplayer.invalid_address": "Dirección de servidor no válida: %s",
   "horizon.multiplayer.connected_friend_direct": "Conectado directamente con tu amigo…",
-  "horizon.multiplayer.connected_friend_relay": "Conectado con tu amigo a través del relé…"
+  "horizon.multiplayer.connected_friend_relay": "Conectado con tu amigo a través del relé…",
+  "horizon.pages.shader_options": "Opciones de sombreadores",
+  "horizon.pages.split_profiles": "¿Quién juega?",
+  "horizon.pages.split_profiles.tooltip": "Quién juega: un perfil guardado en esta carpeta del juego.",
+  "horizon.shader_options.open": "Opciones de sombreadores…",
+  "horizon.shader_options.profile": "Perfil",
+  "horizon.shader_options.loading": "Leyendo las opciones del paquete de sombreadores…"
 }
