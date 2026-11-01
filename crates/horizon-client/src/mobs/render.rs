@@ -2810,7 +2810,7 @@ mod tests {
                 &atlas,
                 0xf0f0,
                 &data,
-                &[(part, [0.5, 0.5, 0.75, 0.75], 0xFFFF_FFFF, overlay)],
+                &[(part, [0.5, 0.5, 0.75, 0.75], 0xFFFF_FFFF, overlay, false)],
                 &mut vertices,
             );
             let (armour, body): (Vec<&Vertex>, Vec<&Vertex>) =
