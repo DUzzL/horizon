@@ -164,6 +164,8 @@ impl Game<'_> {
             player_fall_flying,
             ridden,
         };
+        self.audio
+            .set_listener_reserve(self.settings.extras.ui_sound_reserve);
         self.audio.tick(self.pause, &ctx);
     }
     /// `Minecraft.setLevel` -> `updateLevelInEngines`: `SoundManager.stop()`.

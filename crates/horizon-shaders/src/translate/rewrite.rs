@@ -289,6 +289,7 @@ impl Stage<'_> {
                 "gl_FragCoord" => Some("hz_FragCoord".into()),
                 "gl_FrontColor" => Some("hz_FrontColor".into()),
                 "gl_Fog" => Some("hz_Fog".into()),
+                "gl_FogFragCoord" => Some("hz_FogFragCoord".into()),
                 // Before the compatibility inputs, of which `gl_Vertex` is a prefix.
                 "gl_VertexID" => Some("gl_VertexIndex".into()),
                 "gl_InstanceID" => Some("gl_InstanceIndex".into()),

@@ -374,7 +374,8 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
     );
     crate::logging::flush();
     crate::telemetry::keep_crash(home, &report);
-    match report.save(home) {
+    // A player of a shared game folder (`--player-dir`) finds the report beside its own log.
+    match report.save(crate::logging::player_dir_override().unwrap_or(home)) {
         Ok(path) => {
             eprintln!("{SAVED_LINE}{}", path.display());
             Some(path)

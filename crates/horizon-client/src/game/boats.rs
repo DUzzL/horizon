@@ -1119,7 +1119,7 @@ impl Game<'_> {
             if let Some((h, _)) = self.fluid_height_of(x, y, z, None)
                 && p[1] <= f64::from(y) + f64::from(h)
             {
-                fluid = Some(([p[0], f64::from(y) + f64::from(h), p[2]], t));
+                fluid = Some((fluid_hit_point(p, y, h), t));
                 break;
             }
             t += 0.05;
@@ -1454,9 +1454,35 @@ impl Game<'_> {
     }
 }
 
+/// Where a fluid pick lands in the cell the ray sample `p` is in. Vanilla's
+/// `ClipContext.Fluid.ANY` clips against the fluid shape: a full-height cell
+/// (the same fluid above it) is a full cube, so the hit is the ray's own
+/// point and a boat placed under water stays at the eye; a partial cell is
+/// clipped to its surface.
+fn fluid_hit_point(p: [f64; 3], y: i32, h: f32) -> [f64; 3] {
+    if h >= 1.0 {
+        p
+    } else {
+        [p[0], f64::from(y) + f64::from(h), p[2]]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `VoxelShape.clip` on a full-cube fluid cell keeps the true hit point
+    /// (a ray starting inside hits at `from + delta * 0.001`); only a partial
+    /// cell is clipped to its surface.
+    #[test]
+    fn a_full_height_fluid_cell_keeps_the_ray_point_and_a_partial_one_snaps_to_its_surface() {
+        let eye = [0.5, 3.62, 0.5];
+        assert_eq!(fluid_hit_point(eye, 3, 1.0), eye);
+        assert_eq!(
+            fluid_hit_point(eye, 3, 8.0 / 9.0),
+            [0.5, 3.0 + f64::from(8.0f32 / 9.0), 0.5]
+        );
+    }
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
