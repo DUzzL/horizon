@@ -286,7 +286,9 @@ use horizon_client::{
     biome::BiomeColors,
     block_entities::Pos,
     chat::ChatSource,
-    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
+    containers::{
+        BlockEntity, MOD_MENUS, ModBlockEntity, ModBlockEntityFields, ModContainer, ModFluidTanks,
+    },
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
     extras_hud::Corners,
@@ -4210,11 +4212,14 @@ impl Game<'_> {
             super::mods::warn_no_block_entity(name, &id);
             return None;
         }
-        Some(BlockEntity::Mod(Box::new(ModBlockEntity {
-            id,
-            nbt,
-            ..ModBlockEntity::default()
-        })))
+        Some(BlockEntity::Mod(Box::new(
+            ModBlockEntityFields {
+                id,
+                nbt,
+                ..Default::default()
+            }
+            .into(),
+        )))
     }
     /// The containers of the mod blocks' block entities, by block state
     /// (`native_block_entity_container`), checked.

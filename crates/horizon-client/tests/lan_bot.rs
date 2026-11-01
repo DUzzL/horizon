@@ -1279,7 +1279,7 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
 /// with no `BlockEntityData` for one whose mod gives no tag.
 #[test]
 fn a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick() {
-    use horizon_client::containers::{BlockEntity, ModBlockEntity};
+    use horizon_client::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
     use horizon_world::nbt::{Compound, JavaString, Tag};
     let Some(resources) = resources() else {
         return;
@@ -1308,10 +1308,10 @@ fn a_synced_mod_block_entity_reaches_the_chunks_players_once_a_tick() {
         s.world
             .set(pos.0, pos.1, pos.2, BlockStateId(MACHINE))
             .unwrap();
-        let mut machine = ModBlockEntity {
+        let mut machine = ModBlockEntity::new(ModBlockEntityFields {
             id: "test:machine".into(),
-            ..ModBlockEntity::default()
-        };
+            ..Default::default()
+        });
         if let Some(on) = on {
             machine.nbt.insert("on".into(), Tag::Byte(on));
         }
