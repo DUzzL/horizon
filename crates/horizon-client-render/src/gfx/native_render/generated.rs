@@ -2,23 +2,35 @@
 use super::*;
 pub trait RenderHooks: Send + Sync {
     /// The world is drawn (see [`WorldDrawn`]). Not called on the title screen's panorama.
-    fn world_drawn(&self, world: &mut WorldDrawn<'_>) {
-        let _ = world;
+    fn world_drawn(&self, event: &mut WorldDrawnEvent<'_, '_>) {
+        let _ = event;
     }
     /// Asked as a frame is built and drawn: set what your mod needs.
     ///
-    /// Every mod gets `needs` in order and may add, change or remove needs.
-    fn render_needs(&self, needs: &mut RenderNeeds) {
-        let _ = needs;
+    /// Every mod gets `event.needs` in order and may add, change or remove needs.
+    fn render_needs(&self, event: &mut RenderNeedsEvent<'_>) {
+        let _ = event;
     }
+}
+/// What [`RenderHooks::world_drawn`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+pub struct WorldDrawnEvent<'a, 'b> {
+    pub world: &'a mut WorldDrawn<'b>,
 }
 pub fn dispatch_world_drawn(mods: &[&dyn RenderHooks], world: &mut WorldDrawn<'_>) {
+    let mut event = WorldDrawnEvent { world };
     for mod_hook in mods {
-        mod_hook.world_drawn(&mut *world);
+        mod_hook.world_drawn(&mut event);
     }
 }
+/// What [`RenderHooks::render_needs`] is told. Fields may be added: the struct is `#[non_exhaustive]`.
+#[non_exhaustive]
+pub struct RenderNeedsEvent<'a> {
+    pub needs: &'a mut RenderNeeds,
+}
 pub fn dispatch_render_needs(mods: &[&dyn RenderHooks], needs: &mut RenderNeeds) {
+    let mut event = RenderNeedsEvent { needs };
     for mod_hook in mods {
-        mod_hook.render_needs(&mut *needs);
+        mod_hook.render_needs(&mut event);
     }
 }

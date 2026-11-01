@@ -10,7 +10,9 @@ pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
-pub use crate::gfx::native_render::{RenderHooks, RenderNeeds, WorldDrawn, wgpu};
+pub use crate::gfx::native_render::{
+    RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent, wgpu,
+};
 pub use crate::hud::HudBatch;
 pub use crate::hud_layout::{GuiDraw, HealthInputs};
 pub use crate::items::ItemStack;

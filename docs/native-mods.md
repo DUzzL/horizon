@@ -1723,7 +1723,8 @@ bindings = [{ name = "amount", ty = "&mut i32", value = "&mut *amount" }]
 ```
 
 The generated trait method is `inject_<mod_id>_<trait_method>` (hyphens in the mod id become
-underscores), with the binding names and types as its parameters. Implement it on the object
+underscores). Its event, as a catalog hook's, is that name in CamelCase plus `Event`
+(`InjectExampleBeforeTickEvent`), with the bindings as fields under the same rules. Implement it on the object
 returned by that bundle's `hooks()`; it is called only for that bundle's object. Types must be
 public and available from both the target and `horizon_client::mod_api`. Only HEAD listen is
 supported, or HEAD with `cancellable = true` for a unit-returning target: that method returns
@@ -1736,7 +1737,27 @@ ordered after other mixins. Catalog hooks retain the mixin-before-trait order be
 A linked trait mod implements `horizon_client::mod_api::Hooks`. Mixin injections run first.
 An injection that returns early skips trait mods. A claimed cancellation also skips trait mods.
 Otherwise, trait mods run in their supplied order. The first `Cancel` stops dispatch.
-For replacement hooks, the first `Some` wins. Collection hooks call every mod. Mutable inputs are reborrowed in order, so each mod sees earlier changes. Receiverless hooks have no `Host`.
+For replacement hooks, the first `Some` wins. Collection hooks call every mod. Receiverless hooks have no `Host`.
+
+Each hook method takes its host, where it has one, and one event:
+
+```rust
+fn living_incoming_damage(&self, event: &mut LivingIncomingDamageEvent<'_>) -> Flow {
+    if event.kind == "minecraft:pig" {
+        event.amount *= 0.5;
+    }
+    Flow::Continue
+}
+```
+
+The event is a generated `#[non_exhaustive]` struct named after the catalog hook, in CamelCase plus `Event`, with
+the hook point's arguments as public fields: values as values and borrowed ones as references (`event.kind`). A
+number or `bool` a mod may change is a plain field, written back once every mod has run, even after a `Cancel`;
+anything else a mod may change, a game struct or a list, is a `&mut` field. A cancellation or replacement is still
+the return value; a collection hook's list is a field (`event.lines`). One event goes through every mod, so each
+sees the changes before it. Because no mod can build or match the whole
+struct, a later version can add a field without breaking any mod, as NeoForge's event objects do; the cost is that
+a mod's own tests can't build an event yet.
 
 Hook methods take `&self` and require `Send + Sync`. The process-wide mod list is installed once, like mixin module statics. One mod instance serves both
 the window's game and the server-thread game. A hook can also fire again inside

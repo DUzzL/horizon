@@ -12,7 +12,7 @@ use std::sync::{
 };
 
 mod generated;
-pub use generated::RenderHooks;
+pub use generated::{RenderHooks, RenderNeedsEvent, WorldDrawnEvent};
 pub use wgpu;
 
 static RENDERERS: OnceLock<Box<[&'static dyn RenderHooks]>> = OnceLock::new();
@@ -111,14 +111,14 @@ mod tests {
 
     struct Depth;
     impl RenderHooks for Depth {
-        fn render_needs(&self, needs: &mut RenderNeeds) {
-            needs.world_depth = true;
+        fn render_needs(&self, event: &mut RenderNeedsEvent<'_>) {
+            event.needs.world_depth = true;
         }
     }
     struct Spans;
     impl RenderHooks for Spans {
-        fn render_needs(&self, needs: &mut RenderNeeds) {
-            needs.entity_spans = needs.world_depth;
+        fn render_needs(&self, event: &mut RenderNeedsEvent<'_>) {
+            event.needs.entity_spans = event.needs.world_depth;
         }
     }
 
