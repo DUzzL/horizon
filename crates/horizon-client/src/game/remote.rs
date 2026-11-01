@@ -1803,6 +1803,12 @@ impl Game<'_> {
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);
+                    // clearClientLevel drops the client level now, so its
+                    // unload comes before the configuration screen, not
+                    // after the next login's load.
+                    if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+                        self.native_client_level_unload(&old);
+                    }
                     let ticks = self.ticks;
                     if let Some(r) = self.remote.as_mut() {
                         r.reconfiguring = Some(ticks);
