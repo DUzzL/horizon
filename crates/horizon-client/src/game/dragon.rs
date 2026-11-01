@@ -438,8 +438,10 @@ impl Dragon {
     fn sample(&self, delay: usize) -> (f64, f32) {
         self.history[(self.head + 64 - (delay & 63)) & 63]
     }
-    /// DragonFlightHistory.get(delay, partial).
+    /// `DragonFlightHistory.get(delay, partial)`, with
+    /// `EnderDragonRenderer.extractRenderState`'s frozen history on death.
     fn sample_lerp(&self, delay: usize, partial: f32) -> (f64, f32) {
+        let partial = if self.alive() { partial } else { 0.0 };
         let a = self.sample(delay);
         let b = self.sample(delay + 1);
         let yaw = b.1 + wrap(a.1 - b.1) * partial;
@@ -3880,7 +3882,7 @@ fn dragon_rays(base: glam::Mat4, t: f32, white: horizon_client::hud::Rect, out: 
                     normal: [0; 4],
                     pos: m.transform_point3(p).to_array(),
                     uv,
-                    layer: 2,
+                    layer: horizon_client::gfx::DRAGON_RAYS_OVERLAY,
                     color: c,
                     light: 0,
 
@@ -3916,6 +3918,55 @@ fn push_seen_with_hurt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dying_dragons_keep_their_flight_pose_between_frames() {
+        let mut dragon = Dragon::new(Vec3::new(0.0, 80.0, 0.0), 0.0, 432);
+        dragon.history.fill((70.0, 170.0));
+        dragon.position.y = 90.0;
+        dragon.yaw = -170.0;
+        dragon.record();
+        assert_eq!(dragon.sample_lerp(0, 0.5), (80.0, 180.0));
+        dragon.health = 0.0;
+        for partial in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(dragon.sample_lerp(0, partial), (70.0, 170.0));
+        }
+    }
+
+    /// Driven by `tools/test_dragon_render_parity.py`; compares the actual
+    /// ray vertices with EnderDragonRenderer's captured VertexConsumer output.
+    #[test]
+    #[ignore]
+    fn dragon_render_parity_fixture() {
+        let path = std::env::var("HORIZON_DRAGON_RENDER_OUTPUT").expect("harness output path");
+        let mut cases = Vec::new();
+        for t in [0.0, 0.05, 0.25, 0.5, 0.8, 0.9, 0.95, 1.0] {
+            let mut vertices = Vec::new();
+            dragon_rays(
+                glam::Mat4::IDENTITY,
+                t,
+                horizon_client::hud::Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 1,
+                    h: 1,
+                },
+                &mut vertices,
+            );
+            // The fourth quad vertex only pads a triangle for our index buffer.
+            let triangles: Vec<_> = vertices
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|q| &q[..3])
+                .map(|v| serde_json::json!([v.pos[0], v.pos[1], v.pos[2], v.color]))
+                .collect();
+            cases.push(triangles);
+        }
+        std::fs::write(path, serde_json::to_vec(&cases).unwrap()).unwrap();
+    }
 
     #[test]
     fn death_rays_sample_inside_the_white_sprite() {

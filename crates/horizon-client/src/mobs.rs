@@ -20,6 +20,8 @@ pub mod brain;
 pub mod breeze;
 pub mod camel;
 pub mod caravan;
+pub mod cem;
+pub mod cem_anim;
 pub mod combat;
 pub mod control;
 pub mod conversion;
@@ -49,6 +51,7 @@ pub mod illager;
 pub mod illusioner;
 pub mod item_break;
 pub mod keyframes;
+pub mod landing;
 pub mod leash;
 pub mod living;
 pub mod llama;
@@ -64,6 +67,7 @@ pub mod piglin;
 pub mod polar_bear;
 pub mod rabbit;
 pub mod raider;
+pub mod random_textures;
 pub mod ravager;
 pub mod render;
 pub mod riders;
@@ -1187,6 +1191,8 @@ pub struct Mob {
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
+    /// The packs' random texture variants it wears (`random_textures::choose`).
+    pub random_textures: random_textures::Choice,
 }
 /// A mannequin's `description` and `hide_description` (`Mannequin.updateDescription`):
 /// the default `entity.minecraft.mannequin.label`, none at all, or a component.
@@ -1393,6 +1399,16 @@ pub enum MobEvent {
     ElderCurse {
         at: [f64; 3],
     },
+    /// `Entity.setDeltaMovement`: replace a target's velocity.
+    SetVelocity {
+        target: Who,
+        velocity: [f64; 3],
+    },
+    /// `Entity.remove(RemovalReason.KILLED)` of a mob that is no longer alive: it vanishes at once,
+    /// with no death animation (`ShootTongue.eatEntity`).
+    RemoveKilled {
+        target: u32,
+    },
     /// `Entity.push`: add to a target's velocity.
     Push {
         target: Who,
@@ -1479,12 +1495,14 @@ pub enum MobEvent {
     StabDismount {
         target: Who,
     },
-    /// `LivingEntity.knockback(power, x, z)`: pushed away from the direction.
+    /// `LivingEntity.knockback(power, x, z, source)`: pushed away from the
+    /// direction.
     Knockback {
         target: Who,
         power: f64,
         x: f64,
         z: f64,
+        source: Damage,
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
@@ -1632,6 +1650,12 @@ pub enum MobEvent {
         kind: &'static str,
         at: [f64; 3],
         velocity: [f64; 3],
+    },
+    /// One `minecraft:entity_effect` particle at `at` in the colour `color`
+    /// (`ColorParticleOption.create(ENTITY_EFFECT, r, g, b)`), standing still.
+    ParticleColored {
+        at: [f64; 3],
+        color: [f32; 3],
     },
     Experience {
         at: [f64; 3],
@@ -2337,6 +2361,8 @@ pub struct MobWorld<'a> {
     pub thundering: bool,
     pub nether: bool,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
+    /// Each block's `fallOn` rule (the player's landing registry).
+    pub landing: &'a horizon_world::block_landing::BlockLandingRegistry,
     pub biomes: &'a crate::biome::Biomes,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,
@@ -2459,6 +2485,7 @@ impl Mob {
             slim: false,
             cape: None,
             profile: None,
+            random_textures: Default::default(),
             attrs: Attrs {
                 speed: kind.speed,
                 attack_damage: kind.attack_damage,
@@ -2784,7 +2811,7 @@ impl Mob {
                     (f[0] - self.position.x, f[2] - self.position.z)
                 }),
             };
-            self.knockback(f64::from(0.4f32), dx, dz);
+            self.knockback(f64::from(0.4f32), dx, dz, &source);
         }
         ai::after_hurt(self, &source);
         if self.health <= 0.0 {
@@ -2894,13 +2921,29 @@ impl Mob {
             }
         }
     }
-    /// LivingEntity.knockback(power, xd, zd) towards the negative direction.
-    /// `Creaking.knockback`: a creaking that cannot move is not shoved.
-    pub fn knockback(&mut self, power: f64, mut xd: f64, mut zd: f64) {
+    /// LivingEntity.knockback(power, xd, zd, source) towards the negative
+    /// direction. `Creaking.knockback`: a creaking that cannot move is not
+    /// shoved. The native knockback hook runs once the knockback resistance
+    /// took its share, before the motion changes and the draws of a random
+    /// direction.
+    pub fn knockback(&mut self, power: f64, xd: f64, zd: f64, source: &Damage) {
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
-        let power = power * (1.0 - self.attrs.knockback_resistance);
+        let mut knock = crate::health::Knock {
+            strength: power * (1.0 - self.attrs.knockback_resistance),
+            x: xd,
+            z: zd,
+        };
+        if crate::health::knockback_canceled(crate::health::Hurting::Mob(self, source), &mut knock)
+        {
+            return;
+        }
+        let crate::health::Knock {
+            strength: power,
+            x: mut xd,
+            z: mut zd,
+        } = knock;
         if power <= 0.0 {
             return;
         }

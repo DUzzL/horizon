@@ -62,10 +62,14 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, **env):
+    def __init__(self, players, split=True, saved_split=False, **env):
         self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
+        if saved_split:
+            (self.home / 'horizon-extras.txt').write_text('splitscreen:true\n')
         self.sockets = Path(tempfile.mkdtemp(prefix='hzse-'))  # short: Unix socket paths
         self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_SPLIT=str(players), **env)
+        if not split:
+            self.env.pop("HORIZON_SPLIT", None)
         try:
             self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative',
                      '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
@@ -172,6 +176,12 @@ def scenario_alone():
         w, h = g.size(1)
         check('P1 has its whole window', (w, h), (2 * WIDTH, 2 * HEIGHT) if w > WIDTH else (WIDTH, HEIGHT))
         check('P1 plays', g.ctl(1, 'state').get('player') is not None, True)
+        g.ctl(1, 'options', 'horizon')
+        labels = lambda: [w['label'] for w in g.ctl(1, 'ui')['widgets']]
+        g.wait(lambda: 'Splitscreen...' in labels(), 'Horizon Settings')
+        g.ctl(1, 'click-button', 'Splitscreen...')
+        g.wait(lambda: any(s.startswith('Splitscreen: ') for s in labels()), 'saved switch')
+        check('testing override leaves the saved switch off', 'Splitscreen: Off' in labels(), True)
     finally:
         g.quit()
 
@@ -191,11 +201,172 @@ def scenario_windows():
         g.quit()
 
 
+def scenario_picker():
+    print('picker: a joining player makes a profile and plays as it')
+    g = Game(2, HORIZON_SPLIT_PICK='1')
+    try:
+        def picking():
+            return (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles'
+        g.wait(picking, 'the picker')
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Sam')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Sam in the world')
+        check('Sam has its profile folder', (g.home / 'splitscreen/profiles/Sam/options.txt').exists(), True)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'Sam gone', seconds=15)
+    finally:
+        g.quit()
+
+
+def scenario_cancel():
+    print('cancel: a joining player cancels its pick and leaves; P1 gets its window back')
+    g = Game(2, HORIZON_SPLIT_PICK='1')
+    try:
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               'the picker')
+        w, h = g.size(1)
+        g.ctl(2, 'click-button', 'Cancel')
+        g.wait(lambda: not g.alive(2), 'P2 gone after Cancel', seconds=15)
+        check('P1 alone: its whole window again', g.settle([1], [(2 * w, h)]), [(2 * w, h)])
+    finally:
+        g.quit()
+
+
+def scenario_switch():
+    print('switch: pause menu changes profile, Cancel keeps it, saved progress survives')
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        half = g.size(2)
+
+        def settings():
+            g.ctl(2, 'key', 'esc', 'tap')
+            g.wait(lambda: any(w['label'] == 'Splitscreen Settings'
+                              for w in g.ctl(2, 'ui')['widgets']), 'pause settings row')
+            g.ctl(2, 'click-button', 'Splitscreen Settings')
+            g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')
+                   == 'splitscreen-profiles', 'profile settings')
+
+        settings()
+        check('current test profile appears even without a stored folder',
+              'P2' in g.ctl(2, 'state')['menu']['profiles'], True)
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Alex')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Alex playing')
+        g.ctl(2, 'command', 'experience set @s 7 levels')
+        g.wait(lambda: g.ctl(2, 'state')['player']['xp']['level'] == 7, 'Alex experience')
+        settings()
+        g.ctl(2, 'click-button', 'Cancel')
+        check('Cancel keeps the current player', g.ctl(2, 'state')['player']['xp']['level'], 7)
+        # Cancel returns to the pause menu; resume before opening it again.
+        g.ctl(2, 'key', 'esc', 'tap')
+        settings()
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Sam')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None
+               and g.ctl(2, 'state')['player']['xp']['level'] == 0, 'Sam playing')
+        check('switch keeps the view', g.size(2), half)
+        settings()
+        check('old profile is free', 'Alex' not in g.ctl(2, 'state')['menu']['taken'], True)
+        g.ctl(2, 'click-button', 'Alex')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None
+               and g.ctl(2, 'state')['player']['xp']['level'] == 7, 'Alex saved experience restored')
+        check('switching back restores its progress', g.ctl(2, 'state')['player']['xp']['level'], 7)
+    finally:
+        g.quit()
+
+
+def scenario_bumpers():
+    print('bumpers: reorder views, move into a new window, return and join there')
+    g = Game(2, HORIZON_SPLIT_PICK='1')
+    try:
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')
+               == 'splitscreen-profiles', 'the picker')
+        half = g.size(1)
+        whole = (2 * half[0], half[1])
+        # From second place to first, then second again: neither opens a new window.
+        g.ctl(2, 'pad', 'lb', 'tap')
+        time.sleep(0.5)
+        g.ctl(2, 'pad', 'rb', 'tap')
+        time.sleep(0.5)
+        check('LB then RB keeps both views in Window 1', g.sizes([1, 2]), [half, half])
+        g.ctl(2, 'pad', 'rb', 'tap')
+        check('next RB opens Window 2', g.settle([1], [whole]), [whole])
+        own = g.size(2)
+        g.ctl(2, 'pad', 'lb', 'tap')
+        check('LB returns beside P1', g.settle([1, 2], [half, half]), [half, half])
+        g.ctl(2, 'pad', 'rb', 'tap')
+        g.settle([1, 2], [whole, own])
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Ann')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann playing')
+        check('Ann joins in the chosen window', g.settle([1, 2], [whole, own]), [whole, own])
+    finally:
+        g.quit()
+
+
+def scenario_toggle():
+    print('toggle: default off, saved switch, joined guard, solo rendering after leaving')
+    def labels(g):
+        return [w['label'] for w in g.ctl(1, 'ui')['widgets']]
+    def page(g):
+        g.ctl(1, 'options', 'horizon')
+        g.wait(lambda: 'Splitscreen...' in labels(g), 'Horizon Settings')
+        g.ctl(1, 'click-button', 'Splitscreen...')
+        g.wait(lambda: any(s.startswith('Splitscreen: ') for s in labels(g)), 'switch')
+    g = Game(1, split=False)
+    try:
+        whole = g.size(1)
+        page(g)
+        check('default off without the testing variable', 'Splitscreen: Off' in labels(g), True)
+        g.ctl(1, 'click-button', 'Splitscreen: Off')
+        g.wait(lambda: 'Splitscreen: On' in labels(g), 'enabled')
+        # Close all options pages to persist, then return.
+        for _ in range(3):
+            g.ctl(1, 'key', 'esc', 'tap')
+        check('saved enabled', 'splitscreen:true' in (g.home / 'horizon-extras.txt').read_text(), True)
+        page(g)
+        g.ctl(1, 'click-button', 'Splitscreen: On')
+        for _ in range(3):
+            g.ctl(1, 'key', 'esc', 'tap')
+        check('saved disabled', 'splitscreen:false' in (g.home / 'horizon-extras.txt').read_text(), True)
+        check('solo keeps its full view', g.size(1), whole)
+    finally:
+        g.quit()
+    g = Game(2, saved_split=True)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        half = g.size(1)
+        page(g)
+        switches = [w for w in g.ctl(1, 'ui')['widgets'] if w['label'] == 'Splitscreen: On']
+        check('joined: switch disabled', [w['enabled'] for w in switches], [False])
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'P2 gone')
+        g.wait(lambda: any(w['label'] == 'Splitscreen: On' and w['enabled']
+                          for w in g.ctl(1, 'ui')['widgets']), 'switch available alone')
+        g.ctl(1, 'click-button', 'Splitscreen: On')
+        check('off: full window restored', g.settle([1], [(2 * half[0], half[1])]),
+              [(2 * half[0], half[1])])
+        g.ctl(1, 'click-button', 'Splitscreen: Off')
+        check('on alone: full window stays', g.size(1), (2 * half[0], half[1]))
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
     'four': scenario_four,
     'windows': scenario_windows,
+    'picker': scenario_picker,
+    'cancel': scenario_cancel,
+    'switch': scenario_switch,
+    'bumpers': scenario_bumpers,
+    'toggle': scenario_toggle,
 }
 
 

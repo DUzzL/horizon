@@ -316,6 +316,14 @@
   "needed by another pack": "requis par un autre pack",
   "Older →": "Plus anciennes →",
   "Saved: nothing runs around the game.": "Enregistré : rien ne s'exécute autour du jeu.",
+  "Maximum memory": "Mémoire maximale",
+  "No limit": "Aucune limite",
+  "limited to {mb} MB": "limité à {mb} Mo",
+  "Saved: the next Play uses at most {mb} MB.": "Enregistré : le prochain lancement utilise au plus {mb} Mo.",
+  "Saved: no memory limit on the next Play.": "Enregistré : aucune limite de mémoire au prochain lancement.",
+  "Type a number of MB like 4096, or 4gb, or leave it empty for no limit.": "Saisissez un nombre de Mo comme 4096, ou 4gb, ou laissez vide pour aucune limite.",
+  "The game stays under this. Very low values make it slower, and it crashes only if it can't run at all. Change it while playing with /ramlimit.": "Le jeu reste en dessous de cette valeur. Une valeur très basse le ralentit, et il ne plante que s'il ne peut plus du tout fonctionner. Modifiez-la en jeu avec /ramlimit.",
+  "How much memory Java may use (-Xmx). Set it too low and the game can crash.": "La mémoire que Java peut utiliser (-Xmx). Une valeur trop basse peut faire planter le jeu.",
   "Could not run {program}: {error}": "Could not run {program}: {error}",
   "Restart": "Redémarrer",
   "Copied to the clipboard.": "Copié dans le presse-papiers.",
@@ -651,5 +659,7 @@
   "Could not read the saved sign-in.": "Impossible de lire la connexion enregistrée.",
   "Could not save the renewed sign-in.": "Impossible d'enregistrer la connexion renouvelée.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Impossible d'enregistrer la connexion renouvelée dans le trousseau. Déverrouillez-le et réessayez.",
-  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant."
+  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant.",
+  "Built on {base}": "Compilé sur {base}",
+  "Native mod builds": "Builds avec mods natifs"
 }

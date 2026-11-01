@@ -32,7 +32,36 @@ use horizon_protocol::{
     text::literal,
 };
 use horizon_world::entity_move::EntityMoveWorld;
+use std::collections::HashMap;
 use winit::keyboard::KeyCode;
+
+/// Sets the viewer counts `known` holds for `dim` to `now` and returns the
+/// changes as `(pos, previous, viewers)`, in position order. A container that
+/// is no longer counted goes to 0 and leaves `known`.
+pub(super) fn viewer_changes(
+    known: &mut HashMap<(&'static str, (i32, i32, i32)), u32>,
+    dim: &'static str,
+    mut now: HashMap<(i32, i32, i32), u32>,
+) -> Vec<((i32, i32, i32), u32, u32)> {
+    let mut changes = Vec::new();
+    known.retain(|&(d, pos), previous| {
+        if d != dim {
+            return true;
+        }
+        let viewers = now.remove(&pos).unwrap_or(0);
+        if viewers != *previous {
+            changes.push((pos, *previous, viewers));
+            *previous = viewers;
+        }
+        viewers > 0
+    });
+    for (pos, viewers) in now {
+        known.insert((dim, pos), viewers);
+        changes.push((pos, 0, viewers));
+    }
+    changes.sort_unstable();
+    changes
+}
 
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
@@ -297,6 +326,9 @@ impl Game<'_> {
         f: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
         let swap = self.enter_guest(host, conn)?;
+        super::dedicated::crash_fixture("guest", || {
+            host.hub.guests.iter().any(|g| g.conn == conn && g.placed)
+        });
         let dimension =
             (self.serving.is_some() || self.options.dedicated.is_some()).then_some(self.dim.id());
         let result = horizon_client::block_contact::in_level(dimension, || f(self));
@@ -1363,6 +1395,27 @@ impl Game<'_> {
         }
     }
 
+    /// `ContainerOpenersCounter` for the mod containers of the level in place:
+    /// the players with each one open, recounted from their menus, so a
+    /// change is heard whichever way a player left (`native_mod_container_viewers`).
+    fn tick_mod_container_viewers(&mut self, host: &LanHost) {
+        let mut now: HashMap<(i32, i32, i32), u32> = HashMap::new();
+        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+            // `BarrelBlockEntity.startOpen`: a spectator does not open it.
+            if !g.spectator()
+                && let Some(m) = &g.menu
+                && let Slots::Block(pos) = m.slots
+                && self.mod_menu_at(pos).is_some()
+            {
+                *now.entry(pos).or_default() += 1;
+            }
+        }
+        let dim = self.dim.id();
+        for (pos, previous, viewers) in viewer_changes(&mut self.mod_container_viewers, dim, now) {
+            self.native_mod_container_viewers(dim, [pos.0, pos.1, pos.2], viewers, previous);
+        }
+    }
+
     /// `stillValid` of the guest's open container: its blocks are still there
     /// and in reach, or its vehicle exists and is in reach. True with none open.
     fn container_menu_valid(&self, g: &horizon_client::lan::guest::Guest) -> bool {
@@ -1869,6 +1922,23 @@ impl Game<'_> {
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
+                // SpawnEggItem.use calls ServerLevel.mayInteract at its own
+                // fluid ray's position, unlike useOn's packet-supplied block.
+                let held = if hand == Hand::Off {
+                    g.offhand.as_ref()
+                } else {
+                    g.inventory.get(g.selected).and_then(Option::as_ref)
+                };
+                if held.is_some_and(|s| s.item.ends_with("_spawn_egg")) {
+                    let hit = self
+                        .as_guest(host, conn, |g| {
+                            g.with_hand(hand, |g| g.spawn_egg_fluid_hit())
+                        })
+                        .flatten();
+                    if hit.is_some_and(|h| self.under_spawn_protection(host, gi, h.pos)) {
+                        return;
+                    }
+                }
                 let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                 let used = self.as_guest(host, conn, |g| {
                     // A horn's sound, inline instruments included.
@@ -2095,6 +2165,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
+                self.guest_far_terrain(host, conn, &p.data)
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
@@ -3215,6 +3288,11 @@ impl Game<'_> {
             }
             host.hub.teleport(i, Some(at));
         }
+        // PlayerRespawnEvent, at the end of PlayerList.respawn: the player is
+        // placed, in their respawn level, with their state swapped in so the
+        // helpers reach them (as for native_perform_command).
+        let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
         if away && let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
@@ -3227,6 +3305,7 @@ impl Game<'_> {
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
         self.lan_containers_tick(host);
+        self.tick_mod_container_viewers(host);
         self.tick_lan_mount_menus(host);
         self.announce_guest_advancements(host);
         let conns: Vec<u32> = host
@@ -4017,15 +4096,8 @@ impl Game<'_> {
             if next % 10 != 0 {
                 return;
             }
-            if (next / 10) % 2 == 0
-                && !creative
-                && let Some(stack) = game.armor[1].clone()
-            {
-                // `ItemStack.hurtAndBreak`: Unbreaking can save the wear.
-                let loss = game.wear(&stack, 1);
-                if let Some(elytra) = game.armor[1].as_mut() {
-                    elytra.damage += loss;
-                }
+            if (next / 10) % 2 == 0 && !creative {
+                game.wear_glider(1);
             }
             let ctx = game.player_context(None);
             game.post_game_event("minecraft:elytra_glide", at, ctx);
