@@ -202,6 +202,11 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - mounts:    the host and the guest each open a tamed horse's, donkey's and llama's inventory
              (shift + right click, then the inventory key while riding), put on a saddle, armour
              or a carpet and fill the chest by shift-clicking.
+- mount_other_level: with a Nether chunk force-loaded (a second level ticking), the host's and the
+             guest's horse, camel, llama, trader llama, nautilus, donkey and mule inventories stay
+             open, opened by shift + right click, by the inventory key while riding and again after
+             getting off; also with an End chunk force-loaded, and with the player and its horse in
+             the Nether while the other player keeps the Overworld ticking (#5331).
 - riding:    the host and the guest each saddle and ride a horse (walk, jump), a pig and a strider
              (with their sticks), a camel and a donkey, sit on a llama and fly a happy ghast, and
              get off by sneaking; the other side sees the animal move.
@@ -1549,6 +1554,30 @@ def check_deaths(host, guest, out):
             guest.wait(10)
         said['thorns'] = host.raw('messages', 10)['chat']
         host.shot(out, 'deaths-thorns')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        ready()
+        gx, gy, gz = pos_of(guest)
+        host('command', command=f'tp @s {gx - 4:.2f} {gy:.2f} {gz:.2f}')
+        bx, by, bz = int(gx) - 1, int(gy), int(gz)
+        host('command', command=f'setblock {bx} {by} {bz} minecraft:tnt')
+        host.raw('look-at', f'{bx + 0.5:.2f}', f'{by + 0.5:.2f}', f'{bz + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        guest.wait(100)
+        said['tnt'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-tnt')
+        ready()
+        hx, hy, hz = pos_of(host)
+        host('command', command='effect give @s minecraft:resistance 10 5')
+        host('command', command=f'summon minecraft:pig {hx + 3:.2f} {hy:.2f} {hz:.2f} {{NoAI:1b}}')
+        host('command', command=f'setblock {int(hx) + 2} {int(hy)} {int(hz)} minecraft:tnt')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        host.raw('look-at', f'{int(hx) + 2.5:.2f}', f'{int(hy) + 0.5:.2f}', f'{int(hz) + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        host.wait(100)
+        said['blast_pig'] = host.raw('entities', 6, 'pig')['entities']
+        host.shot(out, 'deaths-blast-pig')
     finally:
         host('command', command='gamerule natural_health_regeneration true')
         for g in (host, guest):
@@ -1560,9 +1589,11 @@ def check_deaths(host, guest, out):
             'host_death_behind_guest': f'{name} was slain by {GUEST_NAME}',
             'arrow': f'{GUEST_NAME} was shot by {name}',
             'arrow_behind_guest': f'{name} was shot by {GUEST_NAME}',
-            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}'}
+            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}',
+            'tnt': f'{GUEST_NAME} was blown up by {name}'}
     for case, line in want.items():
         assert line in said[case], f'no "{line}" in the {case} chat: {said[case]}'
+    assert not said['blast_pig'], f'the blast left the pig standing: {said["blast_pig"]}'
     for case, lines in said.items():
         assert not any('%1$s' in line or '%2$s' in line for line in lines), \
             f'a raw template in the {case} chat: {lines}'
@@ -4211,6 +4242,8 @@ def check_objects(host, guest, out):
         f'summon minecraft:armor_stand {x - 2.5} {y} {z - 2.5} {{Rotation:[90f,0f]}}',
         f'summon minecraft:armor_stand {x - 4.5} {y} {z - 2.5} {{ShowArms:1b,Small:1b,NoBasePlate:1b,'
         'equipment:{head:{id:"minecraft:diamond_helmet",count:1}}}',
+        # Falls to the floor: the guest's copy has to follow the server's moves.
+        f'summon minecraft:armor_stand {x + 2.5} {y + 3} {z - 2.5} {{Rotation:[200f,0f]}}',
         f'summon minecraft:item_frame {x - 3.5} {y + 1} {z - 4.97} {{block_pos:[I;{x - 4},{y + 1},{z - 5}],Facing:3b,'
         'Item:{id:"minecraft:diamond",count:1},ItemRotation:3b}',
         f'summon minecraft:glow_item_frame {x - 1.5} {y + 1} {z - 4.97} {{block_pos:[I;{x - 2},{y + 1},{z - 5}],Facing:3b}}',
@@ -10605,6 +10638,223 @@ CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
 
 
+def check_trident_pickup(host, guest, out):
+    """#5577: a thrown trident a player picks up (AbstractArrow.playerTouch, then Player.take) flies
+    into them on every client as an ItemPickupParticle, like an arrow, instead of vanishing. A
+    server's client keeps tridents apart from the other projectiles."""
+    face_each_other(host, guest)
+    seen = {}
+    try:
+        for game in (host, guest):
+            game('command', command='gamemode survival')
+            game('command', command='clear @s')
+            game('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+            # Straight down: it sticks at the player's feet, inside their pickup box.
+            game('command', command='tp @s ~ ~ ~ ~ 90')
+            game.wait(5)
+            before = {g.name: g('status')['pickups'].get('trident', 0) for g in (host, guest)}
+            game.raw('use-item', '--hold', 1.2)
+            game.wait(40)
+            game.shot(out, 'trident-pickup')
+            seen[game.name] = {'flown': {g.name: g('status')['pickups'].get('trident', 0) - before[g.name]
+                                         for g in (host, guest)},
+                               'tridents': game('inventory')['counts'].get('minecraft:trident', 0)}
+    finally:
+        for game in (host, guest):
+            game.raw('mouse', 'right', 'up')
+            game('command', command='clear @s')
+        host('command', command='kill @e[type=minecraft:trident]')
+        face_each_other(host, guest)
+    for name, case in seen.items():
+        assert case['tridents'] == 1, f'{name} did not pick the trident up: {seen}'
+        if SERVER_THREAD:
+            assert all(n == 1 for n in case['flown'].values()), f"{name}'s trident did not fly to them: {seen}"
+    return seen
+
+
+CHECKS += ['trident_pickup']
+CHECK_FNS['trident_pickup'] = check_trident_pickup
+
+
+# Mounts for mount_other_level: (kind, summon NBT, blocks in front of the player). A camel is
+# always tame (Camel.isTamed); the equines need Tame:1b, and a nautilus an Owner, the player's
+# offline UUID (TamableAnimal.readAdditionalSaveData tames it). A donkey, mule and llama get a
+# chest for their extra slots; a camel is 1.7 wide and long, so it stands a little further off.
+OTHER_LEVEL_MOUNTS = [
+    ('horse', '{Tame:1b,NoAI:1b}', 2.5),
+    ('camel', '{NoAI:1b}', 3.0),
+    ('llama', '{Tame:1b,NoAI:1b,ChestedHorse:1b,Strength:3}', 2.5),
+    ('trader_llama', '{Tame:1b,NoAI:1b,ChestedHorse:1b,Strength:3}', 2.5),
+    ('nautilus', '{Owner:[I;OWNER],NoAI:1b}', 2.5),
+    ('donkey', '{Tame:1b,NoAI:1b,ChestedHorse:1b}', 2.5),
+    ('mule', '{Tame:1b,NoAI:1b,ChestedHorse:1b}', 2.5),
+]
+HEIGHTS.update({'nautilus': 0.95, 'mule': 1.6, 'trader_llama': 1.87})
+# The second level the server ticks while the players stand in the Overworld: a chunk force-loaded
+# there.
+OTHER_LEVELS = ['minecraft:the_nether', 'minecraft:the_end']
+
+
+def check_mount_other_level(host, guest, out):
+    """#5331: ServerPlayer.tick checks the open menu's stillValid in the player's own level. With a
+    chunk force-loaded in the Nether, or in the End, the server ticks a second level that has none
+    of the Overworld's mobs; the inventory of a tamed horse, camel, llama, trader llama, nautilus,
+    donkey and mule, opened with shift + right click or with the inventory key while riding, and
+    again by shift + right click after getting off, must stay open through those ticks instead of
+    closing at once. The other way round too (in_nether, --server-thread): the player and the mount
+    in the Nether while the other player keeps the Overworld ticking. Each case is reported on its
+    own (LAN_E2E_MOUNTS=camel,llama picks mounts, LAN_E2E_LEVELS=the_end,in_nether cases).
+
+    By default only the horse and the camel, with the Nether force-loaded, plus in_nether: the
+    whole matrix takes about 10 minutes, past what the nightly LAN suite has left of its timeout.
+    LAN_E2E_MOUNTS=all and LAN_E2E_LEVELS=all run all of it."""
+    spots = apart(host, guest)
+    result = {}
+    failures = []
+
+    def env_list(name, default):
+        given = [k for k in os.environ.get(name, '').split(',') if k]
+        return [] if given == ['all'] else given or default
+
+    # An empty list means every one.
+    only = env_list('LAN_E2E_MOUNTS', ['horse', 'camel'])
+    picked = env_list('LAN_E2E_LEVELS', ['the_nether', 'in_nether'])
+    mounts = [m for m in OTHER_LEVEL_MOUNTS if not only or m[0] in only]
+
+    def try_mount(where, label, player, spot, kind, nbt, ahead, into):
+        """Summon `kind` in front of `spot` and open its inventory the three ways, each reported in
+        `into[kind]` and, when it fails, in `failures`."""
+        x, y, z = spot
+        who = f'{where} {label} {kind}'
+        opened = into[kind] = {}
+        try:
+            player('command', command='gamemode survival')
+            player('command', command='clear @s')
+            owner = offline_uuid_ints(host.player if label == 'host' else GUEST_NAME)
+            player('command', command=f'summon minecraft:{kind} {x + 0.5} {y} {z + ahead} '
+                                     f'{nbt.replace("OWNER", owner)}')
+            player.wait(5)
+            mob = next((m for m in player.raw('mobs', 16).get('near', [])
+                        if m['kind'] == f'minecraft:{kind}' and m['health'] > 0), None)
+            assert mob, f'the {label} sees no {kind}'
+            p = mob['pos']
+            aim = (f'{p[0]:.2f}', f'{p[1] + HEIGHTS[kind] / 2:.2f}', f'{p[2]:.2f}')
+
+            def shift_click():
+                player.raw('look-at', *aim)
+                player.raw('key', 'shift', 'down')
+                player.wait(3)
+                player.raw('mouse', 'right', 'click')
+                player.wait(2)
+                player.raw('key', 'shift', 'up')
+
+            def stays_open(how, what):
+                # The screen opens and is still open 20 ticks later; each way is reported on its
+                # own, so one that fails doesn't hide the others.
+                if mount_screen(player) is None:
+                    opened[how] = False
+                    failures.append(f'{who}: {what} opened no {kind} inventory')
+                    return
+                player.wait(20)
+                opened[how] = mount_screen(player, ticks=2) is not None
+                if not opened[how]:
+                    failures.append(f'{who}: the {kind} inventory ({what}) closed by itself')
+                back_to_game(player)
+                player.wait(5)
+
+            shift_click()
+            stays_open('use', 'shift + right click')
+            player.raw('look-at', *aim)
+            player.raw('mouse', 'right', 'click')
+            player.wait(8)
+            riding = player('status').get('riding')
+            if riding == mob['id']:
+                player.raw('key', 'e', 'tap')
+                stays_open('key', 'the inventory key')
+                hold(player, 'shift', 10)
+                player.wait(10)
+                if player('status').get('riding') is not None:
+                    failures.append(f'{who}: did not get off the {kind}')
+            else:
+                failures.append(f'{who}: right-clicked the {kind}: riding {riding}')
+            # Off the mount and open again.
+            shift_click()
+            stays_open('reopen', 'shift + right click after getting off')
+        except AssertionError as error:
+            failures.append(f'{who}: {error}')
+        finally:
+            back_to_game(player)
+            player('command', command=f'kill @e[type=minecraft:{kind},x={x},y={y},z={z},distance=..16]')
+            player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 0')
+            # A killed mob lies there for 20 ticks (LivingEntity.tickDeath): the next mount's
+            # clicks, at the same spot, must not land on it.
+            for _ in range(15):
+                player.wait(2)
+                if not any(m['kind'] == f'minecraft:{kind}' for m in player.raw('mobs', 16).get('near', [])):
+                    break
+
+    for level in OTHER_LEVELS:
+        if picked and level.removeprefix('minecraft:') not in picked:
+            continue
+        result[level] = {}
+        host('command', command=f'execute in {level} run forceload add 0 0')
+        try:
+            host.wait(10)
+            for label, player in (('host', host), ('guest', guest)):
+                result[level][label] = {}
+                for kind, nbt, ahead in mounts:
+                    try_mount(level, label, player, spots[label], kind, nbt, ahead, result[level][label])
+        finally:
+            host('command', command=f'execute in {level} run forceload remove 0 0')
+    # The player and the mount in the Nether, the other player keeping the Overworld ticking: the
+    # Overworld's pass must leave the menu alone. One mount is enough: every mount's menu takes the
+    # same check.
+    if picked and 'in_nether' not in picked:
+        pass
+    elif not SERVER_THREAD:
+        result['in_nether'] = 'skipped (needs --server-thread)'
+    else:
+        result['in_nether'] = {}
+        for label, player, spot in (('host', host, (0, 100, 0)), ('guest', guest, (12, 100, 0))):
+            x, y, z = spot
+            box = f'{x - 3} {y - 1} {z - 3} {x + 4} {y + 3} {z + 6}'
+            result['in_nether'][label] = {}
+            try:
+                # The Nether's mobs, fire and the fall into whatever is below until the platform
+                # stands can't get in the way.
+                player('command', command='gamemode creative')
+                player('command', command='effect give @s minecraft:resistance 120 4 true')
+                player('command', command='effect give @s minecraft:fire_resistance 120 0 true')
+                player('command', command=f'execute in minecraft:the_nether run tp @s {x + 0.5} {y} {z + 0.5} 0 0')
+                state = wait_dimension(player, 'minecraft:the_nether', 600)
+                if state.get('dimension') != 'minecraft:the_nether':
+                    failures.append(f'in_nether {label}: still in {state.get("dimension")}')
+                    continue
+                player('command', command=f'fill {box} minecraft:air')
+                player('command', command=f'fill {x - 3} {y - 1} {z - 3} {x + 4} {y - 1} {z + 6} minecraft:obsidian')
+                player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 0')
+                player.wait(20)
+                at = pos_of(player)
+                if abs(at[1] - y) > 0.1:
+                    failures.append(f'in_nether {label}: not on the platform at {y}: {at}')
+                    continue
+                for kind, nbt, ahead in mounts[:1]:
+                    try_mount('in_nether', label, player, spot, kind, nbt, ahead, result['in_nether'][label])
+            finally:
+                back_to_game(player)
+                host('command', command=f'execute in minecraft:the_nether run fill {box} minecraft:air')
+                player('command', command='effect clear @s')
+                bx, by, bz = spots[label]
+                player('command', command=f'execute in minecraft:overworld run tp @s {bx + 0.5} {by} {bz + 0.5} 0 0')
+                wait_dimension(player, 'minecraft:overworld', 600)
+                player.wait(10)
+    assert not failures, f'{failures}: {result}'
+    return result
+
+
+CHECKS += ['mount_other_level']
+CHECK_FNS['mount_other_level'] = check_mount_other_level
+
 def check_cushion_break_seated(host, guest, out):
     """#4571: breaking the cushion one sits on (Entity.setRemoved) puts the rider on the floor it
     sat on (LivingEntity.dismountVehicle from a removed vehicle), not a block below it."""
@@ -10642,6 +10892,51 @@ def check_cushion_break_seated(host, guest, out):
 
 CHECKS += ['cushion_break_seated']
 CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
+
+
+def check_attack_over_slab(host, guest, out):
+    """#5772: a mob whose centre a block hides from the eyes, but whose head shows over it, takes the
+    hit the crosshair aims at its head. The attack packet names only the entity, so the server aims
+    the swapped-in player itself; it aimed at the centre and dropped the hit (#5903). A bottom slab at
+    eye height between the player and a zombie hides the zombie's centre, not its head."""
+    x, y, z = map(math.floor, pos_of(host))
+    tag = 'attack_over_slab'
+    target = [x + 2.5, y, z + 0.5]
+    seen = {}
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 5} {y - 1} {z + 3} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 5} {y + 4} {z + 3} minecraft:air')
+    host('command', command=f'setblock {x + 1} {y + 1} {z} minecraft:stone_slab[type=bottom]')
+    try:
+        for label, player, other in (('host', host, guest), ('guest', guest, host)):
+            player('command', command='gamemode survival')
+            player('command', command='clear @s')
+            player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+            other('command', command=f'tp @s {x + 0.5} {y} {z + 3.5}')
+            host('command', command=f'summon minecraft:zombie {target[0]} {y} {target[2]} '
+                 f'{{NoAI:1b,PersistenceRequired:1b,Tags:["{tag}"]}}')
+            player.wait(20)  # full attack charge and the zombie paired
+            mob = next(m for m in player.raw('mobs', 16)['near']
+                       if m['kind'] == 'minecraft:zombie' and math.dist(m['pos'], target) < 0.1)
+            before = mob_seen(player, mob['id'])['health']
+            # The head, over the slab: the crosshair hits the zombie, not the slab.
+            player.raw('look-at', target[0], y + 1.8, target[2])
+            player.wait(2)
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            after = mob_seen(player, mob['id'])['health']
+            player.shot(out, f'attack-over-slab-{label}')
+            seen[label] = {'health': [before, after]}
+            host('command', command=f'kill @e[tag={tag}]')
+            player.wait(5)
+            assert after < before, f'{label}: the hit over the slab did no damage: {seen}'
+        return seen
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+        host('command', command=f'setblock {x + 1} {y + 1} {z} minecraft:air')
+
+
+CHECKS += ['attack_over_slab']
+CHECK_FNS['attack_over_slab'] = check_attack_over_slab
 
 
 if __name__ == '__main__':

@@ -522,6 +522,10 @@ impl<'a> Game<'a> {
     /// then `tickSpawningChunk` in the shuffled spawning chunks of every
     /// player: inhabited time, then `spawnForChunk`.
     pub(super) fn spawn_natural(&mut self) {
+        // `tickChunks` does nothing in a Debug world.
+        if self.world_debug {
+            return;
+        }
         let players = self.level_players();
         if players.is_empty() {
             return;

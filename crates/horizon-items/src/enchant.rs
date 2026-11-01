@@ -272,9 +272,7 @@ impl Enchantments {
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
         let mut props = HashMap::new();
-        if let Ok(bytes) = fs::read(root.join("items.json"))
-            && let Ok(raw) = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
-        {
+        if let Ok(raw) = horizon_world::item_defaults::read(root) {
             for (id, c) in raw {
                 props.insert(
                     Arc::from(id.as_str()),

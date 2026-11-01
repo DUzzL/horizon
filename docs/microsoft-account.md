@@ -140,6 +140,59 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
 - Tokens never appear in logs, errors, `horizon-launcher` CLI output, MCP results or crash reports.
   Requests are logged by endpoint name only.
 
+## Account status and renewal
+
+Settings shows each account's current authentication status. “Ready for online play” means
+its saved access token is not near expiry and its last ownership check succeeded; service
+revocation can only be discovered by a later request. “Needs refresh” means its access token
+has an hour or less left. On launcher startup these due sessions are renewed in the background;
+Play also keeps its existing ownership and renewal checks. Fresh tokens are not renewed on a
+startup status check.
+
+**Refresh** explicitly renews an account even when its access token is fresh. Microsoft
+rejecting the refresh credential marks the account **Sign in again** until a successful browser
+sign-in replaces it. A network outage offers retry rather than discarding the account or
+claiming it requires a full login. Unreadable keychain data is never overwritten by refresh.
+If Microsoft rotates its refresh credential before Xbox/Minecraft fails, the rotated credential
+is still saved so another attempt can recover.
+
+`horizon-launcher account refresh NAME_OR_UUID` exposes the same operation (MCP:
+`account_refresh`). `account list --json` includes public authentication status and token
+expiry, never tokens. `account refresh --json` returns a status object, including when renewal
+needs attention; callers inspect `state` rather than treating transport success as an online
+session. Inspection, refresh and sign-out run off the window's drawing thread. Credential
+operations are serialized in-process and between launchers using the same launcher data folder.
+
+The reusable `account::session` API has no GPUI dependency. Keychain reads and browser sign-in
+remain owned by the launcher. A running game asks it for a renewed session through the CLI:
+the launcher passes its own path to the game as `HORIZON_LAUNCHER_EXE`, and
+`account session NAME_OR_UUID --json` renews that account and returns a new read-once session
+file (`{"session_file"}`), or the public status (`{"authentication"}`) when the account needs a
+browser sign-in or a retry. `account sign-in --for NAME_OR_UUID` is the targeted sign-in below,
+from the command line: it prints the link and code, refuses another Microsoft account, and
+leaves who plays unchanged. `account session` is not an MCP tool: its file holds a token, and
+only the game reads it. Renewing in the launcher does not change the token a running game
+already holds until the game asks.
+
+### Profile heads, progress, and targeted re-sign-in
+
+Microsoft accounts show their public Minecraft profile head in Settings, the selected-account
+chip, and the account switcher. Skins are fetched on workers and cached by their texture URL
+under `profile-heads/` in launcher data. Changing the skin invalidates that image; an unavailable
+image uses the UUID's default skin from installed resources, or a neutral placeholder when
+those resources are absent. The cache contains public images, never authentication tokens.
+
+Account operations report the actual stage: waiting for account access, reading the keychain,
+renewing the Microsoft sign-in, Xbox Live, getting a Minecraft session, checking ownership,
+loading the profile, and saving. A browser flow separately says it is waiting for the player.
+Progress is public metadata and does not expose credentials through the UI or MCP.
+
+**Sign in again** on an account row targets that exact Minecraft UUID. The browser instructions
+name the expected player. Signing in to a different account is rejected before storing its
+credentials or adding/selecting that identity. Retry keeps the same target; Cancel leaves the
+saved account alone. Successful re-sign-in restores that account without changing the player
+or offline name currently selected for Play. Adding a new account remains a separate action.
+
 ## Handing the session to the game
 
 Vanilla's launcher passes `--accessToken <token>` on the command line, where every user of the

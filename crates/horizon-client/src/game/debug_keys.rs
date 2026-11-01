@@ -976,8 +976,13 @@ impl Game<'_> {
                 (_, true) => ((0.25, 0.9875), 0.9875),
                 _ => ((0.5, 1.975), 1.7775),
             };
-            let p = a.position;
-            g.hitbox([p.x, p.y, p.z], size, eye, true, (0.0, a.yaw));
+            g.hitbox(
+                at(a.previous, a.position),
+                size,
+                eye,
+                true,
+                (0.0, a.render_yaw(alpha)),
+            );
         }
         for b in &self.boats {
             let h = super::boats::HEIGHT as f32;

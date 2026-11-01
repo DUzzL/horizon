@@ -663,11 +663,18 @@ fn effects_from_blocks(
     // Block.stepOn for the block under a mob on the ground (`getOnPosLegacy`):
     // MagmaBlock.stepOn's hot floor, 1 damage (a mob never sneaks).
     if m.on_ground && m.alive() {
-        let (x, y, z) = (
-            m.position.x.floor() as i32,
-            (m.position.y - f64::from(0.2_f32)).floor() as i32,
-            m.position.z.floor() as i32,
-        );
+        // 0.2 below the feet, or the supporting block when the centre is over
+        // its edge.
+        let [x, y, z] = m.block_on_legacy(w);
+        crate::block_contact::emit(crate::block_contact::Event::StepOn(
+            crate::block_contact::Contact {
+                entity: m.id as i32,
+                kind: &m.kind.id,
+                block: w.block_name(x, y, z),
+                state: w.world.block(x, y, z),
+                position: horizon_core::position::BlockPos::new(x, y, z),
+            },
+        ));
         if w.block_name(x, y, z) == "minecraft:magma_block" {
             m.damage(1.0, Damage::of(DamageKind::HotFloor));
         }
@@ -702,6 +709,16 @@ fn effects_from_blocks(
                     if visited.contains(&p) {
                         continue;
                     }
+                    crate::block_contact::emit(crate::block_contact::Event::Inside(
+                        crate::block_contact::Contact {
+                            entity: m.id as i32,
+                            kind: &m.kind.id,
+                            block: w.block_name(x, y, z),
+                            state: w.world.block(x, y, z),
+                            position: horizon_core::position::BlockPos::new(x, y, z),
+                        },
+                    ));
+                    visited.push(p);
                     match w.block_name(x, y, z) {
                         "minecraft:cactus" => {
                             m.damage(1.0, Damage::of(DamageKind::Cactus));
@@ -751,7 +768,6 @@ fn effects_from_blocks(
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
                     }
-                    visited.push(p);
                 }
             }
         }
@@ -1524,6 +1540,7 @@ fn server_ai_step(
         || m.species() == Species::HappyGhast && m.is_baby()
         || m.species() == Species::CopperGolem
         || m.species() == Species::Axolotl
+        || m.species() == Species::Tadpole
     {
         super::animal_brain::tick(m, w, level_random, events);
     }
@@ -1884,6 +1901,7 @@ pub fn takes_food(m: &Mob) -> bool {
 pub fn feed_animal(
     m: &mut Mob,
     level: &mut impl RandomSource,
+    love_cause: Option<[i32; 4]>,
 ) -> Option<Option<(&'static str, f32, f32)>> {
     // Armadillo.mobInteract: a ball takes no food.
     if super::armadillo::scared(m) {
@@ -1895,6 +1913,8 @@ pub fn feed_animal(
     if m.extra.age == 0 {
         m.extra.in_love = 600;
         m.extra.love_player = true;
+        // Animal.setInLove: the player who fed it, for a fox baby to trust.
+        m.extra.love_cause = love_cause;
     } else {
         // AgeableMob.ageUp(getSpeedUpSecondsWhenFeeding(-age), true): a tenth.
         let secs = ((-m.extra.age / 20) as f32 * 0.1) as i32;
@@ -2892,7 +2912,7 @@ mod feed_tests {
             m.extra.tame = true;
             m.extra.age = -24000;
             assert!(takes_food(&m), "{id}: a tamed baby takes its food");
-            assert!(feed_animal(&mut m, &mut level).is_some(), "{id}");
+            assert!(feed_animal(&mut m, &mut level, None).is_some(), "{id}");
             // getSpeedUpSecondsWhenFeeding(24000): a tenth of 1200 seconds.
             assert_eq!(m.extra.age, -24000 + 120 * 20, "{id}: grew a tenth");
             assert_eq!(m.extra.in_love, 0, "{id}: a baby does not fall in love");

@@ -303,15 +303,10 @@ impl Game<'_> {
                 b.yaw = yaw;
             }
             b.on_ground = on_ground;
-        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
-            if let Some(yaw) = yaw {
-                c.yaw = yaw;
-            }
-        } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
-            if let Some(yaw) = yaw {
-                a.yaw = yaw;
-            }
-            a.on_ground = on_ground;
+        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id)
+            && let Some(yaw) = yaw
+        {
+            c.yaw = yaw;
         }
     }
 

@@ -332,6 +332,14 @@ impl Game<'_> {
         self.pad.menu.synthetic = was;
     }
 
+    /// The event being handled is one the pad or the keyboard's focus made
+    /// up (`pad_synthetic_event`), not the window's. A controller's click or
+    /// a focused widget's is not the mouse, so the native mods' mouse hooks
+    /// skip it.
+    pub(super) fn pad_synthetic_input(&self) -> bool {
+        self.pad.menu.synthetic
+    }
+
     fn pad_click_at(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32), right: bool) {
         self.pad_pointer_to(event_loop, at);
         self.pad_pointer_button(event_loop, right, true);
@@ -1175,8 +1183,7 @@ impl Game<'_> {
 
     /// The real mouse, before the screen takes it: where it is, and a press
     /// or a scroll hands it the pointer back from the keyboard, at the
-    /// place the mouse left it (`setLastInputType(MOUSE)`). A left press
-    /// focuses what it lands on, for the next Tab or arrow.
+    /// place the mouse left it (`setLastInputType(MOUSE)`).
     pub(super) fn key_focus_mouse(&mut self, event_loop: &dyn EventLoopCtl, event: &WindowEvent) {
         if self.pad.menu.synthetic {
             return;
@@ -1187,24 +1194,35 @@ impl Game<'_> {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button,
                 ..
-            } => {
-                self.key_focus_to_mouse(event_loop);
-                if *button == MouseButton::Left && self.pad_in_menu() {
-                    let (cx, cy) = self.cursor;
-                    self.pad.menu.origin = self
-                        .key_targets()
-                        .into_iter()
-                        .find(|t| {
-                            let [x, y, w, h] = t.rect;
-                            cx >= x && cy >= y && cx < x + w && cy < y + h
-                        })
-                        .map(|t| t.rect);
-                }
-            }
+            } => self.key_focus_to_mouse(event_loop),
             WindowEvent::MouseWheel { .. } => self.key_focus_to_mouse(event_loop),
             _ => {}
+        }
+    }
+
+    /// Only a press accepted by ScreenEvent.Pre may focus the widget under it.
+    pub(super) fn key_focus_mouse_press(&mut self, event: &WindowEvent) {
+        if !self.pad.menu.synthetic
+            && self.pad_in_menu()
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            let (cx, cy) = self.cursor;
+            self.pad.menu.origin = self
+                .key_targets()
+                .into_iter()
+                .find(|t| {
+                    let [x, y, w, h] = t.rect;
+                    cx >= x && cy >= y && cx < x + w && cy < y + h
+                })
+                .map(|t| t.rect);
         }
     }
 

@@ -129,7 +129,29 @@ Sign in with a Microsoft account in your browser (device code). Play needs one t
 
     horizon-launcher account sign-in
 
+- `--for`: Sign this account (name or UUID) in again: another Microsoft account is refused and who plays stays the same
+
 MCP: `account_sign_in`.
+
+## `horizon-launcher account refresh`
+
+Renew an account's session now, even when its access token is still fresh.
+
+    horizon-launcher account refresh <WHO>
+
+- `WHO`
+
+MCP: `account_refresh`.
+
+## `horizon-launcher account session`
+
+Renew an account's session for a game already running: prints the read-once session file it hands over (`--json`: {"session_file"} or {"authentication"} when it can't).
+
+    horizon-launcher account session <WHO>
+
+- `WHO`
+
+MCP: none: the game's own session handoff.
 
 ## `horizon-launcher account sign-out`
 

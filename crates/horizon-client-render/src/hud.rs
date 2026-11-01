@@ -528,20 +528,33 @@ impl HudAtlas {
         for folder in folders {
             walk(&textures.join(folder), &mut files);
         }
-        // Content mods' equipment textures, which their equipment assets name as
-        // `<ns>:<path>`, and their mob effects' icons, `<ns>:mob_effect/<path>`.
+        // Content mods' entity textures: their equipment assets name them as
+        // `<ns>:<path>`, and native mods draw their block entities with them
+        // (`native_draw_quad`: `<ns>:entity/...`); and their mob effects'
+        // icons, `<ns>:mob_effect/<path>`.
         let namespaces = horizon_items::content_namespaces::namespaces(root);
-        for (folder, textures) in [("entity", "entity/equipment"), ("mob_effect", "mob_effect")] {
+        for folder in ["entity", "mob_effect"] {
             if folders.contains(&folder) {
                 for namespace in &namespaces {
                     walk(
-                        &root.join(format!("assets/{namespace}/textures/{textures}")),
+                        &root.join(format!("assets/{namespace}/textures/{folder}")),
                         &mut files,
                     );
                 }
             }
         }
         let assets = root.join("assets");
+        // A native mod's particle type names its textures `<ns>:particle/<path>`
+        // and needn't ship content, so every namespace's folder is packed.
+        if folders.contains(&"particle")
+            && let Ok(namespaces) = fs::read_dir(&assets)
+        {
+            for ns in namespaces.flatten() {
+                if ns.file_name() != "minecraft" {
+                    walk(&ns.path().join("textures/particle"), &mut files);
+                }
+            }
+        }
         // Content mods' GUI textures, for their screens: `<namespace>:gui/...`.
         if full && let Ok(namespaces) = fs::read_dir(&assets) {
             for ns in namespaces.flatten() {
@@ -565,6 +578,12 @@ impl HudAtlas {
                     format!("{namespace}:{rest}")
                 }
             };
+            // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
+            if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
+                && textures.join(format!("{base}.png")).is_file()
+            {
+                return None;
+            }
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
@@ -1604,6 +1623,9 @@ pub struct HudRenderer {
     atlas_view: wgpu::TextureView,
     /// The resource pack's text shader, when it has one that works.
     pack_text: Option<pack_text::PackText>,
+    /// Target pixels per window pixel: above 1 for a screenshot drawn larger than the
+    /// window (`Renderer::screenshot_quality`).
+    pub zoom: f32,
 }
 impl HudRenderer {
     pub fn new(
@@ -1833,6 +1855,7 @@ impl HudRenderer {
             format,
             atlas_view: view.clone(),
             pack_text: None,
+            zoom: 1.0,
         })
     }
     /// Draw the GUI's text with `shader` (`HudAtlas::text_shader`), or natively.
@@ -1968,14 +1991,14 @@ impl HudRenderer {
                 [
                     size[0] as f32,
                     size[1] as f32,
-                    batch.scale,
+                    batch.scale * self.zoom,
                     batch.glint_alpha,
                 ],
                 batch.end_portal,
             )),
         );
         if let Some(pack_text) = &self.pack_text {
-            pack_text.prepare(uploads, encoder, batch, size);
+            pack_text.prepare(uploads, encoder, batch, size, batch.scale * self.zoom);
         }
     }
     /// Draw the batch `prepare` staged.
@@ -2048,7 +2071,8 @@ impl HudRenderer {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_vertex_buffer(0, self.buffer.slice(..));
-            if let Some([x, y, w, h]) = clip {
+            if let Some(clip) = clip {
+                let [x, y, w, h] = clip.map(|v| (v as f32 * self.zoom) as u32);
                 let (x, y) = (x.min(size[0]), y.min(size[1]));
                 let (w, h) = (w.min(size[0] - x), h.min(size[1] - y));
                 if w == 0 || h == 0 {
@@ -2186,7 +2210,7 @@ mod tests {
         atlas.pixels[at..at + 4].try_into().unwrap()
     }
     #[test]
-    fn content_mod_equipment_textures_pack_under_their_namespace() {
+    fn content_mod_entity_textures_pack_under_their_namespace() {
         let root = std::env::temp_dir().join(format!("horizon-atlas-equip-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let equipment = root.join("assets/gems/textures/entity/equipment/humanoid");
@@ -2206,10 +2230,17 @@ mod tests {
             br#"["gems"]"#,
         )
         .unwrap();
+        // A block entity's texture, for a native mod's renderer.
+        let machine = root.join("assets/gems/textures/entity/machine");
+        fs::create_dir_all(&machine).unwrap();
+        write_strip(&machine.join("cog.png"), 32, 32, &[[0, 0, 200, 255]], None);
         let atlas = HudAtlas::build(&root).unwrap();
         let rect = atlas.sprites["gems:entity/equipment/humanoid/ruby"];
         assert_eq!(texel_at(&atlas, rect, 0, 0), [200, 0, 0, 255]);
-        // Only equipment: the mods' other textures reach the atlas through atlas definitions.
+        let rect = atlas.sprites["gems:entity/machine/cog"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (32, 32));
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
+        // Only entity textures: the mods' others reach the atlas through atlas definitions.
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
         fs::remove_dir_all(&root).unwrap();
     }

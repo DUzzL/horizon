@@ -223,10 +223,18 @@ impl Game<'_> {
             Some(self.player_boat_seat(i))
         } else {
             // A minecart: the server moves it, the rider sits in it.
-            self.carts.iter().find(|c| c.id == id).map(|c| {
+            let cart = self.carts.iter().find(|c| c.id == id).map(|c| {
                 c.position
                     .add_vector(Vec3::new(0.0, super::minecarts::SEAT, 0.0))
-            })
+            });
+            if cart.is_none() {
+                // Entity.baseTick: a passenger whose vehicle is gone stops
+                // riding it. Nothing with the id is in the level any more (it
+                // died, or the world it rode in was left), so the seat goes.
+                self.riding = None;
+                return false;
+            }
+            cart
         };
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;

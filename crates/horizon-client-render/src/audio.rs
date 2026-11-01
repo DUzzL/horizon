@@ -1226,6 +1226,17 @@ impl Audio {
             self.play(event, Some(at), volume, pitch);
             return;
         }
+        self.play_after(
+            event,
+            at,
+            volume,
+            pitch,
+            (distance_sqr.sqrt() / 40.0 * 20.0) as i32,
+        );
+    }
+    /// `play` at a world position, starting `ticks` sound-engine ticks (20 a
+    /// second) from now: `SoundEngine.playDelayed`.
+    pub fn play_after(&mut self, event: &str, at: [f64; 3], volume: f32, pitch: f32, ticks: i32) {
         let seed = self.random.next_long();
         if let Some(capture) = self.capture.as_mut() {
             capture.push((event.to_owned(), at, volume, pitch));
@@ -1239,8 +1250,7 @@ impl Audio {
         let instance =
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
         let id = self.engine.add(instance, false);
-        self.engine
-            .play_delayed(id, (distance_sqr.sqrt() / 40.0 * 20.0) as i32);
+        self.engine.play_delayed(id, ticks);
     }
     /// `play` for this client only: a sound a packet's handler plays
     /// (`playLocalSound`), which the guests play from that packet themselves.

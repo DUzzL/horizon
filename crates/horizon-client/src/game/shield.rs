@@ -30,11 +30,12 @@ impl Game<'_> {
             &mut self.inventory[slot]
         }
     }
+    /// The stack's `blocks_attacks`: its own component, else its item's.
     pub(super) fn blocks_attacks(
         &self,
         stack: &ItemStack,
-    ) -> Option<&horizon_client::items::BlocksAttacks> {
-        self.items().get(&stack.item)?.blocks_attacks.as_ref()
+    ) -> Option<std::borrow::Cow<'_, horizon_client::items::BlocksAttacks>> {
+        horizon_client::items::BlocksAttacks::of_stack(stack, self.items().get(&stack.item))
     }
     /// `ShieldItem.use` (ItemUtils.startUsingInstantly) for the hand at `slot`;
     /// false when that hand holds no blocking item or it is on cooldown.
@@ -45,8 +46,8 @@ impl Game<'_> {
         if self.blocks_attacks(stack).is_none() {
             return false;
         }
-        if self.shield_cooldown == 0 && self.using.is_none() {
-            self.using = Some((slot, 0));
+        if self.shield_cooldown == 0 {
+            self.start_using_item();
         }
         true
     }
@@ -124,7 +125,10 @@ impl Game<'_> {
         let Some(stack) = self.stack_in(slot).cloned() else {
             return;
         };
-        let Some(component) = self.blocks_attacks(&stack).cloned() else {
+        let Some(component) = self
+            .blocks_attacks(&stack)
+            .map(std::borrow::Cow::into_owned)
+        else {
             return;
         };
         let at = self

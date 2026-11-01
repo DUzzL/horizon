@@ -1310,6 +1310,8 @@ impl Game<'_> {
         let destroyed = creative || b.damage > 40.0;
         if destroyed {
             self.eject_boat_mobs(i, true);
+            let id = self.boats[i].id;
+            self.release_vehicle_container(id);
             let b = self.boats.remove(i);
             let at = [b.position.x, b.position.y, b.position.z];
             // AbstractBoat.remove: a destroyed boat drops its lead.
