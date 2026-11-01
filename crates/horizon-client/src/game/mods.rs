@@ -233,7 +233,7 @@ impl Game<'_> {
     /// mods don't run any more: their rows say so, and the player hears it once in the chat
     /// (`tell_native_now`).
     pub(super) fn start_mods(&mut self) {
-        let dir = Self::options_path().with_file_name(mod_list::DIR);
+        let dir = Self::game_dir().join(mod_list::DIR);
         let mut paths = horizon_mods::find(&dir);
         paths.retain(|p| !self.mods.dev.contains(p));
         paths.extend(self.mods.dev.iter().cloned());
@@ -272,7 +272,7 @@ impl Game<'_> {
             .ok()
             .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
             .unwrap_or_default();
-        let native_dir = Self::options_path().with_file_name(mod_list::NATIVE_DIR);
+        let native_dir = Self::game_dir().join(mod_list::NATIVE_DIR);
         let unbuilt = not_built(&native_dir, &built, &self.settings.mods.installed);
         self.settings.mods.installed.extend(unbuilt);
         let installed = &self.settings.mods.installed;
@@ -288,9 +288,7 @@ impl Game<'_> {
             return;
         }
         let names = std::mem::take(&mut self.mods.stopped).join(", ");
-        let seen = Self::options_path()
-            .with_file_name(mod_list::DIR)
-            .join(NOTICE_SEEN);
+        let seen = Self::game_dir().join(mod_list::DIR).join(NOTICE_SEEN);
         if seen.exists() {
             return;
         }

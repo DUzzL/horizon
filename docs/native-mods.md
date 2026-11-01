@@ -367,6 +367,37 @@ and the content mods that are on. `neoforge:true`, `not`, `and` and `or` combine
 does not know leaves the file out, so a future shape fails closed. Tags, loot tables and advancements
 do not answer the gate yet.
 
+### Recipe filters
+
+A content mod or a data pack can remove recipes, or swap one of their inputs or outputs, without knowing
+their ids: a file `data/<ns>/recipe_filter/<name>.json` holds `{"filters": [...]}`. Each filter has match
+keys, all of which must hold (a filter with none matches every recipe), and exactly one action:
+
+| Key | Meaning |
+|---|---|
+| `id` | the recipe id; `*` matches any run of characters (`minecraft:*_planks`) |
+| `type` | the recipe's `type`, with the same `*` (`mymod:*`) |
+| `input` | an item id or `#tag` among the recipe's inputs |
+| `output` | an item id among its outputs (anything under `result`, `results`, `output` or `outputs`) |
+| `remove` | `true`: the recipe is not loaded |
+| `replace_input` | `{"from": ..., "to": ...}`: every input that is `from` becomes `to` |
+| `replace_output` | the same, for the outputs |
+
+```json
+{"filters": [
+  {"id": "minecraft:*_planks", "remove": true},
+  {"type": "mymod:*", "replace_input": {"from": "minecraft:iron_ingot", "to": "#c:ingots/iron"}}
+]}
+```
+
+Filters run on each recipe after the packs are merged and its load conditions held, so they see the final
+set and reach every recipe type, mods' own included: they work on the recipe's JSON, every string outside
+`type`, `group`, `category` and the conditions (a `{"tag": ...}` object's tag reads as `#tag`). Every recipe
+loader applies them: crafting, the stations, brewing, the recipe book and what players are sent. Files apply
+in id order and each file's filters in order; a pack's file replaces a file of the same id, as any data file
+does. A filter with an unknown key or not exactly one action is skipped with a warning, so a typo never
+matches every recipe.
+
 ### A mod's own enchantment effect kinds
 
 A `minecraft:post_attack` entry with `enchanted` attacker and `affected` victim whose `effect.type` is in a
@@ -923,6 +954,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
   helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
   registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+- **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
+  `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
+  (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
+  `native_player`, `native_give_items` and the other helpers reach them. A respawn at an anchor in another dimension, or
+  at the world spawn's free column, may still move them on a later tick, once that level has loaded round them; the
+  End-exit respawn (after the credits) does not fire it.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -1053,6 +1090,24 @@ A model that moves (a turning gun barrel, a thrown projectile) is an `item_displ
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
 client, so a call a tick looks smooth.
 
+### Mobs drawn by a mod
+
+`crates/horizon-client/src/game/native_mob_draw.rs`: `native_mob_submit(mob, draw, drawn)` (client) is asked once a frame for
+every mob in view but players (vanilla's `EntityRenderer.submit`). Set `drawn` and the mob's vanilla model, armour and held
+items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag, shadow, flames and glowing outline still draw.
+
+- `mob` (`NativeMobRender`) is the frame's `LivingEntityRenderState`: the id, kind, custom name and `baby`, the partial tick,
+  `age` (ticks lived plus the partial tick), `body_yaw`, `head_yaw` (from the body) and `pitch` in degrees, the walk cycle
+  (`walk_position`, `walk_speed`: a vanilla quadruped's legs swing `cos(walk_position * 0.6662) * 1.4 * walk_speed` radians), `hurt_time`,
+  `death_time` and `on_ground`.
+- `draw` is a block entity's frame (`native_block_entity_submit`): draw with `native_draw_cube`, `native_draw_quad`,
+  `native_draw_block` and `native_draw_item` under its pose stack, which starts at the mob's feet turned with its body: +z
+  is the way it faces, +x its left, +y up, in blocks. Turn a head or swing a leg with `rotate_about` and a pivot. It holds
+  the mob's light.
+- A mod's own creature is an ordinary mob (`native_spawn_mob`, API 37) drawn this way: a quiet villager, an allay or a bat
+  gives it movement, sounds and saving, and the mod gives it a model and animations of its own. Tell yours apart by the
+  ids the server half sends with mod messages (API 40), or by its custom name.
+
 ### Advancement triggers
 
 `crates/horizon-client/src/game/native_criteria.rs`: a mod's own criteria triggers, as a NeoForge mod registers a
@@ -1132,6 +1187,22 @@ they mean is the mod's own: a mod that bundles its pack as `native-<mod id>` wri
 explosion's centre (camera-relative, from `frame.camera_position`) and its age in seconds, for a cloud or a shock wave
 ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
 them. The mod's server half can send what happened to each client half with mod messages (API 40).
+
+### Biome colours
+
+`crates/horizon-client/src/game/native_biome_colors.rs`: the grass, leaf and water colours a client mod changes while the
+game runs, for seasons (a golden autumn, a pale winter) or a world that greens as it heals.
+
+- `native_biome_colors(biome, colors)` (client) changes a biome's `BiomeColors`: `grass`, `foliage` (leaves, vines),
+  `dry_foliage` (leaf litter) and `water`, 0xRRGGBB, starting from the biome file and the colormaps. The dark forest's
+  modifier still darkens the grass set here; the swamp's noise colours replace it.
+- It is asked for every biome when a mod calls `native_refresh_biome_colors()`. When the colours differ from those in use,
+  every loaded section and the far terrain are rebuilt with them, as changing Biome Blend does. Call it when your colours
+  change and once when the player joins, not every tick: a rebuild takes the workers a few seconds. A slow fade is a
+  call a day, not a frame.
+- Block-breaking and falling-leaf particles keep the biome's own colours for now.
+- A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
+  `native_shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
 
 ### Sounds a client mod plays
 

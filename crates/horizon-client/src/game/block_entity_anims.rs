@@ -303,6 +303,7 @@ impl Game<'_> {
             .get("minecraft:conduit_effect_block")
             .cloned()
             .unwrap_or_default();
+        let mut shulker_pushes = Vec::new();
         for &(pos, ticker) in &positions {
             match ticker {
                 Ticker::Lid => self.be_anims.chests.entry(pos).or_default().tick(),
@@ -315,17 +316,19 @@ impl Game<'_> {
                         .tick(pos, &players, &mut anims.book_random);
                 }
                 Ticker::Shulker { facing } => {
-                    // A window that simulates the world ticks its boxes on the
-                    // server pass (`tick_block_entities`, which also applies
-                    // `moveCollidedEntities`); a server's client only animates
-                    // what it is sent. Either way the collision queries read
-                    // the lids from `World::shulkers` (`sync_shulkers`).
+                    // `ShulkerBoxBlockEntity.tick` runs on both sides: the
+                    // client moves its own player, including with a menu open.
+                    // The server ticks its boxes in `tick_block_entities`.
                     if self.remote.is_some() {
-                        self.be_anims
+                        let tick = self
+                            .be_anims
                             .shulkers
                             .entry(pos)
                             .or_default()
                             .tick(pos, facing);
+                        if let Some(push) = tick.push {
+                            shulker_pushes.push((pos, facing, push));
+                        }
                     }
                 }
                 Ticker::Skull { powered } => {
@@ -432,6 +435,10 @@ impl Game<'_> {
             }
         }
         self.be_anims.present = positions;
+        if self.remote.is_some() {
+            self.sync_shulkers();
+            self.push_shulker_entities(shulker_pushes);
+        }
     }
     /// `ConduitBlockEntity.serverTick` of every conduit in the chunks that
     /// tick blocks, with or without a renderer. The conduits are looked for
