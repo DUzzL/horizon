@@ -453,6 +453,8 @@ impl Game<'_> {
                                 owner: None,
                                 guest: None,
                             });
+                            // `Entity.load`: the `PortalCooldown` of one that just came through.
+                            self.remember(id, uuid, tag);
                             for rider in riders {
                                 self.load_mob(rider, Some(id));
                             }
