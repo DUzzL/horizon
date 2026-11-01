@@ -1289,6 +1289,25 @@ It names the level it means by its `dimension` (`minecraft:overworld`), as `nati
   that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
   the end, or more than 65536 filters.
 
+### Column reads
+
+`crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
+only, that read many columns in one call. They name the level they mean by its `dimension` (`minecraft:overworld`), as
+`native_set_block` does, and answer `Err` with the reason, reading nothing, on a client, for another dimension or for
+a read too big, so a mod can tell "ask for less" from "wrong level". They run on the server tick: read a big area in
+pieces.
+
+- `native_surface_heights(dimension, columns, heightmap)` answers each column's height on `heightmap` (`NativeHeightmap`,
+  as `native_edit_blocks` reads it: one above the highest block that counts), `None` for a column whose chunk isn't
+  loaded; at most 65,536 columns a call.
+- `native_read_columns(dimension, columns, heightmap, (below, above))` reads, for each column, the blocks from `below`
+  under its height to `above` - 1 over it, bottom first: `NativeColumnBlocks` holds the heights (`bases`), the block
+  names seen (`palette`), the blocks as indexes into it, a column after another, and three biome tints a column (grass,
+  foliage and water, at the column's top). Blocks outside the level's height, and every block of a column not loaded,
+  read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
+  The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
+  near a biome border they can differ from what players see by a few blocks.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
