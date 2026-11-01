@@ -6814,13 +6814,28 @@ impl Game<'_> {
     /// Landing rules (farmland trampling, turtle eggs) wrote or removed the block
     /// raw: finish `Level.setBlock`'s neighbour updates, so a crop on trampled
     /// farmland breaks. The local player's and every server player's landings.
+    /// The level events they send go out too: a turtle egg's break particles
+    /// and sound (`decreaseEggs`' 2001, `Level.destroyBlock`'s for the last).
     fn landing_block_updates(&mut self, event: &horizon_client::landing::FallEvent) {
         use horizon_client::landing::FallEvent;
         let (position, flags) = match *event {
             FallEvent::Write {
                 position, flags, ..
             } => (position, flags as i32),
-            FallEvent::Destroy { position, .. } => (position, level_flags::UPDATE_ALL),
+            FallEvent::Destroy {
+                position, state, ..
+            } => {
+                self.level_event_at(2001, [position.x, position.y, position.z], state.0 as i32);
+                (position, level_flags::UPDATE_ALL)
+            }
+            FallEvent::LevelEvent {
+                event,
+                position,
+                data,
+            } => {
+                self.level_event_at(event, [position.x, position.y, position.z], data);
+                return;
+            }
             _ => return,
         };
         self.with_level(|b, level, ticks| b.notify_written(level, ticks, position, flags));
@@ -7086,6 +7101,23 @@ impl Game<'_> {
                         speed,
                         1,
                     );
+                }
+                // A block's own sound plays at the block (a turtle egg
+                // breaking, a shelf mushroom bouncing).
+                MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {
+                    sound,
+                    position: Some(pos),
+                    volume,
+                    pitch,
+                }) if sound.block_sound().is_some() => {
+                    if let Some(name) = sound.block_sound() {
+                        let at = [
+                            f64::from(pos.x) + 0.5,
+                            f64::from(pos.y) + 0.5,
+                            f64::from(pos.z) + 0.5,
+                        ];
+                        self.audio.play(name, Some(at), volume, pitch);
+                    }
                 }
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Sound {
                     sound,
