@@ -182,6 +182,12 @@ impl Game<'_> {
             | Target::Tnt(id)
             | Target::Falling(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
+            // It keeps its UUID with itself.
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| uuid_text(s.uuid)),
             // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
         }
@@ -216,6 +222,11 @@ impl Game<'_> {
             | Target::Tnt(id)
             | Target::Other(id) => self.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.raw.as_deref()),
             Target::Falling(id) => self
                 .falling
                 .iter()

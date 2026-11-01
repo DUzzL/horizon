@@ -363,6 +363,22 @@ def entities():
         cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
         cmd('/kill @e[type=minecraft:falling_block]'),
         cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # An ominous item spawner, with an item or empty (`ItemStack.EMPTY`,
+        # which saves no `item` and spawns nothing when its time comes).
+        cmd('/summon minecraft:ominous_item_spawner 4.5 210 8.5 {spawn_item_after_ticks:2000L,item:{id:"minecraft:diamond",count:2},Tags:["o"]}'),
+        cmd('/execute if entity @e[type=minecraft:ominous_item_spawner,tag=o]'),
+        cmd('/tag @e[type=minecraft:ominous_item_spawner,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:ominous_item_spawner,limit=1] item'),
+        cmd('/data get entity @e[type=minecraft:ominous_item_spawner,limit=1] spawn_item_after_ticks'),
+        cmd('/tp @e[type=minecraft:ominous_item_spawner] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:ominous_item_spawner]'),
+        cmd('/summon minecraft:ominous_item_spawner 4.5 210 8.5'),
+        cmd('/data get entity @e[type=minecraft:ominous_item_spawner,limit=1] item'),
+        cmd('/kill @e[type=minecraft:ominous_item_spawner]'),
+        cmd('/summon minecraft:ominous_item_spawner 4.5 210 8.5 {spawn_item_after_ticks:5L}'),
+        {'op': 'tick', 'n': 10},
+        cmd('/execute if entity @e[type=minecraft:ominous_item_spawner]'),
+        cmd('/execute if entity @e[type=minecraft:item,distance=..3]'),
         # And the thrown items.
         *[c for kind in ('snowball', 'egg', 'ender_pearl') for c in (
             cmd(f'/summon minecraft:{kind} 4.5 210 8.5 {{NoGravity:1b}}'),

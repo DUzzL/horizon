@@ -391,7 +391,12 @@ impl Game<'_> {
     /// codes stripped, go on the sign the guest may write on unless it is
     /// waxed (`SignBlockEntity.updateSignText`); a guest gone out of reach
     /// may no longer write (`playerIsTooFarAwayToEdit`).
-    pub(super) fn lan_sign_update(&mut self, host: &mut LanHost, conn: u32, p: play::SignUpdate) {
+    pub(super) fn lan_sign_update(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        mut p: play::SignUpdate,
+    ) {
         let Some(g) = host.hub.guest(conn) else {
             return;
         };
@@ -422,9 +427,51 @@ impl Game<'_> {
             self.mark_block_entity_updated(key);
             return;
         }
+        if !matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::Sign(sign)) if !sign.waxed
+        ) {
+            return;
+        }
+        // Everything vanilla checks has passed: the mods hear what is about to
+        // go on the sign, with the player's state swapped in, and may rewrite
+        // or refuse it.
+        if let Some((uuid, name, dimension)) = host
+            .hub
+            .guest(conn)
+            .map(|g| (g.uuid, g.name.clone(), g.dimension.clone()))
+        {
+            let mut lines = p.lines.to_vec();
+            let mut cancel = false;
+            self.as_guest_messaged(host, conn, |game| {
+                game.native_sign_changed(
+                    uuid,
+                    &name,
+                    &dimension,
+                    p.pos,
+                    p.front,
+                    &mut lines,
+                    &mut cancel,
+                );
+            });
+            if cancel {
+                // The sign keeps its text: the editor closes, and the player's
+                // client, which shows what it sent, gets the sign as it is.
+                if let Some(play) = host.play.get_mut(&conn) {
+                    play.sign_editing = None;
+                }
+                self.mark_block_entity_updated(key);
+                return;
+            }
+            lines.resize(4, String::new());
+            for (line, new) in p.lines.iter_mut().zip(lines) {
+                *line = new;
+            }
+        }
         let Some(play) = host.play.get_mut(&conn) else {
             return;
         };
+        // A hook may have broken the sign.
         let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get_mut(&key) else {
             return;
         };
