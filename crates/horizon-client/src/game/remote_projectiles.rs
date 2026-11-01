@@ -155,6 +155,17 @@ pub(super) fn remote_projectile_tick(p: &mut Projectile, w: &impl ProjectileWorl
     }
 }
 
+/// `Entity.getRandomX(0.5)` / `getRandomY` / `getRandomZ(0.5)` for a shulker
+/// bullet (`EntityType.SHULKER_BULLET` is 0.3125 x 0.3125).
+fn shulker_bullet_trail_at(at: Vec3, random: &mut impl RandomSource) -> [f64; 3] {
+    const SIZE: f64 = 0.3125;
+    [
+        at.x + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
+        at.y + SIZE * random.next_double(),
+        at.z + SIZE * (2.0 * random.next_double() - 1.0) * 0.5,
+    ]
+}
+
 /// `AbstractHurtingProjectile.getTrailParticle`: smoke for every one of them
 /// but the wind charges (no trail) and the dragon's fireball (its own).
 pub(super) fn has_smoke_trail(kind: &ProjectileKind) -> bool {
@@ -241,6 +252,25 @@ impl Game<'_> {
         let smoke = ParticleOptions::simple(ParticleType::Smoke);
         for p in at {
             self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
+        }
+    }
+
+    /// `ShulkerBullet.tick` on a client: two `END_ROD` particles in its
+    /// 0.3125 box (`getRandomX(0.5)`, `getRandomY`, `getRandomZ(0.5)`).
+    pub(super) fn shulker_bullet_trails(&mut self) {
+        let bullets: Vec<Vec3> = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| matches!(p.kind, ProjectileKind::ShulkerBullet { .. }))
+            .map(|p| p.position)
+            .collect();
+        let options = ParticleOptions::simple(ParticleType::EndRod);
+        for at in bullets {
+            for _ in 0..2 {
+                let p = shulker_bullet_trail_at(at, self.particles.random());
+                self.particles.add(&options, p, [0.0; 3]);
+            }
         }
     }
 
@@ -588,6 +618,7 @@ impl Game<'_> {
             .map(|p| p.position)
             .collect();
         self.smoke_trails(trails);
+        self.shulker_bullet_trails();
         // FireworkRocketEntity.tick: a rocket attached to an entity follows it
         // and boosts it client-side too (attachedToEntity.isFallFlying), and
         // every rocket leaves its spark trail on a client.
@@ -774,6 +805,18 @@ mod tests {
         let mut p = Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), None);
         p.velocity = Vec3::new(1.5, 0.0, 0.0);
         p
+    }
+
+    #[test]
+    fn a_shulker_bullet_trail_stays_inside_its_box() {
+        let at = Vec3::new(10.0, 20.0, 30.0);
+        let mut random = horizon_core::random::LegacyRandom::new(1);
+        for _ in 0..32 {
+            let [x, y, z] = shulker_bullet_trail_at(at, &mut random);
+            assert!((x - at.x).abs() <= 0.3125 * 0.5 + 1e-12, "{x}");
+            assert!((0.0..0.3125 + 1e-12).contains(&(y - at.y)), "{y}");
+            assert!((z - at.z).abs() <= 0.3125 * 0.5 + 1e-12, "{z}");
+        }
     }
 
     #[test]
