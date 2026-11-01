@@ -11640,5 +11640,72 @@ CHECKS += ['blast-bystanders']
 CHECK_FNS['blast-bystanders'] = check_blast_bystanders
 
 
+def check_mining_drop_latency(host, guest, out):
+    """An instant survival break sends its drop in the tick that handles START (#4572).
+
+    Queue the click behind the server barrier, then release it at one TPS. A
+    snapshot taken before tick_guests delays the drop until the next second.
+    Both the integrated owner and a LAN guest must see the first snapshot.
+    """
+    hx, _, hz = pos_of(host)
+    x, y, z = int(hx), 100, int(hz)
+    seen = {}
+    try:
+        host('command', command=f'fill {x-5} {y-1} {z-5} {x+5} {y-1} {z+5} minecraft:stone')
+        host('command', command=f'fill {x-5} {y} {z-5} {x+5} {y+4} {z+5} minecraft:air')
+        for player in (host, guest):
+            player('command', command='clear @s')
+            player('command', command='gamemode survival')
+        for player, other in ((host, guest), (guest, host)):
+            host('command', command='tick rate 20')
+            host('command', command='kill @e[type=minecraft:item]')
+            player('command', command=f'tp @s {x+0.5} {y} {z-3.5}')
+            other('command', command=f'tp @s {x+3.5} {y} {z+0.5}')
+            host('command', command=f'setblock {x} {y} {z} minecraft:torch')
+            player.wait(20)
+            assert all(g.raw('block', x, y, z).get('block') == 'minecraft:torch'
+                       for g in (host, guest)), 'torch did not reach both clients'
+            player.raw('look-at', x+0.5, y+0.3, z+0.5)
+            host('command', command='tick rate 1')
+            host.raw('server-hold', 'on')
+            try:
+                player.raw('mouse', 'left', 'click')
+                # The client's input tick also slows to one TPS. Wait for its
+                # prediction while transport runs and the server is still held.
+                deadline = time.monotonic() + 3
+                while player.raw('block', x, y, z).get('block') != 'minecraft:air':
+                    assert time.monotonic() < deadline, \
+                        f'{player.name}: client did not predict the instant break'
+                    time.sleep(0.02)
+            finally:
+                host.raw('server-hold', 'off')
+            started = time.monotonic()
+            arrivals = {}
+            while time.monotonic() - started < 0.75 and len(arrivals) < 2:
+                for viewer in (host, guest):
+                    if viewer.name in arrivals:
+                        continue
+                    entities = viewer.raw('entities', 24, 'minecraft:item')['entities']
+                    if any(abs(e['pos'][0] - x - 0.5) < 2
+                           and abs(e['pos'][2] - z - 0.5) < 2 for e in entities):
+                        arrivals[viewer.name] = round(time.monotonic() - started, 3)
+                time.sleep(0.01)
+            seen[player.name] = arrivals
+            lab.write_json(out / 'mining-drop-latency.json', seen)
+            assert len(arrivals) == 2, \
+                f'{player.name}: drop waited for a second server tick: {seen}'
+    finally:
+        host.raw('server-hold', 'off')
+        host('command', command='tick rate 20')
+        host('command', command='kill @e[type=minecraft:item]')
+        for player in (host, guest):
+            player.raw('release')
+    return seen
+
+
+CHECKS += ['mining-drop-latency']
+CHECK_FNS['mining-drop-latency'] = check_mining_drop_latency
+
+
 if __name__ == '__main__':
     main()
