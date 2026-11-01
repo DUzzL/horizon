@@ -1640,10 +1640,12 @@ impl LevelAccess for GameLevel<'_> {
         }
     }
     fn has_mod_block_entity(&self, pos: BlockPos) -> bool {
-        matches!(
-            self.world.block_entities.get(&(pos.x, pos.y, pos.z)),
-            Some(BlockEntity::Mod(_))
-        )
+        // Asked on every block change: no lookup until a mod block entity exists.
+        self.world.block_entities.has_mods()
+            && matches!(
+                self.world.block_entities.get(&(pos.x, pos.y, pos.z)),
+                Some(BlockEntity::Mod(_))
+            )
     }
     fn remove_block_entity(&mut self, pos: BlockPos, old: BlockStateId, side_effects: bool) -> u8 {
         self.remove_entity(pos, old, side_effects)

@@ -210,6 +210,11 @@ impl BlockEntities {
         self.pending.remove(pos);
     }
 
+    /// Whether any mod block entity is in the map: until one is, a block change
+    /// never looks one up (`LevelAccess::has_mod_block_entity`).
+    pub fn has_mods(&self) -> bool {
+        !self.mods.is_empty()
+    }
     /// The mod block entities within `radius` blocks of `x`, `z` (by chunk, so
     /// far ones are skipped whole; the caller checks each distance).
     pub fn mods_near(&self, x: f64, z: f64, radius: f64) -> impl Iterator<Item = &Pos> {
