@@ -924,7 +924,7 @@ mod tests {
             poses.get("root")[0]
         };
         // A preview in a frame the world drew, then one in a frame it didn't: each starts from
-        // what the world last stored (1, then 2) and stores nothing itself.
+        // where its frame began (0, then the world's last 2) and stores nothing itself.
         assert_eq!(
             [tx(1), in_gui(|| tx(1)), tx(2), in_gui(|| tx(3)), tx(4)],
             [1.0, 101.0, 2.0, 103.0, 3.0]
