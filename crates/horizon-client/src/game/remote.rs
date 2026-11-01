@@ -3484,6 +3484,7 @@ impl Game<'_> {
                                     && let Some(stack) = self.stack_in(slot).cloned()
                                 {
                                     self.use_duration = self.use_duration(&stack);
+                                    self.use_ticks_set = false;
                                 }
                             }
                             _ => {}
@@ -7031,6 +7032,18 @@ impl Game<'_> {
             } else {
                 (result, changes)
             };
+            // AbstractCauldronBlock.useItemOn, either hand: CauldronInteractions
+            // answers on the client as on the server and only the server acts,
+            // so a bucket the cauldron takes is not used again (UseItem).
+            let result = if result.consumes_action() || spectator {
+                result
+            } else {
+                match self.cauldron_outcome(hit.pos, held.as_ref()) {
+                    horizon_client::cauldron::Outcome::Success => InteractionResult::Success,
+                    horizon_client::cauldron::Outcome::Consume => InteractionResult::Consume,
+                    horizon_client::cauldron::Outcome::Pass => result,
+                }
+            };
             let reacts = result.consumes_action();
             // useItemOn on this client, unless a sneak with something in hand
             // skips it: RedStoneOreBlock's dust, and the wick smoke of a lit
@@ -7794,6 +7807,13 @@ impl Game<'_> {
         if self.mod_use_tick(slot, ticks, !self.right || !in_hand) {
             return;
         }
+        // updatingUsingItem runs here too: a use a mod's tick ran out stays
+        // frozen until let go (RELEASE_USE_ITEM) or the server finishes it.
+        if let Some(s) = stack.as_ref().filter(|_| in_hand)
+            && !self.use_item_ticked(s, ticks)
+        {
+            return;
+        }
         // BrushItem.onUseTick: with no block aimed the use ends (the server
         // ends it too); a stroke shows its dust. Its sounds are the server's.
         if stack
@@ -7828,7 +7848,10 @@ impl Game<'_> {
         }
         // A drawn bow, a charging crossbow, a raised shield...: held until
         // the button lets go.
-        if stack.as_ref().is_some_and(|s| self.held_until_released(s)) {
+        if let Some(s) = stack.as_ref().filter(|s| self.held_until_released(s)) {
+            if in_hand && (self.mod_use(s) || self.blocks_attacks(s).is_some()) {
+                self.item_on_use_tick(s, ticks);
+            }
             self.using = in_hand.then_some((slot, ticks + 1));
             return;
         }
@@ -7873,6 +7896,7 @@ impl Game<'_> {
             // player's own server.
             self.emit_consume(&consumable, &stack, 5);
         }
+        self.item_on_use_tick(&stack, ticks);
         self.using = Some((slot, ticks + 1));
     }
     /// `Player.handleEntityEvent(9)`: `completeUsingItem` on the client. A consumable's last crumbs, and FoodProperties.onConsume,
@@ -8285,14 +8309,21 @@ impl Game<'_> {
             direction: 0,
             sequence: 0,
         }));
+        // a mod's Stop may skip the item's release, and a mod's own release follows.
         let hand = self.used_hand();
         if let Some((slot, ticks)) = self.using.take()
             && let Some(hand) = hand
-            && self
-                .stack_in(slot)
-                .is_some_and(|s| &*s.item == "minecraft:trident")
+            && let Some(stack) = self.stack_in(slot).cloned()
         {
-            self.with_hand(hand, |g| g.release_trident(ticks));
+            self.with_hand(hand, |g| {
+                if !g.use_item_stopped(&stack, ticks) {
+                    return;
+                }
+                if &*stack.item == "minecraft:trident" {
+                    g.release_trident(g.ticks_held(&stack, ticks));
+                }
+                g.mod_release_using(&stack, ticks);
+            });
         }
     }
     /// ClientPacketListener.sendChat / sendCommand, signed with a chat

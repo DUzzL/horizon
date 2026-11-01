@@ -1052,6 +1052,17 @@ impl Mob {
     fn flying_speed(&self) -> f32 {
         0.02
     }
+    /// `LivingEntity.getEffectiveGravity`: the gravity, floored to 0.01 while a
+    /// Slow Falling mob is on its way down.
+    pub fn effective_gravity(&self) -> f64 {
+        let gravity = self.gravity();
+        if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") && !gravity.is_nan()
+        {
+            gravity.min(0.01)
+        } else {
+            gravity
+        }
+    }
     /// Entity.getGravity: none while isNoGravity.
     pub fn gravity(&self) -> f64 {
         if self.no_gravity {
@@ -1192,7 +1203,12 @@ impl Mob {
         {
             y += (0.05 * f64::from(amp + 1) - movement.y) * 0.2;
         } else {
-            y -= self.gravity();
+            // LivingEntity.travelInAir: a Slow Falling mob on its way down lands without
+            // having fallen.
+            if self.velocity.y <= 0.0 && self.has_effect("minecraft:slow_falling") {
+                self.fall_distance = 0.0;
+            }
+            y -= self.effective_gravity();
         }
         // LivingEntity.shouldDiscardFriction (a breeze's, a frog's or a goat's
         // long jump).
@@ -1220,7 +1236,7 @@ impl Mob {
     fn travel_in_fluid(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
         let falling = self.velocity.y <= 0.0;
         let old_y = self.position.y;
-        let gravity = self.gravity();
+        let gravity = self.effective_gravity();
         if self.fluids.in_water {
             let mut slow = if self.extra.sprinting {
                 0.9
@@ -1577,16 +1593,7 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
     /// `living_motion::effective_gravity`: the gravity attribute, floored to
     /// 0.01 while a Slow Falling mob is on its way down.
     fn effective_gravity(&mut self) -> Result<f64, ()> {
-        let gravity = self.mob.gravity();
-        if self.mob.velocity.y <= 0.0 && self.mob.has_effect("minecraft:slow_falling") {
-            Ok(if gravity.is_nan() {
-                gravity
-            } else {
-                gravity.min(0.01)
-            })
-        } else {
-            Ok(gravity)
-        }
+        Ok(self.mob.effective_gravity())
     }
     fn block_suppresses_bounce(&mut self, state: BlockStateId) -> Result<bool, ()> {
         Ok(self.movement(state)?.suppresses_bounce)

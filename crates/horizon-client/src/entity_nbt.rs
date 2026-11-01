@@ -355,6 +355,7 @@ pub fn mob_to_nbt(
         ),
         ("Air", Tag::Short(m.air as i16)),
         ("Health", Tag::Float(m.health.max(0.0).to_bits())),
+        ("AbsorptionAmount", Tag::Float(m.absorption.to_bits())),
         (
             "HurtTime",
             Tag::Short(m.hurt_time.clamp(0, i32::from(i16::MAX)) as i16),
@@ -1407,6 +1408,9 @@ pub fn mob_from_nbt(
         add_modifier(&mut m, Attr::FollowRange, id, bonus, Op::AddMultipliedBase);
     }
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
+    m.absorption = float(tag.get("AbsorptionAmount"))
+        .map_or(0.0, |h| h as f32)
+        .max(0.0);
     // LivingEntity.setHealth clamps to the max health: a horse or llama is made
     // with the type's and saved before it drops to the one it rolled. (Only
     // the base is read here, so the clamp would cut a leader zombie's bonus.)
