@@ -6145,16 +6145,9 @@ impl Game<'_> {
             // (a sulfur cube's swallowed block) are drawn.
             // A player's own hook (`native_player_submit`) is asked for the
             // other players in view.
-            let player_name = if is_player {
-                self.remote_player_names()
-                    .into_iter()
-                    .find(|(id, _)| *id == mob.id)
-                    .map(|(_, name)| name)
-            } else {
-                None
-            };
-            let who = player_name
-                .as_deref()
+            let who = is_player
+                .then(|| self.remote_player_name(mob.id))
+                .flatten()
                 .map(|name| NativePlayerRender { name, local: false });
             let modded = if layers_only {
                 false

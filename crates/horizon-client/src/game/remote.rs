@@ -9178,6 +9178,14 @@ impl Game<'_> {
     /// Status for `horizon-ctl status`.
     /// The other players' entities in the level and their names (their
     /// profiles', which outlive the player list's entries).
+    /// The profile name of the other player with entity id `id` (none for this
+    /// window's own player), without building the whole list: asked per frame.
+    pub(super) fn remote_player_name(&self, id: u32) -> Option<&str> {
+        let r = self.remote.as_ref()?;
+        let id = i32::try_from(id).ok()?;
+        let uuid = r.level_players.get(&id).filter(|uuid| **uuid != r.profile)?;
+        r.level_player_name(id, uuid)
+    }
     pub(super) fn remote_player_names(&self) -> Vec<(u32, String)> {
         let Some(r) = self.remote.as_ref() else {
             return Vec::new();

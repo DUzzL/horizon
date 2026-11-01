@@ -130,6 +130,12 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) -> bool {
+        // Posing a player for the mods costs, each frame: only when one listens.
+        let mut listened = false;
+        self.native_player_render_listened(&mut listened);
+        if !listened {
+            return false;
+        }
         self.mod_entity_draw(mob, partial, camera, light, out, |render, draw| {
             let mut drawn = false;
             self.native_player_submit(render, &who, draw, &mut drawn);
@@ -147,6 +153,12 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
+        // Every mob in view each frame: only when a mod listens.
+        let mut listened = false;
+        self.native_player_render_listened(&mut listened);
+        if !listened {
+            return;
+        }
         self.mod_entity_draw(mob, partial, camera, light, out, |render, draw| {
             self.native_mob_layer(render, who.as_ref(), draw);
             true

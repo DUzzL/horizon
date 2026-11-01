@@ -1718,6 +1718,13 @@ impl Game<'_> {
     ) {
         let _ = (mob, draw, drawn);
     }
+    /// Whether a mod listens to `native_player_submit` or `native_mob_layer`: a
+    /// mod that hooks either hooks this one too and sets `listened` (HEAD,
+    /// `*listened = true`). Without it the game poses no player or mob for
+    /// them, each frame. Client-side. API @API:player_render@.
+    pub(super) fn native_player_render_listened(&self, listened: &mut bool) {
+        let _ = listened;
+    }
     /// Draw the player `player` (`who`: its profile name, and whether it is
     /// this window's own player) with a model of your own, once a frame while
     /// it is in view (`RenderPlayerEvent.Pre`), and set `drawn` to leave out its
