@@ -2382,6 +2382,16 @@ impl Game<'_> {
                         self.particles.add(&options, at, velocity);
                     }
                 }
+                MobEvent::ParticleColored {
+                    at,
+                    color: [r, g, b],
+                } => {
+                    let options = horizon_client::particles::ParticleOptions::colored(
+                        horizon_client::particles::ParticleType::EntityEffect,
+                        [r, g, b, 1.0],
+                    );
+                    self.particles.add(&options, at, [0.0; 3]);
+                }
                 MobEvent::Experience { at, amount } => self.spawn_breeding_orb(at, amount),
                 MobEvent::AxolotlSupportPlayer { mob } => {
                     let previous = self

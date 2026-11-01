@@ -123,6 +123,18 @@ impl Rocket {
             )
         }
     }
+    /// `EntityType.FIREWORK_ROCKET`: 0.25 x 0.25.
+    pub(super) fn bounds(&self) -> Aabb {
+        let h = 0.125;
+        Aabb::new(
+            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
+            Vec3::new(
+                self.position.x + h,
+                self.position.y + 2.0 * h,
+                self.position.z + h,
+            ),
+        )
+    }
     /// `FireworkRocketEntity.tick` for a rocket attached to no entity: speed
     /// up (an angled one keeps its motion) and rise, then move.
     fn free_flight(&mut self, scene: &mut SceneCollisions) {
@@ -479,8 +491,13 @@ impl Game<'_> {
     }
     /// The owner as `rocket_targets` names it: a guest by their entity id.
     fn rocket_owner(&self, r: &Rocket) -> Option<Who> {
-        let owner = r.owner?;
-        let Some(conn) = r.guest.filter(|_| owner == Who::Player) else {
+        self.shooter_who(r.owner, r.guest)
+    }
+    /// `Projectile.getOwner` as a target's `Who`: a guest's `Who::Player`
+    /// (kept with the connection that shot it) is their entity, not the host.
+    pub(super) fn shooter_who(&self, owner: Option<Who>, guest: Option<u32>) -> Option<Who> {
+        let owner = owner?;
+        let Some(conn) = guest.filter(|_| owner == Who::Player) else {
             return Some(owner);
         };
         let host = self.lan.as_ref()?;

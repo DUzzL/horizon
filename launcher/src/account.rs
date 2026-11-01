@@ -1,7 +1,8 @@
 //! Microsoft account sign-in (docs/microsoft-account.md): the OAuth device-code flow, then Xbox
 //! Live, XSTS and the Minecraft services, the game ownership check and the profile. Secrets (the
 //! Microsoft refresh token, the Minecraft access token, the last ownership answer) live in the OS
-//! keychain; accounts.json keeps only names and UUIDs. The game gets the session in a file it
+//! keychain, or in a file only the player can read where there is none; accounts.json keeps only
+//! names and UUIDs. The game gets the session in a file it
 //! reads once (`--session-file`), never on its command line. Tokens never reach logs, errors or
 //! output.
 //!
@@ -612,7 +613,8 @@ fn check_with(
 
 // ----- The keychain --------------------------------------------------------------------------------
 
-/// Where secrets are kept: the OS keychain, or memory in tests and when there is none.
+/// Where secrets are kept: the OS keychain, a file of the launcher's own when there is none, or
+/// memory in tests.
 pub trait SecretStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, String>;
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
@@ -650,6 +652,230 @@ impl SecretStore for MemoryStore {
     }
     fn operations(&self) -> &Mutex<()> {
         &self.1
+    }
+}
+
+/// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
+/// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
+/// to secret, encrypted with a key of this computer's ([`seal`]), readable and writable by the
+/// player only (0600 on Unix), replaced whole on every write. A lock file beside it keeps each read-modify-replace whole across every launcher and CLI
+/// process. The keychain takes its secrets back at the first start it answers ([`Layered`]).
+pub struct FileStore {
+    path: PathBuf,
+}
+
+/// The secrets file's name in the launcher's data folder.
+pub const SECRETS_FILE: &str = "account-secrets.json";
+
+impl FileStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// The launcher's own: [`SECRETS_FILE`] in its data folder.
+    pub fn launcher() -> Self {
+        Self::new(crate::backend::data_dir().join(SECRETS_FILE))
+    }
+
+    fn shown(&self, e: std::io::Error) -> String {
+        format!("{}: {e}", self.path.display())
+    }
+
+    /// Runs `f` holding the file's lock (`account-secrets.lock`): other processes wait.
+    fn locked<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        self.holding("lock", f)
+    }
+
+    /// Runs `f` holding the lock file `account-secrets.<name>`, made if need be.
+    fn holding<T>(&self, name: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| self.shown(e))?;
+        }
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.path.with_extension(name))
+            .map_err(|e| self.shown(e))?;
+        lock.lock().map_err(|e| self.shown(e))?;
+        // Closing the file releases the lock, after `f` whatever it answers.
+        f()
+    }
+
+    /// Whether the file holds a sign-in: not only sign-out marks, and readable.
+    fn holds_secrets(&self) -> bool {
+        self.entries()
+            .is_ok_and(|secrets| secrets.values().any(|secret| secret != SIGNED_OUT))
+    }
+
+    fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        match std::fs::read(&self.path) {
+            // Only where the file breaks: serde's own message can quote what the file holds.
+            Ok(bytes) => serde_json::from_slice(&unseal(&bytes).ok_or_else(|| {
+                format!(
+                    "{} can't be read on this computer: it was written on another one, or changed. \
+                     Remove it and sign in again.",
+                    self.path.display()
+                )
+            })?)
+            .map_err(|e| {
+                format!(
+                    "{} can't be read ({:?} error at line {}, column {}).",
+                    self.path.display(),
+                    e.classify(),
+                    e.line(),
+                    e.column()
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(e) => Err(self.shown(e)),
+        }
+    }
+
+    /// Replaces the file with `secrets` through a temporary file of this write's own beside it, so
+    /// a crash leaves the old file or the new one; removes it when there are none left.
+    fn write(&self, secrets: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        if secrets.is_empty() {
+            return match std::fs::remove_file(&self.path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(self.shown(e)),
+                _ => Ok(()),
+            };
+        }
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self
+            .path
+            .with_extension(format!("json.{}.{n}.tmp", std::process::id()));
+        let json = serde_json::to_vec(secrets).map_err(|e| e.to_string())?;
+        let sealed = seal(&json)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let written = options.open(&tmp).and_then(|mut file| {
+            std::io::Write::write_all(&mut file, &sealed)?;
+            file.sync_all()
+        });
+        if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &self.path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(self.shown(e));
+        }
+        Ok(())
+    }
+
+    /// The file's entry for `key`, if the file is there.
+    fn entry(&self, key: &str) -> Result<Option<String>, String> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        self.locked(|| Ok(self.read()?.remove(key)))
+    }
+
+    /// Everything the file holds, if it is there.
+    fn entries(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        if !self.path.exists() {
+            return Ok(Default::default());
+        }
+        self.locked(|| self.read())
+    }
+
+    fn put(&self, key: &str, value: &str) -> Result<(), String> {
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            secrets.insert(key.into(), value.into());
+            self.write(&secrets)
+        })
+    }
+
+    /// The keychain took `key`: removes its entry if it still holds `before`, what was read before
+    /// the keychain call. Whether the file still has an entry for it: one another process wrote
+    /// since stays, and is read first.
+    fn settle(&self, key: &str, before: Option<&str>) -> Result<bool, String> {
+        if !self.path.exists() {
+            return Ok(false);
+        }
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            if before.is_some() && secrets.get(key).map(String::as_str) == before {
+                secrets.remove(key);
+                self.write(&secrets)?;
+                return Ok(false);
+            }
+            Ok(secrets.contains_key(key))
+        })
+    }
+}
+
+/// The secrets file's first bytes: format 1, the JSON sealed with ChaCha20-Poly1305 under
+/// [`file_key`], then a random 12-byte nonce and the ciphertext with its tag.
+const SEALED: &[u8] = b"HZSECv1\n";
+
+/// The secrets file's key: this computer's identity (`/etc/machine-id` on Linux, `/etc/hostid` on
+/// FreeBSD) hashed with a constant of the launcher's. The tokens are never on disk in plain text,
+/// and a copy of the file taken off the computer (a backup, a synced home folder) can't be read
+/// elsewhere. On the computer itself, the file's mode (0600) is what keeps other users out.
+fn file_key() -> chacha20poly1305::Key {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"horizon-launcher account-secrets v1");
+    if let Some(id) = ["/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/hostid"]
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+    {
+        hash.update(id.trim_ascii());
+    }
+    hash.finalize()
+}
+
+/// `json` sealed for the secrets file ([`SEALED`]).
+fn seal(json: &[u8]) -> Result<Vec<u8>, String> {
+    use chacha20poly1305::{aead::Aead, KeyInit};
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+    let sealed = chacha20poly1305::ChaCha20Poly1305::new(&file_key())
+        .encrypt(&nonce.into(), json)
+        .map_err(|_| "the secrets couldn't be sealed".to_string())?;
+    Ok([SEALED, &nonce, &sealed].concat())
+}
+
+/// What [`seal`] sealed, or `None` for a file in another format, changed, or sealed on another
+/// computer.
+fn unseal(bytes: &[u8]) -> Option<Vec<u8>> {
+    use chacha20poly1305::{aead::Aead, KeyInit};
+    let rest = bytes.strip_prefix(SEALED)?;
+    let (nonce, sealed) = rest.split_at_checked(12)?;
+    let nonce: [u8; 12] = nonce.try_into().ok()?;
+    chacha20poly1305::ChaCha20Poly1305::new(&file_key())
+        .decrypt(&nonce.into(), sealed)
+        .ok()
+}
+
+/// A file entry for an account signed out while the keychain was away: the keychain's copy, if any,
+/// counts as gone, and goes at the first start it answers.
+const SIGNED_OUT: &str = "";
+
+impl SecretStore for FileStore {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        self.locked(|| Ok(self.read()?.remove(key)))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            secrets.insert(key.into(), secret.into());
+            self.write(&secrets)
+        })
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            if secrets.remove(key).is_none() {
+                return Ok(());
+            }
+            self.write(&secrets)
+        })
+    }
+    fn persistent(&self) -> bool {
+        true
     }
 }
 
@@ -1028,35 +1254,235 @@ pub fn no_keychain() -> Option<String> {
     })
 }
 
-/// The keychain if it answers, else memory for this run (said in the UI with [`no_keychain`]).
-/// Never a file of its own: secrets are kept by the system or not at all.
+/// What a keychain this run stopped asking answers.
+const KEYCHAIN_AWAY: &str =
+    "The keychain didn't answer earlier: sign in again to keep this account.";
+
+/// The keychain, with the secrets file for what it can't keep (#5095). Each call asks both, never a
+/// choice made once: a launcher that wrote to the file while the keychain was away still finds its
+/// secrets after another process handed them to the keychain. Reads take the file's copy first (it
+/// is the newer one), writes go to the keychain and to the file only when it refuses.
+///
+/// The file's lock is never held across a keychain call, which can wait on an unlock prompt: other
+/// processes keep reading and writing the file meanwhile. Every write to the keychain holds a lock of
+/// its own instead (`account-secrets.keychain.lock`), with what it writes read under it, so a hand-over
+/// never puts back a secret another process renewed or signed out since; only keychain writes wait
+/// on a prompt, as they would on the keychain itself. A file entry is only removed if it still holds
+/// what was read before the keychain call, so another process's newer write stays. And once the
+/// keychain refuses or doesn't answer, this run stops asking it (no prompt after a dismissed
+/// prompt), until another process hands it a secret this run saw in the file.
+pub struct Layered {
+    keychain: Box<dyn SecretStore>,
+    file: FileStore,
+    away: std::sync::atomic::AtomicBool,
+    /// What this run saw in the file and didn't hand over itself: put there, read there, or there
+    /// when it started. Gone from the file later, the keychain answers again (another process
+    /// handed it).
+    parked: Mutex<std::collections::HashSet<String>>,
+}
+
+impl Layered {
+    /// Starts by handing the keychain what the file kept while it was away, one secret at a time,
+    /// up to the first it refuses; sign-outs it missed are done there too. Each is read again under
+    /// the keychain's lock: one another process renewed or signed out meanwhile isn't handed over.
+    pub fn new(keychain: Box<dyn SecretStore>, file: FileStore) -> Self {
+        let layered = Self {
+            keychain,
+            file,
+            away: Default::default(),
+            parked: Default::default(),
+        };
+        let keys: Vec<String> = layered
+            .file
+            .entries()
+            .unwrap_or_default()
+            .into_keys()
+            .collect();
+        // Seen before the hand-over starts: whatever another process hands over meanwhile, this
+        // run asks the keychain for it again.
+        layered.parked.lock().unwrap().extend(keys.iter().cloned());
+        for key in keys {
+            let handed = layered.keychain_writes(|| {
+                let Some(secret) = layered.file.entry(&key)? else {
+                    return Ok(());
+                };
+                layered.ask(|keychain| match secret.as_str() {
+                    SIGNED_OUT => keychain.delete(&key),
+                    _ => keychain.set(&key, &secret),
+                })?;
+                layered.unpark(&key, Some(secret))
+            });
+            if handed.is_err() {
+                break;
+            }
+        }
+        layered
+    }
+
+    /// Runs `f`, a write to the keychain and what it reads first, holding the keychain's lock.
+    fn keychain_writes<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        self.file.holding("keychain.lock", f)
+    }
+
+    fn is_away(&self) -> bool {
+        self.away.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Asks the keychain unless it was away; an error means it is away for the rest of the run.
+    fn ask<T>(
+        &self,
+        call: impl FnOnce(&dyn SecretStore) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.is_away() {
+            return Err(KEYCHAIN_AWAY.into());
+        }
+        let answer = call(self.keychain.as_ref());
+        if answer.is_err() {
+            self.away.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        answer
+    }
+
+    /// Puts `value` in the file for `key`, the keychain being away.
+    fn park(&self, key: &str, value: &str) -> Result<(), String> {
+        self.file.put(key, value)?;
+        self.parked.lock().unwrap().insert(key.into());
+        Ok(())
+    }
+
+    /// The keychain took `key`: the file's copy read before goes, unless another process wrote since.
+    /// Still in the file, it stays counted as seen there, so its hand-over by another process is
+    /// noticed.
+    fn unpark(&self, key: &str, before: Option<String>) -> Result<(), String> {
+        let still_there = self.file.settle(key, before.as_deref())?;
+        let mut parked = self.parked.lock().unwrap();
+        if still_there {
+            parked.insert(key.into());
+        } else {
+            parked.remove(key);
+        }
+        Ok(())
+    }
+}
+
+impl SecretStore for Layered {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        match self.file.entry(key)? {
+            Some(secret) if secret == SIGNED_OUT => return Ok(None),
+            Some(secret) => {
+                self.parked.lock().unwrap().insert(key.into());
+                return Ok(Some(secret));
+            }
+            None => {}
+        }
+        // Seen in the file and gone from it: another process handed it to the keychain, which
+        // answers again.
+        if self.is_away() && self.parked.lock().unwrap().remove(key) {
+            self.away.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.ask(|keychain| keychain.get(key))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        if self.is_away() {
+            return self.park(key, secret);
+        }
+        self.keychain_writes(|| {
+            let before = self.file.entry(key)?;
+            match self.ask(|keychain| keychain.set(key, secret)) {
+                Ok(()) => self.unpark(key, before),
+                Err(_) => self.park(key, secret),
+            }
+        })
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        // The keychain may hold a copy: the mark hides it until it can go.
+        if self.is_away() {
+            return self.park(key, SIGNED_OUT);
+        }
+        self.keychain_writes(|| {
+            let before = self.file.entry(key)?;
+            match self.ask(|keychain| keychain.delete(key)) {
+                Ok(()) => self.unpark(key, before),
+                Err(_) => self.park(key, SIGNED_OUT),
+            }
+        })
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
+/// The OS keychain if it answers, else why not.
+fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
+    // Unit tests never reach the player's keychain.
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "macos",
+            target_os = "windows"
+        )
+    ))]
+    {
+        if std::env::var_os("HORIZON_NO_KEYCHAIN").is_some() {
+            return Err("HORIZON_NO_KEYCHAIN is set.".into());
+        }
+        SystemStore.get("probe").map(|_| Box::new(SystemStore) as _)
+    }
+    #[cfg(not(all(
+        not(test),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "macos",
+            target_os = "windows"
+        )
+    )))]
+    Err("This system has no keychain.".into())
+}
+
+/// Microsoft sign-ins. Linux and FreeBSD: the Secret Service with the secrets file beside it
+/// ([`Layered`], #5095). macOS and Windows: the keychain if it answers. Memory with
+/// `HORIZON_NO_KEYCHAIN` (the launcher's own tests) or no keychain on macOS and Windows (said in the
+/// UI with [`no_keychain`]).
 pub fn store() -> &'static dyn SecretStore {
     static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
     STORE
         .get_or_init(|| {
-            // Unit tests never reach the player's keychain.
-            #[cfg(all(
-                not(test),
-                any(
-                    target_os = "linux",
-                    target_os = "freebsd",
-                    target_os = "macos",
-                    target_os = "windows"
-                )
-            ))]
-            {
-                let why = match std::env::var_os("HORIZON_NO_KEYCHAIN") {
-                    Some(_) => "HORIZON_NO_KEYCHAIN is set.".to_string(),
-                    None => match SystemStore.get("probe") {
-                        Ok(_) => return Box::new(SystemStore),
-                        Err(e) => e,
-                    },
-                };
-                let _ = NO_KEYCHAIN_WHY.set(why);
+            #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
+            if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
+                return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()));
             }
-            Box::<MemoryStore>::default()
+            keychain_or_why().unwrap_or_else(|why| {
+                let _ = NO_KEYCHAIN_WHY.set(why);
+                Box::<MemoryStore>::default()
+            })
         })
         .as_ref()
+}
+
+/// Secrets never written to a file of the launcher's own, the Tailscale access token (it
+/// administers the player's whole tailnet): the keychain if it answers, else memory for this run.
+/// [`store`] itself on macOS and Windows, where that is what it is.
+pub fn keychain() -> &'static dyn SecretStore {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        static KEYCHAIN: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
+        KEYCHAIN
+            .get_or_init(|| keychain_or_why().unwrap_or_else(|_| Box::<MemoryStore>::default()))
+            .as_ref()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    store()
+}
+
+/// Whether sign-ins sit in the secrets file now, the keychain having refused them (#5095): sign-out
+/// marks alone, or a file that can't be read, don't count.
+pub fn in_secrets_file() -> bool {
+    cfg!(any(target_os = "linux", target_os = "freebsd"))
+        && store().persistent()
+        && FileStore::launcher().holds_secrets()
 }
 
 // ----- Accounts ------------------------------------------------------------------------------------

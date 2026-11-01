@@ -128,7 +128,11 @@ impl Game<'_> {
             e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
             e.meta = vehicle_meta(b.hurt_time, b.hurt_dir, b.damage);
             // AbstractBoat.DATA_ID_PADDLE_LEFT and DATA_ID_PADDLE_RIGHT.
+            // Omitted false values must reset clients that saw a true value,
+            // including when the controlling passenger dismounts mid-stroke.
             for (k, paddling) in b.paddling.iter().enumerate() {
+                e.defaults
+                    .push((11 + k as u8, serializer::BOOLEAN, Value::Bool(false)));
                 if *paddling {
                     e.meta
                         .push((11 + k as u8, serializer::BOOLEAN, Value::Bool(true)));

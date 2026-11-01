@@ -214,7 +214,10 @@ impl Session {
                     "accounts": accounts.accounts.iter().map(|a| json!({ "name": a.name, "uuid": a.uuid, "authentication": account::session::status(account::store(), &a.uuid) })).collect::<Vec<_>>(),
                     "plays_as": accounts.selected().map(|a| a.name.clone()),
                     "sign_in_configured": account::client_id().is_some(),
+                    // Sign-ins outlast the launcher: in the keychain, or in the secrets file
+                    // where it refused them (`secrets_file`: the file holds a sign-in).
                     "keychain": account::store().persistent(),
+                    "secrets_file": account::in_secrets_file(),
                     // Play needs an account that owns the game (the owner gate).
                     "owner": accounts.has_owner(account::store()),
                     "sign_in": sign_in,

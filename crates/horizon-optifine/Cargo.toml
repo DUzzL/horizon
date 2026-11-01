@@ -9,5 +9,9 @@ description = "OptiFine-format resource pack files: .properties, the name, range
 [dependencies]
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 
+[dev-dependencies]
+# `cpu_seconds` for cem_expr_bench.
+horizon-bench = { path = "../horizon-bench" }
+
 [lints]
 workspace = true

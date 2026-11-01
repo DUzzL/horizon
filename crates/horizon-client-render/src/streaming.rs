@@ -149,6 +149,8 @@ pub trait LodSampler: Send {
     fn reduced_column(&mut self, x: i32, z: i32, _width: i32) -> crate::lod::Column {
         self.column(x, z)
     }
+    /// `side` x `side` columns from (`x`, `z`), `stride` blocks apart; none
+    /// when sampling failed and should be tried again later.
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
         let mut columns = Vec::with_capacity(side * side);
         for dz in 0..side {
