@@ -1,7 +1,9 @@
 //! Far terrain from a server (`horizon:lod`): a Horizon client playing on
-//! another machine's world (a dedicated server, a LAN world) has neither the
-//! seed nor the generator its far terrain samples, so the server samples the
-//! tiles for it, up to the distance its owner allows (`horizon-lod-distance`).
+//! another machine's world has neither the seed nor the generator its far
+//! terrain samples, so the server samples the tiles for it, up to the distance
+//! its owner allows (`horizon-lod-distance`). Only a dedicated server can offer
+//! it for now: an open-to-LAN world has no setting for that distance yet, so
+//! its `LanConfig::lod_distance` stays 0.
 //!
 //! The server offers it with an [`Offer`] payload in the configuration phase,
 //! to Horizon clients only (a vanilla client never hears of it). The client
@@ -23,7 +25,9 @@ use horizon_protocol::{
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, time::Instant};
 
+mod client;
 mod server;
+pub use client::{Inbox, RemoteSource};
 pub use server::{Delivery, Job, Service, Verdict};
 
 /// The custom payload channel, both ways.
