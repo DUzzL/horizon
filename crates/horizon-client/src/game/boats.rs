@@ -725,7 +725,7 @@ impl Game<'_> {
         let driven = self.guest_vehicles();
         // EntityTickEvent.Post comes once AbstractBoat.tick is over, after the
         // passes below (lava, ejection, bubbles, contacts): the ticked boats,
-        // in order.
+        // in order, kept only while a mod listens (no list without mods).
         let mut ticked = Vec::new();
         for i in 0..self.boats.len() {
             // A mod's hook may have removed boats.
@@ -763,7 +763,9 @@ impl Game<'_> {
             };
             let b = self.boats[i].clone();
             self.boats[i] = self.tick_boat(b, false);
-            ticked.push((id, kind));
+            if round.listening() {
+                ticked.push((id, kind));
+            }
         }
         // AbstractBoat.tick's applyEffectsFromBlocks, on the server for every
         // boat, the client-driven ones too.
