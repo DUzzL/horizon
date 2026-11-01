@@ -115,7 +115,11 @@ impl Game<'_> {
             return;
         }
         let g = host.hub.guest(conn).expect("found above");
-        if excused(g, &self.world, host.states.as_slice(), &host.hub.guests) {
+        // A client that hasn't said it loaded the level is still on its loading screen, where it
+        // doesn't move (the server stopped waiting for it after 60 ticks): the replay falls or drifts
+        // where it stands. Its first move counts as any other.
+        let loading = g.loading && !over.moved;
+        if loading || excused(g, &self.world, host.states.as_slice(), &host.hub.guests) {
             if let Some(replay) = host
                 .hub
                 .guest_mut(conn)

@@ -12,7 +12,8 @@ use horizon_assets::{
 };
 use horizon_client::{
     block_entity_render::{diffuse, diffuse_lights, vertex_light},
-    containers::BlockEntity,
+    containers::{BlockEntity, ModBlockEntity},
+    fast_hash::FxHashMap,
     gfx::Cull,
     hud::Rect,
     items::ItemStack,
@@ -57,6 +58,7 @@ pub struct BlockEntityDraw {
     poses: Vec<Mat4>,
     lights: (Vec3, Vec3),
     vertices: Vec<Vertex>,
+    kept: bool,
 }
 
 #[allow(dead_code)]
@@ -91,6 +93,19 @@ impl BlockEntityDraw {
     /// Scales what is drawn next by `by` about the pose's origin.
     pub fn scale(&mut self, by: [f32; 3]) {
         self.apply(Mat4::from_scale(Vec3::from_array(by)));
+    }
+    /// Keeps what this call drew: the block is drawn the same again, with
+    /// neither `native_block_entity_submit` nor
+    /// `native_block_entity_render_bounding_box` called, until its state,
+    /// its block entity (what the server sent), its light or the resource
+    /// packs change. Call it only when what you drew reads none of
+    /// `partial`, `game_time`, the blocks around it or anything else of
+    /// yours, and moves nothing by itself: an idle machine, not a turning
+    /// shaft. Kept geometry stands still: an enchanted item's glint, and an
+    /// item drawn with `native_draw_item` whose model reads the time (a clock,
+    /// a compass), stop where they were. API @API:block_entity_keep@.
+    pub fn keep(&mut self) {
+        self.kept = true;
     }
     fn apply(&mut self, m: Mat4) {
         if let Some(pose) = self.poses.last_mut() {
@@ -145,6 +160,98 @@ fn shaded(tint: u32, brightness: f32) -> u32 {
     0xFF00_0000 | c(0) << 16 | c(8) << 8 | c(16)
 }
 
+/// Game ticks kept geometry stays after it was last drawn, as signs' text.
+const KEPT_FOR: i64 = 100;
+
+/// What kept geometry was drawn with besides its block entity: drawn again
+/// when any of it changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KeptKey {
+    dim: Dim,
+    state: u32,
+    light: u32,
+}
+
+struct KeptEntry {
+    key: KeptKey,
+    entity: ModBlockEntity,
+    bounds: [f32; 6],
+    /// Game time it was last drawn.
+    used: i64,
+    /// Relative to the block's corner.
+    vertices: Vec<Vertex>,
+}
+
+/// Geometry mods kept (`BlockEntityDraw::keep`), by position. As
+/// `SignTexts` keeps a sign's text, it is kept relative to the block and
+/// moved to the camera each frame.
+#[derive(Default)]
+pub(super) struct KeptGeometry {
+    entries: FxHashMap<[i32; 3], KeptEntry>,
+    /// Game time of the last sweep of what is out of view.
+    swept: i64,
+}
+
+impl KeptGeometry {
+    /// Drops what was not drawn for `KEPT_FOR` ticks, once every `KEPT_FOR`.
+    fn sweep(&mut self, now: i64) {
+        if (now - self.swept).abs() >= KEPT_FOR {
+            self.swept = now;
+            self.entries
+                .retain(|_, e| (now - KEPT_FOR..=now).contains(&e.used));
+        }
+    }
+    /// What is kept at `pos` when it was drawn with `key` and `entity`,
+    /// marked drawn at `now`.
+    fn get(
+        &mut self,
+        pos: [i32; 3],
+        key: KeptKey,
+        entity: &ModBlockEntity,
+        now: i64,
+    ) -> Option<&KeptEntry> {
+        let entry = self
+            .entries
+            .get_mut(&pos)
+            .filter(|e| e.key == key && e.entity == *entity)?;
+        entry.used = now;
+        Some(entry)
+    }
+    fn keep(
+        &mut self,
+        pos: [i32; 3],
+        key: KeptKey,
+        entity: &ModBlockEntity,
+        bounds: [f32; 6],
+        vertices: &[Vertex],
+        now: i64,
+    ) {
+        let mut kept = self
+            .entries
+            .remove(&pos)
+            .map_or_else(Vec::new, |e| e.vertices);
+        kept.clear();
+        kept.extend_from_slice(vertices);
+        self.entries.insert(
+            pos,
+            KeptEntry {
+                key,
+                entity: entity.clone(),
+                bounds,
+                used: now,
+                vertices: kept,
+            },
+        );
+    }
+    fn forget(&mut self, pos: [i32; 3]) {
+        self.entries.remove(&pos);
+    }
+    /// Forgets everything: the atlas's sprites moved.
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 impl Game<'_> {
     /// `native_block_entity_submit` for each of `blocks` (in drawn sections,
     /// drawn by no vanilla renderer) whose block entity is a mod's, closer than
@@ -166,7 +273,11 @@ impl Game<'_> {
             poses: Vec::new(),
             lights: diffuse_lights(self.dim == Dim::Nether),
             vertices: std::mem::take(out),
+            kept: false,
         };
+        let now = self.world.game_time;
+        let mut kept = self.kept_block_entities.borrow_mut();
+        kept.sweep(now);
         for &(pos, state) in blocks {
             let corner = DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
             // Vec3.closerThan: strictly closer.
@@ -178,9 +289,27 @@ impl Game<'_> {
             else {
                 continue;
             };
+            let origin = (corner - camera).as_vec3();
+            let light = vertex_light(self.world.light(pos[0], pos[1], pos[2]));
+            let key = KeptKey {
+                dim: self.dim,
+                state,
+                light,
+            };
+            if let Some(entry) = kept.get(pos, key, entity, now) {
+                if in_frustum(self.view_frustum.as_ref(), origin, entry.bounds) {
+                    let start = draw.vertices.len();
+                    self.mark_block_entity(start, state);
+                    draw.vertices.extend(entry.vertices.iter().map(|v| Vertex {
+                        pos: (Vec3::from_array(v.pos) + origin).to_array(),
+                        ..*v
+                    }));
+                    self.cull_entity_vertices(&mut draw.vertices, start);
+                }
+                continue;
+            }
             let id = BlockStateId(state);
             let block = &*self.res.facts().get(id).name;
-            let origin = (corner - camera).as_vec3();
             let mut bounds = DEFAULT_BOUNDS;
             self.native_block_entity_render_bounding_box(pos, block, id, entity, &mut bounds);
             if !in_frustum(self.view_frustum.as_ref(), origin, bounds) {
@@ -188,11 +317,22 @@ impl Game<'_> {
             }
             let start = draw.vertices.len();
             self.mark_block_entity(start, state);
+            // Drawn relative to the block, then moved to the camera, so what
+            // is kept can be moved again.
             draw.block = pos;
             draw.poses.clear();
-            draw.poses.push(Mat4::from_translation(origin));
-            draw.light = vertex_light(self.world.light(pos[0], pos[1], pos[2]));
+            draw.poses.push(Mat4::IDENTITY);
+            draw.light = light;
+            draw.kept = false;
             self.native_block_entity_submit(pos, block, id, entity, &mut draw);
+            if draw.kept {
+                kept.keep(pos, key, entity, bounds, &draw.vertices[start..], now);
+            } else {
+                kept.forget(pos);
+            }
+            for v in &mut draw.vertices[start..] {
+                v.pos = (Vec3::from_array(v.pos) + origin).to_array();
+            }
             self.cull_entity_vertices(&mut draw.vertices, start);
         }
         *out = draw.vertices;
@@ -362,6 +502,7 @@ mod tests {
             poses: vec![Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0))],
             lights: diffuse_lights(false),
             vertices: Vec::new(),
+            kept: false,
         }
     }
 
@@ -445,5 +586,82 @@ mod tests {
     fn a_tint_keeps_its_channels_in_vertex_order() {
         // The vertex colour is RGBA8 read little-endian: red in the low byte.
         assert_eq!(shaded(0x10_20_30, 1.0), 0xFF_30_20_10);
+    }
+
+    fn machine(progress: i32) -> ModBlockEntity {
+        ModBlockEntity {
+            id: "mymod:machine".into(),
+            data: vec![progress],
+            ..Default::default()
+        }
+    }
+
+    fn vertex(x: f32) -> Vertex {
+        Vertex {
+            pos: [x, 0.0, 0.0],
+            ..bytemuck::Zeroable::zeroed()
+        }
+    }
+
+    const KEY: KeptKey = KeptKey {
+        dim: Dim::Overworld,
+        state: 7,
+        light: 0xF0F0,
+    };
+
+    #[test]
+    fn kept_geometry_is_drawn_again_until_what_it_was_drawn_with_changes() {
+        let mut kept = KeptGeometry::default();
+        let pos = [1, 2, 3];
+        kept.keep(pos, KEY, &machine(0), DEFAULT_BOUNDS, &[vertex(0.5)], 0);
+        let entry = kept.get(pos, KEY, &machine(0), 1).expect("kept");
+        assert_eq!(entry.vertices.len(), 1);
+        assert_eq!(entry.vertices[0].pos, [0.5, 0.0, 0.0]);
+        assert_eq!(entry.bounds, DEFAULT_BOUNDS);
+        // New data from the server, another state, light or dimension, or
+        // another position: none of them is the kept geometry.
+        assert!(kept.get(pos, KEY, &machine(1), 1).is_none());
+        for changed in [
+            KeptKey { state: 8, ..KEY },
+            KeptKey {
+                light: 0x00F0,
+                ..KEY
+            },
+            KeptKey {
+                dim: Dim::Nether,
+                ..KEY
+            },
+        ] {
+            assert!(kept.get(pos, changed, &machine(0), 1).is_none());
+        }
+        assert!(kept.get([1, 2, 4], KEY, &machine(0), 1).is_none());
+        // Drawn again and kept with the new data, it replaces the old.
+        kept.keep(pos, KEY, &machine(1), DEFAULT_BOUNDS, &[vertex(0.25)], 2);
+        assert!(kept.get(pos, KEY, &machine(0), 2).is_none());
+        let entry = kept.get(pos, KEY, &machine(1), 2).expect("kept again");
+        assert_eq!(entry.vertices[0].pos, [0.25, 0.0, 0.0]);
+        // Drawn without keeping: forgotten.
+        kept.forget(pos);
+        assert!(kept.get(pos, KEY, &machine(1), 3).is_none());
+    }
+
+    #[test]
+    fn kept_geometry_out_of_view_for_its_ticks_is_swept() {
+        let mut kept = KeptGeometry::default();
+        let (seen, gone) = ([0, 0, 0], [5, 0, 0]);
+        kept.keep(seen, KEY, &machine(0), DEFAULT_BOUNDS, &[vertex(0.0)], 0);
+        kept.keep(gone, KEY, &machine(0), DEFAULT_BOUNDS, &[vertex(0.0)], 0);
+        kept.get(gone, KEY, &machine(0), 50);
+        // A sweep at 100 keeps both: each was drawn in the last 100 ticks.
+        kept.sweep(100);
+        assert!(kept.entries.contains_key(&gone));
+        assert!(kept.entries.contains_key(&seen));
+        kept.get(seen, KEY, &machine(0), 150);
+        // At 199 no sweep is due yet; at 200 the one last drawn at 50 goes.
+        kept.sweep(199);
+        assert!(kept.entries.contains_key(&gone));
+        kept.sweep(200);
+        assert!(!kept.entries.contains_key(&gone));
+        assert!(kept.get(seen, KEY, &machine(0), 200).is_some());
     }
 }

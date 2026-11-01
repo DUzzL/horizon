@@ -1467,6 +1467,7 @@ impl Game<'_> {
             player: player_uuid,
             tool: None,
             explosion: None,
+            used: false,
         };
         self.native_loot_drops(&context, &mut stacks);
         stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
@@ -4891,6 +4892,9 @@ impl Game<'_> {
         let feet = [m.position.x, m.position.y, m.position.z];
         let mut handled = true;
         let mut drops: Vec<(String, u32)> = Vec::new();
+        // The shearing table rolled, for the mods (none for a mooshroom).
+        let mut drops_table = String::new();
+        let mob = (m.id, super::native_hooks::mob_kind(m));
         // `Sheep.shear`'s drops add a spread on top of the ItemEntity's own
         // motion; `MushroomCow.shear`'s do not.
         let mut wool = false;
@@ -4980,8 +4984,9 @@ impl Game<'_> {
             Species::Sheep if item == "minecraft:shears" && !m.extra.sheared && !m.is_baby() => {
                 m.extra.sheared = true;
                 let color = horizon_client::mobs::render::DYE_NAMES[m.extra.color as usize & 15];
+                drops_table = format!("minecraft:shearing/sheep/{color}");
                 let stacks = world_items!(self).loot_table(
-                    &format!("minecraft:shearing/sheep/{color}"),
+                    &drops_table,
                     false,
                     None,
                     &mut self.world.random,
@@ -5482,8 +5487,22 @@ impl Game<'_> {
             self.trigger_item_entity("minecraft:player_sheared_equipment", &stack, &target);
             self.spawn_item(stack, [center[0], center[1] + 0.5, center[2]], [0.0; 3], 10);
         }
-        for (item, count) in drops {
-            for _ in 0..count {
+        let mut drops: Vec<ItemStack> = drops
+            .into_iter()
+            .map(|(item, count)| ItemStack::new(&item, count))
+            .collect();
+        if !drops.is_empty() {
+            self.native_use_drops(
+                &drops_table,
+                feet,
+                None,
+                Some((mob.0, &mob.1)),
+                held.as_ref(),
+                &mut drops,
+            );
+        }
+        for stack in drops {
+            for _ in 0..stack.count {
                 // `spawnAtLocation(stack, 1.0)`: an ItemEntity a block above
                 // the feet that starts with the constructor's own motion, and
                 // `setDefaultPickUpDelay`. Sheep.shear adds its spread on top;
@@ -5501,10 +5520,8 @@ impl Game<'_> {
                 }
                 self.spawn_item(
                     ItemStack {
-                        item: item.as_str().into(),
                         count: 1,
-                        damage: 0,
-                        extra: None,
+                        ..stack.clone()
                     },
                     [feet[0], feet[1] + 1.0, feet[2]],
                     v,
@@ -5536,10 +5553,21 @@ impl Game<'_> {
             _ => return false,
         };
         let at = m.position;
+        let mob = (m.id, super::native_hooks::mob_kind(m));
         let tool = self.held().cloned();
         self.audio.play(sound, Some([at.x, at.y, at.z]), 1.0, 1.0);
         self.mobs[index].extra.sheared = true;
-        for stack in self.sequence_loot(table, table, tool.as_ref()) {
+        let mut stacks = self.sequence_loot(table, table, tool.as_ref());
+        let origin = [at.x, at.y, at.z];
+        self.native_use_drops(
+            table,
+            origin,
+            None,
+            Some((mob.0, &mob.1)),
+            tool.as_ref(),
+            &mut stacks,
+        );
+        for stack in stacks {
             self.spawn_at_location(at, height, stack);
         }
         let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
@@ -5562,7 +5590,17 @@ impl Game<'_> {
         let feet = [at.x, at.y, at.z];
         let tool = self.held().cloned();
         let table = "minecraft:brush/armadillo";
-        for d in self.sequence_loot(table, table, tool.as_ref()) {
+        let mut stacks = self.sequence_loot(table, table, tool.as_ref());
+        let kind = super::native_hooks::mob_kind(&self.mobs[index]);
+        self.native_use_drops(
+            table,
+            feet,
+            None,
+            Some((id, &kind)),
+            tool.as_ref(),
+            &mut stacks,
+        );
+        for d in stacks {
             self.spawn_at_location(at, 0.0, d);
         }
         self.audio

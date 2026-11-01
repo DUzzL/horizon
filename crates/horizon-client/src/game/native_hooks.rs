@@ -678,7 +678,9 @@ pub(crate) struct NativeLootDrops<'a> {
     pub(crate) origin: [f64; 3],
     /// The block broken: its position and state.
     pub(crate) block: Option<([i32; 3], BlockStateId)>,
-    /// The mob that died: its entity ID and type (`minecraft:zombie`).
+    /// The mob that died, or the entity a player's use dropped them from (the
+    /// sheep sheared, the item frame broken): its entity ID and type
+    /// (`minecraft:zombie`).
     pub(crate) entity: Option<(u32, &'a str)>,
     /// The player who broke the block or killed the mob, when known. A mob
     /// names one only while it remembers the player's hit (100 ticks), so one
@@ -688,6 +690,12 @@ pub(crate) struct NativeLootDrops<'a> {
     pub(crate) tool: Option<&'a ItemStack>,
     /// The radius of the explosion that broke the block.
     pub(crate) explosion: Option<f32>,
+    /// A player's use dropped them rather than a break or a death: shears on a
+    /// sheep, a mooshroom, a snow golem or a bogged, a brush on an armadillo or
+    /// a suspicious block, shears carving a pumpkin, picking sweet berries or
+    /// cave vines, or a hit taking an item frame or its item. `player` names
+    /// them; `block` or `entity` says what dropped them. API @API:use_drops@.
+    pub(crate) used: bool,
 }
 
 /// A depth-tested outline of the client's block selection shape.
@@ -896,7 +904,7 @@ pub(crate) struct NativePlayer {
 pub(crate) struct NativeClock {
     /// Ticks since the world was created (`Level.getGameTime`).
     pub(crate) game_time: i64,
-    /// The time of day in ticks (`Level.getDayTime`): 0 at sunrise, 24000 a
+    /// The time of day in ticks (`Level.getOverworldClockTime`): 0 at sunrise, 24000 a
     /// day. It keeps counting past 24000 (`/time add`, days going by), so take
     /// it modulo 24000 for the hour; `/time set` can make it negative.
     pub(crate) day_time: i64,
@@ -1734,6 +1742,39 @@ impl Game<'_> {
     ) {
         let _ = (player, command, ran);
     }
+    /// A command a player typed (NeoForge's `CommandEvent`, before
+    /// `Commands.performCommand` runs it), without its slash: any command,
+    /// vanilla's and the mods' own, also one the player may not run. Set
+    /// `canceled` to stop it: nothing runs and nothing is answered but the
+    /// lines pushed to `replies`, which go to the player as system chat.
+    /// No player's state is swapped in and the server's player list is busy
+    /// with this one, so `native_tell` and the other helpers that take a UUID
+    /// reach nobody here: answer through `replies`. Once for each command a
+    /// player sends, on a server, and for each line of a quiet command batch
+    /// (`horizon:quiet_commands`, whose replies are dropped). A command the
+    /// server refuses before reading it (unsigned chat arguments, the chat
+    /// rate limit) never reaches it. @API:native_player_command@.
+    pub(super) fn native_player_command(
+        &mut self,
+        player: u128,
+        name: &str,
+        command: &str,
+        canceled: &mut bool,
+        replies: &mut Vec<Text>,
+    ) {
+        let _ = (player, name, command, canceled, replies);
+    }
+    /// A command a mod registered, typed on the dedicated server's console
+    /// or sent through `horizon-server console`
+    /// (`DedicatedServer.handleConsoleInputs`), without its slash: set `ran`
+    /// when it is yours. There is no player: the source is the console, at
+    /// permission level 4, so `native_acting_player` is None and the
+    /// player-only helpers give nothing; `native_feedback` answers on the
+    /// console. A name no mod registered goes to vanilla's dispatcher as
+    /// before. @API:native_perform_console_command@.
+    pub(super) fn native_perform_console_command(&mut self, command: &str, ran: &mut bool) {
+        let _ = (command, ran);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
@@ -2128,7 +2169,9 @@ impl Game<'_> {
     /// entity's data (a shulker box's items) after this. Add, change or take out
     /// stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
     /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
-    /// how, and it is called even when `drops` is empty. It hears blocks that a
+    /// how, and it is called even when `drops` is empty. A player's use drops
+    /// through it too (`NativeLootDrops::used`: shears, a brush, an item
+    /// frame), with that player named. It hears blocks that a
     /// player, an explosion or a mob breaks, not other breaks (leaves decaying,
     /// a torch losing its wall, a piston, `/setblock ... destroy`), nor a
     /// creative break or a tool that can't harvest the block, nor experience.
@@ -2689,6 +2732,62 @@ impl Game<'_> {
         }
         let _ = self.process_level_events();
         changed
+    }
+    /// The strongest redstone signal reaching the block at `pos` from its six
+    /// neighbours, 0 to 15 (`SignalGetter.getBestNeighborSignal`, what a
+    /// dispenser or a piston reads), in the level in place, `dimension`. 0 on
+    /// a client's copy of the world and for another dimension. A mod's
+    /// explosive, launcher or machine reads it in its block entity's tick to
+    /// go off or switch on. API @API:native_neighbor_signal@.
+    pub(super) fn native_neighbor_signal(&mut self, dimension: &str, pos: [i32; 3]) -> i32 {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return 0;
+        }
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        self.with_level(|b, level, ticks| b.best_neighbor_signal(level, ticks, at))
+    }
+    /// The light at `pos` in the world in place, as `(block, sky)`, each 0 to
+    /// 15 (`Level.getBrightness` for `LightLayer.BLOCK` and `LightLayer.SKY`).
+    /// A solar panel checks for full sky light above it, a lamp or a mob farm
+    /// for darkness. `(0, 0)` in a chunk that isn't loaded. Like the other
+    /// reads here it reads the world this game holds: the level in place on
+    /// a server, the server's copy on a client. API @API:native_world_state@.
+    pub(super) fn native_light(&self, pos: [i32; 3]) -> (u8, u8) {
+        if !self.world.loaded(pos[0], pos[2]) {
+            return (0, 0);
+        }
+        let light = self.world.light(pos[0], pos[1], pos[2]);
+        (light & 15, light >> 4)
+    }
+    /// The rain and thunder levels of the world in place, each 0.0 to 1.0
+    /// (`Level.getRainLevel` and `Level.getThunderLevel`): what a solar panel
+    /// or a wind turbine reads. Both 0 in the Nether and the End, which have
+    /// no weather (`Level.canHaveWeather`). API @API:native_world_state@.
+    pub(super) fn native_weather(&self) -> (f32, f32) {
+        if self.dim != super::Dim::Overworld {
+            return (0.0, 0.0);
+        }
+        self.world.weather.levels(1.0)
+    }
+    /// The world's time of day in ticks (`Level.getOverworldClockTime`), the
+    /// same as `native_clock`'s `day_time`; it keeps counting past 24000, so
+    /// take it modulo 24000 for the hour. API @API:native_world_state@.
+    pub(super) fn native_day_time(&self) -> i64 {
+        self.world.day_time
+    }
+    /// The lowest block y and the height of the world in place
+    /// (`LevelHeightAccessor.getMinY` and `getHeight`): how deep a quarry or a
+    /// miner may dig. API @API:native_world_state@.
+    pub(super) fn native_world_height(&self) -> (i32, i32) {
+        (self.world.shape.min_y, self.world.shape.height)
+    }
+    /// The most of the item `item` one slot holds (`Item.getDefaultMaxStackSize`),
+    /// or `None` for an unknown item: for a mod's container that fills or
+    /// merges stacks itself. API @API:native_world_state@.
+    pub(super) fn native_max_stack_size(&self, item: &str) -> Option<u32> {
+        self.res.items().get(item).map(|i| i.max_stack)
     }
     /// The random of the server level `dimension`: vanilla's `Level.random`
     /// (`level.getRandom()`), the one its explosions, block drops and other
@@ -3320,6 +3419,33 @@ impl Game<'_> {
             player,
             tool,
             explosion,
+            used: false,
+        };
+        self.native_loot_drops(&context, drops);
+        drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
+    }
+    /// The mods' say on what the acting player's use drops
+    /// (`NativeLootDrops::used`): `table` is the loot table rolled, if any.
+    pub(super) fn native_use_drops(
+        &mut self,
+        table: &str,
+        origin: [f64; 3],
+        block: Option<([i32; 3], BlockStateId)>,
+        entity: Option<(u32, &str)>,
+        tool: Option<&ItemStack>,
+        drops: &mut Vec<ItemStack>,
+    ) {
+        let player = Some(self.native_acting_id());
+        let context = NativeLootDrops {
+            table,
+            dimension: self.dim.id(),
+            origin,
+            block,
+            entity,
+            player,
+            tool,
+            explosion: None,
+            used: true,
         };
         self.native_loot_drops(&context, drops);
         drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
