@@ -56,6 +56,9 @@ pub(super) struct NativeSound {
 #[derive(Default)]
 pub(super) struct Creatures {
     pub projectiles: Vec<Projectile>,
+    /// The entities a family tells the mods ticked, kept between ticks
+    /// (game/native_ticks.rs).
+    pub tick_buffer: Vec<(u32, super::native_ticks::TickKind)>,
     /// Wind bursts from a guest's turn, waiting for it to end (game/wind.rs).
     pub wind_bursts: Vec<super::wind::Burst>,
     /// The players a fishing hook can catch, taken as the hooks tick, and
@@ -885,6 +888,20 @@ impl Game<'_> {
         // waiting any more.
         self.combat.charged_exploders.clear();
         self.combat.exploded.clear();
+        // EntityTickEvent.Pre for the mobs about to tick, before the loop holds them.
+        let mut round = self.native_tick_round();
+        if round.listening() {
+            let ticking = self.entity_ticking_area();
+            let mut i = 0;
+            while let Some(m) = self.mobs.get(i) {
+                let (x, z) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                if self.world.loaded(x, z) && ticking(x, z) {
+                    let (id, kind) = (m.id, super::native_ticks::TickKind::Mob(m.kind.clone()));
+                    self.native_tick_pre_batch(&mut round, id, kind);
+                }
+                i += 1;
+            }
+        }
         let uuid = self.level.player_uuid;
         let mut snapshot: Vec<Seen> = self.mobs.iter().map(|m| seen(m, uuid)).collect();
         let mut events = Vec::new();
@@ -997,6 +1014,11 @@ impl Game<'_> {
                     keep.push(kept);
                     continue;
                 }
+                // A mod canceled its tick: it stays as it is.
+                if round.canceled(m.id) {
+                    keep.push(true);
+                    continue;
+                }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
@@ -1077,6 +1099,7 @@ impl Game<'_> {
             self.mobs.append(&mut mobs);
         }
         self.died = died;
+        self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {
             let at = [at.x, at.y, at.z];

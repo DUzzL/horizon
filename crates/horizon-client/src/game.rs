@@ -215,6 +215,7 @@ mod native_projectiles;
 mod native_recipes;
 mod native_server;
 mod native_shaders;
+mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
 mod native_world_edit;
@@ -3768,6 +3769,29 @@ impl Game<'_> {
         }
     }
     fn tick_items(&mut self) {
+        // EntityTickEvent.Pre for the items about to tick, and the Post after them.
+        let mut round = self.native_tick_round();
+        if round.listening() {
+            let ticking = self.entity_ticking_area();
+            let merging = self.remote.is_none();
+            let mut i = 0;
+            while let Some(item) = self.dropped.get(i) {
+                let (id, x, z) = (
+                    item.id,
+                    item.position.x.floor() as i32,
+                    item.position.z.floor() as i32,
+                );
+                if !(merging && id > self.ticked_entities_through) && ticking(x, z) {
+                    let kind = native_ticks::TickKind::Fixed("minecraft:item");
+                    self.native_tick_pre_batch(&mut round, id, kind);
+                }
+                i += 1;
+            }
+        }
+        self.tick_dropped_items(&mut round);
+        self.native_tick_post_batch(round);
+    }
+    fn tick_dropped_items(&mut self, round: &mut native_ticks::TickRound) {
         let mut items = std::mem::take(&mut self.dropped);
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -3782,6 +3806,8 @@ impl Game<'_> {
         let mut nearby = Vec::new();
         for i in 0..items.len() {
             if removed[i] {
+                // Merged into an earlier item before its own tick: it never ticked.
+                round.not_ticked(items[i].id);
                 continue;
             }
             let item = &mut items[i];
@@ -3794,7 +3820,8 @@ impl Game<'_> {
             if !ticking(
                 item.position.x.floor() as i32,
                 item.position.z.floor() as i32,
-            ) {
+            ) || round.canceled(item.id)
+            {
                 continue;
             }
             // ItemEntity.tick's noPhysics (servers only): out of a block
