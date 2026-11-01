@@ -2201,4 +2201,52 @@ mod tests {
         );
         assert!(p.is_ok(), "{:?}", p.err());
     }
+
+    /// Parameters and locals named like a bool uniform hide it (GLSL 4.60, 4.2): the uniform is
+    /// only rewritten where it is the name in scope, and a prototype's parameter ends with it.
+    #[test]
+    fn parameters_and_locals_named_like_bool_uniforms_hide_them() {
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   float f(in bool hideGUI) { return hideGUI ? 1.0 : 0.0; }\n\
+                   float g() { bool hideGUI = gl_FragCoord.x > 0.5; return hideGUI ? 2.0 : 0.0; }\n\
+                   float h(bool hideGUI);\n\
+                   void main() { c = vec4(f(true), g(), h(false), hideGUI ? 1.0 : 0.0); }\n\
+                   float h(bool hideGUI) { return hideGUI ? 3.0 : 0.0; }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let arg = |name: &str| {
+            let (_, f) = (p.fragment.functions.iter())
+                .find(|(_, f)| f.name.as_deref() == Some(name))
+                .unwrap();
+            f.arguments[0].name.clone()
+        };
+        assert_eq!(arg("f").as_deref(), Some("hideGUI"));
+        assert_eq!(arg("h").as_deref(), Some("hideGUI"));
+        assert!(p.interface.uniforms.iter().any(|u| u.name == "hideGUI"));
+        // `main` still reads the uniform, as an int compared with zero.
+        let entry = &p.fragment.entry_points[0].function;
+        let reads_uniform = entry.expressions.iter().any(|(_, e)| {
+            matches!(e, naga::Expression::Binary { op: naga::BinaryOperator::NotEqual, .. })
+        });
+        assert!(reads_uniform);
+    }
+
+    /// A loop variable, a struct member and a member access named like a bool uniform.
+    #[test]
+    fn loop_variables_and_members_named_like_bool_uniforms_translate() {
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   struct S { bool hideGUI; float x; };\n\
+                   float f(S v) {\n    float t = 0.0;\n    \
+                   for (int i = 0; i < 2; i++) { bool hideGUI = i > 0; t += hideGUI ? 1.0 : 0.0; }\n    \
+                   return t + (v.hideGUI ? 1.0 : 0.0);\n}\n\
+                   void main() { S s = S(true, 1.0); c = vec4(f(s), hideGUI ? 1.0 : 0.0, 0.0, 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
 }

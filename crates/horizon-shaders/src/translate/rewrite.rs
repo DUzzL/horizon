@@ -106,7 +106,7 @@ impl Stage<'_> {
         let mut calls: Vec<(&str, &str, usize)> = Vec::new();
         // Sampler parameters of the function being written: name → type.
         let mut params: HashMap<String, String> = HashMap::new();
-        // Names of samplers a local variable or parameter of the function hides.
+        // Names of samplers and bool uniforms a local variable or parameter of the function hides.
         let mut hidden: Vec<(&str, usize)> = Vec::new();
         let mut depth = 0;
         let mut skip_until = 0;
@@ -231,6 +231,11 @@ impl Stage<'_> {
                         returns = None;
                     }
                 }
+                // A prototype (`float h(bool x);`) ends its parameters' scope.
+                ";" if depth == 0 && calls.is_empty() => {
+                    hidden.clear();
+                    params.clear();
+                }
                 "(" => {
                     let callee = prev(i).map_or("", |j| self.tokens[j]);
                     let close = if matches!(callee, "shadow2D" | "shadow2DLod" | "shadow2DProj") {
@@ -288,7 +293,10 @@ impl Stage<'_> {
             }
             // `float specular`: a variable of the same name as a sampler or a sampler parameter,
             // from the end of its initializer to the function's end; `.specular` a member.
-            if sampler_ty.contains_key(t) || params.contains_key(t) {
+            if sampler_ty.contains_key(t)
+                || params.contains_key(t)
+                || uniforms.get(t).is_some_and(|ty| ty == "bool")
+            {
                 let before = prev(i).map(|j| self.tokens[j]);
                 if before == Some(".") {
                     out.push_str(t);
