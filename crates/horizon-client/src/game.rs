@@ -12275,6 +12275,46 @@ impl Game<'_> {
             hit.pos[2] + hit.face[2],
         ]
     }
+    /// The cauldron at `pos`, and whether water is above it
+    /// (`CauldronInteractions.isUnderWater`).
+    pub(super) fn cauldron_at(
+        &self,
+        pos: [i32; 3],
+    ) -> Option<(horizon_world::chunk::BlockState, bool)> {
+        let registry = self.pack.assets.registry;
+        let id = self.world.block(pos[0], pos[1], pos[2]);
+        let state = registry
+            .state(id)
+            .filter(|s| s.name.ends_with("cauldron"))
+            .cloned()?;
+        let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
+        let under_water = registry
+            .state(above)
+            .is_some_and(|s| s.name == "minecraft:water");
+        Some((state, under_water))
+    }
+    /// What the cauldron at `pos` answers to `held` on a client, which only
+    /// asks (`CauldronInteractions` acts `if (!level.isClientSide())`). A
+    /// sneak with something in hand skips `useItemOn`
+    /// (`Player.isSecondaryUseActive`).
+    pub(super) fn cauldron_outcome(
+        &self,
+        pos: [i32; 3],
+        held: Option<&ItemStack>,
+    ) -> horizon_client::cauldron::Outcome {
+        use horizon_client::cauldron::{self, Outcome};
+        let Some(held) = held else {
+            return Outcome::Pass;
+        };
+        if self.keys.contains(&KeyCode::ShiftLeft) {
+            return Outcome::Pass;
+        }
+        let Some((state, under_water)) = self.cauldron_at(pos) else {
+            return Outcome::Pass;
+        };
+        let removes_dye = cauldron::removes_dye(self.items(), &held.item);
+        cauldron::outcome(&state, under_water, removes_dye, held)
+    }
     /// `CauldronInteractions` for the held item aimed at a cauldron.
     fn use_on_cauldron(&mut self, pos: [i32; 3]) -> Result<bool> {
         use horizon_client::cauldron::{self, Outcome};
@@ -12309,22 +12349,17 @@ impl Game<'_> {
             }
         }
         let registry = self.pack.assets.registry;
-        let id = self.world.block(pos[0], pos[1], pos[2]);
-        let Some(state) = registry
-            .state(id)
-            .filter(|s| s.name.ends_with("cauldron"))
-            .cloned()
-        else {
+        let Some((state, under_water)) = self.cauldron_at(pos) else {
             return Ok(false);
         };
         let Some(held) = self.held() else {
             return Ok(false);
         };
+        // Player.isSecondaryUseActive with an item in hand skips useItemOn.
+        if self.keys.contains(&KeyCode::ShiftLeft) {
+            return Ok(false);
+        }
         let removes_dye = cauldron::removes_dye(self.items(), &held.item);
-        let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
-        let under_water = registry
-            .state(above)
-            .is_some_and(|s| s.name == "minecraft:water");
         let result = cauldron::interact(&state, under_water, removes_dye, &mut Hand(self));
         if result.outcome == Outcome::Pass {
             return Ok(false);

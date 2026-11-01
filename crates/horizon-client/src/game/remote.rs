@@ -7031,6 +7031,18 @@ impl Game<'_> {
             } else {
                 (result, changes)
             };
+            // AbstractCauldronBlock.useItemOn, either hand: CauldronInteractions
+            // answers on the client as on the server and only the server acts,
+            // so a bucket the cauldron takes is not used again (UseItem).
+            let result = if result.consumes_action() || spectator {
+                result
+            } else {
+                match self.cauldron_outcome(hit.pos, held.as_ref()) {
+                    horizon_client::cauldron::Outcome::Success => InteractionResult::Success,
+                    horizon_client::cauldron::Outcome::Consume => InteractionResult::Consume,
+                    horizon_client::cauldron::Outcome::Pass => result,
+                }
+            };
             let reacts = result.consumes_action();
             // useItemOn on this client, unless a sneak with something in hand
             // skips it: RedStoneOreBlock's dust, and the wick smoke of a lit
