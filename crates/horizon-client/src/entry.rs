@@ -8,6 +8,10 @@ pub fn main() {
 
 /// Start the game with trait mods in dispatch order.
 pub fn main_with(mods: crate::mod_api::Mods) {
+    // First: a trait injection into anything below (logging, the crash handler) calls its mod.
+    if crate::mod_api::MODS.set(mods).is_err() {
+        log::warn!("Trait mods already installed; ignoring the second list");
+    }
     horizon_threads::configure_allocator();
     horizon_client::telemetry::mark_start();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -49,9 +53,6 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
         ram_limit::start(&home, side);
-    }
-    if crate::mod_api::MODS.set(mods).is_err() {
-        log::warn!("Trait mods already installed; ignoring the second list");
     }
     let renderers = crate::mod_api::mods()
         .iter()

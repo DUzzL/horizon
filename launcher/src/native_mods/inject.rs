@@ -154,8 +154,10 @@ impl Injection {
                 quote!(#n)
             }
         });
-        let call = quote!(crate::mod_api::mods()[#owner].#name(#(#args),*));
-        let (output, result) = if self.cancellable {
+        let call = quote!(owner.#name(#(#args),*));
+        // Before the mods are installed (an injection into code `main_with` runs first), or
+        // with fewer mods than the build had, the injection does nothing.
+        let (output, result, absent) = if self.cancellable {
             (
                 quote!(-> core::ops::ControlFlow<()>),
                 quote! {
@@ -164,13 +166,16 @@ impl Injection {
                     }
                     core::ops::ControlFlow::Continue(())
                 },
+                quote!(core::ops::ControlFlow::Continue(())),
             )
         } else {
-            (quote!(), quote!(#call;))
+            (quote!(), quote!(#call;), quote!())
         };
         quote! {
             fn horizon_trait_dispatch(#(#params),*) #output {
-                debug_assert!(crate::mod_api::mods().len() > #owner);
+                let Some(owner) = crate::mod_api::mods().get(#owner) else {
+                    return #absent;
+                };
                 #result
             }
         }
