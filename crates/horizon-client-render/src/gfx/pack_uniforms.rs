@@ -198,6 +198,7 @@ pub const NAMES: &[&str] = &[
     "playerLookVector",
     "playerBodyVector",
     "firstPersonCamera",
+    "centerDepthSmooth",
     "isRightHanded",
     "is_on_ground",
     "bedrockLevel",
@@ -220,6 +221,9 @@ pub struct FrameUniforms {
     previous: Option<(glam::DVec3, Mat4, Mat4)>,
     wetness: f32,
     eye_smooth: [f32; 2],
+    /// `depthtex0` at the screen's centre as last read back, and `centerDepthSmooth`.
+    pub center_depth_raw: Option<f32>,
+    center_depth: Option<f32>,
     /// The pack's shadow settings (7.1).
     pub shadow: Shadow,
 }
@@ -235,6 +239,8 @@ impl Default for FrameUniforms {
             previous: None,
             wetness: 0.0,
             eye_smooth: [0.0; 2],
+            center_depth_raw: None,
+            center_depth: None,
             shadow: Shadow::default(),
         }
     }
@@ -379,6 +385,15 @@ impl FrameUniforms {
         for (smoothed, target) in self.eye_smooth.iter_mut().zip(eye) {
             *smoothed = smooth(*smoothed, target, 10.0 / 20.0, dt);
         }
+        // `centerDepthHalflife`'s default, 1 tick (OptiFine's shaders.txt); the first value
+        // read back is taken as it is.
+        if let Some(raw) = self.center_depth_raw {
+            self.center_depth = Some(match self.center_depth {
+                Some(v) => smooth(v, raw, 1.0 / 20.0, dt),
+                None => raw,
+            });
+        }
+        let center_depth = self.center_depth.unwrap_or(1.0);
         // Vanilla fades by the stronger of two linear fogs; a pack gets one: the pair (start
         // and end together) of the one that is complete nearer (OQ-36). Mixing the nearer start
         // of one with the nearer end of the other made fog begin at the camera on clear days.
@@ -424,6 +439,7 @@ impl FrameUniforms {
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),
+                "centerDepthSmooth" => Value::f(&[center_depth]),
                 "moonPosition" => v3(moon),
                 "shadowLightPosition" => v3(if day { sun } else { moon }),
                 "sunAngle" => Value::f(&[sun_angle]),
