@@ -172,6 +172,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
              (armour 15, LivingEntity.getDamageAfterArmorAbsorb), and the full 10 without it.
 - plates:    a stone pressure plate the guest steps on is pressed on both sides, and comes up once
              the guest steps off (#848).
+- plate-projectiles: a guest's thrown trident, a firework rocket and a guest's fishing bobber press a wooden
+             pressure plate; a trident leaves a stone plate up, which senses only players and mobs (#5896).
 - swings:    each side sees the other's arm swing while it mines a block, and the guest sees its own
              swing when its hoe tills dirt (the server's use) (#848).
 - cracks:    each side sees the other player's crack on the block they mine grow, and go once it breaks
@@ -367,7 +369,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
-          'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
+          'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
           'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
@@ -1554,6 +1556,30 @@ def check_deaths(host, guest, out):
             guest.wait(10)
         said['thorns'] = host.raw('messages', 10)['chat']
         host.shot(out, 'deaths-thorns')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        ready()
+        gx, gy, gz = pos_of(guest)
+        host('command', command=f'tp @s {gx - 4:.2f} {gy:.2f} {gz:.2f}')
+        bx, by, bz = int(gx) - 1, int(gy), int(gz)
+        host('command', command=f'setblock {bx} {by} {bz} minecraft:tnt')
+        host.raw('look-at', f'{bx + 0.5:.2f}', f'{by + 0.5:.2f}', f'{bz + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        guest.wait(100)
+        said['tnt'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-tnt')
+        ready()
+        hx, hy, hz = pos_of(host)
+        host('command', command='effect give @s minecraft:resistance 10 5')
+        host('command', command=f'summon minecraft:pig {hx + 3:.2f} {hy:.2f} {hz:.2f} {{NoAI:1b}}')
+        host('command', command=f'setblock {int(hx) + 2} {int(hy)} {int(hz)} minecraft:tnt')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        host.raw('look-at', f'{int(hx) + 2.5:.2f}', f'{int(hy) + 0.5:.2f}', f'{int(hz) + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        host.wait(100)
+        said['blast_pig'] = host.raw('entities', 6, 'pig')['entities']
+        host.shot(out, 'deaths-blast-pig')
     finally:
         host('command', command='gamerule natural_health_regeneration true')
         for g in (host, guest):
@@ -1565,9 +1591,11 @@ def check_deaths(host, guest, out):
             'host_death_behind_guest': f'{name} was slain by {GUEST_NAME}',
             'arrow': f'{GUEST_NAME} was shot by {name}',
             'arrow_behind_guest': f'{name} was shot by {GUEST_NAME}',
-            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}'}
+            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}',
+            'tnt': f'{GUEST_NAME} was blown up by {name}'}
     for case, line in want.items():
         assert line in said[case], f'no "{line}" in the {case} chat: {said[case]}'
+    assert not said['blast_pig'], f'the blast left the pig standing: {said["blast_pig"]}'
     for case, lines in said.items():
         assert not any('%1$s' in line or '%2$s' in line for line in lines), \
             f'a raw template in the {case} chat: {lines}'
@@ -3472,6 +3500,52 @@ def check_plates(host, guest, out):
     detail = {'pressed': pressed, 'released': released}
     assert pressed == {'host': 'true', 'guest': 'true'}, f'the plate under the guest: {detail}'
     assert released == {'host': 'false', 'guest': 'false'}, f'the plate after the guest left: {detail}'
+    return detail
+
+
+def check_plate_projectiles(host, guest, out):
+    guest('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+
+    def press(block, dx, entity, nbt):
+        plate = (x + dx, y, z + 5)
+        guest('command', command=f'setblock {plate[0]} {plate[1]} {plate[2]} minecraft:{block}')
+        guest.wait(5)
+        at = f'{plate[0] + 0.5} {plate[1] + 0.05} {plate[2] + 0.5}'
+        guest('command', command=f'summon minecraft:{entity} {at} {nbt}')
+        state = wait_state(host, plate, 'powered', 'true', 15)
+        guest('command', command=f'kill @e[type=minecraft:{entity}]')
+        guest('command', command=f'setblock {plate[0]} {plate[1]} {plate[2]} minecraft:air')
+        return state
+
+    detail = {'rocket': press('oak_pressure_plate', 0, 'firework_rocket', '{LifeTime:60}')}
+    # A field of plates under the cast, so the bobber lands on one wherever it falls.
+    field = (x - 4, y, z + 2, x + 4, y, z + 7)
+    guest('command', command='fill {} {} {} {} {} {} minecraft:oak_pressure_plate'.format(*field))
+    guest('command', command='item replace entity @s weapon.mainhand with minecraft:fishing_rod')
+    guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 25')
+    guest.wait(10)
+    guest('use_item')
+    guest.wait(40)
+    detail['bobber'] = sum('powered=true' in b[3] for b in host.raw('blocks', *field)['blocks'])
+    guest('use_item')
+    # A real throw on each kind of plate: a stone plate senses only players and mobs.
+    for block, key in (('oak_pressure_plate', 'trident'), ('stone_pressure_plate', 'stone')):
+        guest('command', command='fill {} {} {} {} {} {} minecraft:air'.format(*field))
+        guest.wait(30)
+        guest('command', command='fill {} {} {} {} {} {} minecraft:{}'.format(*field, block))
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+        guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 30')
+        guest.wait(10)
+        guest('use_item', hold=1)
+        guest.wait(30)
+        detail[key] = sum('powered=true' in b[3] for b in host.raw('blocks', *field)['blocks'])
+        guest('command', command='kill @e[type=minecraft:trident]')
+    guest('command', command='fill {} {} {} {} {} {} minecraft:air'.format(*field))
+    assert detail['rocket'] == 'true', f'a rocket on a wooden plate: {detail}'
+    assert detail['bobber'] > 0, f'no plate under the bobber: {detail}'
+    assert detail['trident'] > 0, f'no plate under the trident: {detail}'
+    assert detail['stone'] == 0, f'a stone plate senses no trident: {detail}'
     return detail
 
 
@@ -6391,7 +6465,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'piston-slime': check_piston_slime,
              'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast,
-             'light': check_light, 'plates': check_plates, 'swings': check_swings,
+             'light': check_light, 'plates': check_plates, 'plate-projectiles': check_plate_projectiles, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
              'flight': check_flight, 'fireball': check_fireball, 'deflect': check_deflect,
              'barter': check_barter, 'worn': check_worn, 'kills': check_kills, 'looting': check_looting, 'leave': check_leave,
@@ -10612,6 +10686,44 @@ CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
 
 
+def check_trident_pickup(host, guest, out):
+    """#5577: a thrown trident a player picks up (AbstractArrow.playerTouch, then Player.take) flies
+    into them on every client as an ItemPickupParticle, like an arrow, instead of vanishing. A
+    server's client keeps tridents apart from the other projectiles."""
+    face_each_other(host, guest)
+    seen = {}
+    try:
+        for game in (host, guest):
+            game('command', command='gamemode survival')
+            game('command', command='clear @s')
+            game('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+            # Straight down: it sticks at the player's feet, inside their pickup box.
+            game('command', command='tp @s ~ ~ ~ ~ 90')
+            game.wait(5)
+            before = {g.name: g('status')['pickups'].get('trident', 0) for g in (host, guest)}
+            game.raw('use-item', '--hold', 1.2)
+            game.wait(40)
+            game.shot(out, 'trident-pickup')
+            seen[game.name] = {'flown': {g.name: g('status')['pickups'].get('trident', 0) - before[g.name]
+                                         for g in (host, guest)},
+                               'tridents': game('inventory')['counts'].get('minecraft:trident', 0)}
+    finally:
+        for game in (host, guest):
+            game.raw('mouse', 'right', 'up')
+            game('command', command='clear @s')
+        host('command', command='kill @e[type=minecraft:trident]')
+        face_each_other(host, guest)
+    for name, case in seen.items():
+        assert case['tridents'] == 1, f'{name} did not pick the trident up: {seen}'
+        if SERVER_THREAD:
+            assert all(n == 1 for n in case['flown'].values()), f"{name}'s trident did not fly to them: {seen}"
+    return seen
+
+
+CHECKS += ['trident_pickup']
+CHECK_FNS['trident_pickup'] = check_trident_pickup
+
+
 # Mounts for mount_other_level: (kind, summon NBT, blocks in front of the player). A camel is
 # always tame (Camel.isTamed); the equines need Tame:1b, and a nautilus an Owner, the player's
 # offline UUID (TamableAnimal.readAdditionalSaveData tames it). A donkey, mule and llama get a
@@ -10830,6 +10942,31 @@ CHECKS += ['cushion_break_seated']
 CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
 
 
+def check_hoglin_wall(host, guest, out):
+    host('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    gx, gz = x + 6, z
+    box = f'{gx - 2} {y} {gz - 2} {gx + 2} {y + 3} {gz + 2}'
+    health = lambda: server_reply(host, 'data get entity @e[type=minecraft:hoglin,limit=1] Health', 'entity data')
+    try:
+        host('command', command='kill @e[type=minecraft:hoglin]')
+        host('command', command=f'fill {box} minecraft:stone')
+        host('command', command=f'summon minecraft:hoglin {gx + 0.5} {y + 1} {gz + 0.5} {{NoAI:1b}}')
+        before = health()
+        host.wait(40)
+        after = health()
+    finally:
+        host('command', command='kill @e[type=minecraft:hoglin]')
+        host('command', command=f'fill {box} minecraft:air')
+        host('command', command='gamemode survival')
+    assert before != after, f'a hoglin inside a wall took no damage: {before} -> {after}'
+    return {'before': before, 'after': after}
+
+
+CHECKS += ['hoglin-wall']
+CHECK_FNS['hoglin-wall'] = check_hoglin_wall
+
+
 def check_attack_over_slab(host, guest, out):
     """#5772: a mob whose centre a block hides from the eyes, but whose head shows over it, takes the
     hit the crosshair aims at its head. The attack packet names only the entity, so the server aims
@@ -10873,6 +11010,56 @@ def check_attack_over_slab(host, guest, out):
 
 CHECKS += ['attack_over_slab']
 CHECK_FNS['attack_over_slab'] = check_attack_over_slab
+
+
+def check_shulker_lift(host, guest, out):
+    """ShulkerBoxBlockEntity.tick moves the local player on each client, even with its menu open."""
+    hx, _, hz = pos_of(host)
+    x, y, z = int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8
+    box = (x, y, z)
+    modes = {player: player('state')['gamemode'] for player in (host, guest)}
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+4} {y+5} {z+4} minecraft:air')
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+4} {y-1} {z+4} minecraft:stone')
+    host('command', command=f'setblock {x} {y} {z} minecraft:shulker_box[facing=up]')
+    seen = {}
+    try:
+        for player in (host, guest):
+            other = guest if player is host else host
+            other('command', command=f'tp @s {x+3.5} {y} {z+0.5}')
+            for mode in ('survival', 'creative'):
+                player('command', command=f'gamemode {mode}')
+                player('command', command=f'tp @s {x+0.5} {y+1} {z+0.5}')
+                player.wait(15)
+                before = pos_of(player)
+                assert abs(before[1] - (y+1)) < 0.01, f'not standing on the box: {before}'
+                label = f'shulker-lift-{player.name}-{mode}'
+                player.shot(out, label + '-before')
+                player.raw('interact', *box)
+                player.raw('wait-for', 'screen', 'container', '--timeout', 10)
+                player.wait(20)
+                opened = pos_of(player)
+                player.shot(out, label + '-open')
+                # Let the player settle on the open lid: it must remain a supporting shape.
+                player.wait(20)
+                settled = pos_of(player)
+                player.raw('key', 'esc', 'tap')
+                player.wait(30)
+                closed = pos_of(player)
+                seen[label] = dict(before=before, opened=opened, settled=settled, closed=closed)
+                lab.write_json(out / 'shulker-lift.json', seen)
+                assert abs(opened[1] - (y+1.5)) < 0.02, f'opening lid did not lift {label}: {seen[label]}'
+                assert abs(settled[1] - (y+1.5)) < 0.02, f'open lid did not support {label}: {seen[label]}'
+                assert abs(closed[1] - (y+1)) < 0.02, f'closing lid did not lower {label}: {seen[label]}'
+        return seen
+    finally:
+        for player in (host, guest):
+            back_to_game(player)
+            player('command', command=f'gamemode {modes[player]}')
+        host('command', command=f'setblock {x} {y} {z} minecraft:air')
+
+
+CHECKS += ['shulker_lift']
+CHECK_FNS['shulker_lift'] = check_shulker_lift
 
 
 if __name__ == '__main__':

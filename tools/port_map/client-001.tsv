@@ -33,7 +33,7 @@ ClientCommonPacketListenerImpl.handleKeepAlive	port	crates/horizon-client/src/ne
 ClientCommonPacketListenerImpl.handleCustomPayload	port	crates/horizon-client/src/net.rs::receive_brand	gap: minor: reads the brand only; other custom payloads go to the game and are ignored
 ClientCommonPacketListenerImpl.handleResourcePackPush	port	crates/horizon-client/src/game/server_packs.rs::Game::handle_pack_push	
 ClientCommonPacketListenerImpl.handleResourcePackPop	port	crates/horizon-client/src/game/server_packs.rs::Game::handle_pack_pop	
-ClientCommonPacketListenerImpl.handlePostEffects	missing		player: a server's screen post effect (ClientboundPostEffectsPacket, set by /posteffect and on join) is not drawn on remote servers; Horizon's /posteffect only works in its own game
+ClientCommonPacketListenerImpl.handlePostEffects	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	
 ClientCommonPacketListenerImpl.preparePackPrompt	port	crates/horizon-client/src/game/server_packs.rs::PackPrompt::texts	builds the server prompt line from the header and the server's prompt
 ClientCommonPacketListenerImpl.handleStoreCookie	port	crates/horizon-client/src/net.rs::receive_play	stores the cookie for a later transfer or cookie request
 ClientCommonPacketListenerImpl.handleCustomReportDetails	skip:debug		extra lines for crash reports only

@@ -20,6 +20,8 @@ const MATERIALS: usize = 10;
 /// (`RenderTypes.entityTranslucent`, `entityTranslucentEmissive`, `eyes`,
 /// `breezeWind`). Only the improved transparency path reads it.
 pub const OIT_ENTITY: u32 = 1 << 24;
+/// `RenderPipelines.DRAGON_RAYS`: untextured colour, additive with depth writes.
+pub const DRAGON_RAYS_OVERLAY: u32 = 37;
 /// Tags quads as drawn by a render type vanilla gives an `OitPipelineSet`
 /// (`OIT_ENTITY`): improved transparency draws them in its stages.
 pub fn mark_oit(quads: &mut [Vertex]) {

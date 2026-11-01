@@ -100,12 +100,14 @@ import net.minecraft.world.phys.Vec3;
  * recorded too, as component JSON), {@code state on|off} (whether each player
  * also records what the server changes about it: its game mode, teleports,
  * motion, inventory slots, effects and death) and {@code end}, which writes each
- * player's lines to OUT.
+ * player's lines to OUT. {@code boats on|off} records boat paddle metadata;
+ * {@code paddle NAME LEFT RIGHT} sends the two boolean paddle states.
  */
 public final class LocatorBarClient {
     private static volatile String step = "start";
     private static volatile boolean players;
     private static volatile boolean chat;
+    private static volatile boolean boats;
     private static volatile boolean state;
     private static final Map<UUID, String> NAMES = new LinkedHashMap<>();
 
@@ -158,6 +160,12 @@ public final class LocatorBarClient {
                     case "quit" -> players.get(w[1]).close();
                     case "players" -> LocatorBarClient.players = w[1].equals("on");
                     case "chat" -> chat = w[1].equals("on");
+                    case "boats" -> boats = w[1].equals("on");
+                    case "paddle" -> {
+                        String[] sides = w[2].split(" ");
+                        players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPaddleBoatPacket(
+                            Boolean.parseBoolean(sides[0]), Boolean.parseBoolean(sides[1])));
+                    }
                     case "state" -> state = w[1].equals("on");
                     case "end" -> {
                         try (PrintWriter out = new PrintWriter(Files.newBufferedWriter(output, StandardCharsets.UTF_8))) {
@@ -205,6 +213,11 @@ public final class LocatorBarClient {
     }
 
     /** One connection: login and configuration in the caller's thread, then play on its own. */
+    private static boolean isBoat(net.minecraft.world.entity.EntityType<?> type) {
+        String id = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(type).toString();
+        return id.endsWith("_boat") || id.endsWith("_raft");
+    }
+
     private static final class Player {
         final String name;
         final List<String> lines = new ArrayList<>();
@@ -219,6 +232,7 @@ public final class LocatorBarClient {
         /** This player's own entity id (ClientboundLoginPacket). */
         private volatile int id = -1;
         /** The other players this one was sent, by entity id. */
+        private final java.util.Set<Integer> boatIds = new java.util.HashSet<>();
         private final Map<Integer, String> seen = new java.util.HashMap<>();
         private final Object replyLock = new Object();
         private int replies;
@@ -422,6 +436,18 @@ public final class LocatorBarClient {
                         id = l.playerId();
                     }
                     if (state) recordState(p);
+                    if (boats && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
+                        && isBoat(a.getType())) {
+                        boatIds.add(a.getId());
+                    }
+                    if (boats && p instanceof net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data
+                        && boatIds.contains(data.id())) {
+                        for (var value : data.packedItems()) {
+                            if ((value.id() == 11 || value.id() == 12) && value.value() instanceof Boolean) {
+                                record("paddle " + value.id() + " " + value.value());
+                            }
+                        }
+                    }
                     if (p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
                         && a.getType() == net.minecraft.world.entity.EntityTypes.PLAYER) {
                         String who = NAMES.getOrDefault(a.getUUID(), "uuid?");

@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "Die gespeicherte Anmeldung konnte nicht gelesen werden.",
   "Could not save the renewed sign-in.": "Die erneuerte Anmeldung konnte nicht gespeichert werden.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Die erneuerte Anmeldung konnte nicht im Schlüsselbund gespeichert werden. Entsperre ihn und versuche es erneut.",
-  "Another account operation is running. Try again in a moment.": "Ein anderer Kontovorgang läuft. Versuche es gleich noch einmal."
+  "Another account operation is running. Try again in a moment.": "Ein anderer Kontovorgang läuft. Versuche es gleich noch einmal.",
+  "Built on {base}": "Gebaut auf {base}",
+  "Native mod builds": "Builds mit nativen Mods"
 }
