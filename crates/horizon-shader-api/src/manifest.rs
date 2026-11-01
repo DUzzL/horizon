@@ -43,6 +43,8 @@ pub struct Manifest {
     pub shared: Vec<String>,
     pub sky: Option<Stage>,
     pub material: Option<Stage>,
+    /// Where corners of terrain are drawn: needs `material`, and shares its module.
+    pub vertex: Option<Stage>,
     /// The colour of rain and snow streaks (Minecraft's own when absent).
     pub weather: Option<Stage>,
     /// Full-screen passes, in the order they run.
@@ -324,6 +326,8 @@ struct Raw {
     sky: Option<Stage>,
     material: Option<Stage>,
     #[serde(default)]
+    vertex: Option<Stage>,
+    #[serde(default)]
     weather: Option<Stage>,
     #[serde(default)]
     post: Vec<Stage>,
@@ -474,13 +478,25 @@ impl Manifest {
                 "no stage: give it a [sky], a [material], a [weather] or a [[post]]".into(),
             ));
         }
-        if raw.sky.iter().chain(&raw.post).any(|s| s.fog.is_some()) {
+        if raw.vertex.is_some() && raw.material.is_none() {
+            return Err(err(
+                "[vertex] needs a [material]: they draw terrain together".into(),
+            ));
+        }
+        if raw
+            .sky
+            .iter()
+            .chain(&raw.vertex)
+            .chain(&raw.post)
+            .any(|s| s.fog.is_some())
+        {
             return Err(err("`fog` is a key of [material] only".into()));
         }
         if raw
             .sky
             .iter()
             .chain(&raw.material)
+            .chain(&raw.vertex)
             .any(|s| s.scale.is_some() || s.output.is_some())
         {
             return Err(err("`scale` and `output` are keys of [[post]] only".into()));
@@ -496,6 +512,7 @@ impl Manifest {
             .sky
             .iter()
             .chain(&raw.material)
+            .chain(&raw.vertex)
             .chain(&raw.weather)
             .chain(&raw.post);
         for file in raw
@@ -702,6 +719,7 @@ impl Manifest {
             shared: raw.shared,
             sky: raw.sky,
             material: raw.material,
+            vertex: raw.vertex,
             weather: raw.weather,
             post: raw.post,
             options,
@@ -814,6 +832,7 @@ impl Manifest {
             .sky
             .iter()
             .chain(&self.material)
+            .chain(&self.vertex)
             .chain(&self.weather)
             .chain(&self.post);
         for file in self

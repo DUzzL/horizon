@@ -12,6 +12,7 @@ bindings and no entry points, and no names starting with `horizon_`.
 | Stage | In `horizon-shaders.toml` | Your function |
 | --- | --- | --- |
 | sky | `[sky]` | `fn sky(input: SkyInput) -> vec4<f32>` |
+| vertex | `[vertex]` | `fn vertex(input: VertexInput) -> vec3<f32>` |
 | material | `[material]` | `fn material(input: MaterialInput) -> Surface` |
 | weather | `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` |
 | post | `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` |
@@ -34,6 +35,36 @@ Resources (bind group 3):
 | Binding | Declaration | Meaning |
 | --- | --- | --- |
 | 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
+
+## vertex
+
+`fn vertex(input: VertexInput) -> vec3<f32>`
+
+### `VertexInput`
+
+One corner of a block's surface, for `fn vertex(input: VertexInput) -> vec3<f32>`, which returns where it is drawn (camera-relative, in blocks; `input.position` where it stays).
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `position` | `vec3<f32>` | The corner, camera-relative, in blocks (`+ frame.camera_position` for the world's). |
+| `uv` | `vec2<f32>` | The texture coordinate inside the block's sprite. |
+| `material` | `u32` | The `[[materials]]` id of the block's sprite (0 when none matches). |
+| `light` | `vec2<f32>` | Block and sky light, 0..1. |
+| `tint` | `vec4<f32>` | The vertex colour (biome tint, face shade, ambient occlusion); alpha 1. |
+| `face` | `u32` | For a fluid, the face of the block the corner is on (as `MaterialInput.face`), else 0. |
+| `fluid` | `u32` | 1 on a fluid's surface (water or lava), else 0. |
+
+Resources (bind group 3):
+
+| Binding | Declaration | Meaning |
+| --- | --- | --- |
+| 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
+
+Helpers:
+
+- `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
+  stored in the shadow map, for `textureSampleCompareLevel`.
+- `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.
 
 ## material
 
