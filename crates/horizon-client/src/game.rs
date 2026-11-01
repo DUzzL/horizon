@@ -2415,6 +2415,10 @@ struct Game<'a> {
     use_duration: i32,
     /// A mod's `Start` or `Tick` set that use's ticks left (`game/item_use.rs`).
     use_ticks_set: bool,
+    /// The crossbow charge's start and middle loading sounds played so far
+    /// (`game/crossbow.rs`): each charge plays each of them once, however
+    /// far a mod's tick moved the charge at a time.
+    crossbow_sounds: [bool; 2],
     /// Camera.oldFovModifier / fovModifier.
     /// `Camera` (eye height and field-of-view easing, view placement).
     view: horizon_client::camera::Camera,
@@ -17975,6 +17979,7 @@ impl<'a> Game<'a> {
             using: None,
             use_duration: 0,
             use_ticks_set: false,
+            crossbow_sounds: [false; 2],
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             frame_clock: Default::default(),
