@@ -1146,6 +1146,24 @@ impl Game<'_> {
     /// Atlas, models, renderer and client caches already refer to the new resources.
     /// Selection/F3+T and server-pack reloads share this point; initial startup does not.
     pub(super) fn native_client_resources_reloaded(&mut self) {}
+    /// The client made a new level for `dimension` (NeoForge's
+    /// `LevelEvent.Load` from the `ClientLevel` constructor): on joining a
+    /// server, single player's own included, and on changing dimension.
+    /// Its chunks come after. When the dimension changes, the old level's
+    /// `native_client_level_unload` follows this, as `Minecraft.setLevel`
+    /// tells it after the new level is made. Client-side, on the window; the
+    /// server's levels have `native_level_load`. API @API:client_level_events@.
+    pub(super) fn native_client_level_load(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
+    /// The client dropped its level for `dimension` (`LevelEvent.Unload`
+    /// from `Minecraft.setLevel` and `disconnect`): replaced by another
+    /// dimension's, or on leaving the server. Once for each
+    /// `native_client_level_load`. Not told when the game itself quits.
+    /// Client-side. API @API:client_level_events@.
+    pub(super) fn native_client_level_unload(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
     /// Once a tick, in every `Game`: the window's (in single player, on LAN
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
