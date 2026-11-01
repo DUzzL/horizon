@@ -265,6 +265,11 @@ class SourceGraph:
                           if self.targets(manifest.parent).get(name, (None,))[0] == kind.rstrip("s")]
                 if len(owners) == 1:
                     packages = [*packages, owners[0]]
+            if not name and kind in ("bins", "examples") and "horizon-client" in packages \
+                    and "horizon-client-lib" not in packages \
+                    and (self.root / "crates/horizon-client-lib/Cargo.toml").is_file():
+                # Broad records predate the client package split too.
+                packages = [*packages, "horizon-client-lib"]
             for package in packages:
                 crate = self.root / "crates" / package
                 targets = self.targets(crate)
