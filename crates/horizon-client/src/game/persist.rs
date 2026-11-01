@@ -373,6 +373,11 @@ impl Game<'_> {
                                 a.last_state = in_block.and_then(|t| self.state_from_nbt(&t));
                             }
                             self.claim_owner(&mut p);
+                            // An arrow that came through a portal keeps its
+                            // cooldown: it does not go straight back through.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
@@ -432,14 +437,19 @@ impl Game<'_> {
                         }
                     }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
+                    // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
                     "minecraft:tnt" => {
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         if let Some(position) = entity_nbt::position(&tag) {
+                            self.next_entity += 1;
+                            let id = self.next_entity;
                             let fuse = match tag.get("fuse") {
                                 Some(Tag::Short(f)) => i32::from(*f),
                                 _ => 80,
                             };
                             self.tnts.push(super::tnt::PrimedTnt {
-                                id: 0,
+                                id,
                                 position,
                                 previous: position,
                                 velocity: entity_nbt::motion(&tag),
@@ -448,6 +458,11 @@ impl Game<'_> {
                                 owner: None,
                                 guest: None,
                             });
+                            // `Entity.load`: the `PortalCooldown` of one that just came through.
+                            self.remember(id, uuid, tag);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     k if super::boats::any_boat_wood(k)

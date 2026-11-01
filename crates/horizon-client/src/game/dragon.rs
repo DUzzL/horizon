@@ -869,7 +869,13 @@ impl Game<'_> {
     /// `EnderDragonFight.tick` and the fight's entities, while the End is
     /// ticked (in place for its player, or on a server with players in it).
     pub(super) fn tick_fight(&mut self) {
-        if self.dim != Dim::End || self.travelling.is_some() {
+        if self.travelling.is_some() {
+            return;
+        }
+        // A dragon outside the End (`/summon`) has no fight: `ServerLevel.getDragonFight` is
+        // null there, but `EnderDragon.aiStep` still flies it.
+        if self.dim != Dim::End {
+            self.tick_dragon();
             return;
         }
         self.load_fight();

@@ -101,6 +101,8 @@ pub struct RenderAssets {
     pub pbr_normals: Vec<u8>,
     pub pbr_specular: Vec<u8>,
     pub pbr_size: u32,
+    /// OptiFine connected textures (empty without `optifine/ctm` files).
+    pub connected: crate::connected::ConnectedTextures,
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -240,9 +242,34 @@ impl RenderAssets {
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
-        if draws {
+        let connected = if draws {
             crate::native_emissive::load(root, &mut sprites);
-        }
+            // A side's sprite, for rules that connect by tile: the first quad facing it.
+            let catalog = &models.catalog;
+            let mut found = Vec::new();
+            crate::connected::ConnectedTextures::load(
+                root,
+                registry,
+                &mut sprites,
+                |state, face| {
+                    let side = horizon_assets::model::Direction::ALL[face as usize];
+                    catalog
+                        .models_at(
+                            state,
+                            horizon_core::position::BlockPos::new(0, 0, 0),
+                            &mut found,
+                        )
+                        .ok()?;
+                    found
+                        .iter()
+                        .flat_map(|m| &m.faces)
+                        .find(|f| f.quad.facing == side)
+                        .map(|f| f.layer)
+                },
+            )
+        } else {
+            Default::default()
+        };
         sprites.save_disk_cache();
         if draws {
             sprites.finish();
@@ -267,6 +294,7 @@ impl RenderAssets {
             pbr_normals: sprites.normals,
             pbr_specular: sprites.specular,
             pbr_size: sprites.pbr_size,
+            connected,
         })
     }
 }

@@ -308,6 +308,56 @@ fn fade_code(w: f32) -> u32 {
     return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w);
 }
+// Solid terrain draws in two passes from the same draws: first the quads with no
+// cutout that are not fading, through `fs_opaque`, which never discards, so a tiled
+// GPU (Apple's) keeps hiding the pixels behind them; then the rest through
+// `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
+// all the terrain it drew. A quad the pass leaves out is decided before any of the
+// vertex's work and lies outside the clip volume: it makes no pixel.
+fn opaque_quad(layer: u32, w: f32) -> bool {
+    return (layer & 0x8000u) != 0u && fade_code(w) == 0u;
+}
+fn left_out() -> TerrainOut {
+    var out: TerrainOut;
+    out.clip = vec4(2.0, 2.0, 2.0, 1.0);
+    return out;
+}
+@vertex fn vs_terrain_opaque(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    if !opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
+@vertex fn vs_terrain_cutout(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    if opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
+@vertex fn vs_terrain_flat_opaque(
+    @builtin(vertex_index) vertex: u32,
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+) -> TerrainOut {
+    let origin = slot_origins[block_slots[vertex >> 8u]];
+    if !opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
+@vertex fn vs_terrain_flat_cutout(
+    @builtin(vertex_index) vertex: u32,
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+) -> TerrainOut {
+    let origin = slot_origins[block_slots[vertex >> 8u]];
+    if opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>, w: f32) -> TerrainOut {
     let pos = position + origin;
@@ -357,6 +407,13 @@ fn brightness(c: vec3<f32>) -> f32 {
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     return solid_color(in);
 }
+// `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
+@fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    var color = texel * in.color;
+    color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
+    return solid_finish(in, texel, color);
+}
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
 @fragment fn fs_solid_mirror(in: TerrainOut) -> @location(0) vec4<f32> {
@@ -373,6 +430,10 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     // terrain.fsh: the fade-in mixes toward the fog colour.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    return solid_finish(in, texel, color);
+}
+// The rest of a solid pixel's colour once it is kept: emission and fog.
+fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
     // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel may
     // shine, and at which tier (mesher::hdr_tier): 0.525 at the lowest, 0 at the
     // brightest. Only pixels as bright as their sprite's threshold may: its
@@ -529,6 +590,11 @@ fn sky_along_ray(d: vec3<f32>) -> vec3<f32> {
 }
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     return vec4(sky_along_ray(view_ray(in.ndc)), 1.0);
+}
+// The first-person hand's depth clear inside the world pass: `vs_sky`'s triangle lies at the
+// far plane, written over the whole depth target with no colour.
+@fragment fn fs_depth_reset(in: SkyOut) -> @location(0) vec4<f32> {
+    return vec4(0.0);
 }
 @fragment fn fs_dark_disc(in: SkyOut) -> @location(0) vec4<f32> {
     let d = view_ray(in.ndc);

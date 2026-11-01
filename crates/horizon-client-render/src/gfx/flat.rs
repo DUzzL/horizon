@@ -62,7 +62,13 @@ pub struct Call {
 }
 
 pub struct Flat {
+    /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
+    /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
     pub solid: wgpu::RenderPipeline,
+    /// The solid draws in two passes over the same draws (terrain.wgsl's `opaque_quad`):
+    /// the quads with no cutout first, through a shader that never discards, then the rest.
+    pub solid_opaque: wgpu::RenderPipeline,
+    pub solid_cutout: wgpu::RenderPipeline,
     /// The solid draws as the water mirror's camera draws them (`fs_solid_mirror`).
     pub solid_mirror: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
@@ -286,7 +292,7 @@ fn plan(
 }
 
 impl Flat {
-    /// `pipeline(layout, label, fragment entry, blend, cull)` builds a
+    /// `pipeline(layout, label, vertex entry, fragment entry, blend, cull)` builds a
     /// terrain pipeline as the per-section ones, without the origin buffer.
     pub fn new(
         device: &wgpu::Device,
@@ -295,6 +301,7 @@ impl Flat {
         min_sections: usize,
         pipeline: impl Fn(
             &wgpu::PipelineLayout,
+            &str,
             &str,
             &str,
             Option<wgpu::BlendState>,
@@ -354,11 +361,35 @@ impl Flat {
         let storage_usage = wgpu::BufferUsages::STORAGE;
         let back = Some(wgpu::Face::Back);
         Self {
-            solid: pipeline(&layout, "Terrain solid (flat)", "fs_solid", None, back),
+            solid: pipeline(
+                &layout,
+                "Terrain solid (flat)",
+                "vs_terrain_flat",
+                "fs_solid",
+                None,
+                back,
+            ),
+            solid_opaque: pipeline(
+                &layout,
+                "Terrain solid opaque (flat)",
+                "vs_terrain_flat_opaque",
+                "fs_opaque",
+                None,
+                back,
+            ),
+            solid_cutout: pipeline(
+                &layout,
+                "Terrain solid cutout (flat)",
+                "vs_terrain_flat_cutout",
+                "fs_solid",
+                None,
+                back,
+            ),
             // The mirror flips the winding: its solid terrain culls the front.
             solid_mirror: pipeline(
                 &layout,
                 "Terrain solid mirrored (flat)",
+                "vs_terrain_flat",
                 "fs_solid_mirror",
                 None,
                 Some(wgpu::Face::Front),
@@ -366,6 +397,7 @@ impl Flat {
             translucent: pipeline(
                 &layout,
                 "Terrain translucent (flat)",
+                "vs_terrain_flat",
                 "fs_translucent",
                 Some(wgpu::BlendState::ALPHA_BLENDING),
                 back,

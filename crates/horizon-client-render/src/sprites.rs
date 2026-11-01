@@ -349,10 +349,26 @@ impl Sprites {
         };
         self.register(root, name, decoded)
     }
+    /// The layer of a texture outside `textures/` (an OptiFine pack's connected-texture tile),
+    /// named by its resource path and added on first use. Unlike [`Sprites::insert`], a texture
+    /// that does not load is an error: the caller drops what needed it. Such files bypass the
+    /// disk cache, whose fingerprint covers only `textures/`.
+    pub fn insert_file(&mut self, root: &Path, resource: &str) -> Result<u32> {
+        if let Some(layer) = self.layers.get(resource) {
+            return Ok(*layer);
+        }
+        let decoded = Self::decode_file(&root.join(resource), resource)?;
+        self.register(root, resource, decoded)
+    }
     /// Read and decode one texture and its `.mcmeta`.
     fn decode(root: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
         let (namespace, path) = name.split_once(':').ok_or("invalid sprite identifier")?;
-        let path = root.join(format!("assets/{namespace}/textures/{path}.png"));
+        Self::decode_file(
+            &root.join(format!("assets/{namespace}/textures/{path}.png")),
+            name,
+        )
+    }
+    fn decode_file(path: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
         let metadata = match fs::read_to_string(path.with_extension("png.mcmeta")) {
             Ok(text) => Some(serde_json::from_str::<
                 BTreeMap<String, Box<serde_json::value::RawValue>>,
@@ -368,7 +384,7 @@ impl Sprites {
             .as_deref()
             .map(AnimationMetadata::from_json)
             .transpose()?;
-        let (png_width, png_height, pixels) = read_rgba(&path)?;
+        let (png_width, png_height, pixels) = read_rgba(path)?;
         let (width, height) = if let Some(animation) = &animation {
             let [width, height] =
                 animation.frame_size(i32::try_from(png_width)?, i32::try_from(png_height)?);
@@ -512,6 +528,7 @@ impl Sprites {
 /// A PNG's width, height and pixels as RGBA.
 fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(BufReader::new(File::open(path)?));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![
@@ -660,6 +677,33 @@ mod tests {
             assert_eq!(sprite_mipmap_limit(levels, 32, 16, 6), levels + 1);
             assert_eq!(sprite_mipmap_limit(levels, 16, 16, 5), levels);
         }
+    }
+    #[test]
+    fn files_outside_textures_load_by_path() {
+        let root = std::env::temp_dir().join(format!("horizon-sprite-file-{}", std::process::id()));
+        let tile = "assets/minecraft/optifine/ctm/glass/0.png";
+        fs::create_dir_all(root.join(tile).parent().unwrap()).unwrap();
+        let mut encoder = png::Encoder::new(File::create(root.join(tile)).unwrap(), 16, 16);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = (0..256).flat_map(|i| [i as u8, 0, 0, 128]).collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        let mut sprites = Sprites::default();
+        let layer = sprites.insert_file(&root, tile).unwrap();
+        assert_eq!(sprites.insert_file(&root, tile).unwrap(), layer);
+        assert!(sprites.translucent[layer as usize]);
+        // A missing tile is an error, not the missing texture.
+        assert!(
+            sprites
+                .insert_file(&root, "assets/minecraft/optifine/ctm/glass/1.png")
+                .is_err()
+        );
+        assert_eq!(sprites.count(), 1);
+        fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn identical_still_textures_share_a_layer() {

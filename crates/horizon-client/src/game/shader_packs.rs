@@ -136,6 +136,8 @@ pub(super) struct PackIds {
     missing_item: i32,
     /// `oldHandLight` (3.2): the first held item and light are those of the brighter hand.
     old_hand_light: bool,
+    /// `vignette`: `false` hides the game's vignette over the pack's image.
+    vignette: bool,
     /// `oldLighting`: `true` keeps the game's face shading in the block colours.
     old_lighting: bool,
 }
@@ -143,7 +145,12 @@ pub(super) struct PackIds {
 impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
-    pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
+    pub(super) fn shader_pack_inputs(
+        &mut self,
+        camera: glam::DVec3,
+        partial: f32,
+        sky: &horizon_client::environment::Sky,
+    ) -> PackInputs {
         // A `shaders/` pack lights the faces itself unless `oldLighting=true`: sections mesh
         // without the game's face shading (the pack loaded or dropped below shows next frame).
         let pack_lighting = self.pack_ids.as_ref().is_some_and(|ids| !ids.old_lighting);
@@ -151,10 +158,11 @@ impl Game<'_> {
             self.streaming.shader_pack_lighting = pack_lighting;
             self.all_sections_changed();
         }
-        let picked = picked_pack(&self.settings);
+        let picked = picked_pack(&self.settings).to_owned();
         if self.native_shaders.picked != picked {
             // Another pack, or none: drop what ran.
-            self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
+            self.native_shaders = super::native_shaders::NativeShaders::picking(&picked);
+            self.set_translucent_layers(Vec::new());
             self.pack_ids = None;
             if let Some(renderer) = &mut self.renderer {
                 renderer.drop_shader_packs();
@@ -163,7 +171,7 @@ impl Game<'_> {
         if picked.is_empty() {
             return PackInputs::default();
         }
-        let name = picked.to_owned();
+        let name = picked;
         let dimension = match self.dim {
             Dim::Overworld => 0,
             Dim::Nether => -1,
@@ -229,6 +237,10 @@ impl Game<'_> {
                             // OQ-21: on unless the pack turns it off.
                             old_hand_light: properties
                                 .get("oldHandLight")
+                                .is_none_or(|v| v.trim() != "false"),
+                            // On unless the pack turns it off (`vignette=false`).
+                            vignette: properties
+                                .get("vignette")
                                 .is_none_or(|v| v.trim() != "false"),
                             // Off unless the pack turns it on (Iris shades no faces by default).
                             old_lighting: properties
@@ -314,6 +326,11 @@ impl Game<'_> {
             logical_height: self.world.shape.logical_height,
             has_skylight: self.world.shape.sky_light,
             has_ceiling: self.dim == Dim::Nether,
+            elytra_flying: self.player.as_ref().is_some_and(|p| p.fall_flying),
+            cloud_height: horizon_client::gfx::pack_uniforms::cloud_height(
+                sky.cloud_color[3],
+                sky.cloud_height,
+            ),
             mod_params: self.native_shader_params_now(partial),
         }
     }
@@ -357,6 +374,11 @@ impl Game<'_> {
             format!("Shader pack {name} could not be loaded and was turned off"),
             0xFF5555,
         ));
+    }
+
+    /// Whether the game's vignette draws: the option, unless the loaded pack turns it off.
+    pub(super) fn vignette_shown(&self) -> bool {
+        self.settings.vignette && self.pack_ids.as_ref().is_none_or(|ids| ids.vignette)
     }
 
     /// `heldItemId(2)` and `heldBlockLightValue(2)`: main hand, then off hand (5.2, 5.3).
@@ -512,7 +534,7 @@ fn name_id(name: &str) -> i32 {
 /// their sprite layer, not their block. A layer takes the id of the block named like its sprite
 /// (`block/oak_leaves` for `oak_leaves`), else the id most blocks drawing it share (ties: the
 /// lowest); -1 when no block drawing it has one. y is 1 for the fluid sprites, -1 otherwise.
-fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
+pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
     use std::collections::{BTreeMap, BTreeSet};
     let layers = pack
         .render

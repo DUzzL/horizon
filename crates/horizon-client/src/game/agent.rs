@@ -417,6 +417,7 @@ impl Game<'_> {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
             Screen::Friends => "friends",
+            Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
@@ -698,7 +699,7 @@ impl Game<'_> {
             push(
                 [orb.position.x, orb.position.y, orb.position.z],
                 "minecraft:experience_orb",
-                json!({ "kind": "orb", "value": orb.value }),
+                json!({ "kind": "orb", "value": orb.value, "velocity": [orb.velocity.x, orb.velocity.y, orb.velocity.z] }),
             );
         }
         list.sort_by(|a, b| a.0.total_cmp(&b.0));

@@ -265,6 +265,21 @@ pub const SKY_INPUT: Struct = Struct {
     },
 };
 
+/// The vertex stage's input: one corner of a block's surface.
+pub const VERTEX_INPUT: Struct = Struct {
+    name: "VertexInput",
+    doc: "One corner of a block's surface, for `fn vertex(input: VertexInput) -> vec3<f32>`, which returns where it is drawn (camera-relative, in blocks; `input.position` where it stays).",
+    fields: fields! {
+        position: "vec3<f32>" = "The corner, camera-relative, in blocks (`+ frame.camera_position` for the world's).",
+        uv: "vec2<f32>" = "The texture coordinate inside the block's sprite.",
+        material: "u32" = "The `[[materials]]` id of the block's sprite (0 when none matches).",
+        light: "vec2<f32>" = "Block and sky light, 0..1.",
+        tint: "vec4<f32>" = "The vertex colour (biome tint, face shade, ambient occlusion); alpha 1.",
+        face: "u32" = "For a fluid, the face of the block the corner is on (as `MaterialInput.face`), else 0.",
+        fluid: "u32" = "1 on a fluid's surface (water or lava), else 0.",
+    },
+};
+
 /// The weather stage's input: one point of a rain or snow streak.
 pub const WEATHER_INPUT: Struct = Struct {
     name: "WeatherInput",
