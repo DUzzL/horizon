@@ -1064,6 +1064,8 @@ impl Game<'_> {
         self.titles.overlay_time = 0;
         // GameRenderer.resetData and narrator.clear (Minecraft.disconnect).
         self.item_activation.reset();
+        // Kept mod block entity geometry belongs to the world leaving.
+        self.kept_block_entities.get_mut().clear();
         self.clear_narrator();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;

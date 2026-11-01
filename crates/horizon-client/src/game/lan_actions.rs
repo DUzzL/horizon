@@ -2762,6 +2762,30 @@ impl Game<'_> {
         command: &str,
         signed: Option<Vec<(String, horizon_client::lan::hub::chat::ChatMessage)>>,
     ) {
+        // The mods hear every command first, and may stop it.
+        let mut canceled = false;
+        let mut replies = Vec::new();
+        if let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone())) {
+            self.native_player_command(
+                uuid,
+                &name,
+                command.trim_start_matches('/'),
+                &mut canceled,
+                &mut replies,
+            );
+        }
+        for line in replies {
+            host.hub.send_to(
+                conn,
+                &C::SystemChat(play::SystemChat {
+                    content: horizon_client::lan::data::component_nbt(&line.component()),
+                    overlay: false,
+                }),
+            );
+        }
+        if canceled {
+            return;
+        }
         if self.guest_message_command(host, conn, command, signed.as_ref()) {
             return;
         }
@@ -3098,6 +3122,7 @@ impl Game<'_> {
         // restartClientLoadTimerAfterRespawn.
         g.dead = false;
         g.load_timeout = horizon_client::lan::guest::CLIENT_LOADED_TIMEOUT;
+        g.loading = true;
         g.death_time = 0;
         g.health = 20.0;
         g.food = 20;

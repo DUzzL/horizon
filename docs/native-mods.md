@@ -913,6 +913,16 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_player_command(player, name, command, canceled, replies)`**: any command a player typed (without the
+  slash), vanilla's too and commands the player may not run, heard before anything looks at it, and each line of a
+  quiet command batch. Set `canceled` and nothing runs; push lines to `replies` and the player gets them as system chat
+  (a quiet batch drops them). The player's state is not swapped in, and `native_tell` and the other helpers that take a
+  UUID reach nobody inside this hook: answer through `replies`. Commands may carry secrets (`/msg`, a login plugin's
+  password), so don't log them carelessly.
+- **`native_perform_console_command(command, ran)`**: a registered command typed on the dedicated server's console
+  (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
+  helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
+  registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
@@ -929,6 +939,18 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   the 36 inventory slots and the off hand, never the armour, and only at **plain** stacks: no damage and no
   component (name, enchantment...), so a shop never takes a worn or enchanted item for a new one. Each returns how
   many it counted, took or gave; the player's screen follows as for any change to their inventory.
+- `native_give_stack(uuid, stack)`, a whole stack (damage, name, enchantments... kept) to any player from any server
+  hook, as `Inventory.add` places it (onto equal stacks, then empty inventory slots); what did not fit comes back, all
+  of it for a player not here, dead, or swapped out by another player's hook. Nothing is dropped: an auto-pickup
+  leaves the rest on the ground, a machine keeps it.
+- Experience: `native_experience_orbs(dimension, min, max)`, the orbs in a box (id, position, `value`, and `count`
+  for merged orbs), read before a mod cancels an orb in `native_entity_join_level`; and `native_give_experience(uuid,
+  points)`, points given to any player as touching an orb gives them: Mending repairs their damaged items first, the
+  rest goes to their experience, with the level-up sound; and `native_give_levels(uuid, levels)`, levels added or,
+  negative, taken off (`Player.giveExperienceLevels`, as the anvil and the enchanting table charge; below 0 the level
+  and points are 0; no level-up sound). Both return false for a player not here, dead, or swapped out by another
+  player's hook, and where the server's player list is busy (some world ticks hold it): give first, and cancel the orb
+  only when the give returned true. A merged orb is worth `value` × `count`.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is
@@ -992,7 +1014,11 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   it (a mob names one only while it remembers the player's hit, 100 ticks), the tool and an explosion's radius. It hears blocks
   that a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch losing its wall, a piston,
   `/setblock ... destroy`), nor a creative break or a tool that can't harvest the block. A block's stacks get its block entity's data (a
-  shulker box's items) after the hook, and a container's contents spill on their own, not through it.
+  shulker box's items) after the hook, and a container's contents spill on their own, not through it. A player's use drops
+  through it too, with `used` set and that player named: shears on a sheep, a mooshroom, a snow golem or a bogged (its shearing
+  table), a brush on an armadillo (`minecraft:brush/armadillo`) or a suspicious block (its item, no table), shears carving a
+  pumpkin, picking sweet berries or cave vines (their harvest table), and a player's hit taking an item frame or its item (the
+  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told.
 
 ### A block's items
 
