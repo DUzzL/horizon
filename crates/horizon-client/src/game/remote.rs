@@ -471,6 +471,9 @@ pub(super) struct Remote {
     /// the first teleport, which takes them then.
     abilities: Option<play::PlayerAbilities>,
     loaded_sent: bool,
+    /// The dimension of the client level the mods heard made
+    /// (`native_client_level_load`), to be told dropped once.
+    heard_level: Option<String>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login
     /// or respawn, until the player's section is shown.
     pub(super) level_load: horizon_client::level_loading::LevelLoadTracker,
@@ -967,6 +970,7 @@ impl Game<'_> {
             carried: None,
             abilities: None,
             loaded_sent: false,
+            heard_level: None,
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
@@ -1073,6 +1077,10 @@ impl Game<'_> {
         self.clear_narrator();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
+        // Minecraft.disconnect: the client level goes.
+        if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+            self.native_client_level_unload(&old);
+        }
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
@@ -2068,6 +2076,15 @@ impl Game<'_> {
             self.pending_uploads.clear();
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.clear_sections(self.world.layout());
+            }
+            // The new ClientLevel is told before setLevel drops the old one.
+            let old = self
+                .remote
+                .as_mut()
+                .and_then(|r| r.heard_level.replace(spawn.dimension.clone()));
+            self.native_client_level_load(&spawn.dimension);
+            if let Some(old) = old {
+                self.native_client_level_unload(&old);
             }
         }
         let has_sky = self
