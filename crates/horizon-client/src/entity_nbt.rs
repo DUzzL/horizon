@@ -3462,9 +3462,7 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
             Some("minecraft:pig/sound_variant"),
         ),
         // ZombieNautilus.applyImplicitComponents: the variant only.
-        crate::mobs::Species::ZombieNautilus => {
-            (Some("minecraft:zombie_nautilus/variant"), None)
-        }
+        crate::mobs::Species::ZombieNautilus => (Some("minecraft:zombie_nautilus/variant"), None),
         _ => (None, None),
     };
     if let Some(name) = variant.and_then(|id| text(components.other(id))) {
