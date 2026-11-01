@@ -311,10 +311,10 @@ fn fade_code(w: f32) -> u32 {
     return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w);
 }
-// Solid terrain draws in two passes from the same draws: first the quads with no
-// cutout that are not fading, through `fs_opaque`, which never discards, so a tiled
-// GPU (Apple's) keeps hiding the pixels behind them; then the rest through
-// `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
+// Solid terrain draws in two passes, each over its own part of every mesh's quads
+// (`mesher::Part`): first the quads with no cutout that are not fading, through
+// `fs_opaque`, which never discards, so a tiled GPU (Apple's) keeps hiding the pixels
+// behind them; then the rest through `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
 // all the terrain it drew. A quad the pass leaves out is decided before any of the
 // vertex's work and lies outside the clip volume: it makes no pixel.
 fn opaque_quad(layer: u32, w: f32) -> bool {
