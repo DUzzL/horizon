@@ -802,6 +802,7 @@ pub struct Renderer {
     mirror: Option<MirrorTarget>,
     entity_pipeline: wgpu::RenderPipeline,
     hdr_mark_pipeline: wgpu::RenderPipeline,
+    hdr_hand_unmark_pipeline: wgpu::RenderPipeline,
     hdr_mark_lightning_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
     crumbling_pipeline: wgpu::RenderPipeline,
@@ -1681,6 +1682,10 @@ async fn open_backend(
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
+        // Video memory in blocks of 8-64 MiB instead of 128-256 MiB (Vulkan and DirectX 12):
+        // with the larger blocks a few small buffers kept whole blocks the arena's pages had
+        // left, and over half the video memory reserved was unused (1,344 MiB for 500).
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]
@@ -2991,6 +2996,17 @@ impl Renderer {
             "fs_hdr_mark",
             wgpu::ColorWrites::ALPHA,
         );
+        let hdr_hand_unmark_pipeline = entity_pipeline_with(
+            "HDR hand unmark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            Default::default(),
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_hand_unmark",
+            wgpu::ColorWrites::ALPHA,
+        );
         // Attribute 7: 6 is the entity vertex buffer's glint UV.
         let lightning_attributes = wgpu::vertex_attr_array![7=>Float32x3];
         let lightning_vertex = [
@@ -3576,6 +3592,7 @@ impl Renderer {
             mirror: None,
             entity_pipeline,
             hdr_mark_pipeline,
+            hdr_hand_unmark_pipeline,
             hdr_mark_lightning_pipeline,
             weather,
             crumbling_pipeline,
@@ -3731,6 +3748,11 @@ impl Renderer {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
         pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+        if self.hdr.is_some() {
+            // Drawn into the world: the light sources it holds are marked as the world's are.
+            pass.set_pipeline(&self.hdr_mark_pipeline);
+            pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+        }
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
@@ -4648,6 +4670,10 @@ impl Renderer {
     }
     /// The F3 screen's HDR line while the setting is on: the swapchain HDR presents to with
     /// its paper white and peak, or that the surface offers none.
+    /// Whether HDR output is on: the setting, where the display offers it.
+    pub fn hdr_on(&self) -> bool {
+        self.hdr.is_some()
+    }
     pub fn hdr_line(&self) -> String {
         match &self.hdr {
             Some(hdr) => format!(
@@ -7207,6 +7233,15 @@ impl Renderer {
                     ((base_quads - translucent_item_quads) * 4) as i32,
                     0..1,
                 );
+                if self.hdr.is_some() {
+                    // A glowing item in the world (Item sheet quads), as entities are.
+                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.draw_indexed(
+                        0..translucent_item_quads * 6,
+                        ((base_quads - translucent_item_quads) * 4) as i32,
+                        0..1,
+                    );
+                }
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if crumbling_quads > 0 && !oit_on {
@@ -7521,6 +7556,7 @@ impl Renderer {
                         for (quads, first) in [
                             (oit_entity_quads, base_quads),
                             (additive_quads, world_quads),
+                            (translucent_item_quads, base_quads - translucent_item_quads),
                             (
                                 translucent_particle_quads,
                                 base_quads - translucent_item_quads - translucent_particle_quads,
@@ -8078,7 +8114,12 @@ impl Renderer {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
+                        // HDR output's hand marks test against it (below).
+                        store: if self.hdr.is_some() {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: None,
                 }),
@@ -8092,6 +8133,41 @@ impl Renderer {
             drop(pass);
             if let Some(hdr) = &self.hdr {
                 hdr.mark_hand(encoder, timing.as_mut());
+                if let Some(view) = hdr.hand_light_view() {
+                    // The light sources in the hand may shine, the rest of it stays at the
+                    // world's brightness: nothing the world kept here shows through it.
+                    let attachments = [Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })];
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("HDR hand marks"),
+                        timestamp_writes: timing.as_mut().and_then(|t| t.writes("HDR hand marks")),
+                        color_attachments: &attachments,
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        ..Default::default()
+                    });
+                    pass.set_bind_group(0, &self.hand_group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                    let quads = 0..overlay.hand_quads * 6;
+                    pass.set_pipeline(&self.hdr_hand_unmark_pipeline);
+                    pass.draw_indexed(quads.clone(), overlay.first_hand_vertex, 0..1);
+                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
+                }
             }
         }
         // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
@@ -8220,6 +8296,8 @@ impl Renderer {
                     radius,
                     timing.as_mut(),
                 );
+        } else if let Some(blur) = &mut self.menu_blur {
+            blur.release();
         }
         self.hud.draw_range(
             encoder,
