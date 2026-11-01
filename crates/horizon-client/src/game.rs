@@ -155,6 +155,7 @@ mod lan_camera;
 mod lan_chat;
 mod lan_crafting;
 mod lan_entities;
+mod lan_far;
 mod lan_mobs;
 mod lan_mount_menu;
 mod lan_particles;
@@ -190,6 +191,7 @@ mod names;
 mod narrator;
 mod native_biome_colors;
 mod native_block_entity_draw;
+mod native_claimed_items;
 mod native_components;
 mod native_criteria;
 mod native_entities;
@@ -237,6 +239,7 @@ mod prediction;
 mod pumpkin;
 mod quick_actions;
 mod raids;
+mod random_textures;
 mod recipe_book;
 mod remote;
 mod remote_camera;
@@ -484,7 +487,11 @@ impl Options {
         self.player_name.clone().unwrap_or_else(|| {
             std::env::current_dir().map_or_else(
                 |_| horizon_client::offline_name::generate(0),
-                |dir| horizon_client::offline_name::load_or_create(&dir),
+                |_| {
+                    horizon_client::offline_name::load_or_create(
+                        &horizon_client::logging::player_dir(),
+                    )
+                },
             )
         })
     }
@@ -610,7 +617,7 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --in-frame              DEPRECATED, do not use: unsupported, will be removed soon (also --no-server-thread)\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --in-frame              DEPRECATED, do not use: unsupported, will be removed soon (also --no-server-thread)\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                         horizon_core::VANILLA_VERSION
                     );
                     return Ok(None);
@@ -696,6 +703,8 @@ impl Options {
                             "--game-dir" | "--gameDir" => o.game_dir = Some(value.into()),
                             // main has made it the game home already (logging::set_game_home).
                             "--home" => {}
+                            // ...and this player's own folder (logging::set_player_dir).
+                            "--player-dir" => {}
                             "--dev-mod" => o.dev_mods.push(std::path::absolute(&value)?),
                             "--benchmark" => {
                                 if horizon_client::benchmark::scenes(&value).is_none() {
@@ -2295,6 +2304,8 @@ struct Game<'a> {
     session_lock: Option<horizon_client::save::SessionLock>,
     audio: Audio,
     music: horizon_client::music::MusicManager,
+    /// The tracks native mods play over the music (`native_music_layers`).
+    music_layers: horizon_client::music::MusicLayers,
     /// `ToastManager.nowPlayingToast`: there while Music Toast is not Never.
     now_playing: Option<horizon_client::toasts::NowPlayingToast>,
     /// The Music Toast option the toast was last set up for.
@@ -2638,6 +2649,8 @@ struct Game<'a> {
     panel: native_panel::Panel,
     /// Horizon's own shader pack, while one is picked (`game/native_shaders.rs`).
     native_shaders: native_shaders::NativeShaders,
+    /// The items native client mods claim and the events they haven't polled (game/native_claimed_items.rs).
+    native_input: native_claimed_items::ModInput,
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
     /// Native mods' messages waiting (`game/native_net.rs`).
@@ -3460,6 +3473,9 @@ impl Game<'_> {
     }
     /// ClientLevel.addDestroyBlockEffect: a burst per outline box.
     fn destroy_particles(&mut self, pos: [i32; 3], state: BlockStateId) {
+        if self.settings.extras.hide_block_particles {
+            return;
+        }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
             return;
         };
@@ -3471,6 +3487,9 @@ impl Game<'_> {
     }
     /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
     fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
+        if self.settings.extras.hide_block_particles {
+            return;
+        }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
             return;
         };
@@ -3675,6 +3694,8 @@ impl Game<'_> {
             |stack: &ItemStack| catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1);
         // A LAN or server guest only shows the host's items.
         let merging = self.remote.is_none();
+        let obstacles = horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
+        let mut nearby = Vec::new();
         for i in 0..items.len() {
             if removed[i] {
                 continue;
@@ -3699,6 +3720,14 @@ impl Game<'_> {
                 let speed = self.world.random.next_float() * 0.2 + 0.1;
                 item.move_towards_closest_space(&self.world, self.res.facts(), speed);
             }
+            // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
+            // where the item can reach this tick (a block of slack for the next velocity).
+            let reach = Vec3::new(
+                item.velocity.x.abs() + 1.0,
+                item.velocity.y.abs() + 1.0,
+                item.velocity.z.abs() + 1.0,
+            );
+            obstacles.near(item.bounds().inflate(reach), &mut nearby);
             let alive = item.tick(
                 &self.world,
                 self.pack.assets.registry,
@@ -3706,6 +3735,7 @@ impl Game<'_> {
                 self.collision,
                 no_physics,
                 &self.res.motion().fluids,
+                &nearby,
             );
             cells.moved(i, item.previous, item.position);
             // ItemEntity.tick: merge every 2 ticks while moving between
@@ -5564,10 +5594,11 @@ impl Game<'_> {
             return Ok(Some(Hand::Main));
         }
         // An EntityHitResult may fall through to Item.use, never to useItemOn.
-        let block_hit = if matches!(guest, Some(GuestUse::Item(_))) || self.entity_targeted() {
-            None
-        } else {
-            self.pick()
+        let block_hit = match guest {
+            Some(GuestUse::OnBlock(_)) => self.pick(),
+            Some(GuestUse::Item(_)) => None,
+            _ if self.entity_targeted() => None,
+            _ => self.pick(),
         };
         let hands = match guest {
             Some(GuestUse::OnBlock(hand) | GuestUse::Item(hand) | GuestUse::Entity(hand, _)) => {
@@ -5846,7 +5877,9 @@ impl Game<'_> {
                             self.trigger_default_block_use(hit.pos);
                         }
                     }
-                    self.swing_arm();
+                    if result.should_swing() {
+                        self.swing_arm();
+                    }
                     return Ok(true);
                 }
             }
@@ -5944,9 +5977,7 @@ impl Game<'_> {
             return Ok(true);
         }
         if (!on_block && self.use_potion_item(&stack)?)
-            || ((block_hit.is_some() || !spawn_egg)
-                && (!on_block || spawn_egg)
-                && self.throw_item(&stack)?)
+            || ((!on_block || (spawn_egg && block_hit.is_some())) && self.throw_item(&stack)?)
         {
             return Ok(true);
         }
@@ -7361,6 +7392,36 @@ impl Game<'_> {
                 self.sync_toggle(slot);
             }
         }
+    }
+    /// Apply a physical key to every mapping bound to it.
+    fn mapped_key_event(&mut self, key: KeyCode, pressed: bool, repeat: bool) -> Result<()> {
+        for mapped in self.settings.keys.translate_all(key) {
+            match mapped {
+                Ok(k) => {
+                    self.mapped_key(k, pressed, repeat)?;
+                }
+                Err(button) => {
+                    let action = match (pressed, repeat) {
+                        (false, _) => KeyAction::Release,
+                        (_, false) => KeyAction::Press,
+                        (_, true) => KeyAction::Repeat,
+                    };
+                    if let Some(pressed) = keyboard_button(
+                        gameplay_has_keyboard(
+                            self.screen,
+                            self.title.is_some(),
+                            self.dialog_open(),
+                        ),
+                        action,
+                    ) {
+                        self.play_mouse(button, pressed)?;
+                    } else if container_key_clones(button, action) {
+                        self.inventory_pick_key();
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     /// A key event after rebinding, as the default key of its mapping (the
     /// keyboard and controllers both end here).
@@ -11452,6 +11513,7 @@ impl Game<'_> {
         // TagsUpdatedEvent (SERVER_DATA_LOAD): the world's data is in, before
         // its chunks and players are.
         self.native_server_data_loaded(false);
+        self.sync_recipe_content();
         self.bosses = Default::default();
         reset_world_progress(&mut self.adv, &mut self.stats);
         self.prefetch_advancement_tree();
@@ -13327,14 +13389,25 @@ impl Game<'_> {
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
         self.streaming.radius = self.settings.render_distance;
-        // Options.biomeBlendRadius, ambientOcclusion and cutoutLeaves:
-        // LevelExtractor.allChanged when they change.
+        // Options.biomeBlendRadius, ambientOcclusion, cutoutLeaves and the
+        // leaf-culling mode: LevelExtractor.allChanged when they change.
+        let leaf_culling = self.effective_leaf_culling();
         let (s, st) = (&self.settings, &self.streaming);
-        let remesh = (s.biome_blend, s.smooth_lighting, s.cutout_leaves)
-            != (st.biome_blend, st.smooth_lighting, st.cutout_leaves);
+        let remesh = (
+            s.biome_blend,
+            s.smooth_lighting,
+            s.cutout_leaves,
+            leaf_culling,
+        ) != (
+            st.biome_blend,
+            st.smooth_lighting,
+            st.cutout_leaves,
+            st.leaf_culling,
+        );
         self.streaming.biome_blend = self.settings.biome_blend;
         self.streaming.smooth_lighting = self.settings.smooth_lighting;
         self.streaming.cutout_leaves = self.settings.cutout_leaves;
+        self.streaming.leaf_culling = leaf_culling;
         if remesh {
             self.all_sections_changed();
         }
@@ -14859,7 +14932,7 @@ impl Game<'_> {
         let pack_inputs = if title {
             Default::default()
         } else {
-            self.shader_pack_inputs(camera, alpha as f32)
+            self.shader_pack_inputs(camera, alpha as f32, &sky)
         };
         // Map textures and font glyphs changed while building this frame's
         // geometry (game/maps.rs, world text) upload with this batch; draining
@@ -15460,11 +15533,25 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// LOD Distance and Far Detail Reduced as the player chose them.
+    /// LOD Distance and Far Detail Reduced as the player chose them, the
+    /// distance no farther than a server sampling far terrain for us allows.
     fn far_terrain_choice(&self) -> (u32, bool) {
         let g = &self.settings.horizon;
         let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced;
-        (g.lod_distance, reduced)
+        let distance = match self.server_far_terrain() {
+            Some(offer) => g.lod_distance.min(offer.distance),
+            None => g.lod_distance,
+        };
+        (distance, reduced)
+    }
+    /// The far terrain another machine's server samples for us
+    /// (`lod_net`): a client of a dedicated server or of a LAN world, not of
+    /// its own server thread, which hands its generator over directly.
+    fn server_far_terrain(&self) -> Option<horizon_client::lod_net::Offer> {
+        if self.integrated.is_some() {
+            return None;
+        }
+        self.remote.as_ref()?.far_terrain
     }
     /// LOD Distance as far terrain uses it (`graphics::lod_distance_capped`).
     fn lod_distance(&self) -> u32 {
@@ -15485,6 +15572,11 @@ impl Game<'_> {
         }
     }
     fn clear_lod(&mut self) {
+        // The samplers waiting on the server stop first: dropping the far
+        // terrain joins them.
+        if let Some(remote) = &self.remote {
+            remote.session.cancel_far_terrain();
+        }
         self.lod = None;
         self.lod_source_attempted = false;
         self.lod_observe.clear();
@@ -15499,7 +15591,9 @@ impl Game<'_> {
             && self.renderer.is_some()
             && self.player.is_some()
             && self.title.is_none()
-            && (self.remote.is_none() || self.integrated.is_some());
+            && (self.remote.is_none()
+                || self.integrated.is_some()
+                || self.server_far_terrain().is_some());
         if !enabled {
             if self.lod.is_some() || self.lod_source_attempted {
                 self.clear_lod();
@@ -15511,9 +15605,16 @@ impl Game<'_> {
         }
         self.lod_source_attempted = true;
         let dim = self.dim;
-        let source = match &self.integrated {
-            Some(server) => server.call(move |game| game.lod_source_in(dim)).flatten(),
-            None => Some(self.streaming.lod_source()),
+        let source = match (&self.integrated, self.server_far_terrain(), &self.remote) {
+            (Some(server), ..) => server.call(move |game| game.lod_source_in(dim)).flatten(),
+            (None, Some(offer), Some(remote)) => {
+                let states = self.res.facts().states.len() as u32;
+                let biomes = self.res.biomes().index.clone();
+                let source: Arc<dyn horizon_client::streaming::LodSource> =
+                    remote.session.far_terrain(offer, biomes, states);
+                Some(source)
+            }
+            _ => Some(self.streaming.lod_source()),
         };
         if let Some(source) = source {
             self.lod = Some(horizon_client::lod::Lod::new(
@@ -15779,7 +15880,21 @@ impl ApplicationHandler for Game<'_> {
         self.previous = Instant::now();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let key = if self.window.as_ref().is_some_and(|w| w.id() == id)
+            && let WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } = &event
+        {
+            Some((event.clone(), glfw_modifiers(self.modifiers)))
+        } else {
+            None
+        };
         self.handle_window_event(event_loop, id, event);
+        if let Some((event, modifiers)) = key {
+            self.native_input_key(&event, modifiers);
+        }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         // The real mouse never steers an offscreen game: its pointer is not grabbed.
@@ -15855,6 +15970,30 @@ impl Game<'_> {
                 self.physical_buttons.remove(button);
             }
         }
+        let mouse = if !self.pad_synthetic_input()
+            && let WindowEvent::MouseInput { state, button, .. } = &event
+        {
+            Some((
+                glfw_button(*button),
+                *state == ElementState::Pressed,
+                glfw_modifiers(self.modifiers),
+            ))
+        } else {
+            None
+        };
+        if let Some((button, pressed, modifiers)) = mouse {
+            let mut canceled = false;
+            self.native_mouse_button_pre(button, pressed, modifiers, &mut canceled);
+            if canceled {
+                return;
+            }
+        }
+        self.handle_window_event_inner(event_loop, event);
+        if let Some((button, pressed, modifiers)) = mouse {
+            self.native_mouse_button_post(button, pressed, modifiers);
+        }
+    }
+    fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
             self.physical_buttons.clear();
@@ -16124,6 +16263,16 @@ impl Game<'_> {
             return;
         }
         let result: Result<()> = (|| {
+            if let WindowEvent::KeyboardInput { event, .. } = &event
+                && event.state == ElementState::Released
+                && let PhysicalKey::Code(key) = event.physical_key
+                && self.screen_key_released(key)
+            {
+                // Screen cancellation must not leave a held keyboard mapping down.
+                self.keys.remove(&key);
+                self.mapped_key_event(key, false, false)?;
+                return Ok(());
+            }
             // ScreenEvent.MouseButtonPressed.Pre / MouseButtonReleased.Pre:
             // the open screen hears of the press before anything reads it, and
             // a cancelled one goes no further — no hotbar key, no slot, no
@@ -16316,10 +16465,28 @@ impl Game<'_> {
                         && self.sleeping.is_none()
                         && self.player.is_some()
                         && !self.native_wheel_event(d)
-                        && let Some((wheel, (_, vertical_steps))) =
-                            self.mouse
-                                .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
+                        && let Some((wheel, (horizontal_steps, vertical_steps))) = self
+                            .mouse
+                            .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
                     {
+                        if !self.pad_synthetic_input() {
+                            let mut canceled = false;
+                            self.native_mouse_scrolling(
+                                [scaled(raw_x), scaled(raw_y)],
+                                [horizontal_steps, vertical_steps],
+                                [
+                                    self.physical_buttons.contains(&MouseButton::Left),
+                                    self.physical_buttons.contains(&MouseButton::Middle),
+                                    self.physical_buttons.contains(&MouseButton::Right),
+                                ],
+                                [self.cursor.0, self.cursor.1],
+                                glfw_modifiers(self.modifiers),
+                                &mut canceled,
+                            );
+                            if canceled {
+                                return Ok(());
+                            }
+                        }
                         if self.spectator() && self.spectator_gui.is_menu_active() {
                             self.spectator_scroll(-wheel);
                         } else if self.spectator() {
@@ -16887,38 +17054,7 @@ impl Game<'_> {
                     {
                         self.smooth_camera = !self.smooth_camera;
                     }
-                    // Key binds: act as the default key of every mapping bound
-                    // to it (KeyMapping.set drives them all).
-                    for mapped in self.settings.keys.translate_all(key) {
-                        match mapped {
-                            Ok(k) => {
-                                self.mapped_key(
-                                    k,
-                                    event.state == ElementState::Pressed,
-                                    event.repeat,
-                                )?;
-                            }
-                            Err(button) => {
-                                let action = match (event.state, event.repeat) {
-                                    (ElementState::Released, _) => KeyAction::Release,
-                                    (_, false) => KeyAction::Press,
-                                    (_, true) => KeyAction::Repeat,
-                                };
-                                if let Some(pressed) = keyboard_button(
-                                    gameplay_has_keyboard(
-                                        self.screen,
-                                        self.title.is_some(),
-                                        self.dialog_open(),
-                                    ),
-                                    action,
-                                ) {
-                                    self.play_mouse(button, pressed)?;
-                                } else if container_key_clones(button, action) {
-                                    self.inventory_pick_key();
-                                }
-                            }
-                        }
-                    }
+                    self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
                     self.observe_fullscreen();
@@ -17422,6 +17558,7 @@ impl<'a> Game<'a> {
                 );
                 music
             },
+            music_layers: Default::default(),
             // ToastManager.initializeMusicToast: Pause and Pause and Toast make the toast.
             now_playing: (settings.file.int("musicToast").clamp(0, 2) != 0).then(Default::default),
             music_toast_state: settings.file.int("musicToast").clamp(0, 2) as u8,
@@ -17633,6 +17770,7 @@ impl<'a> Game<'a> {
             recipe_tables: Default::default(),
             panel: Default::default(),
             native_shaders: Default::default(),
+            native_input: Default::default(),
             native_lifecycle: Default::default(),
             native_net: Default::default(),
             native_mod_screen: None,
@@ -18019,7 +18157,7 @@ impl Game<'_> {
     fn recipes(&self) -> &Recipes {
         match &self.world_tables {
             Some(t) => &t.recipes,
-            None => self.res.recipes(),
+            None => self.synced_recipes().unwrap_or_else(|| self.res.recipes()),
         }
     }
     fn stations(&self) -> &horizon_client::stations::StationData {
@@ -18092,6 +18230,8 @@ impl Game<'_> {
         }
         self.world_tables = self.build_world_tables();
         horizon_client::structure_blocks::forget_loot_data();
+        // Before the players are sent the reloaded data below.
+        self.sync_recipe_content();
         // PlayerList.reloadResources: the tags and recipes go to the players
         // and their advancements reload. The synchronized registries (the
         // dialogs, and the commands' ids of them) stay the hub's.
@@ -19011,7 +19151,7 @@ fn start_game<'a>(
     let handoff = prepared.is_some();
     let mut settings = match settings {
         Some(settings) => settings,
-        None => Settings::load(&std::env::current_dir()?.join("options.txt")),
+        None => Settings::load(&Game::options_path()),
     };
     if let Some(d) = options.distance_override {
         settings.render_distance = d;
@@ -19680,7 +19820,7 @@ pub fn run() -> Result<()> {
         // the error.
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
-            let settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+            let settings = Settings::load(&Game::options_path());
             return no_resources::show(&vanilla_root, &settings);
         }
         return Err(error.into());
@@ -19691,13 +19831,14 @@ pub fn run() -> Result<()> {
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
         horizon_client::heartbeat::start();
-        if let Err(e) = horizon_client::multiplayer::add_official_server(&std::env::current_dir()?)
+        if let Err(e) =
+            horizon_client::multiplayer::add_official_server(&horizon_client::logging::player_dir())
         {
             log::warn!("could not add the official server to servers.dat: {e}");
         }
     }
     mods::register_components(&vanilla_root)?;
-    let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+    let early_settings = Settings::load(&Game::options_path());
     // Minecraft's constructor opens the narrator; a server has none.
     if options.execution_role.is_client() {
         narrator::start(&early_settings);

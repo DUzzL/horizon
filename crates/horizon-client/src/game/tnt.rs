@@ -525,9 +525,48 @@ impl FluidFlowWorld for TntFluidWorld<'_> {
     }
 }
 
+impl Game<'_> {
+    /// `positionRider` for the mobs riding primed TNT: the passenger attachment
+    /// (the top of its 0.98 box), less the rider's own vehicle attachment.
+    pub(super) fn seat_tnt_mobs(&mut self) {
+        for i in 0..self.tnts.len() {
+            let (id, pos, prev) = (
+                self.tnts[i].id,
+                self.tnts[i].position,
+                self.tnts[i].previous,
+            );
+            if id == 0 {
+                continue;
+            }
+            for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(id)) {
+                let offset = horizon_client::mobs::riders::vehicle_attachment(m);
+                m.position = tnt_seat(pos, offset);
+                m.previous = tnt_seat(prev, offset);
+                m.velocity = Vec3::ZERO;
+                m.fall_distance = 0.0;
+                m.on_ground = false;
+                m.extra.passenger = true;
+                m.ai.nav.stop();
+            }
+        }
+    }
+}
+
+fn tnt_seat(tnt: Vec3, rider_offset: f64) -> Vec3 {
+    Vec3::new(tnt.x, tnt.y + PrimedTnt::SIZE - rider_offset, tnt.z)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rider_sits_on_top_of_the_tnt_less_its_own_attachment() {
+        // 64 + 0.98 (the box's top) - 0.14 (a rider's vehicle attachment).
+        let seat = tnt_seat(Vec3::new(1.5, 64.0, -2.5), 0.14);
+        assert_eq!((seat.x, seat.z), (1.5, -2.5));
+        assert!((seat.y - 64.84).abs() < 1e-9);
+    }
 
     #[test]
     fn a_piston_slime_bounce_launches_primed_tnt() {

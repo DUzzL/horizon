@@ -624,6 +624,9 @@ pub struct Renderer {
     device_lost: Arc<std::sync::atomic::AtomicBool>,
     pub config: wgpu::SurfaceConfiguration,
     solid: wgpu::RenderPipeline,
+    /// `solid` split in two passes for the world pass (terrain.wgsl's `opaque_quad`).
+    solid_opaque: wgpu::RenderPipeline,
+    solid_cutout: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
@@ -1965,6 +1968,31 @@ impl Renderer {
             true,
             None,
         );
+        // `solid` in two passes over the same draws (terrain.wgsl's `opaque_quad`), for the
+        // world pass without a shader pack: no cutout first, through a shader that never
+        // discards, then the rest.
+        let solid_opaque = pipeline(
+            "Terrain solid opaque",
+            "vs_terrain_opaque",
+            "fs_opaque",
+            &terrain_buffers,
+            tri,
+            Some(wgpu::Face::Back),
+            true,
+            true,
+            None,
+        );
+        let solid_cutout = pipeline(
+            "Terrain solid cutout",
+            "vs_terrain_cutout",
+            "fs_solid",
+            &terrain_buffers,
+            tri,
+            Some(wgpu::Face::Back),
+            true,
+            true,
+            None,
+        );
         // The water mirror's camera sees the world from the other side of the plane, which
         // flips the winding: its solid terrain culls the front.
         let solid_mirror = pipeline(
@@ -3216,18 +3244,9 @@ impl Renderer {
                 &bindings,
                 arena.page_vertices(),
                 min_sections,
-                |layout, label, fragment, blend, cull| {
+                |layout, label, vertex, fragment, blend, cull| {
                     pipeline_in(
-                        layout,
-                        label,
-                        "vs_terrain_flat",
-                        fragment,
-                        &buffers,
-                        tri,
-                        cull,
-                        true,
-                        true,
-                        blend,
+                        layout, label, vertex, fragment, &buffers, tri, cull, true, true, blend,
                     )
                 },
             )
@@ -3343,6 +3362,8 @@ impl Renderer {
             device_lost,
             config,
             solid,
+            solid_opaque,
+            solid_cutout,
             translucent,
             flat_on: flat.is_some(),
             cull_on: cull.is_some(),
@@ -6506,6 +6527,10 @@ impl Renderer {
             .filter(|_| !frame.title)
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         let solid_pipeline = material.map_or(&self.solid, |(m, _)| &m.solid);
+        // Two solid passes only where a discard costs the GPU its hidden surface
+        // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
+        // would double the solid draw calls and vertex work for nothing.
+        let split_solid = self.info.backend == wgpu::Backend::Metal;
         let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
         let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
@@ -6610,13 +6635,25 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 Some(flat) => {
-                    pass.set_pipeline(pack_flat.map_or(&flat.solid, |p| &p.0));
                     let vertices = |p| self.arena.buffer(p);
+                    // Without a pack, on Metal, each list draws twice: the opaque
+                    // pass, then the cutout one (terrain.wgsl's `opaque_quad`).
+                    let passes: &[&wgpu::RenderPipeline] = match pack_flat {
+                        Some(p) => &[&p.0],
+                        None if split_solid => &[&flat.solid_opaque, &flat.solid_cutout],
+                        None => &[&flat.solid],
+                    };
+                    let draw = |pass: &mut wgpu::RenderPass<'_>, calls: &[flat::Call]| {
+                        for &pipeline in passes {
+                            pass.set_pipeline(pipeline);
+                            flat.draw(pass, calls, vertices);
+                        }
+                    };
                     match cull {
                         // As below: phase 1, the test, then phase 2's draws
                         // that the test saw, copied after it.
                         Some(cull) => {
-                            flat.draw(&mut pass, &flat.calls[..flat.phase1_calls], vertices);
+                            draw(&mut pass, &flat.calls[..flat.phase1_calls]);
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
@@ -6631,16 +6668,23 @@ impl Renderer {
                             );
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
-                            pass.set_pipeline(pack_flat.map_or(&flat.solid, |p| &p.0));
-                            flat.draw_phase2(&mut pass, vertices);
+                            for &pipeline in passes {
+                                pass.set_pipeline(pipeline);
+                                flat.draw_phase2(&mut pass, vertices);
+                            }
                         }
-                        None => flat.draw(&mut pass, &flat.calls[..flat.solid_calls], vertices),
+                        None => draw(&mut pass, &flat.calls[..flat.solid_calls]),
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    pass.set_pipeline(solid_pipeline);
+                    // Without a native material, on Metal, each list draws twice:
+                    // the opaque pass, then the cutout one (terrain.wgsl's `opaque_quad`).
+                    let passes: &[&wgpu::RenderPipeline] = match material {
+                        None if split_solid => &[&self.solid_opaque, &self.solid_cutout],
+                        _ => &[solid_pipeline],
+                    };
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
@@ -6649,7 +6693,10 @@ impl Renderer {
                             // its pass, or one of their own on Metal), then
                             // what they found in sight, in a pass that loads
                             // both targets (it reads the test's results).
-                            self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
+                            for &pipeline in passes {
+                                pass.set_pipeline(pipeline);
+                                self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
+                            }
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
@@ -6663,21 +6710,28 @@ impl Renderer {
                             );
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
-                            pass.set_pipeline(solid_pipeline);
                             pass.set_index_buffer(
                                 self.indices.slice(..),
                                 wgpu::IndexFormat::Uint32,
                             );
                             pass.set_vertex_buffer(1, self.instances.slice(..));
-                            self.draw_sections(
-                                &mut pass,
-                                &cull.phase2,
-                                phase1_draws,
-                                phase1_draws,
-                                solid_draws - phase1_draws,
-                            );
+                            for &pipeline in passes {
+                                pass.set_pipeline(pipeline);
+                                self.draw_sections(
+                                    &mut pass,
+                                    &cull.phase2,
+                                    phase1_draws,
+                                    phase1_draws,
+                                    solid_draws - phase1_draws,
+                                );
+                            }
                         }
-                        None => self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws),
+                        None => {
+                            for &pipeline in passes {
+                                pass.set_pipeline(pipeline);
+                                self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
+                            }
+                        }
                     }
                 }
             }

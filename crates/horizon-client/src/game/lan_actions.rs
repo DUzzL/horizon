@@ -1869,6 +1869,23 @@ impl Game<'_> {
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
+                // SpawnEggItem.use calls ServerLevel.mayInteract at its own
+                // fluid ray's position, unlike useOn's packet-supplied block.
+                let held = if hand == Hand::Off {
+                    g.offhand.as_ref()
+                } else {
+                    g.inventory.get(g.selected).and_then(Option::as_ref)
+                };
+                if held.is_some_and(|s| s.item.ends_with("_spawn_egg")) {
+                    let hit = self
+                        .as_guest(host, conn, |g| {
+                            g.with_hand(hand, |g| g.spawn_egg_fluid_hit())
+                        })
+                        .flatten();
+                    if hit.is_some_and(|h| self.under_spawn_protection(host, gi, h.pos)) {
+                        return;
+                    }
+                }
                 let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                 let used = self.as_guest(host, conn, |g| {
                     // A horn's sound, inline instruments included.
@@ -2095,6 +2112,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
+                self.guest_far_terrain(host, conn, &p.data)
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
@@ -3215,6 +3235,11 @@ impl Game<'_> {
             }
             host.hub.teleport(i, Some(at));
         }
+        // PlayerRespawnEvent, at the end of PlayerList.respawn: the player is
+        // placed, in their respawn level, with their state swapped in so the
+        // helpers reach them (as for native_perform_command).
+        let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
         if away && let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
