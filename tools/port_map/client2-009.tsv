@@ -5,7 +5,7 @@ ActiveTextCollector.defaultScrollingHelper	port	crates/horizon-client-render/src
 ActiveTextCollector.findElementUnderCursor	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: hit test covers chat lines only; book links use game/books.rs book_link_at
 ActiveTextCollector.isPointInRectangle	port	crates/horizon-client-render/src/ui.rs::hovered	half-open rectangle test with the same bounds
 ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines are searched for click and hover styles
-ActiveTextCollector.ClickableStyleFinder.acceptScrolling	missing		minor: no scrolling text (see defaultScrollingHelper)
+ActiveTextCollector.ClickableStyleFinder.acceptScrolling	missing		minor: scrolling text is not hit-tested for click and hover styles (Chat::style_at searches chat lines only)
 ActiveTextCollector.Parameters.withScale	skip:java		record copy-with helper; Horizon has no pose matrix per text
 ActiveTextCollector.Parameters.withOpacity	skip:java		record copy-with helper; opacity is the colour's alpha byte in Horizon
 ActiveTextCollector.Parameters.withScissor	missing		minor: a nested scissor is not intersected with the enclosing rectangle; Draw::Scissor replaces it
