@@ -1713,9 +1713,38 @@ impl Game<'_> {
         }
         self.creatures.projectiles.push(p);
     }
+    /// `Entity.sendBubbleColumnParticles` at the top of the column block `pos`: two
+    /// splashes and two bubbles over it, which the level random places, shown here
+    /// and to the players within range.
+    pub(super) fn bubble_column_particles(&mut self, pos: BlockPos) {
+        for _ in 0..2 {
+            let r = &mut self.world.random;
+            let splash = [
+                f64::from(pos.x) + r.next_double(),
+                f64::from(pos.y + 1),
+                f64::from(pos.z) + r.next_double(),
+            ];
+            let bubble = [
+                f64::from(pos.x) + r.next_double(),
+                f64::from(pos.y + 1),
+                f64::from(pos.z) + r.next_double(),
+            ];
+            let splash_options = ParticleOptions::simple(ParticleType::Splash);
+            self.particles
+                .send_particles(&splash_options, splash, [0.0; 3], 1.0, 1);
+            self.lan_level_particles(&splash_options, splash, [0.0; 3], 1.0, 1, None);
+            let bubble_options = ParticleOptions::simple(ParticleType::Bubble);
+            self.particles
+                .send_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1);
+            self.lan_level_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1, None);
+        }
+    }
     pub(super) fn handle_mob_events(&mut self, events: Vec<MobEvent>) -> Result<()> {
         for e in events {
             match e {
+                MobEvent::BubbleColumnParticles { pos } => {
+                    self.bubble_column_particles(BlockPos::new(pos[0], pos[1], pos[2]))
+                }
                 MobEvent::SquidCycle { mob, at } => self.lan_entity_event(mob as i32, 19, at),
                 MobEvent::RabbitHop { mob, at } => self.lan_entity_event(mob as i32, 1, at),
                 MobEvent::Drown { mob, at } => {
@@ -3885,36 +3914,7 @@ impl Game<'_> {
                 self.audio
                     .play(name, Some([at.x, at.y, at.z]), volume, pitch);
             }
-            ArrowEvent::BubbleColumnParticles { pos } => {
-                // Entity.sendBubbleColumnParticles: the level random places them.
-                for _ in 0..2 {
-                    let r = &mut self.world.random;
-                    let splash = [
-                        f64::from(pos.x) + r.next_double(),
-                        f64::from(pos.y + 1),
-                        f64::from(pos.z) + r.next_double(),
-                    ];
-                    let bubble = [
-                        f64::from(pos.x) + r.next_double(),
-                        f64::from(pos.y + 1),
-                        f64::from(pos.z) + r.next_double(),
-                    ];
-                    self.particles.send_particles(
-                        &ParticleOptions::simple(ParticleType::Splash),
-                        splash,
-                        [0.0; 3],
-                        1.0,
-                        1,
-                    );
-                    self.particles.send_particles(
-                        &ParticleOptions::simple(ParticleType::Bubble),
-                        bubble,
-                        [0.0, 0.01, 0.0],
-                        0.2,
-                        1,
-                    );
-                }
-            }
+            ArrowEvent::BubbleColumnParticles { pos } => self.bubble_column_particles(pos),
             ArrowEvent::Block { pos, reaction } => match reaction {
                 BlockReaction::PrimeTnt => {
                     self.spawn_primed_tnt(pos, false, None, None);

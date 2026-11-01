@@ -3867,6 +3867,7 @@ impl Game<'_> {
         let merging = self.remote.is_none();
         let obstacles = horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
         let mut nearby = Vec::new();
+        let mut bubble_tops = Vec::new();
         for i in 0..items.len() {
             if removed[i] {
                 // Merged into an earlier item before its own tick: it never ticked.
@@ -3912,6 +3913,17 @@ impl Game<'_> {
                 &nearby,
             );
             cells.moved(i, item.previous, item.position);
+            // Entity.handleOnAboveBubbleColumn: the server sends the particles of
+            // the surface of a bubble column the item is at the top of.
+            if merging {
+                bubble_tops.extend(horizon_client::motion::bubble_column_surfaces(
+                    &self.world,
+                    self.pack.assets.registry,
+                    self.res.facts(),
+                    self.collision,
+                    item.bounds(),
+                ));
+            }
             // ItemEntity.tick: merge every 2 ticks while moving between
             // blocks, every 40 otherwise, before the lifetime check.
             let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
@@ -3958,6 +3970,9 @@ impl Game<'_> {
                 removed[i] = true;
                 cells.remove(i, item.position);
             }
+        }
+        for pos in bubble_tops {
+            self.bubble_column_particles(pos);
         }
         let mut removed = removed.into_iter();
         items.retain(|_| !removed.next().unwrap_or(false));
