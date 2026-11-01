@@ -940,6 +940,9 @@ impl Streaming {
                 }
             }
         }
+        // A section with the same blocks and new light takes the packet's light (vanilla's
+        // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
+        Self::light_updated(world, key.0, key.1, &kept.light);
         if !kept.blocks {
             return;
         }
@@ -2418,9 +2421,11 @@ struct Resent {
     blocks: bool,
     /// The sections whose blocks did not change but whose biomes did.
     biomes: Vec<usize>,
+    /// The sections whose blocks did not change but whose light the packet changes.
+    light: Vec<usize>,
 }
 /// `new`, a resident column `old` sent again, takes `old`'s sections whose
-/// blocks it holds unchanged, with `new`'s biomes; the sections whose blocks
+/// blocks it holds unchanged, with `new`'s biomes and light; the sections whose blocks
 /// changed keep `old`'s light (until lit again) and their cells' classes go in
 /// `cells`.
 fn keep_unchanged_sections(
@@ -2448,13 +2453,30 @@ fn keep_unchanged_sections(
         }
         let biomes = new.sections[s].biomes.clone();
         let changed = !same_values(&old.sections[s].biomes, &biomes);
+        let light = (!same_light(&old.sections[s].light, &new.sections[s].light))
+            .then(|| new.sections[s].light.clone());
         new.sections[s] = old.sections[s].clone();
         if changed {
             Arc::make_mut(&mut new.sections[s]).biomes = biomes;
             out.biomes.push(s);
         }
+        if let Some(light) = light {
+            Arc::make_mut(&mut new.sections[s]).light = light;
+            out.light.push(s);
+        }
     }
     out
+}
+/// Whether two sections' packed light (4,096 cells) holds the same values.
+fn same_light(a: &crate::chunk::Light, b: &crate::chunk::Light) -> bool {
+    use crate::chunk::Light;
+    match (a, b) {
+        (Light::Uniform(x), Light::Uniform(y)) => x == y,
+        (Light::Full(x), Light::Full(y)) => x == y,
+        (Light::Uniform(v), Light::Full(f)) | (Light::Full(f), Light::Uniform(v)) => {
+            f.iter().all(|c| c == v)
+        }
+    }
 }
 /// Whether two biome containers (64 cells) hold the same values.
 fn same_values(
@@ -2492,6 +2514,7 @@ mod tests {
             Resent {
                 blocks: true,
                 biomes: vec![0],
+                light: vec![],
             }
         );
         assert_eq!(new.biome(0, -64, 0), 3);
@@ -2505,6 +2528,20 @@ mod tests {
         let kept = keep_unchanged_sections(&old, &mut same, &mut cells);
         assert_eq!(kept, Resent::default());
         assert!(Arc::ptr_eq(&same.sections[0], &old.sections[0]));
+        // the same blocks under new light: the packet's light, as vanilla applies it
+        let mut lit = old.clone();
+        Arc::make_mut(&mut lit.sections[2]).light = crate::chunk::Light::Uniform(0xF0);
+        Arc::make_mut(&mut old.sections[2]).light = crate::chunk::Light::Uniform(0x50);
+        let kept = keep_unchanged_sections(&old, &mut lit, &mut cells);
+        assert_eq!(
+            kept,
+            Resent {
+                light: vec![2],
+                ..Resent::default()
+            }
+        );
+        assert_eq!(lit.sections[2].light.get(0), 0xF0);
+        assert!(Arc::ptr_eq(&lit.sections[1], &old.sections[1]));
     }
 
     #[test]
