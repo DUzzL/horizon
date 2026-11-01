@@ -1766,24 +1766,6 @@ mod tests {
         .unwrap_or_else(|e| panic!("{e:?}"));
     }
 
-    /// A parameter or local named like a `bool` uniform hides it in its function (Pixel
-    /// Perfect's `fogify(..., in bool isSpectator, ...)`); elsewhere the uniform is read.
-    #[test]
-    fn bool_uniforms_hidden_by_parameters_and_locals() {
-        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
-                   float proto(bool hideGUI);\n\
-                   float f(in bool hideGUI) { return hideGUI ? 1.0 : 0.0; }\n\
-                   float g() { bool hideGUI = gl_FragCoord.x > 0.5; return hideGUI ? 2.0 : 0.0; }\n\
-                   void main() { c = vec4(f(true), g(), proto(false), hideGUI ? 1.0 : 0.0); }\n\
-                   float proto(bool hideGUI) { return hideGUI ? 3.0 : 0.0; }\n";
-        let p = program(
-            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
-            Target::Buffers,
-        )
-        .unwrap_or_else(|e| panic!("{e:?}"));
-        assert!(p.interface.uniforms.iter().any(|u| u.name == "hideGUI"));
-    }
-
     /// GLSL's `dot` and `normalize` take a `float` too (genType); naga's take vectors only. A
     /// pack's own `dot` is kept.
     #[test]

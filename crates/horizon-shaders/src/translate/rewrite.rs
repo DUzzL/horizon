@@ -108,8 +108,6 @@ impl Stage<'_> {
         let mut params: HashMap<String, String> = HashMap::new();
         // Names of samplers a local variable or parameter of the function hides.
         let mut hidden: Vec<(&str, usize)> = Vec::new();
-        // Names of `bool` uniforms a parameter or local of the function hides.
-        let mut hidden_bools: Vec<&str> = Vec::new();
         let mut depth = 0;
         let mut skip_until = 0;
         // The `;` that closes a statement we rewrite, and what is written in its place.
@@ -230,12 +228,9 @@ impl Stage<'_> {
                     if depth == 0 {
                         params.clear();
                         hidden.clear();
-                        hidden_bools.clear();
                         returns = None;
                     }
                 }
-                // A prototype's parameters hide nothing past it.
-                ";" if depth == 0 => hidden_bools.clear(),
                 "(" => {
                     let callee = prev(i).map_or("", |j| self.tokens[j]);
                     let close = if matches!(callee, "shadow2D" | "shadow2DLod" | "shadow2DProj") {
@@ -330,17 +325,7 @@ impl Stage<'_> {
                 continue;
             }
             if uniforms.get(t).is_some_and(|ty| ty == "bool") {
-                // `bool hideGUI`: a parameter or local of the same name hides the uniform to
-                // the function's end; `.hideGUI` is a member.
-                let before = prev(i).map(|j| self.tokens[j]);
-                if before.is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else")) {
-                    hidden_bools.push(t);
-                }
-                if before == Some(".") || hidden_bools.contains(&t) {
-                    out.push_str(t);
-                } else {
-                    write!(out, "(hz_bool_{t} != 0)").unwrap();
-                }
+                write!(out, "(hz_bool_{t} != 0)").unwrap();
                 continue;
             }
             let replaced: Option<String> = match t {
