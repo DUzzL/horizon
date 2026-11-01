@@ -169,7 +169,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             ),
         );
         shared.set_phase(Phase::Starting);
-        let mut child = engine::spawn(&program, &resources, dir)
+        let mut child = engine::spawn(&program, &resources, dir, config.engine.low_memory)
             .map_err(|e| format!("{}: {e}", program.display()))?;
         {
             let mut state = shared.state.lock().unwrap();

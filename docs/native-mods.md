@@ -357,6 +357,16 @@ horizon-mixins failed (exit status: 1). The end of its output, the whole of it i
 E_CRATE_DEPENDENCY: crate_lock needs rand ^0.9, which isn't in Horizon's Cargo.lock (…/horizon-mixin.toml)
 ```
 
+### Conditional data
+
+A data file that carries NeoForge's `neoforge:conditions` loads only when every condition holds, and is
+silently absent otherwise — as on NeoForge, where packs gate cross-mod recipes on the other mod being
+there. The recipe loaders (crafting, the stations, brewing, the recipe book, and the packs' overlays
+over them) all answer the gate; `mod_loaded` asks which mods' data is in the root: `minecraft`, always,
+and the content mods that are on. `neoforge:true`, `not`, `and` and `or` combine; a condition the game
+does not know leaves the file out, so a future shape fails closed. Tags, loot tables and advancements
+do not answer the gate yet.
+
 ### A mod's own enchantment effect kinds
 
 A `minecraft:post_attack` entry with `enchanted` attacker and `affected` victim whose `effect.type` is in a
@@ -903,12 +913,23 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_player_command(player, name, command, canceled, replies)`**: any command a player typed (without the
+  slash), vanilla's too and commands the player may not run, heard before anything looks at it, and each line of a
+  quiet command batch. Set `canceled` and nothing runs; push lines to `replies` and the player gets them as system chat
+  (a quiet batch drops them). The player's state is not swapped in, and `native_tell` and the other helpers that take a
+  UUID reach nobody inside this hook: answer through `replies`. Commands may carry secrets (`/msg`, a login plugin's
+  password), so don't log them carelessly.
+- **`native_perform_console_command(command, ran)`**: a registered command typed on the dedicated server's console
+  (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
+  helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
+  registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
   registered command no mod takes answers as vanilla's unknown command.
 - Helpers: `native_server_players()` (uuid, name, level, dimension, position and game mode of each player on);
-  `native_tell(uuid, text)`, a system line to one player; `native_broadcast(text)`, to every player and the server's
+  `native_tell(uuid, text)`, a system line to one player, also the acting player inside their hook;
+  `native_broadcast(text)`, to every player and the server's
   log; `native_feedback(text)`, the command's answer to the player whose command it is; `native_world_dir()`, the
   open world's folder, where a server mod keeps its data in a folder of its own so the world's backups carry it.
 - Items (API 9), of the acting player (inside `native_perform_command`, whose player is swapped in): `native_held()`
@@ -918,13 +939,25 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   the 36 inventory slots and the off hand, never the armour, and only at **plain** stacks: no damage and no
   component (name, enchantment...), so a shop never takes a worn or enchanted item for a new one. Each returns how
   many it counted, took or gave; the player's screen follows as for any change to their inventory.
+- `native_give_stack(uuid, stack)`, a whole stack (damage, name, enchantments... kept) to any player from any server
+  hook, as `Inventory.add` places it (onto equal stacks, then empty inventory slots); what did not fit comes back, all
+  of it for a player not here, dead, or swapped out by another player's hook. Nothing is dropped: an auto-pickup
+  leaves the rest on the ground, a machine keeps it.
+- Experience: `native_experience_orbs(dimension, min, max)`, the orbs in a box (id, position, `value`, and `count`
+  for merged orbs), read before a mod cancels an orb in `native_entity_join_level`; and `native_give_experience(uuid,
+  points)`, points given to any player as touching an orb gives them: Mending repairs their damaged items first, the
+  rest goes to their experience, with the level-up sound; and `native_give_levels(uuid, levels)`, levels added or,
+  negative, taken off (`Player.giveExperienceLevels`, as the anvil and the enchanting table charge; below 0 the level
+  and points are 0; no level-up sound). Both return false for a player not here, dead, or swapped out by another
+  player's hook, and where the server's player list is busy (some world ticks hold it): give first, and cancel the orb
+  only when the give returned true. A merged orb is worth `value` × `count`.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is
   swapped in (`native_tick`, a menu hook): a teleport to another level (`execute in minecraft:the_nether run tp Alex 0
   70 0`) lands at the next tick's start. `native_server_players()` and the acting player carry `health` (0 once dead).
   `native_action_bar(uuid, text)`, a line over a player's hotbar, which also reaches the acting player inside their
-  hook (where `native_tell` reaches nobody).
+  hook.
 - **`native_right_click_block(pos, face, canceled)`** (API 21): a player's right click on a block, before the block's
   own use and the item's (`ServerPlayerGameMode.useItemOn`), once per hand. A mod that sets `canceled` stops both,
   without a swing; the player's client is sent the block back. With `native_destroy_block` it keeps players out of
@@ -981,7 +1014,13 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   it (a mob names one only while it remembers the player's hit, 100 ticks), the tool and an explosion's radius. It hears blocks
   that a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch losing its wall, a piston,
   `/setblock ... destroy`), nor a creative break or a tool that can't harvest the block. A block's stacks get its block entity's data (a
-  shulker box's items) after the hook, and a container's contents spill on their own, not through it.
+  shulker box's items) after the hook, and a container's contents spill on their own, not through it. A player's use drops
+  through it too, with `used` set and that player named: shears on a sheep, a mooshroom, a snow golem or a bogged (its shearing
+  table), a brush on an armadillo (`minecraft:brush/armadillo`) or a suspicious block (its item, no table), shears carving a
+  pumpkin, picking sweet berries or cave vines (their harvest table), and a player's hit taking an item frame or its item (the
+  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told. Leads: untying one or cutting it with
+  shears is a use (the leashed mob, no table), and a mob a player killed while leashed drops its lead on its next tick as a call
+  of its own, naming the killer (`used` false, no table). A lead that snaps or loses its holder names no player and isn't told.
 
 ### A block's items
 
@@ -1058,6 +1097,65 @@ level is in place.
   doing nothing, on a client, for another dimension, a chunk that isn't loaded, or a radius outside `0 < radius <= 32`
   (TNT is 4, vanilla's largest is 7).
 - A blast set off inside `native_explosion_detonate` runs that hook again, so a mod that chains blasts keeps its own guard.
+
+### Camera shake
+
+`native_camera_shake(partial, shake)` (client) asks every frame for the camera shake a mod wants: `pitch`, `yaw` and `roll`
+in degrees and an `offset` in blocks along the camera's right, up and back. Add to `shake` rather than set it, so two
+mods' shakes add up. Horizon reads it only while playing, scales the sum by Distortion Effects (a player who turns
+that to 0% sees no shake), bounds it to 10 degrees and half a block on each axis, and multiplies it into the view
+after the hurt tilt and view bobbing. A mod keeps its own shake's time and decay, from `partial` and its tick hooks;
+it moves only what the player sees, not where they are or aim.
+
+### A player's motion
+
+`crates/horizon-client/src/game/native_motion.rs`: a push on a client, a flying speed on a server.
+
+- `native_push_player([x, y, z])` (client) adds a push to the player's own velocity, in blocks a tick, as an
+  explosion's knockback does: the player's own game moves them. The server didn't send it, so on a LAN or dedicated
+  server the anticheat's movement check sees a move it can't explain (logged only unless the server sets it to send
+  players back); for a push the server should stand behind, have the server send it. Each component is
+  cut to 4 either way; an upward push lifts the player off the ground. A spectator, no player, or a value that isn't
+  a number is left alone. A server mod that wants a client pushed sends its client half a message (API 40).
+- `native_set_flying_speed(player, speed)` (server) sets `player`'s creative flying speed: vanilla's is 0.05, `None`
+  puts it back, and it is cut to 0 to 50 (1000 times vanilla's). The player's client is told at once, a respawn and
+  a game mode change keep it, and it is saved with the player as vanilla's `abilities.flySpeed` is. Past about 0.45
+  (sprinting) a player flies more than 10 blocks a tick: anyone but the single-player owner then meets the server's
+  moved-too-quickly check, which can send them back, as vanilla's does. It answers false for a player not on this server,
+  on a client, and inside a player's hook (call it from a tick hook).
+
+### Values for a mod's shader pack
+
+`native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
+`[f32; 4]` that every stage of the pack reads as `frame.mods` (`array<vec4<f32>, 8>`, docs/api/shaders-reference.md). What
+they mean is the mod's own: a mod that bundles its pack as `native-<mod id>` writes the slots that pack reads, such as an
+explosion's centre (camera-relative, from `frame.camera_position`) and its age in seconds, for a cloud or a shock wave
+ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
+them. The mod's server half can send what happened to each client half with mod messages (API 40).
+
+### Sounds a client mod plays
+
+`native_play_local_sound(sound, at, volume, pitch, delay)` (client) plays sound event `sound` at `at` for this player only,
+`delay` ticks from now (0 to 1200). The event is vanilla's (`minecraft:entity.generic.explode`) or the mod's own: a content
+mod's `assets/<id>/sounds.json` and `assets/<id>/sounds/*.ogg` load with the rest of its assets. A volume past 1 carries
+farther, as vanilla's attenuation does. A client half that hears from its server half (mod messages, API 40) where
+something happened can time the sound to the distance, such as a blast heard when its shock wave reaches the player:
+`delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
+plays nothing.
+
+### Falling blocks
+
+`crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_spawn_falling_block(dimension, state, pos, velocity, falling)` throws a falling block of `state` from `pos` (its
+  bottom centre) at `velocity` in blocks a tick, each axis cut to 3.9. It flies, lands and places itself as sand does, or
+  drops as an item where it can't be placed. `NativeFalling` holds `drop_item` (default true) and `hurts` (hurts what it
+  lands on as an anvil does, 2 a block fallen and 40 at most; default false).
+- The block at `pos` stays: take it away first with `native_set_block` to make a block fall out of the world, as an
+  explosion's debris or a collapsing tower would.
+- It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
+  loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
 
 ### Mod messages
 

@@ -623,10 +623,16 @@ pub trait SecretStore: Send + Sync {
     fn lock_file(&self) -> Option<PathBuf> {
         None
     }
+    /// The in-process half of that lock. The system keychain is one per computer, so every
+    /// handle to it shares the process-wide lock; a memory store's secrets are its own, and so
+    /// is its lock: two of them (one per unit test) never wait for each other.
+    fn operations(&self) -> &Mutex<()> {
+        session::process_lock()
+    }
 }
 
 #[derive(Default)]
-pub struct MemoryStore(Mutex<HashMap<String, String>>);
+pub struct MemoryStore(Mutex<HashMap<String, String>>, Mutex<()>);
 impl SecretStore for MemoryStore {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         Ok(self.0.lock().unwrap().get(key).cloned())
@@ -641,6 +647,9 @@ impl SecretStore for MemoryStore {
     }
     fn persistent(&self) -> bool {
         false
+    }
+    fn operations(&self) -> &Mutex<()> {
+        &self.1
     }
 }
 
@@ -912,9 +921,28 @@ fn credential_manager_says(code: u32) -> Option<&'static str> {
     (code == ERROR_NOT_ENOUGH_MEMORY).then_some(CREDENTIAL_MANAGER_FULL)
 }
 
+/// A running executable removed by an older macOS updater cannot create Keychain credentials.
+#[cfg(any(target_os = "macos", test))]
+pub const MACOS_LAUNCHER_RESTART: &str = "The launcher was updated while it was running. Restart the launcher, then sign in with Microsoft again.";
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_keychain_says(code: i32) -> Option<&'static str> {
+    // CSSM's Unix ENOENT: Keychain cannot identify an executable removed by an older updater.
+    (code == 100002).then_some(MACOS_LAUNCHER_RESTART)
+}
+
 /// The keyring crate's error as the player reads it.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn write_error(e: keyring::Error) -> String {
+    #[cfg(target_os = "macos")]
+    if let keyring::Error::PlatformFailure(inner) = &e {
+        if let Some(said) = inner
+            .downcast_ref::<security_framework::base::Error>()
+            .and_then(|error| macos_keychain_says(error.code()))
+        {
+            return said.to_string();
+        }
+    }
     #[cfg(target_os = "windows")]
     if let keyring::Error::PlatformFailure(inner) = &e {
         if let Some(said) = inner

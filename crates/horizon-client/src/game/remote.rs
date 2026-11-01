@@ -1064,6 +1064,8 @@ impl Game<'_> {
         self.titles.overlay_time = 0;
         // GameRenderer.resetData and narrator.clear (Minecraft.disconnect).
         self.item_activation.reset();
+        // Kept mod block entity geometry belongs to the world leaving.
+        self.kept_block_entities.get_mut().clear();
         self.clear_narrator();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
@@ -2716,8 +2718,12 @@ impl Game<'_> {
                     _ => None,
                 }
             }
+            // A content mod's menu type: its container, then the inventory.
             // A workstation: its inputs, its result, then the inventory.
             m => {
+                if let Some(t) = horizon_client::containers::mod_menu_type(m) {
+                    return slots(t.slots);
+                }
                 let kind = Self::remote_station_kind(m)?;
                 let inputs = kind.inputs();
                 let own = inputs + usize::from(kind.has_result());
@@ -3447,6 +3453,14 @@ impl Game<'_> {
                                 self.using = synced_local_use(using, *flags, selected, |slot| {
                                     self.stack_in(slot).is_some()
                                 });
+                                // onSyncedDataUpdated's useItemRemaining: getUseDuration,
+                                // without startUsingItem's event.
+                                if using.is_none()
+                                    && let Some((slot, _)) = self.using
+                                    && let Some(stack) = self.stack_in(slot).cloned()
+                                {
+                                    self.use_duration = self.use_duration(&stack);
+                                }
                             }
                             _ => {}
                         }
@@ -5715,7 +5729,11 @@ impl Game<'_> {
                 data: 0,
             }));
         }
-        self.remote_send_state(input);
+        // LocalPlayer.sendChanges sends `input.keyPresses`, which an auto-jump's `makeJump` set to
+        // jump for this tick: the server's prediction plays the jump from it. Sent as held, the jump
+        // was the client's alone, and the server saw a jump its keys didn't allow.
+        let auto_jumped = self.player.as_ref().is_some_and(|p| p.was_auto_jump);
+        self.remote_send_state(input | u8::from(auto_jumped) << 4);
         Ok(())
     }
 
@@ -7032,11 +7050,7 @@ impl Game<'_> {
             } else if held.as_ref().is_some_and(|s| &*s.item == "minecraft:brush") {
                 // BrushItem.useOn: brushing starts here (CONSUME, no swing); the
                 // server brushes and the dust is this client's own.
-                self.with_hand(hand, |g| {
-                    if g.using.is_none() {
-                        g.using = Some((g.held_slot(), 0));
-                    }
-                });
+                self.with_hand(hand, Game::start_using_item);
                 return true;
             } else if held
                 .as_ref()
@@ -7427,6 +7441,10 @@ impl Game<'_> {
         if self.cooldowns.is_on_cooldown(&group) {
             return false;
         }
+        // a mod's item used over time starts here too, as the server starts it.
+        if self.with_hand(hand, |g| g.start_mod_use(&held)) {
+            return true;
+        }
         // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
         // the armor slot and the hand change at once (the server confirms).
         if info.equip_slot.is_some() && self.with_hand(hand, |g| g.equip_from_hand(&held)) {
@@ -7600,7 +7618,7 @@ impl Game<'_> {
             }
         };
         if start {
-            self.using = Some((self.held_slot(), 0));
+            self.start_using_item();
         }
         start || !matches!(&*held.item, "minecraft:bow" | "minecraft:crossbow")
     }
@@ -7614,7 +7632,7 @@ impl Game<'_> {
         if self.cooldowns.is_on_cooldown(&group) {
             return;
         }
-        self.using = Some((self.held_slot(), 0));
+        self.start_using_item();
         let at = self
             .player
             .as_ref()
@@ -7627,9 +7645,12 @@ impl Game<'_> {
     }
     /// Whether `stack` stays in use until the button lets go (bows,
     /// crossbows, tridents, spyglasses, shields, eyes of ender, whose
-    /// `getUseDuration` 0 never counts down to the end): its use only counts
-    /// ticks here.
+    /// `getUseDuration` 0 never counts down to the end) or the server ends
+    /// it (a mod's item): its use only counts ticks here.
     fn held_until_released(&self, stack: &ItemStack) -> bool {
+        if self.mod_use(stack) {
+            return true;
+        }
         matches!(
             &*stack.item,
             "minecraft:bow"
@@ -7757,7 +7778,8 @@ impl Game<'_> {
         // Consumable.shouldEmitParticlesAndSounds, as in tick_used_item. The
         // countdown goes on past zero (LivingEntity.updateUsingItem completes
         // only on the server) until the server's USE_ITEM_COMPLETE.
-        let remaining = consumable.ticks() - ticks as i32;
+        // getUseItemRemainingTicks: the duration this use started with.
+        let remaining = self.use_duration - ticks as i32;
         if consumable.should_emit(remaining) {
             // `emit_consume` plays the eat sound and spawns the bites (when the
             // item has consume particles), as `tick_used_item` does on the
@@ -8598,6 +8620,7 @@ impl Game<'_> {
             self.remote_open_merchant(p.container, title, menu_title(&p.title));
             return;
         }
+        let mod_type = horizon_client::containers::mod_menu_type(&menu);
         let entity = match menu.as_str() {
             "minecraft:crafting" => None,
             "minecraft:furnace" | "minecraft:blast_furnace" | "minecraft:smoker" => {
@@ -8634,6 +8657,14 @@ impl Game<'_> {
                     .unwrap_or(3);
                 Some(BlockEntity::Chest(vec![None; rows * 9]))
             }
+            // A content mod's menu type: its container's slots, which its
+            // mod's screen places.
+            _ if mod_type.is_some() => Some(BlockEntity::Mod(Box::new(
+                horizon_client::containers::ModBlockEntity {
+                    items: vec![None; mod_type.map_or(0, |t| t.slots)],
+                    ..Default::default()
+                },
+            ))),
             _ => {
                 // Unsupported menu: tell the server we closed it.
                 self.send(S::ContainerClose(play::ContainerClose {
@@ -8669,6 +8700,20 @@ impl Game<'_> {
             self.world.block_entities.insert(key, entity);
             self.container = Some(key);
             self.open_native_screen(key, target, p.container, &menu);
+            // A mod menu type shows through its mod's screen only: without one
+            // (`MenuScreens.create` finds no screen) the window closes again.
+            if self.mod_screen.is_none() && mod_type.is_some() {
+                self.world.block_entities.remove(&key);
+                self.container = None;
+                if let Some(r) = self.remote.as_mut() {
+                    r.menu = None;
+                    r.menu_title = None;
+                }
+                self.send(S::ContainerClose(play::ContainerClose {
+                    container: p.container,
+                }));
+                return;
+            }
         }
         self.screen = Screen::Inventory;
         self.capture(false);
