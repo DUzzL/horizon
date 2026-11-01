@@ -1868,7 +1868,21 @@ impl Game<'_> {
         let Ok(models) = self.pack.render.model_catalog.collect_seeded(state, seed) else {
             return;
         };
-        for (_, model) in &models {
+        let models = models.into_iter().map(|(_, model)| model);
+        self.baked_model_vertices(models, m, light, diffuse, tint, out);
+    }
+    /// `tinted_block_model_vertices` for baked models given as they are (a
+    /// state's, or a standalone model).
+    pub(super) fn baked_model_vertices<'m>(
+        &self,
+        models: impl IntoIterator<Item = &'m horizon_client::models::catalog::BakedModel>,
+        m: glam::Mat4,
+        light: impl Fn(&horizon_assets::bake::ModelQuad) -> u32,
+        diffuse: bool,
+        tint: impl Fn(i32) -> Option<u32>,
+        out: &mut Vec<Vertex>,
+    ) {
+        for model in models {
             for face in &model.faces {
                 let Some(s) = self
                     .pack
@@ -2109,6 +2123,7 @@ impl Game<'_> {
             max_y: self.world.shape.max_y() - 1,
             world: &self.world,
             sprites: &self.gui.atlas.sprites,
+            emissive: &self.gui.atlas.emissive,
             nether: self.dim == super::Dim::Nether,
             lid: &lid,
             sign: &|_| None,

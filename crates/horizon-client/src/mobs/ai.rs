@@ -2187,6 +2187,13 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     ) {
         return 0.0;
     }
+    // Silverfish.getWalkTargetValue: a block sitting on an infested host is
+    // the best place to walk to, so it goes back into the stone.
+    if m.species() == Species::Silverfish
+        && super::hostile::is_infested_host(w.block_name(p[0], p[1] - 1, p[2]))
+    {
+        return 10.0;
+    }
     if m.hostile()
         && !matches!(
             m.species(),
@@ -3535,5 +3542,54 @@ mod burn_and_rose_tests {
             assert_eq!(m.health, start - 8.0, "second hit on tick 11");
             assert_eq!(m.fire_ticks, 300);
         });
+    }
+}
+
+#[cfg(test)]
+mod silverfish_walk_target_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+
+    /// `Silverfish.getWalkTargetValue`: a block standing on an infested host
+    /// (a stone-family block) is worth 10, and everywhere else falls through
+    /// to the monster's light value. Horizon treated stone like any other
+    /// block, so a silverfish had no reason to walk back into the wall.
+    #[test]
+    fn a_silverfish_prefers_a_block_on_an_infested_host() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let dirt = registry.default_state("minecraft:dirt").unwrap();
+            for cx in -1..1 {
+                for cz in -1..1 {
+                    world.chunks.insert(
+                        (cx, cz),
+                        std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                    );
+                }
+            }
+            for x in -4..4 {
+                for z in -4..4 {
+                    world.set(x, 64, z, stone).unwrap();
+                }
+            }
+            world.set(2, 64, 0, dirt).unwrap();
+        };
+        let ran = with_built_test_world(&[], build, |w, types| {
+            let m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:silverfish"].clone()),
+                Vec3::new(0.5, 65.0, 0.5),
+                0.0,
+            );
+            assert_eq!(
+                walk_target_value(&m, w, [0, 65, 0]),
+                10.0,
+                "standing on stone"
+            );
+            let dirt = walk_target_value(&m, w, [2, 65, 0]);
+            assert!(dirt < 10.0, "standing on dirt falls through, got {dirt}");
+        });
+        let _ = ran;
     }
 }

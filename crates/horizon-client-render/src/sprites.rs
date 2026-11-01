@@ -371,7 +371,11 @@ impl Sprites {
         }
     }
     fn load(&mut self, root: &Path, name: &str) -> Result<u32> {
-        let cached = self.disk.as_ref().and_then(|d| d.get(name)).cloned();
+        // Custom Item Textures' files are outside `textures/`, which the disk cache's
+        // fingerprint covers: like `insert_file`'s, they skip it.
+        let cit = name.starts_with("horizon_cit:");
+        let disk = self.disk.as_mut().filter(|_| !cit);
+        let cached = disk.as_ref().and_then(|d| d.get(name)).cloned();
         let decoded = match cached {
             Some(decoded) => decoded,
             None => {
@@ -379,7 +383,7 @@ impl Sprites {
                     Some(decoded) => decoded,
                     None => Self::decode(root, name)?,
                 };
-                if let Some(disk) = &mut self.disk {
+                if let Some(disk) = disk {
                     disk.insert(name, decoded.clone());
                 }
                 decoded
@@ -403,11 +407,12 @@ impl Sprites {
     }
     /// Read and decode one texture and its `.mcmeta`.
     fn decode(root: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
-        let (namespace, path) = name.split_once(':').ok_or("invalid sprite identifier")?;
-        Self::decode_file(
-            &root.join(format!("assets/{namespace}/textures/{path}.png")),
-            name,
-        )
+        if !name.contains(':') {
+            return Err("invalid sprite identifier".into());
+        }
+        // `texture_path`, so Custom Item Textures' `horizon_cit:` sprites find their file.
+        let path = crate::atlas_sources::texture_path(root, name, "textures");
+        Self::decode_file(&path, name)
     }
     fn decode_file(path: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
         let metadata = match fs::read_to_string(path.with_extension("png.mcmeta")) {
@@ -503,8 +508,8 @@ impl Sprites {
         let count = frames.len() as u32;
         let layer = u32::try_from(self.native.len())?;
         let pbr = match name.split_once(':') {
-            Some((namespace, path)) if labpbr_maps() => {
-                let path = root.join(format!("assets/{namespace}/textures/{path}.png"));
+            Some(_) if labpbr_maps() => {
+                let path = crate::atlas_sources::texture_path(root, name, "textures");
                 ["_n", "_s"].map(|suffix| pbr_map(&path, suffix, count))
             }
             _ => [None, None],
@@ -514,9 +519,11 @@ impl Sprites {
             strategy,
             alpha_cutoff_bias,
             has_transparent,
-            item: name
-                .split_once(':')
-                .is_some_and(|(_, p)| p.starts_with("item/")),
+            // Custom Item Textures' ids are all item textures.
+            item: name.starts_with("horizon_cit:")
+                || name
+                    .split_once(':')
+                    .is_some_and(|(_, p)| p.starts_with("item/")),
             dither_cutouts: crate::mipmap::dither_cutouts(),
         };
         let still = (animation.is_none() && frames.len() == 1).then(|| {
@@ -745,6 +752,99 @@ mod tests {
         );
         assert_eq!(sprites.count(), 1);
         fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn custom_item_texture_ids_load_with_their_animation() {
+        let root = std::env::temp_dir().join(format!("horizon-sprite-cit-{}", std::process::id()));
+        let file = root.join("assets/minecraft/optifine/cit/a.png");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut encoder = png::Encoder::new(File::create(&file).unwrap(), 16, 48);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = (0..16 * 48).flat_map(|_| [200, 10, 10, 255]).collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        fs::write(file.with_extension("png.mcmeta"), r#"{"animation":{}}"#).unwrap();
+        let mut sprites = Sprites::default();
+        sprites
+            .insert(&root, "horizon_cit:minecraft/optifine/cit/a")
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        // The missing texture would not animate: this one is the file, in three frames.
+        assert_eq!(sprites.animations.len(), 1);
+        assert_eq!(sprites.animations[0].frame_count(), 3);
+    }
+    #[test]
+    fn custom_item_textures_skip_the_disk_cache() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-cit-disk-{}", std::process::id()));
+        // A realistic root: the cache's fingerprint walks the `textures` trees.
+        let vanilla = root.join("assets/minecraft/textures/item/stick.png");
+        let file = root.join("assets/minecraft/optifine/cit/a.png");
+        let write = |path: &Path, red: u8| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut encoder = png::Encoder::new(File::create(path).unwrap(), 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let pixels: Vec<u8> = (0..256).flat_map(|_| [red, 0, 0, 255]).collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        };
+        write(&vanilla, 1);
+        write(&file, 10);
+        let id = "horizon_cit:minecraft/optifine/cit/a";
+        let red = |sprites: &Sprites, layer: u32| sprites.native[layer as usize].1[0][0];
+        let mut first = Sprites::with_disk_cache(&root);
+        let layer = first.insert(&root, id).unwrap();
+        assert_eq!(red(&first, layer), 10);
+        first.save_disk_cache();
+        // The pack's file changes; `textures/` does not, so a cached copy would still match.
+        write(&file, 20);
+        let mut second = Sprites::with_disk_cache(&root);
+        let layer = second.insert(&root, id).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(red(&second, layer), 20);
+    }
+    #[test]
+    fn custom_item_textures_mip_as_items() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-cit-mip-{}", std::process::id()));
+        let write = |rel: &str| {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut encoder = png::Encoder::new(File::create(path).unwrap(), 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            // Any pixels: whether a texture mips as an item is part of the shared-layer key.
+            let pixels: Vec<u8> = (0..256)
+                .flat_map(|i| [9, 9, 9, if i % 2 == 0 { 255 } else { 0 }])
+                .collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        };
+        write("assets/a/textures/block/x.png");
+        write("assets/a/textures/item/x.png");
+        write("assets/minecraft/optifine/cit/x.png");
+        let mut sprites = Sprites::default();
+        let block = sprites.insert(&root, "a:block/x").unwrap();
+        let item = sprites.insert(&root, "a:item/x").unwrap();
+        let cit = sprites
+            .insert(&root, "horizon_cit:minecraft/optifine/cit/x")
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        // The same pixels share a layer only with the same mipmap settings: the CIT texture's
+        // are the item's.
+        assert_ne!(block, item);
+        assert_eq!(cit, item);
     }
     #[test]
     fn prefetched_textures_take_the_layers_inserting_alone_gives() {

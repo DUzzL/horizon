@@ -885,12 +885,15 @@ fn decode_mod_block_entity(id: String, tag: &Tag) -> Option<crate::containers::M
     } else {
         items.clear();
     }
-    Some(crate::containers::ModBlockEntity {
-        id,
-        nbt,
-        items,
-        data: Vec::new(),
-    })
+    Some(
+        crate::containers::ModBlockEntityFields {
+            id,
+            nbt,
+            items,
+            data: Vec::new(),
+        }
+        .into(),
+    )
 }
 pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
     use crate::containers::BlockEntity;

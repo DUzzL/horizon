@@ -445,11 +445,12 @@ pub fn mob_to_nbt(
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
                 let ambient = m.extra.ambient_effects.contains(&effect);
-                let mut e = vec![
-                    ("id", string(crate::brewing::namespaced(effect))),
-                    ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
-                    ("duration", Tag::Int(duration)),
-                ];
+                let mut e = vec![("id", string(crate::brewing::namespaced(effect)))];
+                // The codec leaves out an amplifier of 0 (its default).
+                if amplifier != 0 {
+                    e.push(("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)));
+                }
+                e.push(("duration", Tag::Int(duration)));
                 if ambient {
                     e.push(("ambient", Tag::Byte(1)));
                 }
@@ -2106,7 +2107,14 @@ pub fn ominous_item_spawner_to_nbt(
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
-    put(&mut tag, "item", item_to_nbt(item));
+    // `ItemStack.CODEC` can't encode `ItemStack.EMPTY`, so an empty item
+    // writes no key.
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"item".into());
+    }
+    if &*item.item != "minecraft:air" {
+        put(&mut tag, "item", item_to_nbt(item));
+    }
     put(
         &mut tag,
         "spawn_item_after_ticks",
@@ -2118,7 +2126,11 @@ pub fn ominous_item_spawner_to_nbt(
 /// and `spawn_item_after_ticks` (0 when absent). None without an item:
 /// such a spawner would spawn nothing.
 pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemStack, Vec3, i64)> {
-    let item = tag.get("item").and_then(item_from_nbt)?;
+    // `readAdditionalSaveData`: `ItemStack.EMPTY` when it has none.
+    let item = tag
+        .get("item")
+        .and_then(item_from_nbt)
+        .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:air", 1));
     let after = number(tag.get("spawn_item_after_ticks")).unwrap_or(0);
     Some((item, position(tag)?, after))
 }
@@ -3064,6 +3076,17 @@ mod tests {
         );
         assert_eq!((pos, after), (at, 97));
         assert!(ominous_item_spawner_from_nbt(&raw).is_none());
+        // No item is `ItemStack.EMPTY`, which writes no key back.
+        let empty = ominous_item_spawner_to_nbt(
+            &crate::items::ItemStack::new("minecraft:air", 1),
+            at,
+            0,
+            [1, 2, 3, 4],
+            Some(&tag),
+        );
+        assert!(empty.get("item").is_none());
+        let (back, pos, after) = ominous_item_spawner_from_nbt(&empty).unwrap();
+        assert_eq!((back.item.as_ref(), pos, after), ("minecraft:air", at, 0));
     }
 
     #[test]
@@ -3868,6 +3891,39 @@ mod sheep_nbt_tests {
         assert_eq!(text(saved[0].get("id")).as_deref(), Some("testfx:glow"));
         let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!(back.extra.effects, [("testfx:glow", 200, 2)]);
+    }
+
+    #[test]
+    fn an_amplifier_of_zero_is_left_out_of_active_effects() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let types: HashMap<String, Arc<MobType>> = crate::mobs::MobTypes::load(&root)
+            .unwrap()
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let mut m = Mob::new(1, types["minecraft:pig"].clone(), Vec3::ZERO, 0.0);
+        let speed = crate::brewing::effect("minecraft:speed").unwrap().id;
+        m.add_effect(speed, 200, 0);
+        m.add_effect(
+            crate::brewing::effect("minecraft:slowness").unwrap().id,
+            200,
+            2,
+        );
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        let Some(Tag::List(saved)) = tag.get("active_effects") else {
+            panic!("no active_effects");
+        };
+        assert!(saved[0].get("amplifier").is_none());
+        assert!(saved[1].get("amplifier").is_some());
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.effects[0].2, 0);
+        assert_eq!(back.extra.effects[1].2, 2);
     }
 
     #[test]

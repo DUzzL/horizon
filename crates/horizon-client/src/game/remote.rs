@@ -1803,6 +1803,12 @@ impl Game<'_> {
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);
+                    // clearClientLevel drops the client level now, so its
+                    // unload comes before the configuration screen, not
+                    // after the next login's load.
+                    if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+                        self.native_client_level_unload(&old);
+                    }
                     let ticks = self.ticks;
                     if let Some(r) = self.remote.as_mut() {
                         r.reconfiguring = Some(ticks);
@@ -1997,7 +2003,9 @@ impl Game<'_> {
             dimension.has_skylight,
         )
         .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
-        let same = r.dimension.name == dimension.name && keep_world;
+        // handleRespawn keeps the ClientLevel only for the same level key:
+        // two levels sharing a dimension type are still two levels.
+        let same = keep_world && r.heard_level.as_deref() == Some(spawn.dimension.as_str());
         r.chunk_format = Arc::new(
             r.chunk_format
                 .with_dimension(&dimension)
@@ -2174,8 +2182,7 @@ impl Game<'_> {
         let block = self.world.block(pos[0], pos[1], pos[2]);
         if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) {
             if *self.res.facts().get(block).name == *name {
-                m.nbt
-                    .extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                m.merge_update_tag(fields);
             }
             return;
         }
@@ -8913,10 +8920,11 @@ impl Game<'_> {
             // A content mod's menu type: its container's slots, which its
             // mod's screen places.
             _ if mod_type.is_some() => Some(BlockEntity::Mod(Box::new(
-                horizon_client::containers::ModBlockEntity {
+                horizon_client::containers::ModBlockEntityFields {
                     items: vec![None; mod_type.map_or(0, |t| t.slots)],
                     ..Default::default()
-                },
+                }
+                .into(),
             ))),
             _ => {
                 // Unsupported menu: tell the server we closed it.
