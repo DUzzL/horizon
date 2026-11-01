@@ -21,7 +21,8 @@
 //! disconnects leaves its player waiting, its view dimmed, until it comes back or another takes
 //! over (`pads`).
 //!
-//! `HORIZON_SPLIT=N` (testing, the only way in so far): splitscreen watches the controllers, and
+//! Horizon Settings > Splitscreen... enables joining (off by default).
+//! `HORIZON_SPLIT=N` (testing) enables it too, and
 //! N-1 players without one join once P1 is in its world, as P2, P3... (`HORIZON_SPLIT=1`: only
 //! the controllers). The player in seat N takes `horizon-ctl` on P1's socket path + "N".
 
@@ -30,6 +31,7 @@ use super::{
     pad::{PadId, PadRouter},
     start_game,
 };
+use horizon_client::gamepad::Button;
 use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, View};
 use horizon_client::{Result, gfx::compositor::Compositor, widgets};
 use std::{
@@ -77,10 +79,21 @@ impl Game<'_> {
     }
 }
 
+const WINDOW_1: &str = "Window 1";
+const NEW_WINDOW: &str = "New window";
+
+/// A place offered while picking a profile.
+#[derive(Clone, PartialEq)]
+enum Spot {
+    Window(u8),
+    New,
+    Fill(String),
+}
+
 struct Guest<'a> {
     game: Box<Game<'a>>,
-    /// The name it plays as.
-    name: String,
+    /// The profile it plays as; `None` while it picks one.
+    name: Option<String>,
     /// Its seat (2 to `MAX_PLAYERS`): its number (P2...), its control socket, its sounds.
     seat: usize,
     options: PathBuf,
@@ -90,15 +103,19 @@ struct Guest<'a> {
     window: u8,
     /// Its buttons and focus targets while another player's game runs.
     widgets: widgets::Saved,
+    /// Its profile got into the world: turned away after that (a kick), it leaves; before, it
+    /// picks again.
+    entered: bool,
+    bumpers: [bool; 2],
 }
 
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest<'a>>,
-    /// `HORIZON_SPLIT`: splitscreen watches the controllers for players joining.
-    watching: bool,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
+    /// `HORIZON_SPLIT` is set: splitscreen is on for this run, without touching the saved switch.
+    forced: bool,
     /// While another player is in, the windows players play in, each with its compositor: the
     /// game's first, then the others (else P1 draws on its window).
     surfaces: Vec<Surface>,
@@ -106,6 +123,8 @@ pub(super) struct Split<'a> {
     /// monitor, and P1's.
     windows: Vec<layout::Window>,
     p1_window: u8,
+    /// Seats in the order their views fill a shared window.
+    order: Vec<usize>,
     /// Whether Window 1 is shown (hidden while nobody plays in it): set once per change, since
     /// Wayland can't say whether a window is visible.
     window1_shown: bool,
@@ -150,14 +169,15 @@ impl<'a> Split<'a> {
         Self {
             host,
             guests: Vec::new(),
-            watching: split.is_some(),
             test_players,
+            forced: split.is_some(),
             surfaces: Vec::new(),
             windows: vec![layout::Window {
                 number: 1,
                 placement: Placement::Free(None),
             }],
             p1_window: 1,
+            order: Vec::new(),
             window1_shown: true,
             window_rects: Default::default(),
             screens: Vec::new(),
@@ -264,6 +284,7 @@ impl<'a> Split<'a> {
                 for button in std::mem::take(&mut game.physical_buttons) {
                     game.extras_mouse(button, false);
                 }
+                game.drag_button = None;
                 game.modifiers = Default::default();
                 game.left = false;
                 game.right = false;
@@ -304,7 +325,10 @@ impl<'a> Split<'a> {
     fn name(&self, i: usize) -> String {
         match i {
             0 => "P1".into(),
-            _ => self.guests[i - 1].name.clone(),
+            _ => self.guests[i - 1]
+                .name
+                .clone()
+                .unwrap_or_else(|| "New player".into()),
         }
     }
 
@@ -352,6 +376,8 @@ impl<'a> Split<'a> {
         let mut old = self.host.renderer.take().ok_or("no renderer")?;
         old.release_surface();
         let api = self.host.settings.horizon.api;
+        let batching = self.host.settings.horizon.translucent_batching;
+        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             true,
@@ -360,6 +386,8 @@ impl<'a> Split<'a> {
             Some(&old),
             None,
             api,
+            batching,
+            shader_pack,
         );
         let renderer = match built {
             Ok(r) => r,
@@ -399,13 +427,17 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// P1 alone again: it draws on its window again.
+    /// Splitscreen off or P1 alone again: it draws on its window again.
     #[inline(never)]
-    fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn disable(&mut self, event_loop: &ActiveEventLoop, watching: bool) -> Result<()> {
         for k in (0..self.guests.len()).rev() {
             self.remove_guest(k);
         }
         self.applied.clear();
+        self.order.clear();
+        if !watching {
+            self.stop_routing();
+        }
         self.p1_window = 1;
         self.windows.truncate(1);
         self.surfaces.truncate(1);
@@ -419,6 +451,8 @@ impl<'a> Split<'a> {
         let old = self.host.renderer.take().ok_or("no renderer")?;
         old.take_back(main.compositor);
         let api = self.host.settings.horizon.api;
+        let batching = self.host.settings.horizon.translucent_batching;
+        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             false,
@@ -427,6 +461,8 @@ impl<'a> Split<'a> {
             Some(&old),
             None,
             api,
+            batching,
+            shader_pack,
         );
         let renderer = match built {
             Ok(r) => r,
@@ -466,13 +502,17 @@ impl<'a> Split<'a> {
     fn admit(&mut self, _event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
         let mut changed = false;
         for pad in pad_joins {
-            match self.join(Some(pad)) {
+            match self.join(Some(pad), None) {
                 Ok(()) => changed = true,
                 Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
             }
         }
         if self.in_world() && self.test_players > 0 {
-            match self.join(None) {
+            // HORIZON_SPLIT_PICK: they pick a profile like a controller's player, else P2...
+            let name = std::env::var_os("HORIZON_SPLIT_PICK")
+                .is_none()
+                .then(|| format!("P{}", self.free_seat().unwrap_or(0)));
+            match self.join(None, name) {
                 Ok(()) => {
                     self.test_players -= 1;
                     changed = true;
@@ -652,16 +692,19 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // The last other player gone: P1 draws on its window again.
         self.refresh_monitors();
+        let on = self.host.settings.extras.splitscreen || self.forced;
+        self.host.ui.options.split_joined = self.guests.iter().any(|g| g.name.is_some());
+        // Off, or the last other player gone: P1 draws on its window again.
         if !self.surfaces.is_empty()
-            && self.guests.is_empty()
-            && let Err(e) = self.disable(event_loop)
+            && (!on || self.guests.is_empty())
+            && let Err(e) = self.disable(event_loop, on)
         {
             log::warn!("Horizon: splitscreen could not switch back: {e}");
         }
         if self.surfaces.is_empty() {
-            if !self.watching {
+            if !on {
+                self.stop_routing();
                 return self.host.about_to_wait(event_loop);
             }
             // Alone, the controllers watched for someone joining; P1's own drives P1, its
@@ -684,6 +727,8 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out() | self.admit(event_loop, pad_joins);
+        self.sync_profiles();
+        changed |= self.pick_profiles();
         changed |= self.sync_surfaces(event_loop);
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
@@ -691,7 +736,7 @@ impl ApplicationHandler for Split<'_> {
         // Each player's badge: who it is, shown a moment when something changes for it.
         self.host.split_hud.badge = Some("P1".into());
         for g in &mut self.guests {
-            g.game.split_hud.badge = Some(g.name.clone());
+            g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(|| "New player".into()));
         }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {
@@ -702,6 +747,26 @@ impl ApplicationHandler for Split<'_> {
             // A player's game stops the event loop on an error, as P1's does: say why.
             if let Some(e) = &self.guests[i].game.error {
                 log::error!("Horizon: splitscreen: P{}: {e}", self.guests[i].seat);
+            }
+            // Choosing its profile, the bumpers move its view (its pad as its game read it: the
+            // controller, or `horizon-ctl pad`).
+            let place = self.stop_label(i + 1);
+            let game = &mut self.guests[i].game;
+            if game.ui.options.page() == horizon_client::options_ui::Page::SplitProfiles
+                && game.screen == super::Screen::Options
+            {
+                game.ui.options.split_profiles.place = place;
+                let state = game.pad.state;
+                let held = [
+                    state.held(Button::LeftBumper),
+                    state.held(Button::RightBumper),
+                ];
+                let before = std::mem::replace(&mut self.guests[i].bumpers, held);
+                if held[0] && !before[0] {
+                    self.move_with_bumpers(i + 1, true);
+                } else if held[1] && !before[1] {
+                    self.move_with_bumpers(i + 1, false);
+                }
             }
         }
         self.turn(0);

@@ -215,6 +215,7 @@ mod tests {
             thundering: false,
             nether: false,
             block_tags: &items.block_tags,
+            landing: &motion.landing,
             biomes: &biomes,
             mob_griefing: true,
             universal_anger: false,

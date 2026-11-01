@@ -6,6 +6,7 @@ use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::section_mask::SectionMask;
 use crate::{
     chunk::Chunk,
+    graphics::LeafCullingMode,
     light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
@@ -149,6 +150,8 @@ pub trait LodSampler: Send {
     fn reduced_column(&mut self, x: i32, z: i32, _width: i32) -> crate::lod::Column {
         self.column(x, z)
     }
+    /// `side` x `side` columns from (`x`, `z`), `stride` blocks apart; none
+    /// when sampling failed and should be tried again later.
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
         let mut columns = Vec::with_capacity(side * side);
         for dz in 0..side {
@@ -202,6 +205,7 @@ struct MeshSettings {
     blend_radius: i32,
     smooth_lighting: bool,
     cutout_leaves: bool,
+    leaf_culling: LeafCullingMode,
 }
 enum Job {
     Generate(i32, i32),
@@ -436,6 +440,8 @@ pub struct Streaming {
     /// The `ao` and `cutoutLeaves` options.
     pub smooth_lighting: bool,
     pub cutout_leaves: bool,
+    /// What the mesher does with leaf faces inside a canopy (`LeafCullingMode`).
+    pub leaf_culling: LeafCullingMode,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
     light_tables: Arc<LightTables>,
     /// Applied edits by sequence, replayed onto light jobs snapshotted before them.
@@ -770,6 +776,7 @@ impl Streaming {
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
+                                        leaf_culling: settings.leaf_culling,
                                         assets: &context.assets,
                                         render: &context.render,
                                         tables: &context.tables,
@@ -851,6 +858,7 @@ impl Streaming {
             biome_blend: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            leaf_culling: LeafCullingMode::Off,
             light_tables,
             light_log: Vec::new(),
             light_edit_sequence: 0,
@@ -1710,6 +1718,7 @@ impl Streaming {
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
+                            leaf_culling: self.leaf_culling,
                         },
                     ),
                 );
@@ -2371,6 +2380,7 @@ mod tests {
         mesh.solid.resize(64, bytemuck::Zeroable::zeroed());
         mesh.translucent.resize(16, bytemuck::Zeroable::zeroed());
         mesh.block_entities.push(([1, 2, 3], 7));
+        mesh.lights.push(([1, 2, 3], 7));
         mesh.visibility = 0;
         mesh.sides = crate::mesher::Sides::unsorted(16);
         let capacities = mesh.capacity_bytes();
@@ -2387,6 +2397,7 @@ mod tests {
         assert!(reused.solid.is_empty());
         assert!(reused.translucent.is_empty());
         assert!(reused.block_entities.is_empty());
+        assert!(reused.lights.is_empty());
         assert_eq!(reused.visibility, crate::mesher::ALL_VISIBLE);
         assert_eq!(reused.sides, crate::mesher::Sides::default());
         assert_eq!(pool.bytes, 0);

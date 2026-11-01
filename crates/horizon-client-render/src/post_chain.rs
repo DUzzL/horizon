@@ -1024,6 +1024,7 @@ impl PostEffects {
         size: [u32; 2],
         depth: Option<&wgpu::TextureView>,
         req: &Request,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) -> bool {
         self.use_root(req.root);
         let mut applied = Vec::new();
@@ -1099,6 +1100,7 @@ impl PostEffects {
             (&work.1, size),
             0.0,
             format,
+            timing.as_deref_mut(),
         );
         self.staging = Some(staging);
         for id in &applied {
@@ -1113,6 +1115,7 @@ impl PostEffects {
                 depth,
                 req.menu_blur_radius,
                 format,
+                timing.as_deref_mut(),
             );
             self.chains.insert(id.clone(), Some(chain));
         }
@@ -1126,6 +1129,7 @@ impl PostEffects {
             (target, size),
             0.0,
             format,
+            timing,
         );
         self.blit = Some(blit);
         self.work = Some(work);
@@ -1144,6 +1148,7 @@ impl PostEffects {
         main_depth: Option<&wgpu::TextureView>,
         menu_radius: f32,
         format: wgpu::TextureFormat,
+        mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         for pass in &mut chain.passes {
             if let Some(translated) = &mut pass.translated {
@@ -1203,6 +1208,7 @@ impl PostEffects {
             {
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Post effect depth clear"),
+                    timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("Post clear")),
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view,
@@ -1221,6 +1227,7 @@ impl PostEffects {
                 let c = t.clear.map(f64::from);
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Post effect target clear"),
+                    timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("Post clear")),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &chain.textures[i - 1].1,
                         resolve_target: None,
@@ -1274,6 +1281,7 @@ impl PostEffects {
                     &inputs,
                     (view(pass.output), sizes[pass.output]),
                     format,
+                    timing.as_deref_mut(),
                 );
                 continue;
             }
@@ -1287,6 +1295,7 @@ impl PostEffects {
                 (view(pass.output), sizes[pass.output]),
                 menu_radius,
                 format,
+                timing.as_deref_mut(),
             );
         }
     }
@@ -1303,6 +1312,7 @@ impl PostEffects {
         inputs: &[(&wgpu::TextureView, [u32; 2])],
         output: (&wgpu::TextureView, [u32; 2]),
         format: wgpu::TextureFormat,
+        timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         let Some(pipeline) = translated.pipelines.get(&format) else {
             return;
@@ -1353,6 +1363,7 @@ impl PostEffects {
         });
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Post effect pass"),
+            timestamp_writes: timing.and_then(|t| t.writes("Post effect")),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: output.0,
                 resolve_target: None,
@@ -1381,6 +1392,7 @@ impl PostEffects {
         output: (&wgpu::TextureView, [u32; 2]),
         menu_radius: f32,
         format: wgpu::TextureFormat,
+        timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
         // SamplerInfo: OutSize, then each input's size.
         let info = [
@@ -1441,6 +1453,7 @@ impl PostEffects {
         });
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Post effect pass"),
+            timestamp_writes: timing.and_then(|t| t.writes("Post effect")),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: output.0,
                 resolve_target: None,
@@ -1715,6 +1728,7 @@ mod tests {
                 menu_blur_radius: 5.0,
                 globals: Globals::default(),
             },
+            None,
         );
         let buffer = crate::gfx::copy_frame(device, &mut encoder, &frame, [8, 4]);
         queue.submit([encoder.finish()]);
@@ -1845,6 +1859,7 @@ mod tests {
                 menu_blur_radius: 0.0,
                 globals: Globals::default(),
             },
+            None,
         ));
         let buffer = crate::gfx::copy_frame(device, &mut encoder, &frame, [8, 4]);
         queue.submit([encoder.finish()]);

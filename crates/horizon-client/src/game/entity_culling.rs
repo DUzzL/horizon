@@ -17,12 +17,15 @@ impl Game<'_> {
         // Spans tell the pack's passes which entities are hidden; without them, nothing changes.
         self.pack_shadow_casters = match (&self.renderer, &self.pack_ids) {
             (Some(r), Some(_)) => r.pack_shadow_casters(),
+            // A native pack's shadow pass has no spans to hide entities with: it only needs
+            // the first-person model.
+            (Some(r), None) => (false, r.native_shadow()),
             _ => (false, false),
         };
         let at = camera.to_array().map(|v| v.floor() as i32);
         self.entity_culler = (self.settings.horizon.entity_culling
             // Packs can replace an opaque block's model or texture.
-            && self.settings.resource_packs.iter().all(|id| id == "vanilla")
+            && self.model_packs_are_vanilla()
             && self.player.is_some()
             && !self.spectator()
             && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2]))))

@@ -201,6 +201,7 @@ impl ItemEntity {
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
         fluids: &crate::motion::FluidResources,
+        entity_boxes: &[Aabb],
     ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
@@ -241,10 +242,20 @@ impl ItemEntity {
             // Entity.move with noPhysics: straight through, the ground as it was.
             let moved = if no_physics {
                 wanted
-            } else {
+            } else if entity_boxes.is_empty() {
                 scene
                     .resolve(self.bounds(), wanted, 0.0, self.on_ground)
                     .unwrap_or(Vec3::ZERO)
+            } else {
+                // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
+                // too (a boat, a minecart, a shulker, a happy ghast held still).
+                crate::collisions::EntityCollisions {
+                    blocks: scene,
+                    entities: entity_boxes,
+                    border: None,
+                }
+                .resolve(self.bounds(), wanted, 0.0, self.on_ground)
+                .unwrap_or(Vec3::ZERO)
             };
             self.position = Vec3::new(
                 self.position.x + moved.x,
@@ -405,6 +416,71 @@ impl ItemEntity {
         self.pickup_delay != u32::MAX && age < 6000 && self.stack.count < max_stack
     }
 }
+/// The boxes that stop a dropped item (boats, minecarts, shulkers, a held-still happy ghast),
+/// binned by 8-block cell, so an item looks only at the ones near it: a farm with many drops and
+/// many vehicles checks a handful of boxes per item, not every box in the level.
+#[derive(Default)]
+pub struct ObstacleGrid {
+    cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
+    boxes: Vec<Aabb>,
+}
+impl ObstacleGrid {
+    const CELL: f64 = 8.0;
+    pub fn new(boxes: Vec<Aabb>) -> Self {
+        let mut cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>> = Default::default();
+        for (i, b) in boxes.iter().enumerate() {
+            let (lo, hi) = Self::span(*b);
+            for x in lo.0..=hi.0 {
+                for y in lo.1..=hi.1 {
+                    for z in lo.2..=hi.2 {
+                        cells.entry((x, y, z)).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
+        Self { cells, boxes }
+    }
+    fn span(b: Aabb) -> ((i32, i32, i32), (i32, i32, i32)) {
+        let cell = |v: Vec3| {
+            (
+                (v.x / Self::CELL).floor() as i32,
+                (v.y / Self::CELL).floor() as i32,
+                (v.z / Self::CELL).floor() as i32,
+            )
+        };
+        (cell(b.min_position()), cell(b.max_position()))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.boxes.is_empty()
+    }
+    /// The boxes meeting `area` (`getEntityCollisions`'s query box), in the order they were given.
+    pub fn near(&self, area: Aabb, out: &mut Vec<Aabb>) {
+        out.clear();
+        if self.boxes.is_empty() {
+            return;
+        }
+        let (lo, hi) = Self::span(area);
+        let mut found: Vec<u32> = Vec::new();
+        for x in lo.0..=hi.0 {
+            for y in lo.1..=hi.1 {
+                for z in lo.2..=hi.2 {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        found.extend(list);
+                    }
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        out.extend(
+            found
+                .into_iter()
+                .map(|i| self.boxes[i as usize])
+                .filter(|b| b.intersects(area)),
+        );
+    }
+}
+
 /// Dropped items by block cell, for `ItemEntity.mergeWithNeighbours`'s
 /// search around an item. Holds indexes into the tick's item list.
 #[derive(Default)]
@@ -1081,6 +1157,12 @@ pub struct ArmorStand {
     /// `ArmorStand.disabledSlots`: bit `filterFlag` locks a slot, bit
     /// `filterFlag + 8` takes from it and bit `filterFlag + 16` puts into it.
     pub disabled_slots: i32,
+    /// Server-only `LivingEntity.lastPos` for location-based enchantments.
+    pub enchantment_block: Option<BlockPos>,
+    /// Travel accumulated for `LivingEntity.checkFallDamage`'s landing callback.
+    pub enchantment_fall_distance: f64,
+    /// Last equipment seen by `collectEquipmentChanges`; not saved to NBT.
+    pub enchantment_equipment: [Option<ItemStack>; 6],
 }
 impl ArmorStand {
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
@@ -1152,6 +1234,9 @@ impl ArmorStand {
             pose: Self::DEFAULT_POSE,
             vehicle: None,
             disabled_slots: 0,
+            enchantment_block: None,
+            enchantment_fall_distance: 0.0,
+            enchantment_equipment: Default::default(),
         }
     }
     /// `EquipmentSlot.getFilterFlag` of an `equipment` index (main hand, off
@@ -1721,7 +1806,15 @@ mod honey_slide_tests {
         item.id = 1;
         let mut ys = Vec::new();
         for _ in 0..8 {
-            item.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+            item.tick(
+                &world,
+                assets.registry,
+                &facts,
+                &collision,
+                false,
+                &fluids,
+                &[],
+            );
             ys.push(item.velocity.y);
         }
         // Idle ticks keep gravity; the 4th tick's move hits the floor and
@@ -1777,7 +1870,15 @@ mod honey_slide_tests {
         item.id = 1;
         let before = item.position.y;
         for _ in 0..16 {
-            item.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+            item.tick(
+                &world,
+                assets.registry,
+                &facts,
+                &collision,
+                false,
+                &fluids,
+                &[],
+            );
         }
         assert!(
             item.position.y > before + 0.5,
@@ -1787,7 +1888,7 @@ mod honey_slide_tests {
         );
     }
 
-    fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
+    pub(super) fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
             id: 1,
@@ -1995,7 +2096,15 @@ mod slime_bounce_tests {
         falling.on_ground = false;
         falling.age = 0;
         falling.id = 1;
-        falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        falling.tick(
+            &world,
+            assets.registry,
+            &facts,
+            &collision,
+            false,
+            &fluids,
+            &[],
+        );
         assert_eq!(falling.position.y, 4.0);
         assert!(falling.velocity.y > 0.0);
         assert!(falling.on_ground);
@@ -2005,7 +2114,15 @@ mod slime_bounce_tests {
         // does not set needs_sync.
         falling.velocity = Vec3::ZERO;
         falling.needs_sync = false;
-        falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        falling.tick(
+            &world,
+            assets.registry,
+            &facts,
+            &collision,
+            false,
+            &fluids,
+            &[],
+        );
         assert!(!falling.needs_sync);
     }
 }
@@ -2058,5 +2175,119 @@ mod unstuck_tests {
         assert!(free(&solid, ExperienceOrb::box_at(at)));
         // Nothing to move for: the spawn sites keep the position as given.
         assert_eq!(ExperienceOrb::unstuck(at, &BORDER, shapes(&solid)), None);
+    }
+}
+
+#[cfg(test)]
+mod entity_collision_tests {
+    use super::honey_slide_tests::falling_item;
+    use super::*;
+
+    /// `Entity.collide` stops an item at the entities that `canBeCollidedWith` it: dropped
+    /// above a boat's box (or a still happy ghast's) it lands on the box's top and rests,
+    /// where with no box it falls to the floor of the scene.
+    #[test]
+    fn an_item_lands_on_an_entity_box_under_it() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        world.set(20, 3, 20, stone).unwrap();
+        let rest = |boxes: &[Aabb]| {
+            let mut item = falling_item(20.5, 12.0, 20.5, 0.0, 0.0, 0.0);
+            item.id = 1;
+            for _ in 0..80 {
+                item.tick(
+                    &world,
+                    assets.registry,
+                    &facts,
+                    &collision,
+                    false,
+                    &fluids,
+                    boxes,
+                );
+            }
+            item.position.y
+        };
+        // The stone's top is at 4.0; a box from 5.0 to 9.0 is in the way.
+        let platform = Aabb::new(Vec3::new(19.0, 5.0, 19.0), Vec3::new(22.0, 9.0, 22.0));
+        assert!((rest(&[]) - 4.0).abs() < 1.0e-6, "on the stone with no box");
+        assert!(
+            (rest(&[platform]) - 9.0).abs() < 1.0e-6,
+            "on top of the box, at its top"
+        );
+    }
+
+    #[test]
+    fn obstacle_grid_returns_only_the_boxes_near_an_item() {
+        // A boat every 100 blocks along a line, 1000 of them.
+        let boat = |x: f64| {
+            Aabb::new(
+                Vec3::new(x, 64.0, 0.0),
+                Vec3::new(x + 1.375, 64.5625, 1.375),
+            )
+        };
+        let grid = ObstacleGrid::new((0..1000).map(|i| boat(f64::from(i) * 100.0)).collect());
+        let mut out = Vec::new();
+        // Around the 7th boat: only it.
+        let area = Aabb::new(Vec3::new(699.0, 63.0, -1.0), Vec3::new(701.0, 66.0, 1.0));
+        grid.near(area, &mut out);
+        assert_eq!(out, vec![boat(700.0)]);
+        // Between two boats: none.
+        let area = Aabb::new(Vec3::new(750.0, 63.0, 0.0), Vec3::new(751.0, 66.0, 1.0));
+        grid.near(area, &mut out);
+        assert!(out.is_empty());
+        // A box spanning cells is found from any of them, once.
+        let wide = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 1.0, 1.0));
+        let grid = ObstacleGrid::new(vec![wide]);
+        let area = Aabb::new(Vec3::new(17.0, 0.0, 0.0), Vec3::new(18.0, 1.0, 1.0));
+        grid.near(area, &mut out);
+        assert_eq!(out, vec![wide]);
+    }
+
+    /// A farm: 5000 drops and 1000 separated vehicles. Run with `-- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing"]
+    fn obstacle_grid_beats_scanning_every_box_for_a_big_farm() {
+        let boat = |i: u32| {
+            let (x, z) = (f64::from(i % 40) * 6.0, f64::from(i / 40) * 6.0);
+            Aabb::new(
+                Vec3::new(x, 64.0, z),
+                Vec3::new(x + 1.375, 64.5625, z + 1.375),
+            )
+        };
+        let boxes: Vec<Aabb> = (0..1000).map(boat).collect();
+        let items: Vec<Aabb> = (0..5000)
+            .map(|i| {
+                let (x, z) = (f64::from(i % 70) * 3.4, f64::from(i / 70) * 3.4);
+                Aabb::new(Vec3::new(x, 64.0, z), Vec3::new(x + 0.25, 64.25, z + 0.25))
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let mut hits = 0;
+        for item in &items {
+            let area = item.inflate(Vec3::new(1.0, 1.0, 1.0));
+            hits += boxes.iter().filter(|b| b.intersects(area)).count();
+        }
+        let scan = start.elapsed();
+        let grid = ObstacleGrid::new(boxes);
+        let start = std::time::Instant::now();
+        let (mut out, mut found) = (Vec::new(), 0);
+        for item in &items {
+            grid.near(item.inflate(Vec3::new(1.0, 1.0, 1.0)), &mut out);
+            found += out.len();
+        }
+        let binned = start.elapsed();
+        assert_eq!(hits, found);
+        println!("scan {scan:?}, grid {binned:?}");
     }
 }

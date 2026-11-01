@@ -5,7 +5,7 @@ use super::*;
 use crate::chunk::BlockState;
 use horizon_core::random::RandomSource;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -184,7 +184,7 @@ impl<'f> World<'f> {
             properties: props
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<BTreeMap<_, _>>(),
+                .collect(),
         };
         self.f
             .registry
@@ -2758,16 +2758,19 @@ fn flowers_and_saplings_can_be_placed_in_flower_pots() {
         assert_eq!(w.get(pos), empty_pot);
     }
 
-    // Right-clicking an empty flower pot with an empty hand does nothing (CONSUME).
+    // Right-clicking an empty flower pot with an empty hand does nothing (CONSUME, no swing).
     w.put(pos, empty_pot);
-    assert_eq!(w.use_block(pos), InteractionResult::Consume);
+    let empty_click = w.use_block(pos);
+    assert_eq!(empty_click, InteractionResult::Consume);
+    assert!(empty_click.consumes_action());
+    assert!(!empty_click.should_swing());
     assert_eq!(w.get(pos), empty_pot);
 
-    // Right-clicking an empty flower pot with a non-plant item does nothing (CONSUME).
-    assert_eq!(
-        w.use_item(pos, "minecraft:stone"),
-        InteractionResult::Consume
-    );
+    // Right-clicking an empty flower pot with a non-plant item does nothing (CONSUME, no swing).
+    let non_plant_click = w.use_item(pos, "minecraft:stone");
+    assert_eq!(non_plant_click, InteractionResult::Consume);
+    assert!(non_plant_click.consumes_action());
+    assert!(!non_plant_click.should_swing());
     assert_eq!(w.get(pos), empty_pot);
 }
 

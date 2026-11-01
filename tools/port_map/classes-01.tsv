@@ -51,7 +51,7 @@ PiglinBrute.createAttributes	skip:data		attributes come from entity-types.json
 PiglinBrute.customServerAiStep	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: the brain tick is replaced by the goals set in register_brute; the activity update is in PiglinBruteAi rows
 PiglinBrute.finalizeSpawn	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::mob	golden axe in the main hand via populate; initMemories is missing
 PiglinBrute.hurtServer	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: retaliation is the HurtByTarget goal; no PiglinAi.maybeRetaliate for non-piglin attackers
-PiglinBrute.wantsToPickUp	missing		player: a piglin brute does not pick up a golden axe lying on the ground; piglin_pickups only serves piglins
+PiglinBrute.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	
 PiglinBruteAi.createIdleLookBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: looks at players only (LookAtPlayer); no look at piglins, random look or do-nothing pause
 PiglinBruteAi.createIdleMovementBehaviors	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: strolls anywhere; no visits to piglins and no return to its home point
 PiglinBruteAi.findNearestValidAttackTarget	inline	crates/horizon-client/src/mobs/piglin.rs::register_brute	gap: minor: targets nearest player or wither skeleton through the target goals; no anger memory first
@@ -186,7 +186,7 @@ CreativeModeTabs.generatePresetPaintings	skip:data		creative contents come from 
 CreativeModeTabs.generateSuspiciousStews	skip:data		creative contents come from the data file
 CreativeModeTabs.registerColoredItems	skip:data		creative contents come from the data file
 CreativeModeTabs.tryRebuildTabContents	port	crates/horizon-client/src/creative.rs::Creative::items	contents rebuilt on demand
-DebugStickItem	missing		player: the debug stick does nothing in creative; no block state cycling or marker
+DebugStickItem	home	crates/horizon-client/src/game/debug_stick.rs	
 DoubleHighBlockItem.placeBlock	missing		unsure: no code found that places the upper half of a tall block
 DyeItem.interactLivingEntity	missing		unsure: no dye use on mobs (sheep, collars) found in the client
 DyeItem.tryApplyToSign	inline	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	dye colours the sign text
