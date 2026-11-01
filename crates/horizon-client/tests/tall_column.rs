@@ -1,6 +1,7 @@
 //! A level taller than vanilla's (To The Max's Overworld: -64..2032, 131
 //! sections) streams, lights and meshes to its top, and edits near the top
 //! relight and remesh it.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     assets::Assets,
     biome::Biomes,

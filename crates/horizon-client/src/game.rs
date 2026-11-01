@@ -196,22 +196,27 @@ mod native_block_entity_draw;
 mod native_claimed_items;
 mod native_components;
 mod native_criteria;
+mod native_data_maps;
 mod native_entities;
 mod native_explosions;
 mod native_falling;
 mod native_hooks;
 mod native_inventories;
+mod native_item_fluids;
 mod native_lifecycle;
 mod native_menus;
 mod native_mob_draw;
 mod native_mobs;
 mod native_motion;
+mod native_mounts;
 mod native_net;
 mod native_panel;
 mod native_panel_recipes;
+mod native_projectiles;
 mod native_recipes;
 mod native_server;
 mod native_shaders;
+mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
 mod native_world_edit;
@@ -1790,6 +1795,9 @@ struct WorldTables {
     items: Items,
     recipes: Recipes,
     stations: horizon_client::stations::StationData,
+    /// The values of the data map types native mods registered
+    /// (`native_data_map_types`).
+    data_maps: native_data_maps::DataMaps,
 }
 
 impl Resources {
@@ -2415,6 +2423,10 @@ struct Game<'a> {
     use_duration: i32,
     /// A mod's `Start` or `Tick` set that use's ticks left (`game/item_use.rs`).
     use_ticks_set: bool,
+    /// The crossbow charge's start and middle loading sounds played so far
+    /// (`game/crossbow.rs`): each charge plays each of them once, however
+    /// far a mod's tick moved the charge at a time.
+    crossbow_sounds: [bool; 2],
     /// Camera.oldFovModifier / fovModifier.
     /// `Camera` (eye height and field-of-view easing, view placement).
     view: horizon_client::camera::Camera,
@@ -3758,6 +3770,29 @@ impl Game<'_> {
         }
     }
     fn tick_items(&mut self) {
+        // EntityTickEvent.Pre for the items about to tick, and the Post after them.
+        let mut round = self.native_tick_round();
+        if round.listening() {
+            let ticking = self.entity_ticking_area();
+            let merging = self.remote.is_none();
+            let mut i = 0;
+            while let Some(item) = self.dropped.get(i) {
+                let (id, x, z) = (
+                    item.id,
+                    item.position.x.floor() as i32,
+                    item.position.z.floor() as i32,
+                );
+                if !(merging && id > self.ticked_entities_through) && ticking(x, z) {
+                    let kind = native_ticks::TickKind::Fixed("minecraft:item");
+                    self.native_tick_pre_batch(&mut round, id, kind);
+                }
+                i += 1;
+            }
+        }
+        self.tick_dropped_items(&mut round);
+        self.native_tick_post_batch(round);
+    }
+    fn tick_dropped_items(&mut self, round: &mut native_ticks::TickRound) {
         let mut items = std::mem::take(&mut self.dropped);
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -3772,6 +3807,8 @@ impl Game<'_> {
         let mut nearby = Vec::new();
         for i in 0..items.len() {
             if removed[i] {
+                // Merged into an earlier item before its own tick: it never ticked.
+                round.not_ticked(items[i].id);
                 continue;
             }
             let item = &mut items[i];
@@ -3784,7 +3821,8 @@ impl Game<'_> {
             if !ticking(
                 item.position.x.floor() as i32,
                 item.position.z.floor() as i32,
-            ) {
+            ) || round.canceled(item.id)
+            {
                 continue;
             }
             // ItemEntity.tick's noPhysics (servers only): out of a block
@@ -8129,42 +8167,50 @@ impl Game<'_> {
                     hud_layout::full_attack_indicator(a, delay, self.crosshair_living())
                 });
                 let draws = hud_layout::crosshair(wi, hi, attack, full);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
+                self.gui_layer("minecraft:crosshair", &mut batch, |g, batch| {
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                });
             }
-            if spectator {
-                self.draw_spectator_hotbar(&mut batch);
-            } else {
-                let partial = self.clock.fraction() as f32;
-                let inputs = hud_layout::HotbarInputs {
-                    selected: self.selected as i32,
-                    right_handed: !self.settings.main_hand_left,
-                    offhand: self.offhand.is_some(),
-                    slots: std::array::from_fn(|i| {
-                        self.inventory[i]
-                            .as_ref()
-                            .map(|_| (f32::from(self.hotbar_pop[i]) - partial).max(0.0))
-                    }),
-                    offhand_pop: (f32::from(self.hotbar_pop[9]) - partial).max(0.0),
-                    attack: (indicator == 2).then_some(strength),
-                };
-                let draws = hud_layout::hotbar(wi, hi, &inputs);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
-                for d in &draws {
-                    if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
-                        let stack = if slot == 40 {
-                            self.offhand.as_ref()
-                        } else {
-                            self.inventory[slot as usize].as_ref()
-                        };
-                        if let Some(stack) = stack {
-                            self.draw_item(&mut batch, stack, x as f32, y as f32);
+            self.gui_layer("minecraft:hotbar", &mut batch, |g, batch| {
+                if spectator {
+                    g.draw_spectator_hotbar(batch);
+                } else {
+                    let partial = g.clock.fraction() as f32;
+                    let inputs = hud_layout::HotbarInputs {
+                        selected: g.selected as i32,
+                        right_handed: !g.settings.main_hand_left,
+                        offhand: g.offhand.is_some(),
+                        slots: std::array::from_fn(|i| {
+                            g.inventory[i]
+                                .as_ref()
+                                .map(|_| (f32::from(g.hotbar_pop[i]) - partial).max(0.0))
+                        }),
+                        offhand_pop: (f32::from(g.hotbar_pop[9]) - partial).max(0.0),
+                        attack: (indicator == 2).then_some(strength),
+                    };
+                    let draws = hud_layout::hotbar(wi, hi, &inputs);
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                    for d in &draws {
+                        if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
+                            let stack = if slot == 40 {
+                                g.offhand.as_ref()
+                            } else {
+                                g.inventory[slot as usize].as_ref()
+                            };
+                            if let Some(stack) = stack {
+                                g.draw_item(batch, stack, x as f32, y as f32);
+                            }
                         }
                     }
                 }
-            }
-            self.draw_effect_icons(&mut batch);
+            });
+            self.gui_layer("minecraft:effects", &mut batch, |g, batch| {
+                g.draw_effect_icons(batch);
+            });
             // Hud: the action bar and titles draw over the hotbar (nextStratum).
-            self.draw_boss_bars(&mut batch);
+            self.gui_layer("minecraft:boss_overlay", &mut batch, |g, batch| {
+                g.draw_boss_bars(batch);
+            });
             self.draw_extras(&mut batch);
         }
         if show_hud {
@@ -8179,47 +8225,56 @@ impl Game<'_> {
                 self.experience_recent(),
             );
             use horizon_client::locator_bar::ContextualBar;
-            // The mount's hearts (and the jump bar).
+            // The mount's hearts.
             let vehicle_hearts = if spectator {
                 0
             } else {
-                self.draw_mount_hud(
-                    &mut batch,
-                    wi,
-                    hi,
-                    contextual == ContextualBar::JumpableVehicle,
-                )
+                self.draw_mount_hud(&mut batch, wi, hi)
             };
             // Without the survival bars only the mount's hearts raise it.
             bar_height = 39 + 10 * ((vehicle_hearts + 9) / 10);
-            if contextual == ContextualBar::Locator {
-                let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
-                horizon_client::ui::nine_slice(
-                    &mut batch,
-                    &self.gui.atlas,
-                    sprite,
-                    x as f32,
-                    y as f32,
-                    w as f32,
-                    h as f32,
-                    u32::MAX,
-                );
-            }
+            // The one bar above the hotbar: the mount's jump bar, the locator
+            // bar (with its background) or the experience bar, with the level
+            // number that a survival player always has.
+            self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
+                if contextual == ContextualBar::JumpableVehicle {
+                    g.draw_jump_bar(batch, wi, hi);
+                }
+                if contextual == ContextualBar::Locator {
+                    let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
+                    horizon_client::ui::nine_slice(
+                        batch,
+                        &g.gui.atlas,
+                        sprite,
+                        x as f32,
+                        y as f32,
+                        w as f32,
+                        h as f32,
+                        u32::MAX,
+                    );
+                }
+                if has_experience && g.player.is_some() {
+                    let atlas = &g.gui.atlas;
+                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
+                    let draws = hud_layout::experience(
+                        wi,
+                        hi,
+                        g.experience.progress,
+                        g.experience.level,
+                        contextual == ContextualBar::Experience,
+                        &width,
+                    );
+                    hud_layout::paint(batch, atlas, &draws);
+                }
+                if contextual == ContextualBar::Locator {
+                    let draws = g.locator_bar_draws(wi, hi);
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                }
+            });
             if !self.creative
                 && !spectator
                 && let Some(p) = &mut self.player
             {
-                let atlas = &self.gui.atlas;
-                let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                let draws = hud_layout::experience(
-                    wi,
-                    hi,
-                    self.experience.progress,
-                    self.experience.level,
-                    contextual == ContextualBar::Experience,
-                    &width,
-                );
-                hud_layout::paint(&mut batch, atlas, &draws);
                 let effects = &self.potions.effects;
                 let kind = if effects.get("poison").is_some() {
                     hud_layout::HeartKind::Poisoned
@@ -8264,9 +8319,11 @@ impl Game<'_> {
                     Some(draws) => draws,
                     None => self.health_hud.layout(&inputs, wi, hi),
                 };
-                // A fresh borrow: the hook ran with all of `self`.
-                let atlas = &self.gui.atlas;
-                hud_layout::paint(&mut batch, atlas, &draws);
+                // The rows draw in one pass here, so a mod's `player_health`
+                // layer stands for the armor, food and air rows too.
+                self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                });
                 bar_height = self
                     .health_hud
                     .left_height
@@ -8284,21 +8341,30 @@ impl Game<'_> {
                     self.audio.capture = capture;
                 }
             }
-            if contextual == ContextualBar::Locator {
-                let draws = self.locator_bar_draws(wi, hi);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
-            }
             if !spectator {
-                self.draw_selected_name(&mut batch, bar_height, !self.creative);
+                self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
+                    g.draw_selected_name(batch, bar_height, !g.creative);
+                });
             }
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
         let draws = hud_overlays::sleep_overlay(wi, hi, self.sleep_timer as i32);
-        hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
+        self.gui_layer("minecraft:sleep_overlay", &mut batch, |g, batch| {
+            hud_layout::paint(batch, &g.gui.atlas, &draws);
+        });
         if show_hud {
-            self.draw_titles(&mut batch, bar_height);
-            self.draw_scoreboard(&mut batch);
-            self.draw_subtitles(&mut batch);
+            self.gui_layer("minecraft:overlay_message", &mut batch, |g, batch| {
+                g.draw_overlay_message(batch, bar_height);
+            });
+            self.gui_layer("minecraft:title", &mut batch, |g, batch| {
+                g.draw_title(batch);
+            });
+            self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
+                g.draw_scoreboard(batch);
+            });
+            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                g.draw_subtitles(batch);
+            });
         }
         let atlas = &self.gui.atlas;
         if show_hud
@@ -8308,8 +8374,16 @@ impl Game<'_> {
             let tw = HudBatch::text_width(atlas, text);
             batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
         }
-        self.draw_chat(&mut batch);
-        self.draw_tab_list(&mut batch);
+        // The chat screen draws the focused chat itself; F1 hides the rest.
+        if show_hud && self.screen != Screen::Chat {
+            self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
+            self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
+                g.draw_tab_list(batch);
+            });
+        } else {
+            self.draw_chat(&mut batch);
+            self.draw_tab_list(&mut batch);
+        }
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
         batch.blur_at = batch.vertices.len() as u32;
@@ -11350,6 +11424,7 @@ impl Game<'_> {
     }
     fn tick_mobs(&mut self) -> Result<()> {
         self.tick_creatures()?;
+        self.native_mobs_equipment();
         self.position_rider();
         self.tick_stats();
         self.tick_scoreboard();
@@ -11777,6 +11852,8 @@ impl Game<'_> {
         self.streaming.sky_light = dim != Dim::Nether;
         self.streaming.nether_shading = dim == Dim::Nether;
         self.load_world_state();
+        // The level the world opens in, before any of its chunks.
+        self.native_level_opened(dim);
         Ok(())
     }
     /// Streaming and region storage for one dimension of a world.
@@ -15288,7 +15365,7 @@ impl Game<'_> {
                         &self.world,
                         self.res.facts(),
                         [camera.x, camera.y, camera.z],
-                        self.forward(),
+                        &self.near_plane(),
                     ),
                     horizon_client::fog::FogType::Lava | horizon_client::fog::FogType::PowderSnow
                 ),
@@ -16119,7 +16196,7 @@ impl Game<'_> {
             if let (Some(lod), Some(player)) = (&mut self.lod, &self.player) {
                 let lod_distance =
                     horizon_client::graphics::lod_distance_capped(far_distance, &renderer.info);
-                lod.set_near_loading(self.streaming.busy());
+                lod.set_near_loading(self.streaming.terrain_loading());
                 lod.set_reduced_detail(far_reduced);
                 // The covered columns change only with the complete ones and
                 // the render area: rebuilt then, not every frame.
@@ -16349,6 +16426,23 @@ impl Game<'_> {
             && let Some(title) = &mut self.title
         {
             title.drop_file(path.clone());
+        }
+        // A character that comes with no key (Windows' Alt codes, `Alt` + digits on the numeric
+        // keypad: a `WM_CHAR` after the Alt is released) reaches winit as a key event with no
+        // physical key. GLFW's char callback types it in the focused text field (`charTyped`),
+        // and every screen's key handler here would drop it for want of a key code.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && key_event.state == ElementState::Pressed
+            && matches!(key_event.physical_key, PhysicalKey::Unidentified(_))
+            && let Some(text) = key_event.text.as_deref()
+        {
+            let text: String = text.chars().filter(|c| !c.is_control()).collect();
+            if !text.is_empty() && self.text_field_focused() && self.types_text() {
+                let _ = self.type_chars_into_screen(&text);
+            }
+            return;
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -17975,6 +18069,7 @@ impl<'a> Game<'a> {
             using: None,
             use_duration: 0,
             use_ticks_set: false,
+            crossbow_sounds: [false; 2],
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             frame_clock: Default::default(),
@@ -18591,11 +18686,20 @@ impl Game<'_> {
             }
         };
         let stations = horizon_client::stations::StationData::load(root, &items, &overlay);
+        let mut data_map_types = Vec::new();
+        self.native_data_map_types(&mut data_map_types);
+        let data_maps = native_data_maps::DataMaps::load(
+            &data_map_types,
+            &files,
+            &items.item_tags,
+            &items.block_tags,
+        );
         Some(WorldTables {
             files,
             items,
             recipes,
             stations,
+            data_maps,
         })
     }
     /// Reload the content tables with the world's packs, as
@@ -20215,6 +20319,7 @@ pub fn run() -> Result<()> {
         }
     }
     mods::register_components(&vanilla_root)?;
+    mods::register_standalone_models();
     let early_settings = Settings::load(&Game::options_path());
     // Minecraft's constructor opens the narrator; a server has none.
     if options.execution_role.is_client() {

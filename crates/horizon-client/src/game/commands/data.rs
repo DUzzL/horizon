@@ -207,6 +207,17 @@ impl Game<'_> {
                 );
                 crate::game::persist::with_raw(tag, raw)
             }
+            Target::Spawner(id) => {
+                let s = self.ominous_spawners.iter().find(|s| s.id == id)?;
+                let [x, y, z] = s.position;
+                entity_nbt::ominous_item_spawner_to_nbt(
+                    &s.item,
+                    horizon_core::geometry::Vec3::new(x, y, z),
+                    s.spawn_item_after,
+                    s.uuid,
+                    s.raw.as_deref(),
+                )
+            }
         })
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is
@@ -811,6 +822,8 @@ impl Game<'_> {
             Some(Target::Tnt(id))
         } else if self.falling.iter().any(|f| f.id == id) {
             Some(Target::Falling(id))
+        } else if self.ominous_spawners.iter().any(|s| s.id == id) {
+            Some(Target::Spawner(id))
         } else {
             None
         }
