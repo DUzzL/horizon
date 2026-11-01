@@ -113,7 +113,8 @@ impl ModelLibrary {
             if !added.insert(name.clone()) {
                 return Err(error("duplicate normalized model identifier"));
             }
-            // As in `from_models` and `with_item_generator`, the built-ins win.
+            // The built-ins win, as `from_models` keeps `missing` and
+            // `with_item_generator` keeps `generated`.
             if name != MISSING_MODEL && name != GENERATED_MODEL {
                 models.insert(name, Arc::new(model));
             }
@@ -132,7 +133,9 @@ impl ModelLibrary {
     /// `name`'s resolved model with a virtual child in front of it that has
     /// only `textures`: the child's slots win, and `#references` anywhere in
     /// the chain re-bind through them (so `builtin/generated`'s
-    /// `particle: #layer0` follows a replaced `layer0`). A cyclic chain is an
+    /// `particle: #layer0` follows a replaced `layer0`). The child's slots are
+    /// taken as given: sprites namespaced, references without their `#`, as
+    /// the JSON decoder leaves them. A cyclic chain is an
     /// error, as for `resolve`: a caller wanting the missing model falls
     /// back to it.
     pub fn resolve_with_textures(
@@ -491,8 +494,15 @@ mod tests {
         };
         assert_eq!(rotated.rotation, [0.0, 45.0, 0.0]);
         assert_ne!(head(&base), head(&over));
-        assert!(over.resolve("item/sword").unwrap().uses_item_generator());
-        assert_eq!(over.resolve("item/absent").unwrap().elements().len(), 1);
+        // The generator kept: its `particle: #layer0`, which `{}` would drop.
+        let sword = over.resolve("item/sword").unwrap();
+        assert_eq!(
+            sword.material("particle").unwrap().unwrap().sprite,
+            "minecraft:item/sword"
+        );
+        // The missing cube kept, looked up by its own name, not as a fallback.
+        let missing = over.resolve("builtin/missing").unwrap();
+        assert_eq!(missing.elements().len(), 1);
         // Two spellings of one id.
         let twins = BTreeMap::from([
             ("item/x".to_owned(), model("{}")),
