@@ -639,6 +639,10 @@ fn vertical_hit_angle_power_transfer(
 fn resistance(attribute: f64) -> f32 {
     attribute.clamp(-2.0, 1.0) as f32
 }
+/// `playerPush`'s scale: `Math.max(0, 1 - knockback_resistance)`, in double like vanilla.
+fn push_factor(attribute: f64) -> f64 {
+    (1.0 - attribute.clamp(-2.0, 1.0)).max(0.0)
+}
 /// What `SulfurCube.knockback` adds to the cube's movement for a blow of `damage`: the
 /// archetype's `powers` (horizontal, vertical) turned by where the blow came from (`from`, the
 /// direct entity: the direction of the knock) and, with the causing entity's `aim` (eye, view
@@ -847,7 +851,7 @@ fn player_push(m: &mut Mob, p: &super::PlayerView, events: &mut Vec<MobEvent>) {
         return;
     }
     let a = archetype(m);
-    let kb = (1.0 - a.map_or(0.0, |a| f64::from(resistance(a.knockback_resistance)))).max(0.0);
+    let kb = push_factor(a.map_or(0.0, |a| a.knockback_resistance));
     let len = horizontal.max(1.0e-4);
     let speed = (p.velocity.length() * 2.0 * f64::from(0.3f32)).clamp(0.0, 0.5);
     let push = Vec3::new(
@@ -1305,7 +1309,7 @@ mod launch_tests {
 
 #[cfg(test)]
 mod resistance_tests {
-    use super::{launch, resistance};
+    use super::{launch, push_factor, resistance};
 
     #[test]
     fn negative_resistance_adds_knockback() {
@@ -1313,6 +1317,10 @@ mod resistance_tests {
         assert_eq!(resistance(-2.0), -2.0);
         assert_eq!(resistance(-5.0), -2.0);
         assert_eq!(resistance(3.0), 1.0);
+        assert_eq!(push_factor(-1.0), 2.0);
+        assert_eq!(push_factor(-2.0), 3.0);
+        assert_eq!(push_factor(1.0), 0.0);
+        assert_eq!(push_factor(0.3), 1.0 - 0.3);
         let push = |r: f64, damage: f32| {
             launch(
                 (1.0, 0.6),
