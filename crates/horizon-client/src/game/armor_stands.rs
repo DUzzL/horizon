@@ -727,20 +727,20 @@ impl Game<'_> {
         true
     }
     pub(super) fn tick_armor_stands(&mut self) {
-        let mut scene = horizon_client::collisions::SceneCollisions {
-            world: &self.world,
-            binding: self.collision,
-            subject: None,
-        };
         let mut dead = Vec::new();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
-        for (i, a) in self.armor_stands.iter_mut().enumerate() {
-            a.previous = a.position;
-            a.previous_yaw = a.yaw;
-            if !ticking(a.position.x.floor() as i32, a.position.z.floor() as i32) {
+        for i in 0..self.armor_stands.len() {
+            let at = self.armor_stands[i].position;
+            if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                self.armor_stands[i].previous = at;
+                self.armor_stands[i].previous_yaw = self.armor_stands[i].yaw;
                 continue;
             }
+            self.armor_stand_location_effects(i, false);
+            let a = &mut self.armor_stands[i];
+            a.previous = a.position;
+            a.previous_yaw = a.yaw;
             let in_water = a.update_fluids(&self.world, &self.res.motion().fluids);
             let (world, registry, facts, collision) = (
                 &self.world,
@@ -748,13 +748,30 @@ impl Game<'_> {
                 self.res.facts(),
                 self.collision,
             );
+            let mut scene = horizon_client::collisions::SceneCollisions {
+                world,
+                binding: collision,
+                subject: None,
+            };
             a.tick(&mut scene, facts, in_water, &mut |bounds, velocity| {
                 horizon_client::motion::bubble_column_push(
                     world, registry, facts, collision, bounds, velocity,
                 );
             });
+            if in_water {
+                a.enchantment_fall_distance = 0.0;
+            } else {
+                a.enchantment_fall_distance += (a.previous.y - a.position.y).max(0.0);
+            }
+            let landed = a.on_ground && a.enchantment_fall_distance > 0.0;
+            if a.on_ground {
+                a.enchantment_fall_distance = 0.0;
+            }
             if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
                 dead.push(i);
+            }
+            if landed {
+                self.armor_stand_location_effects(i, true);
             }
         }
         for i in dead.into_iter().rev() {
