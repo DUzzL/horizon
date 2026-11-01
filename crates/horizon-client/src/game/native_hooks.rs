@@ -5430,6 +5430,22 @@ mod tests {
     }
 
     #[test]
+    fn native_breathing_stays_hookable() {
+        let source = include_str!("../breathing.rs");
+        let hook = source.find("pub fn native_living_breathe(").unwrap();
+        // From its doc comment's first line, so an attribute above it counts.
+        let start = source[..hook].find("/// An entity's breathing").unwrap();
+        let body = &source[start..hook + source[hook..].find("\n}\n").unwrap()];
+        assert!(body.contains("#[inline(never)]"));
+        for line in body.lines() {
+            assert!(!line.contains("cfg"), "a cfg in the breathing hook: {line}");
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(!line.contains(mac), "a macro in the breathing hook: {line}");
+            }
+        }
+    }
+
+    #[test]
     fn native_loot_kinds_stay_hookable() {
         let source = include_str!("../../../horizon-world/src/loot.rs");
         for hook in [
@@ -5550,6 +5566,8 @@ mod tests {
         let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
         // The menu engine's (`horizon_client::menu`).
         let menu_hooks = free_hooks(include_str!("../menu.rs"));
+        // The air supply's (`horizon_client::breathing`).
+        let breath_hooks = free_hooks(include_str!("../breathing.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -5563,6 +5581,7 @@ mod tests {
             .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
             .chain(menu_hooks.iter().copied())
+            .chain(breath_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -5582,6 +5601,8 @@ mod tests {
                 format!("horizon_world::loot::native_{name}")
             } else if menu_hooks.contains(name) {
                 format!("horizon_client::menu::native_{name}")
+            } else if breath_hooks.contains(name) {
+                format!("horizon_client::breathing::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {

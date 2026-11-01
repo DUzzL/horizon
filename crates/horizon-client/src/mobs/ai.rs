@@ -12,6 +12,7 @@ use super::{
     undead,
 };
 use crate::blocks::Fluid;
+use crate::breathing::{Breath, apply, breathe};
 use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
@@ -1013,18 +1014,26 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             } else {
                 m.air = 300;
             }
-        } else if m.fluids.eye_in_water && !m.kind.flags.breathes_water {
-            m.air -= 1;
-            if m.air == -20 {
-                m.air = 0;
+        } else {
+            // LivingEntity.baseTick's air supply (LivingBreatheEvent): an
+            // entity with its eyes in water that can't breathe there loses
+            // air, any other gains it.
+            let drowns = m.fluids.eye_in_water && !m.kind.flags.breathes_water;
+            let vanilla = Breath {
+                can_breathe: !drowns,
+                consume: 1,
+                refill: if drowns { 0 } else { 4 },
+            };
+            let breath = breathe(m.id, &m.kind.id, vanilla);
+            let (air, drowned) = apply(m.air, 300, breath);
+            m.air = air;
+            if drowned {
                 events.push(MobEvent::Drown {
                     mob: m.id,
                     at: [m.position.x, m.position.y, m.position.z],
                 });
                 m.damage(2.0, Damage::of(DamageKind::Drown));
             }
-        } else if m.air < 300 {
-            m.air = (m.air + 4).min(300);
         }
 
         if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
