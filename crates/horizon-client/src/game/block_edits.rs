@@ -94,9 +94,8 @@ impl Game<'_> {
             .collect();
         let mut made: FxHashMap<Arc<str>, Option<BlockEntity>> = FxHashMap::default();
         for n in wanted {
-            if !made.contains_key(&n) {
-                let entity = self.new_block_entity(&n);
-                made.insert(n, entity);
+            if let std::collections::hash_map::Entry::Vacant(slot) = made.entry(n.clone()) {
+                slot.insert(self.new_block_entity(&n));
             }
         }
         let facts = self.res.facts();
