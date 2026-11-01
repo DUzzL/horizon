@@ -540,7 +540,7 @@
   "The source of {source}. Its release ships {file}, a content mod: installing those from GitHub is not supported yet.": "Исходный код {source}. Его релиз содержит контентный мод {file}: установка таких модов с GitHub пока не поддерживается.",
   "Build anyway": "Всё равно собрать",
   "A name, 3 to 16 letters": "Имя, от 3 до 16 букв",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "Установлено {mods} с GitHub ({source}). Соберите его в меню «Настройки > Нативные моды».",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "Установлено {mods} с GitHub ({source}). Соберите его на странице «Моды».",
   "Settings, Keys, Generate access token. It's kept in this computer's keychain and only sent to Tailscale.": "Settings, Keys, Generate access token. Он хранится в связке ключей этого компьютера и отправляется только в Tailscale.",
   "{id} is up to date.": "{id} обновлён.",
   "Done": "Done",

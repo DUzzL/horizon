@@ -182,6 +182,8 @@ pub struct Projectile {
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
     pub touching_water: bool,
+    /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
+    pub no_gravity: bool,
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -271,6 +273,7 @@ impl Projectile {
             acceleration,
             needs_sync: false,
             touching_water: false,
+            no_gravity: false,
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
                 Box::new(crate::arrows::ArrowState::new(
@@ -399,7 +402,11 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
+    /// `Entity.getGravity`: none with `NoGravity`, else the kind's default.
     fn gravity(&self) -> f64 {
+        if self.no_gravity {
+            return 0.0;
+        }
         match self.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
             ProjectileKind::SmallFireball
@@ -963,6 +970,18 @@ mod tests {
         // ThrowableProjectile: gravity before inertia, then move.
         assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
         assert!((p.position.x - 0.99).abs() < 1e-9);
+    }
+    #[test]
+    fn a_snowball_with_no_gravity_stays_where_it_was_summoned() {
+        // Entity.getGravity is 0 with NoGravity: at rest, it never moves.
+        let start = Vec3::new(0.5, 100.0, 0.5);
+        let mut p = Projectile::new(ProjectileKind::Snowball, start, None);
+        p.no_gravity = true;
+        let w = Empty(vec![]);
+        for _ in 0..20 {
+            p.tick(&w);
+        }
+        assert_eq!((p.position, p.velocity), (start, Vec3::ZERO));
     }
     #[test]
     fn a_mod_thrown_type_flies_tick_for_tick_as_a_snowball() {

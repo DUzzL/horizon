@@ -3,6 +3,7 @@
 mod admin;
 pub(super) mod compute;
 mod data;
+pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
@@ -2100,11 +2101,19 @@ impl Game<'_> {
                     let cart_kind = super::minecarts::CartKind::from_id(&kind)
                         .unwrap_or(super::minecarts::CartKind::Rideable);
                     self.next_entity += 1;
-                    let cart = super::minecarts::Minecart::new(
+                    let mut cart = super::minecarts::Minecart::new(
                         self.next_entity,
                         cart_kind,
                         Vec3::new(pos[0], pos[1], pos[2]),
                     );
+                    // SummonCommand.createEntity loads even an empty compound, so a
+                    // spawner minecart's BaseSpawner.load runs: SpawnPotentials becomes
+                    // WeightedList.of(new SpawnData()).
+                    if cart.spawner.is_some() {
+                        use horizon_client::mobs::spawner::{Spawner, SpawnerExt};
+                        let empty = horizon_world::nbt::Tag::Compound(Default::default());
+                        cart.spawner = Some(Box::new(Spawner::load(&empty)));
+                    }
                     self.carts.push(cart);
                     name = Text::translate(&format!("entity.minecraft.{k}"), &[]);
                 }
@@ -2152,26 +2161,12 @@ impl Game<'_> {
     }
     /// BlockPredicateArgument test.
     fn block_matches(&self, b: &BlockInput, state: BlockStateId) -> bool {
-        let Some(s) = self.pack.assets.registry.state(state) else {
-            return false;
-        };
-        let name_ok = if b.tag {
-            let tag = b.id.trim_start_matches("minecraft:");
-            self.res
-                .items()
-                .block_tags
-                .get(tag)
-                .or_else(|| self.items().block_tags.get(&b.id))
-                .is_some_and(|set| {
-                    set.contains(&s.name) || set.contains(s.name.trim_start_matches("minecraft:"))
-                })
-        } else {
-            s.name == b.id
-        };
-        name_ok
-            && b.properties
-                .iter()
-                .all(|(k, v)| s.properties.get(k) == Some(v))
+        block_input_matches(
+            self.pack.assets.registry,
+            [&self.res.items().block_tags, &self.items().block_tags],
+            b,
+            state,
+        )
     }
     /// Place a state like BlockInput.place: false when nothing changed.
     pub(super) fn place_state(
@@ -2230,6 +2225,10 @@ impl Game<'_> {
             return Ok(0);
         };
         let state = self.block_state(&b)?;
+        // SetBlockCommand.setBlock: `ServerLevel.isDebug` fails it.
+        if self.world_debug {
+            return Err(err("commands.setblock.failed", &[]));
+        }
         let current = self.world.block(pos[0], pos[1], pos[2]);
         if ctx.has("keep") && current != self.world.air {
             return Err(err("commands.setblock.failed", &[]));
@@ -2432,6 +2431,10 @@ impl Game<'_> {
         if area > i64::from(limit) {
             return Err(err("commands.fill.toobig", &[&limit, &area]));
         }
+        // FillCommand.fillBlocks: `ServerLevel.isDebug` fails it.
+        if self.world_debug {
+            return Err(err("commands.fill.failed", &[]));
+        }
         let state = self.block_state(&block)?;
         let air = self.world.air;
         let (hollow, outline, destroy, strict, keep) = (
@@ -2511,6 +2514,10 @@ impl Game<'_> {
             if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
                 return Err(err("argument.pos.unloaded", &[]));
             }
+        }
+        // CloneCommands.clone: the destination level being a Debug world fails it.
+        if self.world_debug {
+            return Err(err("commands.clone.failed", &[]));
         }
         let filter = match ctx.get("filter") {
             Some(Arg::Block(f)) => Some(f.clone()),
@@ -3548,10 +3555,12 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     out
 }
 
-/// BlockPredicateArgument test, against the registry and the block tags.
+/// BlockPredicateArgument test, against the registry and the block tags:
+/// a `#tag` is looked up by its path in `tags[0]`, then by its whole id in
+/// `tags[1]` (as `Game::block_matches` reads them).
 pub(super) fn block_input_matches(
     registry: &horizon_world::registry::BlockRegistry,
-    tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    tags: [&std::collections::HashMap<String, std::collections::HashSet<String>>; 2],
     b: &BlockInput,
     state: BlockStateId,
 ) -> bool {
@@ -3560,8 +3569,9 @@ pub(super) fn block_input_matches(
     };
     let name_ok = if b.tag {
         let tag = b.id.trim_start_matches("minecraft:");
-        tags.get(tag)
-            .or_else(|| tags.get(&b.id))
+        tags[0]
+            .get(tag)
+            .or_else(|| tags[1].get(&b.id))
             .is_some_and(|set| {
                 set.contains(&s.name) || set.contains(s.name.trim_start_matches("minecraft:"))
             })

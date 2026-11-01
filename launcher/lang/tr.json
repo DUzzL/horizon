@@ -299,7 +299,7 @@
   "Add from GitHub": "GitHub'dan ekle",
   "Add a native mod from GitHub": "GitHub'dan bir yerel mod ekle",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "Bir depoya (en son sürümüne), bir sürüme, dala (branch), etiketli sürüme (tag) veya bir commite ait bağlantı. Başlatıcı, değişen bir dalı asla değil, kesin bir sürüm dosyasını veya commiti yükler.",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "GitHub'dan ({source}) {mods} yüklendi. Ayarlar > Yerel modlar bölümünden derleyin.",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "GitHub'dan ({source}) {mods} yüklendi. Modlar sayfasından derleyin.",
   "{id} is up to date.": "{id} güncel.",
   "Asking GitHub about {owner}/{repo}…": "GitHub'a {owner}/{repo} hakkında soruluyor…",
   "Downloading {source}…": "{source} indiriliyor…",

@@ -413,7 +413,7 @@ pub fn shared_tables(
 /// and a client too, so make the same change each time, and don't load loot tables from here.
 /// Two loads may run at once on two threads. A `/reload` or a world opened with other packs
 /// may load them again, or keep the tables already loaded from the same files. API
-/// @API:loot_tables@.
+/// 75.
 #[inline(never)]
 pub fn native_loot_table_load(id: &str, table: &mut Value) {
     let _ = (id, table);

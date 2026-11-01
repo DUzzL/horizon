@@ -1,10 +1,10 @@
-//! Bulk block edits (a mod's `world.edit-blocks`): runs of blocks up columns
-//! written straight into the resident sections, a section unpacked and packed
-//! once however many of its blocks change, instead of a `World::set` per
-//! block. Nothing round them is told (as `fill ... strict`); the light of each
-//! chunk changed is worked out again whole, off the game thread, rather than
-//! block by block, and each section changed is remeshed once.
-use crate::chunk::{HEIGHT, MIN_Y, SECTIONS, index};
+//! Bulk block edits: runs of blocks up columns written straight into the
+//! resident sections, a section unpacked and packed once however many of its
+//! blocks change, instead of a `World::set` per block. Nothing round them is
+//! told (as `fill ... strict`); the light of each chunk changed is worked out
+//! again whole, off the game thread, rather than block by block, and each
+//! section changed is remeshed once.
+use crate::chunk::index;
 use crate::fast_hash::FxHashMap;
 use crate::world::World;
 
@@ -52,8 +52,16 @@ impl World {
     /// Make `runs` in order, each seeing the changes of those before it.
     /// `matches(filter, state)` says whether a filter passes a state, and
     /// `tracked(state)` whether its changes are reported; each is asked once
-    /// per state. Runs in unloaded chunks and the parts of runs outside the
-    /// world's height are left out.
+    /// per state. Runs in unloaded chunks and the parts of runs outside each
+    /// chunk's own column (`Chunk::layout`) are left out.
+    ///
+    /// Unlike `World::set`, this records nothing per block: no
+    /// `block_entities.state_changed` (a caller adds or removes block
+    /// entities itself, from `Outcome::tracked`), no `watched_writes` (ask
+    /// for those states through `tracked`), no `block_log` entry (the chunk
+    /// goes in `bulk_log` instead, sent whole), no `path_writes` (mobs'
+    /// paths are not recomputed for these blocks) and no `light_edits` (the
+    /// chunk and its neighbours are lit again whole, through `dirty_light`).
     pub fn edit_runs(
         &mut self,
         runs: &[Run],
@@ -65,7 +73,7 @@ impl World {
         let mut by_chunk: FxHashMap<(i32, i32), Vec<u32>> = FxHashMap::default();
         let mut order = Vec::new();
         for (i, r) in runs.iter().enumerate() {
-            if r.y1 < r.y0 || r.y1 < MIN_Y || r.y0 >= MIN_Y + HEIGHT {
+            if r.y1 < r.y0 {
                 continue;
             }
             let key = (r.x >> 4, r.z >> 4);
@@ -79,26 +87,28 @@ impl World {
         }
         let mut filter_memo: Vec<Memo> = Vec::new();
         let mut tracked_memo = Memo(Vec::new());
-        let mut values: Vec<Option<Box<[u32; 4096]>>> = (0..SECTIONS).map(|_| None).collect();
-        let mut changed = [false; SECTIONS];
+        let mut values: Vec<Option<Box<[u32; 4096]>>> = Vec::new();
+        let mut changed: Vec<bool> = Vec::new();
         for key in order {
             let Some(chunk) = self.chunks.get(&key) else {
                 continue;
             };
+            let (min_y, sections) = (chunk.min_y(), chunk.sections.len());
+            let max_y = chunk.max_y();
             let list = &by_chunk[&key];
-            changed.fill(false);
-            for v in values.iter_mut() {
-                *v = None;
-            }
+            changed.clear();
+            changed.resize(sections, false);
+            values.clear();
+            values.resize_with(sections, || None);
             let mut any = 0u64;
             for &i in list {
                 let r = runs[i as usize];
                 let (lx, lz) = (r.x & 15, r.z & 15);
-                let (y0, y1) = (r.y0.max(MIN_Y), r.y1.min(MIN_Y + HEIGHT - 1));
+                let (y0, y1) = (r.y0.max(min_y), r.y1.min(max_y - 1));
                 let mut y = y0;
                 while y <= y1 {
-                    let s = ((y - MIN_Y) >> 4) as usize;
-                    let top = (MIN_Y + (s as i32 + 1) * 16 - 1).min(y1);
+                    let s = ((y - min_y) >> 4) as usize;
+                    let top = (min_y + (s as i32 + 1) * 16 - 1).min(y1);
                     let vals = values[s].get_or_insert_with(|| {
                         let mut v = Box::new([0u32; 4096]);
                         chunk.sections[s].unpack(&mut v);
@@ -138,7 +148,7 @@ impl World {
             out.chunks += 1;
             let chunk =
                 std::sync::Arc::make_mut(self.chunks.get_mut(&key).expect("looked up above"));
-            for s in 0..SECTIONS {
+            for s in 0..sections {
                 if changed[s]
                     && let Some(v) = &values[s]
                 {
@@ -154,7 +164,7 @@ impl World {
             for (s, _) in changed.iter().enumerate().filter(|c| *c.1) {
                 for ds in -1..=1 {
                     let sy = s as i32 + ds;
-                    if !(0..SECTIONS as i32).contains(&sy) {
+                    if !(0..sections as i32).contains(&sy) {
                         continue;
                     }
                     for dz in -1..=1 {
@@ -273,5 +283,24 @@ mod tests {
         assert_eq!(w.world_surface(5, 5, |s| air(s.0)), 20);
         w.edit_runs(&[run(5, 5, 90, 90, 2, None)], |_, _| true, |_| false);
         assert_eq!(w.world_surface(5, 5, |s| air(s.0)), 91);
+    }
+
+    #[test]
+    fn runs_follow_each_chunks_own_layout() {
+        use crate::chunk::ColumnLayout;
+        // a data pack's taller dimension: -128..=511
+        let tall = ColumnLayout::new(-128, 640).unwrap();
+        let mut w = World::new(BlockStateId(0), 0);
+        w.chunks
+            .insert((0, 0), Arc::new(Chunk::with_layout(0, 0, tall)));
+        let out = w.edit_runs(&[run(2, 3, -500, 900, 4, None)], |_, _| true, |_| false);
+        assert_eq!(out.changed, 640);
+        let chunk = &w.chunks[&(0, 0)];
+        assert_eq!(chunk.block(2, -128, 3).0, 4);
+        assert_eq!(chunk.block(2, -65, 3).0, 4);
+        assert_eq!(chunk.block(2, 320, 3).0, 4);
+        assert_eq!(chunk.block(2, 511, 3).0, 4);
+        assert!(w.dirty_sections.contains(&(0, 39, 0)));
+        assert!(!w.dirty_sections.contains(&(0, 40, 0)));
     }
 }

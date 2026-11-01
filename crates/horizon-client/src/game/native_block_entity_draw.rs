@@ -202,7 +202,7 @@ impl Game<'_> {
     /// from its front), textured with the `uv` rectangle (u0, v0, u1, v1 in
     /// texels of 16 per side) of `sprite` (`mymod:entity/screen`,
     /// `mymod:block/casing`, `block/stone`) times the 0xRRGGBB `tint`
-    /// (0xFFFFFF for none). False for an unknown sprite. API @API:block_entity_submit@.
+    /// (0xFFFFFF for none). False for an unknown sprite. API 71.
     pub(super) fn native_draw_quad(
         &self,
         draw: &mut BlockEntityDraw,
@@ -229,7 +229,7 @@ impl Game<'_> {
     /// `Direction` (down, up, north, south, west, east), baked as a model
     /// element's are (`FaceBakery`), times the 0xRRGGBB `tint`. A turned box
     /// is drawn under a turned pose (`BlockEntityDraw::rotate_about`). False
-    /// when a face's sprite is unknown; that face is left out. API @API:block_entity_submit@.
+    /// when a face's sprite is unknown; that face is left out. API 71.
     pub(super) fn native_draw_cube(
         &self,
         draw: &mut BlockEntityDraw,
@@ -262,7 +262,7 @@ impl Game<'_> {
     /// under `draw`'s pose, as vanilla's `submitBlockModel` draws a block in
     /// an entity's place: a block's baked model, with its default tints. A
     /// moving part is often a block of the mod's own, never placed. False for
-    /// an unknown block or property. API @API:block_entity_submit@.
+    /// an unknown block or property. API 71.
     pub(super) fn native_draw_block(
         &self,
         draw: &mut BlockEntityDraw,

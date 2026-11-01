@@ -1,9 +1,0 @@
-{
-  "hooks": [
-    {"name": "loot_table_load", "target": "horizon_world::loot::native_loot_table_load"},
-    {"name": "loot_drops", "target": "horizon_client::game::native_hooks::Game<'_>::native_loot_drops"}
-  ],
-  "rust_summary": "changing vanilla's loot tables and drops: `native_loot_table_load` (in\n`horizon-world`'s `loot.rs`: each table's JSON as it loads) and `native_loot_drops` (a broken\nblock's or a dead mob's items, with what dropped them).",
-  "doc_summary": "[loot table hooks](#loot-tables), for changing loot a mod didn't make. `native_loot_table_load(id, table)`, in `horizon-world`'s `loot.rs`, gets each loot table's JSON as it loads, after the data packs' (NeoForge's `LootTableLoadEvent`, Fabric's `LootTableEvents.MODIFY`): add pools or entries, change or replace it, and chests, block and mob drops, fishing and the rest then roll the changed table. It runs wherever tables load, a client too. `native_loot_drops(context, drops)` gets the items a broken block or a dead mob is about to drop, to add, change or take out (global loot modifiers, `MODIFY_DROPS`), with `NativeLootDrops`: the table rolled, the dimension, the origin, the block or the mob, the player who broke or killed it, the tool and an explosion's radius. It hears blocks a player, an explosion or a mob breaks, not other breaks such as leaves decaying. Bundles need `\"hooks\": @API:loot_tables@`.",
-  "comments": ["crates/horizon-world/src/loot.rs"]
-}

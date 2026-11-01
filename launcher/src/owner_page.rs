@@ -222,7 +222,7 @@ impl Launcher {
             .px(px(32.))
             .py(px(24.))
             .bg(plate::alpha(n.page, 0.8))
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .occlude()
             .child(card)
     }

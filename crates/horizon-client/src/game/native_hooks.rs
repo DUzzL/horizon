@@ -6,6 +6,64 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 80 adds the open screen hears of a mouse button going down or up before it acts
+//! (`native_screen_mouse_button_pressed_pre`, `native_screen_mouse_button_released_pre`, the
+//! `ScreenEvent.MouseButtonPressed.Pre` and `.MouseButtonReleased.Pre` points, with the screen, the
+//! GLFW button and the modifiers), and the helpers the input hooks share (`screen_view_now`,
+//! `screen_hooks_open`).
+//!
+//! API 79 adds items' default components (`native_modify_default_components`, in `horizon-world`'s
+//! `item_defaults.rs`): set or remove a component of any item, vanilla's included, as the game reads its defaults.
+//!
+//! API 78 adds `native_screen_render_post` (`ScreenEvent.Render.Post`: draw over the open
+//! screen, given its id, menu type, title, container panel, slot count, mouse
+//! and partial tick).
+//!
+//! API 77 adds a `minecraft:post_attack` enchantment effect of a mod's own kind
+//! (`native_enchant_effect`, told the enchantment, the kind, the JSON, the level and
+//! the mob hit).
+//!
+//! API 76 adds a mod block's placement state (`native_state_for_placement`) and the state it is built from
+//! (`native_state_with_property`): what a block that faces the player, sits on the clicked face or comes waterlogged needs.
+//!
+//! API 75 adds changing vanilla's loot tables and drops: `native_loot_table_load` (in
+//! `horizon-world`'s `loot.rs`: each table's JSON as it loads) and `native_loot_drops` (a broken
+//! block's or a dead mob's items, with what dropped them).
+//!
+//! API 74 adds a consumable's effect of a mod's own kind
+//! (`native_consume_effect`, which the unknown `on_consume_effects` type reaches with
+//! the kind and the JSON the file wrote).
+//!
+//! API 73 adds mod-block entity contacts (`native_block_step_on`, `native_block_entity_inside`, `native_block_fall_on`), including mutable landing damage.
+//!
+//! API 72 adds bone meal on a mod block (`native_is_valid_bonemeal_target`, `native_is_bonemeal_success`,
+//! `native_perform_bonemeal`), and the level's random a world hook draws from (`native_level_random`).
+//!
+//! API 71 adds drawing mod block entities on the client (`native_block_entity_submit`,
+//! vanilla's `BlockEntityRenderer.submit`, culled by `native_block_entity_render_bounding_box`,
+//! NeoForge's `getRenderBoundingBox`), with a pose stack (`BlockEntityDraw`) and the
+//! helpers `native_draw_quad`, `native_draw_cube` and `native_draw_block`.
+//!
+//! API 70 adds a mod block's own `canSurvive` (`native_can_survive`), and the blocks a mod plant
+//! can stand on (`native_may_place_on`, `VegetationBlock.mayPlaceOn`).
+//!
+//! API 69 adds a mod's own advancement criteria triggers (`native_trigger_criterion`,
+//! in `native_criteria.rs`).
+//!
+//! API 68 adds stack-dependent image tooltip components, measured with `native_tooltip_component` and rendered with `native_tooltip_component_draw`.
+//!
+//! API 67 adds dispenser item behaviours (`native_dispense_item`) and `native_dispense_default` for a plain drop.
+//!
+//! API 66 adds explosions for server mods (`native_explode`, in
+//! `native_explosions.rs`).
+//!
+//! API 65 adds native item component type registration (`native_component_types`) and opaque NBT component helpers.
+//!
+//! API 64 adds comparator output from a mod's block (`native_has_analog_output`,
+//! `native_analog_output`, and the helper `native_update_output_neighbors`).
+//!
+//! API 63 adds context-free tag lookups for server hooks (`native_server_block_in_tag`, `native_server_item_in_tag`).
+//!
 //! API 62 adds nicknames for server mods: `native_set_nickname` shows a name in place of a player's in chat and
 //! the Tab list (the real one on hover), and `native_text_allowed` asks the server's chat filter, in
 //! `native_server.rs`.
@@ -269,7 +327,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 62;
+pub(crate) const NATIVE_HOOKS_API: u32 = 80;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -369,7 +427,7 @@ impl GameLevel<'_> {
     /// that comparators read (how full or far along it is, as a composter's
     /// level), so they ask `native_analog_output`. Asked from inside the
     /// level's update: answer from `state` alone. Authoritative servers only.
-    /// API @API:analog_output@.
+    /// API 64.
     #[inline(always)]
     pub(super) fn native_has_analog_output(&self, state: BlockStateId, output: &mut bool) {
         let _ = (state, output);
@@ -385,7 +443,7 @@ impl GameLevel<'_> {
     /// `native_update_output_neighbors`; a change of state through
     /// `native_set_block` or `native_set_block_property` (neighbour updates
     /// on) tells the comparators itself, as vanilla's `Level.setBlock` does.
-    /// Authoritative servers only. API @API:analog_output@.
+    /// Authoritative servers only. API 64.
     #[inline(always)]
     pub(super) fn native_analog_output(
         &self,
@@ -465,7 +523,7 @@ impl GameLevel<'_> {
     /// be in the world yet, so decide from `state`. Answer only for your own
     /// blocks: `Some(false)` refuses the spot, `Some(true)` allows it, and
     /// the block's own rule doesn't run. The level is read-only. Asked on
-    /// every shape update of such a block: keep it short. API @API:can_survive@.
+    /// every shape update of such a block: keep it short. API 70.
     #[inline(always)]
     pub(super) fn native_can_survive(
         &self,
@@ -483,7 +541,7 @@ impl GameLevel<'_> {
     /// such as a crop) can stand on. Its template's `canSurvive` asks it, so
     /// the plant is refused there and pops off when its ground changes to
     /// one it can't stand on. Answer only for your own blocks. The level is
-    /// read-only. API @API:can_survive@.
+    /// read-only. API 70.
     #[inline(always)]
     pub(super) fn native_may_place_on(
         &self,
@@ -530,7 +588,7 @@ impl GameLevel<'_> {
     /// through vanilla's placement (a player's `BlockItem.place`, a
     /// dispenser's `DirectionalPlaceContext`), and the answer still takes its
     /// survival and entity obstruction checks. Authoritative servers only.
-    /// @API:placement_state@.
+    /// 76.
     #[inline(always)]
     #[allow(clippy::option_option)]
     pub(super) fn native_state_for_placement(
@@ -557,7 +615,7 @@ impl GameLevel<'_> {
     /// whose template takes it (vanilla's `growCrop` then keeps the meal);
     /// left `None`, the block keeps the `BonemealableBlock` its template gives
     /// it, or takes no bone meal.
-    /// @API:bonemeal@.
+    /// 72.
     #[inline(always)]
     pub(super) fn native_is_valid_bonemeal_target(
         &self,
@@ -574,7 +632,7 @@ impl GameLevel<'_> {
     /// it this time. Vanilla draws the level's random here
     /// (`isBonemealSuccess(Level, RandomSource, BlockPos, BlockState)`), so
     /// draw from `native_level_random` to keep vanilla's order.
-    /// Authoritative servers only. @API:bonemeal@.
+    /// Authoritative servers only. 72.
     #[inline(always)]
     pub(super) fn native_is_bonemeal_success(
         &mut self,
@@ -591,7 +649,7 @@ impl GameLevel<'_> {
     /// said yes: grow it here, `state` its state at `pos`. The meal is used up
     /// either way. Change the block with the level's
     /// `native_set_block_property`, and schedule with `native_schedule_block_tick`
-    /// (`ticks` is the hook's). Authoritative servers only. @API:bonemeal@.
+    /// (`ticks` is the hook's). Authoritative servers only. 72.
     #[inline(always)]
     pub(super) fn native_perform_bonemeal(
         &mut self,
@@ -655,6 +713,61 @@ pub(crate) struct NativeZoom {
     pub(crate) factor: f32,
     pub(crate) smooth: bool,
     pub(crate) turn: f32,
+}
+
+/// The camera shake native mods ask for (`native_camera_shake`): turns in
+/// degrees, and an offset in blocks along the camera's right, up and back.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NativeShake {
+    pub(crate) pitch: f32,
+    pub(crate) yaw: f32,
+    pub(crate) roll: f32,
+    pub(crate) offset: [f32; 3],
+}
+
+/// The largest turn a shake gives, in degrees, on each axis.
+const SHAKE_MAX_DEGREES: f32 = 10.0;
+/// The largest offset a shake gives, in blocks, along each axis.
+const SHAKE_MAX_OFFSET: f32 = 0.5;
+
+/// `shake` scaled by `scale` (Distortion Effects) and bounded on each axis;
+/// a value that isn't finite counts as none.
+fn bounded_shake(shake: NativeShake, scale: f32) -> NativeShake {
+    let scale = if scale.is_finite() {
+        scale.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let turn = |v: f32| {
+        if v.is_finite() {
+            (v * scale).clamp(-SHAKE_MAX_DEGREES, SHAKE_MAX_DEGREES)
+        } else {
+            0.0
+        }
+    };
+    let shift = |v: f32| {
+        if v.is_finite() {
+            (v * scale).clamp(-SHAKE_MAX_OFFSET, SHAKE_MAX_OFFSET)
+        } else {
+            0.0
+        }
+    };
+    NativeShake {
+        pitch: turn(shake.pitch),
+        yaw: turn(shake.yaw),
+        roll: turn(shake.roll),
+        offset: shake.offset.map(shift),
+    }
+}
+
+/// The pose a bounded shake multiplies into the projection, after the view
+/// bobbing: the offset, then roll, pitch and yaw.
+fn shake_pose(shake: NativeShake) -> glam::Mat4 {
+    let [x, y, z] = shake.offset;
+    glam::Mat4::from_translation(glam::Vec3::new(-x, -y, -z))
+        * glam::Mat4::from_rotation_z(shake.roll.to_radians())
+        * glam::Mat4::from_rotation_x(shake.pitch.to_radians())
+        * glam::Mat4::from_rotation_y(shake.yaw.to_radians())
 }
 
 /// The minimap a native mod shows (`native_minimap`), drawn by Horizon's
@@ -1129,6 +1242,26 @@ impl Game<'_> {
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
         let _ = zoom;
     }
+    /// The camera shake native mods ask for in this frame, `partial` ticks
+    /// past the last tick (0 to 1): add your pitch, yaw and roll in degrees
+    /// and your offset in blocks, along the camera's right, up and back, to
+    /// `shake`, so several mods' shakes add up. Read while playing only;
+    /// Horizon scales the sum by Distortion Effects and bounds it
+    /// (`native_shake_matrix`). API @API:native_camera_shake@.
+    pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
+        let _ = (partial, shake);
+    }
+
+    /// The values native mods hand their shader packs in this frame,
+    /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
+    /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
+    /// pack reads; a mod that bundles its pack as `native-<mod id>` is the
+    /// one that pack is for. Asked once a frame while a pack is on; a value
+    /// that isn't finite reads as 0 (`native_shader_params_now`). API
+    /// @API:native_shader_params@.
+    pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
+        let _ = (partial, params);
+    }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
         let _ = minimap;
@@ -1182,7 +1315,7 @@ impl Game<'_> {
     /// acting player is the one whose weapon carries the enchantment. Each
     /// such entry is told once a hit, and once for each mob a sweep lands on.
     /// A hit on a player, and an entry inside `minecraft:all_of`, aren't told
-    /// yet. An unclaimed kind does nothing. API @API:enchant_effect@.
+    /// yet. An unclaimed kind does nothing. API 77.
     pub(super) fn native_enchant_effect(
         &mut self,
         enchantment: &str,
@@ -1240,7 +1373,7 @@ impl Game<'_> {
     /// for this call. The kind and the JSON the file wrote are here; the acting
     /// player is the one consuming, and the game's own effects,
     /// sounds, teleports and drops are open. An unclaimed kind does
-    /// nothing. API @API:consume_effect@.
+    /// nothing. API 74.
     pub(super) fn native_consume_effect(&mut self, kind: &str, data: &serde_json::Value) {
         let _ = (kind, data);
     }
@@ -1268,7 +1401,7 @@ impl Game<'_> {
     /// `native_draw_quad`, `native_draw_cube` and `native_draw_block` under
     /// `draw`'s pose stack, which starts at the block's lower north-west
     /// corner, in blocks; `draw` also has the partial tick, the game time and
-    /// the block's light. API @API:block_entity_submit@.
+    /// the block's light. API 71.
     pub(super) fn native_block_entity_submit(
         &self,
         pos: [i32; 3],
@@ -1285,7 +1418,7 @@ impl Game<'_> {
     /// as the block with a block of margin around it; widen it when your
     /// `native_block_entity_submit` draws further (a tall shaft, a beam), or
     /// set an infinite value for one never culled. Asked once a frame for each
-    /// within 64 blocks whose chunk is drawn. API @API:block_entity_submit@.
+    /// within 64 blocks whose chunk is drawn. API 71.
     pub(super) fn native_block_entity_render_bounding_box(
         &self,
         pos: [i32; 3],
@@ -1332,7 +1465,7 @@ impl Game<'_> {
     /// server pack, link and code-of-conduct prompts, a book, a sign editor):
     /// those keep `Screen::Playing`, which it skips, and draw over what it
     /// drew, while vanilla's `ScreenEvent.Render.Post` fires for them.
-    /// API @API:screen_render_post@.
+    /// API 78.
     pub(super) fn native_screen_render_post(
         &self,
         batch: &mut HudBatch,
@@ -1359,7 +1492,7 @@ impl Game<'_> {
     /// sign editor drawn over gameplay, nor while a world loads or saves: the
     /// click there stays the game's own. A gamepad click or a click the
     /// keyboard's focus sends is not the mouse and fires nothing.
-    /// API @API:screen_mouse_button@.
+    /// API 80.
     pub(super) fn native_screen_mouse_button_pressed_pre(
         &self,
         screen: &NativeScreenView<'_>,
@@ -1381,7 +1514,7 @@ impl Game<'_> {
     /// release the screen took ends the drag or the scroll it began, as it
     /// does in vanilla, and no guard here un-cancels it. Same screens as the
     /// press; a press that opened another screen ends on that one.
-    /// API @API:screen_mouse_button@.
+    /// API 80.
     pub(super) fn native_screen_mouse_button_released_pre(
         &self,
         screen: &NativeScreenView<'_>,
@@ -1605,7 +1738,7 @@ impl Game<'_> {
     /// level event the dispenser plays with its smoke: 1000 the click, 1001 the
     /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for
     /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
-    /// answer `(native_dispense_default(..), 1000)`. API @API:dispenser_behaviour@.
+    /// answer `(native_dispense_default(..), 1000)`. API 67.
     pub(super) fn native_dispense_item(
         &mut self,
         dimension: &str,
@@ -1835,7 +1968,7 @@ impl Game<'_> {
     /// a torch losing its wall, a piston, `/setblock ... destroy`), nor a
     /// creative break or a tool that can't harvest the block, nor experience.
     /// Server-side, for every player. API
-    /// @API:loot_tables@.
+    /// 75.
     pub(super) fn native_loot_drops(
         &mut self,
         context: &NativeLootDrops<'_>,
@@ -2199,6 +2332,7 @@ impl GameLevel<'_> {
                 spread,
                 speed,
                 count,
+                randomization: 0,
             });
         true
     }
@@ -2283,7 +2417,7 @@ impl GameLevel<'_> {
     /// properties (`state_properties` in its block file) are set the same way.
     /// `state` itself when the property already has that value; None when the
     /// block has no such property, or the property no such value. API
-    /// @API:placement_state@.
+    /// 76.
     pub(super) fn native_state_with_property(
         &self,
         state: BlockStateId,
@@ -2296,7 +2430,7 @@ impl GameLevel<'_> {
     /// `native_level_random(dimension)` hands a server hook, for a world hook
     /// that draws as a vanilla block does (`isBonemealSuccess`), so the mod's
     /// draws shift vanilla's as a Java mod's would. `None` where this level
-    /// isn't the server's copy. API @API:bonemeal@.
+    /// isn't the server's copy. API 72.
     pub(super) fn native_level_random(
         &mut self,
     ) -> Option<&mut horizon_core::random::LegacyRandom> {
@@ -2515,7 +2649,7 @@ impl Game<'_> {
     /// beside it, or behind a conductor there, read it again
     /// (`Level.updateNeighbourForOutputSignal`). Acts on the level in place:
     /// false (and nothing happens) when `dimension` is another, or this
-    /// window isn't a server. API @API:analog_output@.
+    /// window isn't a server. API 64.
     pub(super) fn native_update_output_neighbors(
         &mut self,
         dimension: &str,
@@ -2617,6 +2751,29 @@ impl Game<'_> {
     /// This `Game` is the window's, not a server's.
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
+    }
+    /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
+    /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
+    /// player only, `delay` ticks from now (0 to 1200, a minute): a client
+    /// mod's sound that waits, as thunder heard after the flash or a blast
+    /// heard when its shock wave arrives. `volume` past 1 carries farther,
+    /// as vanilla's attenuation does (16 blocks times the volume). False, with
+    /// nothing played, on a server or for a value out of range; an event the
+    /// resources don't have plays nothing, as vanilla's. API
+    /// @API:native_local_sound@.
+    pub(super) fn native_play_local_sound(
+        &mut self,
+        sound: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        delay: i32,
+    ) -> bool {
+        if !self.native_window() || !local_sound_ok(sound, at, volume, pitch, delay) {
+            return false;
+        }
+        self.audio.play_after(sound, at, volume, pitch, delay);
+        true
     }
     /// Whether a box in `corner` shows: F3's debug screen takes both top
     /// corners (its left and right columns), and a bottom corner while one
@@ -3709,6 +3866,27 @@ impl Game<'_> {
             },
         })
     }
+    /// The pose of native mods' camera shake in this frame (`native_camera_shake`),
+    /// none while not playing.
+    pub(super) fn native_shake_matrix(&self, partial: f32) -> glam::Mat4 {
+        if !self.native_playing() {
+            return glam::Mat4::IDENTITY;
+        }
+        let mut shake = NativeShake::default();
+        self.native_camera_shake(partial, &mut shake);
+        if shake == NativeShake::default() {
+            return glam::Mat4::IDENTITY;
+        }
+        shake_pose(bounded_shake(shake, self.screen_effect_scale()))
+    }
+
+    /// What native mods hand shader packs in this frame (`native_shader_params`),
+    /// with values that aren't finite as 0.
+    pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
+        let mut params = [[0.0; 4]; 8];
+        self.native_shader_params(partial, &mut params);
+        finite_params(params)
+    }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {
         let mut minimap = None;
@@ -3776,6 +3954,25 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// `params` with each value that isn't finite as 0, so a mod's mistake can't
+/// put a NaN in every pixel of a pack's picture.
+fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
+    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
+}
+
+/// Whether `native_play_local_sound` takes these values: a sound event's id
+/// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
+/// and pitch at or above 0, and a delay of a minute at most.
+fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32) -> bool {
+    sound_id(sound)
+        && at.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
+        && volume.is_finite()
+        && volume >= 0.0
+        && pitch.is_finite()
+        && pitch >= 0.0
+        && (0..=1200).contains(&delay)
+}
+
 /// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
@@ -3808,6 +4005,70 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A shake is scaled by Distortion Effects, bounded on each axis, and a
+    /// value that isn't finite is none.
+    #[test]
+    fn a_shake_is_scaled_and_bounded() {
+        use super::{NativeShake, bounded_shake, shake_pose};
+        let shake = NativeShake {
+            pitch: 4.0,
+            yaw: -30.0,
+            roll: f32::NAN,
+            offset: [0.2, 2.0, f32::INFINITY],
+        };
+        assert_eq!(
+            bounded_shake(shake, 1.0),
+            NativeShake {
+                pitch: 4.0,
+                yaw: -10.0,
+                roll: 0.0,
+                offset: [0.2, 0.5, 0.0],
+            }
+        );
+        assert_eq!(bounded_shake(shake, 0.5).pitch, 2.0);
+        assert_eq!(bounded_shake(shake, 0.0), NativeShake::default());
+        assert_eq!(shake_pose(NativeShake::default()), glam::Mat4::IDENTITY);
+    }
+
+    /// A mod's shader values that aren't finite read as 0.
+    #[test]
+    fn shader_params_that_arent_finite_read_as_zero() {
+        let mut params = [[1.0; 4]; 8];
+        params[0] = [f32::NAN, 2.0, f32::INFINITY, -3.0];
+        let out = super::finite_params(params);
+        assert_eq!(out[0], [0.0, 2.0, 0.0, -3.0]);
+        assert_eq!(out[7], [1.0; 4]);
+    }
+
+    /// A client mod's sound needs a namespaced event, finite values and a
+    /// delay of a minute at most.
+    #[test]
+    fn a_local_sound_is_checked() {
+        use super::local_sound_ok;
+        let at = [0.5, 64.0, 0.5];
+        assert!(local_sound_ok("ironfall:boom_far", at, 8.0, 1.0, 140));
+        assert!(local_sound_ok(
+            "minecraft:entity.generic.explode",
+            at,
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("Ironfall:Boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok(
+            "ironfall:boom",
+            [f64::NAN, 0.0, 0.0],
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("ironfall:boom", at, -1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, 1201));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, -1));
+    }
 
     /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
     #[test]

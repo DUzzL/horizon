@@ -93,6 +93,26 @@ fn reads_every_key_of_schema_1() {
     assert_eq!(m.budget.gpu_ms, Some(1.5));
     let option = m.reflection.as_ref().and_then(|r| r.option.as_deref());
     assert_eq!(option, Some("reflections"));
+    let shadow = m.shadow.as_ref().unwrap();
+    assert_eq!((shadow.resolution, shadow.distance), (1024, 96.0));
+}
+
+#[test]
+fn a_shadow_map_stays_in_range_and_needs_a_stage_to_read_it() {
+    let refused = |shadow: &str, needle: &str| {
+        let mut text = sample_text();
+        text = text.replace("resolution = 1024\ndistance = 96.0", shadow);
+        text = text.replace("resolution = 1024\r\ndistance = 96.0", shadow);
+        let e = Manifest::parse(&text).unwrap_err().to_string();
+        assert!(e.contains(needle), "{e}");
+    };
+    refused("resolution = 64", "shadow.resolution");
+    refused("distance = 8.0", "shadow.distance");
+    let m = Manifest::parse(
+        "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+         [sky]\nfile = \"s.wgsl\"\n[shadow]\n",
+    );
+    assert!(m.unwrap_err().to_string().contains("[shadow] needs"));
 }
 
 #[test]

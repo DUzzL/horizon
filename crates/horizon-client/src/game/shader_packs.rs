@@ -273,6 +273,7 @@ impl Game<'_> {
             rainfall: info.map_or(0.0, |b| b.downfall),
             held_items,
             held_light,
+            mod_params: self.native_shader_params_now(partial),
         }
     }
 

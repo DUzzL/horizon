@@ -299,7 +299,7 @@
   "Add from GitHub": "GitHubから追加",
   "Add a native mod from GitHub": "GitHubからネイティブModを追加",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "リポジトリ（最新リリース）、リリース、ブランチまたはタグ、コミットへのリンクです。ランチャーは特定のリリースファイルまたはコミットのみをインストールし、移動するブランチはインストールしません。",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "{mods} をGitHub ({source}) からインストールしました。「設定 > ネイティブMod」からビルドしてください。",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "{mods} をGitHub ({source}) からインストールしました。「Mods」ページからビルドしてください。",
   "{id} is up to date.": "{id} は最新です。",
   "Asking GitHub about {owner}/{repo}…": "GitHubで {owner}/{repo} を確認中…",
   "Downloading {source}…": "{source} をダウンロード中…",
