@@ -31,6 +31,7 @@ impl Blocks { fn has_flag(&self, s: BlockStateId, _f: u32) -> bool { self.templa
 impl std::ops::Deref for Entities { type Target = std::collections::HashMap<(i32, i32, i32), BlockEntity>; fn deref(&self) -> &Self::Target { &self.0 } }
 // BlockEntities::mods_near has its own test in horizon-client-render; here every mod entity is near.
 impl Entities {
+    fn has_mods(&self) -> bool { self.0.values().any(|e| matches!(e, BlockEntity::Mod(_))) }
     fn mods_near(&self, _x: f64, _z: f64, _r: f64) -> impl Iterator<Item = &(i32, i32, i32)> {
         self.0.iter().filter(|(_, e)| matches!(e, BlockEntity::Mod(_))).map(|(p, _)| p)
     }
