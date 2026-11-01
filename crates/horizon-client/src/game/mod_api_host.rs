@@ -57,6 +57,42 @@ impl Game<'_> {
             .unwrap_or_default();
     }
 
+    /// Whether entity `id` is in the level, as a holder of attachments.
+    fn attachment_entity_exists(&self, id: u32) -> bool {
+        use super::commands::Target;
+        match i32::try_from(id).ok().and_then(|id| self.level_entity(id)) {
+            Some(Target::Mob(_)) => self.mobs.iter().any(|e| e.id == id && !e.removed),
+            Some(
+                Target::Item(_)
+                | Target::Boat(_)
+                | Target::Cart(_)
+                | Target::Stand(_)
+                | Target::Frame(_)
+                | Target::Painting(_)
+                | Target::Other(_),
+            ) => true,
+            _ => self.cushions.iter().any(|e| e.id == id),
+        }
+    }
+
+    /// The attachments of entities that left the level, dropped: each tick
+    /// while any entity has some. Only those entities are looked at, and
+    /// nothing else of the entities' memory changes.
+    pub(super) fn prune_entity_attachments(&mut self) {
+        let gone: Vec<[i32; 4]> = self
+            .persist
+            .uuids
+            .iter()
+            .filter(|(id, uuid)| {
+                self.entity_attachments.contains_key(*uuid) && !self.attachment_entity_exists(**id)
+            })
+            .map(|(_, uuid)| *uuid)
+            .collect();
+        for uuid in gone {
+            self.entity_attachments.remove(&uuid);
+        }
+    }
+
     pub(super) fn native_authoritative(&self) -> bool {
         self.serving.is_some() || self.options.dedicated.is_some()
     }
@@ -72,21 +108,7 @@ impl Game<'_> {
             return Err(AttachmentError::MissingHolder);
         }
         if let horizon_client::mod_api::Holder::Entity(id) = holder {
-            use super::commands::Target;
-            let exists = match i32::try_from(id).ok().and_then(|id| self.level_entity(id)) {
-                Some(Target::Mob(_)) => self.mobs.iter().any(|e| e.id == id && !e.removed),
-                Some(
-                    Target::Item(_)
-                    | Target::Boat(_)
-                    | Target::Cart(_)
-                    | Target::Stand(_)
-                    | Target::Frame(_)
-                    | Target::Painting(_)
-                    | Target::Other(_),
-                ) => true,
-                _ => self.cushions.iter().any(|e| e.id == id),
-            };
-            if !exists {
+            if !self.attachment_entity_exists(id) {
                 return Err(AttachmentError::MissingHolder);
             }
             attachment_compound(

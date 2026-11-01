@@ -11351,7 +11351,7 @@ impl Game<'_> {
     fn tick_mobs(&mut self) -> Result<()> {
         self.tick_creatures()?;
         if !self.entity_attachments.is_empty() {
-            self.prune_entity_memory();
+            self.prune_entity_attachments();
         }
         self.position_rider();
         self.tick_stats();
