@@ -81,6 +81,8 @@ struct StateInfo {
     upper: bool,
     /// A pane's arms (`north`, `east`, `south`, `west` true), as bits of [`ARMS`].
     arms: u8,
+    /// Rules name the state or one of its sides' sprites ([`ConnectedTextures::stacked_pane_hides`]).
+    has_rules: bool,
 }
 
 /// A pane's arm properties, in [`StateInfo::arms`]' bit order.
@@ -201,6 +203,18 @@ impl ConnectedTextures {
                 })
                 .collect();
         }
+        // Panes whose sprites tile rules name (`matchTiles=glass`) are connected too.
+        for id in 0..out.states.len() {
+            let pane = registry
+                .state(BlockStateId(id as u32))
+                .is_some_and(|s| s.name.ends_with("glass_pane"));
+            if pane && !out.states[id].has_rules {
+                out.states[id].has_rules = Face::ALL.into_iter().any(|f| {
+                    face_layer(BlockStateId(id as u32), f)
+                        .is_some_and(|l| !out.list(&out.by_layer, l as usize).is_empty())
+                });
+            }
+        }
         out
     }
 
@@ -309,6 +323,8 @@ impl ConnectedTextures {
                     .enumerate()
                     .filter(|&(_, arm)| prop(arm) == Some("true"))
                     .fold(0, |bits, (i, _)| bits | 1 << i),
+                // Set below, with the state's rule list.
+                has_rules: false,
             });
             list.clear();
             if let Some(candidates) = by_block.get(name) {
@@ -318,6 +334,7 @@ impl ConnectedTextures {
                         .filter(|&&i| out.rules[usize::from(i)].rule.matches_block(name, prop)),
                 );
             }
+            out.states.last_mut().expect("pushed above").has_rules = !list.is_empty();
             let range = push_list(&mut out.lists, &list);
             out.by_state.push(range);
         }
@@ -339,7 +356,7 @@ impl ConnectedTextures {
         ) else {
             return false;
         };
-        if own.block != theirs.block || self.list(&self.by_state, state as usize).is_empty() {
+        if own.block != theirs.block || !own.has_rules {
             return false;
         }
         let (dx, dz) = (x - 0.5, z - 0.5);
