@@ -1792,7 +1792,7 @@ fn render_visible(
         if emissive.is_empty() {
             return None;
         }
-        atlas(emissive.overlay_of(drawn)?)
+        atlas(emissive.overlay(drawn)?)
     };
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
@@ -3136,8 +3136,9 @@ mod emissive_tests {
             std::fs::write(path, text).unwrap();
         }
         let random = RandomTextures::scan(&root);
-        let emissive = Emissive::scan(&root, &random);
         let blinks = Blinks::scan(&root, &random);
+        let mut emissive = Emissive::scan(&root, &random);
+        emissive.pair_beside(&root, blinks.files());
         let _ = std::fs::remove_dir_all(&root);
         MobData {
             states: Vec::new(),
@@ -3218,6 +3219,43 @@ mod emissive_tests {
         assert!(shut(&uvs(93)));
         assert!(open(&uvs(94)));
         assert!(shut(&uvs(89 + 150)));
+    }
+
+    #[test]
+    fn a_blink_shows_its_own_glow_or_none() {
+        let atlas = |name: &str| {
+            let u = match name {
+                "entity/silverfish" => 0.0,
+                "entity/silverfish_e" => 0.25,
+                "entity/silverfish_blink" => 0.5,
+                "entity/silverfish_blink_e" => 0.75,
+                _ => return None,
+            };
+            Some([u, 0.0, u + 0.25, 1.0])
+        };
+        let base = [
+            "assets/minecraft/textures/entity/silverfish.png",
+            "assets/minecraft/textures/entity/silverfish_e.png",
+            "assets/minecraft/textures/entity/silverfish_blink.png",
+        ];
+        let at = |data: &MobData, age: u32| {
+            let mut m = silverfish();
+            m.age = age;
+            drawn(&m, data, &atlas)
+        };
+        // Age 89 is shut (see above), 0 open.
+        let plain = data(&base);
+        let open = at(&plain, 0);
+        assert_eq!(open.len(), 8);
+        assert!(inside(&open[4..], 0.25), "the texture's glow");
+        let shut = at(&plain, 89);
+        assert_eq!(shut.len(), 4, "no glowing open eyes over the shut ones");
+        assert!(inside(&shut, 0.5));
+        let mut own = base.to_vec();
+        own.push("assets/minecraft/textures/entity/silverfish_blink_e.png");
+        let shut = at(&data(&own), 89);
+        assert_eq!(shut.len(), 8);
+        assert!(inside(&shut[4..], 0.75), "the frame's own glow");
     }
 
     /// Draws `m` and returns each vertex's (uv, light).

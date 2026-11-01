@@ -2591,7 +2591,24 @@ mod tests {
             &[[200, 0, 0, 255]],
             None,
         );
+        // A variant's blink frame, with its own overlay.
+        write_strip(
+            &random.join("zombie3_blink.png"),
+            64,
+            64,
+            &[[0, 0, 200, 255]],
+            None,
+        );
+        write_strip(
+            &random.join("zombie3_blink_e.png"),
+            64,
+            64,
+            &[[9, 9, 9, 255]],
+            None,
+        );
         let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["minecraft:optifine/random/entity/zombie/zombie3_blink_e"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [9, 9, 9, 255]);
         let rect = atlas.sprites["minecraft:optifine/random/entity/zombie/zombie3_e"];
         assert_eq!(texel_at(&atlas, rect, 0, 0), [200, 0, 0, 255]);
         assert_eq!(
