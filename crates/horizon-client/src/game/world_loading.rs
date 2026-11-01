@@ -174,6 +174,7 @@ impl WorldRequest {
                 level.seed,
                 o.world_gen(),
                 o.flat_settings(),
+                o.single_biome(),
             )?;
             // WorldCreationUiState.getGameRules, written with the level.
             level.game_rules = o.rules.by_name();
