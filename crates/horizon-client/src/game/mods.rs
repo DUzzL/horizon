@@ -137,6 +137,11 @@ pub(super) fn content_root(
             for e in mod_content::accept_declared(&mut mods, blocks, items, known) {
                 log::warn!("Horizon: {e}");
             }
+            // A file item's remainder named a code-declared item that was refused: that mod
+            // alone is left out, not every content mod through the overlay's check.
+            for e in mod_content::drop_dangling_remainders(&mut mods) {
+                log::warn!("Horizon: {e}");
+            }
         }
     }
     match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {
