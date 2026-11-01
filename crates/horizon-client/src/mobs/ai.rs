@@ -12,6 +12,7 @@ use super::{
     undead,
 };
 use crate::blocks::Fluid;
+use crate::breathing::{Breath, apply, breathe};
 use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
@@ -1013,18 +1014,26 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             } else {
                 m.air = 300;
             }
-        } else if m.fluids.eye_in_water && !m.kind.flags.breathes_water {
-            m.air -= 1;
-            if m.air == -20 {
-                m.air = 0;
+        } else {
+            // LivingEntity.baseTick's air supply (LivingBreatheEvent): an
+            // entity with its eyes in water that can't breathe there loses
+            // air, any other gains it.
+            let drowns = m.fluids.eye_in_water && !m.kind.flags.breathes_water;
+            let vanilla = Breath {
+                can_breathe: !drowns,
+                consume: 1,
+                refill: if drowns { 0 } else { 4 },
+            };
+            let breath = breathe(m.id, &m.kind.id, vanilla);
+            let (air, drowned) = apply(m.air, 300, breath);
+            m.air = air;
+            if drowned {
                 events.push(MobEvent::Drown {
                     mob: m.id,
                     at: [m.position.x, m.position.y, m.position.z],
                 });
                 m.damage(2.0, Damage::of(DamageKind::Drown));
             }
-        } else if m.air < 300 {
-            m.air = (m.air + 4).min(300);
         }
 
         if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
@@ -2904,6 +2913,49 @@ mod poison_effect_tests {
 mod same_vehicle_push_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
+
+    /// What a mob holds and wears, by `EquipmentSlot`: the hand's item, the
+    /// worn armour's stack (a dyed piece keeps its colour), a horse's
+    /// armour in the body slot and its saddle, and nothing else.
+    #[test]
+    fn a_mobs_equipment_is_listed_by_slot() {
+        with_test_world(&[], |_, types| {
+            let mob = |name: &str| {
+                Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut zombie = mob("minecraft:zombie");
+            assert!(zombie.equipment_stacks().iter().all(Option::is_none));
+            zombie
+                .extra
+                .set_main_hand(Some(std::sync::Arc::from("minecraft:iron_sword")));
+            zombie.extra.feet = Some(std::sync::Arc::from("minecraft:iron_boots"));
+            let worn = zombie.equipment_stacks();
+            assert_eq!(
+                worn[0].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_sword"
+            );
+            assert_eq!(
+                worn[2].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_boots"
+            );
+            assert_eq!(worn.iter().flatten().count(), 2);
+            let mut horse = mob("minecraft:horse");
+            horse.extra.head = Some(std::sync::Arc::from("minecraft:iron_horse_armor"));
+            horse.set_saddle(Some(crate::items::ItemStack::new("minecraft:saddle", 1)));
+            let gear = horse.equipment_stacks();
+            assert_eq!(
+                gear[6].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_horse_armor"
+            );
+            assert_eq!(gear[7].as_ref().unwrap().item.as_ref(), "minecraft:saddle");
+            assert!(gear[5].is_none());
+        });
+    }
 
     /// `Entity.push(Entity)` returns at once for `isPassengerOfSameVehicle`
     /// (the same `getRootVehicle`): a camel and the husk on its back, seated

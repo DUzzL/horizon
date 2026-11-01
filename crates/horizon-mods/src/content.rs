@@ -181,8 +181,10 @@ fn yes() -> bool {
 }
 
 /// A block the mod adds: a vanilla template's behaviour, states and shapes
-/// under a new id, with `properties` applied.
-#[derive(Clone, Debug, PartialEq)]
+/// under a new id, with `properties` applied. A native mod may build one in
+/// code (`native_blocks`): `..Default::default()` leaves the rest as a file
+/// leaves it out, except `item`, which a file sets unless told not to.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Block {
     /// `<mod id>:<path>`.
     pub id: String,
@@ -248,8 +250,9 @@ struct ItemFile {
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
-/// id, with these changed.
-#[derive(Clone, Debug, PartialEq)]
+/// id, with these changed. A native mod may build one in code
+/// (`native_items`).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Item {
     pub id: String,
     /// The vanilla item it copies, `minecraft:<path>`.
@@ -334,6 +337,8 @@ pub const MAX_MENU_SLOTS: u16 = 256;
 enum Source {
     Dir(PathBuf),
     Zip(PathBuf),
+    /// No files: blocks and items a native mod declares in code.
+    Code,
 }
 
 /// A mod's content: its files and declarations.
@@ -445,10 +450,95 @@ impl Content {
         Ok(content)
     }
 
+    /// Content with no files, for the blocks and items native mods declare
+    /// in code in `namespace` ([`Content::declare`]).
+    pub fn declared(namespace: &str) -> Content {
+        Content {
+            source: Source::Code,
+            files: Vec::new(),
+            blocks: Vec::new(),
+            items: Vec::new(),
+            effects: Vec::new(),
+            creative_tabs: Vec::new(),
+            entity_types: Vec::new(),
+            menu_types: Vec::new(),
+            namespaces: vec![namespace.to_owned()],
+        }
+    }
+
+    /// Adds blocks and items a native mod declares in code (`native_blocks`,
+    /// `native_items`), checked as declaration files are: ids in this mod's
+    /// own namespace (its id, as `data/<id>/horizon/` is) and declared once
+    /// with what it already has, a vanilla template, a crafting remainder
+    /// that is vanilla or this mod's. All or nothing: on an error nothing is
+    /// added.
+    pub fn declare(&mut self, blocks: &[Block], items: &[Item]) -> Result<(), String> {
+        let own = self
+            .namespaces
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default();
+        let mut ids: BTreeSet<&str> = self
+            .blocks
+            .iter()
+            .map(|b| b.id.as_str())
+            .chain(self.items.iter().map(|i| i.id.as_str()))
+            .collect();
+        let mut item_ids: BTreeSet<&str> = self
+            .blocks
+            .iter()
+            .filter(|b| b.item)
+            .map(|b| b.id.as_str())
+            .chain(self.items.iter().map(|i| i.id.as_str()))
+            .collect();
+        let in_own =
+            |id: &str| namespaced_id(id) && id.split_once(':').is_some_and(|(ns, _)| ns == own);
+        for block in blocks {
+            let id = block.id.as_str();
+            if !in_own(id) {
+                return Err(format!("block {id:?} is not an id in {own}:"));
+            }
+            check_block(block).map_err(|e| format!("block {id}: {e}"))?;
+            if !ids.insert(id) {
+                return Err(format!("block {id} is declared twice"));
+            }
+            if block.item {
+                item_ids.insert(id);
+            }
+        }
+        for item in items {
+            let id = item.id.as_str();
+            if !in_own(id) {
+                return Err(format!("item {id:?} is not an id in {own}:"));
+            }
+            check_item(item).map_err(|e| format!("item {id}: {e}"))?;
+            if !item_ids.insert(id) {
+                return Err(format!(
+                    "item {id} is declared twice, or is also a block's item"
+                ));
+            }
+        }
+        for item in items {
+            if let Some(rest) = &item.crafting_remainder
+                && (rest == "minecraft:air"
+                    || !vanilla_id(rest) && !item_ids.contains(rest.as_str()))
+            {
+                return Err(format!(
+                    "item {}: crafting_remainder {rest:?} is not a vanilla item (minecraft:...) or one of this mod's",
+                    item.id
+                ));
+            }
+        }
+        self.blocks.extend_from_slice(blocks);
+        self.items.extend_from_slice(items);
+        Ok(())
+    }
+
     /// Where the files are read from: the mod's folder or its `.hmod`.
     pub fn source(&self) -> &Path {
         match &self.source {
             Source::Dir(path) | Source::Zip(path) => path,
+            Source::Code => Path::new(""),
         }
     }
 
@@ -468,6 +558,7 @@ impl Content {
         Ok(match &self.source {
             Source::Dir(root) => FileReader::Dir(root),
             Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
+            Source::Code => FileReader::Dir(Path::new("")),
         })
     }
 
@@ -543,11 +634,16 @@ impl Content {
         for (block, name) in blocks {
             let file: BlockFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
-            check_block(&file).map_err(|e| format!("{name}: {e}"))?;
-            if file.item {
-                ids.insert(block.clone());
+            if file
+                .connects_to
+                .as_ref()
+                .is_some_and(|t| !t.starts_with('#'))
+            {
+                return Err(format!(
+                    "{name}: connects_to is a block tag, #namespace:path"
+                ));
             }
-            self.blocks.push(Block {
+            let block = Block {
                 id: block,
                 template: file.template,
                 properties: file.properties,
@@ -560,37 +656,33 @@ impl Content {
                     .connects_to
                     .map(|t| t.trim_start_matches('#').to_owned()),
                 thickness: file.thickness,
-            });
+            };
+            check_block(&block).map_err(|e| format!("{name}: {e}"))?;
+            if block.item {
+                ids.insert(block.id.clone());
+            }
+            self.blocks.push(block);
         }
         let mut remainders = Vec::new();
         for (item, name) in items {
             let file: ItemFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
-            if !vanilla_id(&file.template) {
-                return Err(format!(
-                    "{name}: template {:?} is not a vanilla item (minecraft:...)",
-                    file.template
-                ));
-            }
-            if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
-                return Err(format!("{name}: max_stack_size is 1 to 99"));
-            }
-            check_components(&file.components, &["max_stack_size", "rarity"])
-                .map_err(|e| format!("{name}: {e}"))?;
-            if !ids.insert(item.clone()) {
-                return Err(format!("{name}: {item} is also a block's item"));
-            }
-            if let Some(rest) = &file.crafting_remainder {
-                remainders.push((name, rest.clone()));
-            }
-            self.items.push(Item {
+            let item = Item {
                 id: item,
                 template: file.template,
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
-            });
+            };
+            check_item(&item).map_err(|e| format!("{name}: {e}"))?;
+            if !ids.insert(item.id.clone()) {
+                return Err(format!("{name}: {} is also a block's item", item.id));
+            }
+            if let Some(rest) = &item.crafting_remainder {
+                remainders.push((name, rest.clone()));
+            }
+            self.items.push(item);
         }
         for (effect, name) in effects {
             let file: MobEffect =
@@ -712,7 +804,23 @@ fn check_components(
     Ok(())
 }
 
-fn check_block(file: &BlockFile) -> Result<(), String> {
+/// An item's fields, as a file or code gives them.
+fn check_item(item: &Item) -> Result<(), String> {
+    if !vanilla_id(&item.template) {
+        return Err(format!(
+            "template {:?} is not a vanilla item (minecraft:...)",
+            item.template
+        ));
+    }
+    if item.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
+        return Err("max_stack_size is 1 to 99".into());
+    }
+    check_components(&item.components, &["max_stack_size", "rarity"])
+}
+
+/// A block's fields, as a file or code gives them (`connects_to` without
+/// its `#`).
+fn check_block(file: &Block) -> Result<(), String> {
     if !vanilla_id(&file.template) {
         return Err(format!(
             "template {:?} is not a vanilla block (minecraft:...)",
@@ -817,7 +925,7 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         if file.template != "minecraft:chorus_plant" {
             return Err("connects_to needs template minecraft:chorus_plant (a PipeBlock)".into());
         }
-        let id = tag.strip_prefix('#').unwrap_or_default();
+        let id = tag.as_str();
         let valid = |s: &str| {
             !s.is_empty()
                 && s.chars()
@@ -904,6 +1012,83 @@ capabilities = ["registries"]
         let content = package.and_then(|p| Content::read(&path, &p.manifest));
         std::fs::remove_dir_all(&dir).unwrap();
         content
+    }
+
+    #[test]
+    fn blocks_and_items_declared_in_code_pass_the_files_checks() {
+        let block = |id: &str| Block {
+            id: id.into(),
+            template: "minecraft:iron_block".into(),
+            item: true,
+            ..Block::default()
+        };
+        let item = |id: &str| Item {
+            id: id.into(),
+            template: "minecraft:diamond".into(),
+            ..Item::default()
+        };
+        let mut content = Content::declared("ruby");
+        assert!(content.is_empty());
+        let wrench = Item {
+            crafting_remainder: Some("ruby:gear".into()),
+            ..item("ruby:wrench")
+        };
+        content
+            .declare(&[block("ruby:gear"), block("ruby:casing")], &[wrench])
+            .unwrap();
+        assert_eq!(content.blocks.len(), 2);
+        assert_eq!(content.items[0].id, "ruby:wrench");
+        // Each refusal adds nothing.
+        let refused = |blocks: &[Block], items: &[Item]| {
+            let mut c = Content::declared("ruby");
+            c.declare(&[block("ruby:gear")], &[]).unwrap();
+            let e = c.declare(blocks, items).unwrap_err();
+            assert_eq!((c.blocks.len(), c.items.len()), (1, 0), "{e}");
+            e
+        };
+        assert!(refused(&[block("emerald:gear")], &[]).contains("not an id in ruby:"));
+        assert!(refused(&[block("minecraft:gear")], &[]).contains("not an id in ruby:"));
+        assert!(refused(&[], &[item("ruby")]).contains("not an id in ruby:"));
+        assert!(refused(&[block("ruby:gear")], &[]).contains("declared twice"));
+        assert!(refused(&[], &[item("ruby:gear")]).contains("block's item"));
+        let modded = Block {
+            template: "ruby:other".into(),
+            ..block("ruby:casing")
+        };
+        assert!(refused(&[modded], &[]).contains("not a vanilla block"));
+        let dim = Block {
+            properties: BlockProperties {
+                light: Some(16),
+                ..BlockProperties::default()
+            },
+            ..block("ruby:lamp")
+        };
+        assert!(refused(&[dim], &[]).contains("light is 0 to 15"));
+        let stack = Item {
+            max_stack_size: Some(100),
+            ..item("ruby:ingot")
+        };
+        assert!(refused(&[], &[stack]).contains("max_stack_size"));
+        let rest = Item {
+            crafting_remainder: Some("emerald:dust".into()),
+            ..item("ruby:dust")
+        };
+        assert!(refused(&[block("ruby:pipe")], &[rest]).contains("crafting_remainder"));
+        // A cable's tag comes bare from code.
+        let cable = Block {
+            template: "minecraft:chorus_plant".into(),
+            connects_to: Some("ruby:cables".into()),
+            ..block("ruby:cable")
+        };
+        content.declare(&[cable], &[]).unwrap();
+    }
+
+    #[test]
+    fn a_connecting_block_file_names_its_tag_with_a_hash() {
+        let cable = br#"{"template": "minecraft:chorus_plant", "connects_to": "ruby:cables"}"#;
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/cable.json", cable)];
+        let e = hmod("bare-tag", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("#namespace:path"), "{e}");
     }
 
     #[test]

@@ -268,6 +268,16 @@ impl Game<'_> {
             use horizon_world::level::LevelAccess;
             (level.min_y(), level.max_y())
         });
+        // WitherSkull.getBlockExplosionResistance: a dangerous skull's blast
+        // caps a block the wither may destroy at 0.8.
+        let cap = self.combat.blast_resistance_cap;
+        let wither_immune = cap.and_then(|_| {
+            self.res
+                .items()
+                .block_tags
+                .get("minecraft:wither_immune")
+                .cloned()
+        });
         let mut set: JavaHashMap<Key, ()> = JavaHashMap::default();
         for xx in 0..16 {
             for yy in 0..16 {
@@ -310,12 +320,14 @@ impl Game<'_> {
                                 power -= (resistance + 0.3) * 0.3;
                             }
                             _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
-                                let resistance = if spared {
+                                let base = if spared {
                                     0.0
                                 } else {
                                     f.explosion_resistance.max(fluid)
                                 };
-                                power -= (resistance + 0.3) * 0.3;
+                                let immune =
+                                    wither_immune.as_ref().is_some_and(|t| t.contains(&*f.name));
+                                power -= (blast_resistance(base, cap, immune) + 0.3) * 0.3;
                             }
                             _ => {}
                         }
@@ -1179,9 +1191,30 @@ fn add_or_append_stack(
     stacks.push((pos, stack));
 }
 
+/// `WitherSkull.getBlockExplosionResistance`: `isDangerous() &&
+/// WitherBoss.canDestroy(state) ? min(0.8, resistance) : resistance`. Air has
+/// no resistance to begin with, and `#wither_immune` blocks keep theirs.
+fn blast_resistance(base: f32, cap: Option<f32>, wither_immune: bool) -> f32 {
+    match cap {
+        Some(cap) if !wither_immune => base.min(cap),
+        _ => base,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dangerous wither skull's blast treats a block as at most 0.8 harder to
+    /// break, but a `#wither_immune` block keeps its own resistance and any
+    /// other blast is unchanged.
+    #[test]
+    fn a_dangerous_wither_skull_caps_block_resistance() {
+        assert_eq!(blast_resistance(4.0, Some(0.8), false), 0.8);
+        assert_eq!(blast_resistance(0.3, Some(0.8), false), 0.3, "already low");
+        assert_eq!(blast_resistance(4.0, Some(0.8), true), 4.0, "wither immune");
+        assert_eq!(blast_resistance(4.0, None, false), 4.0, "another blast");
+    }
 
     /// A dropped item survives a mob's blast untouched while `mobGriefing` is
     /// off, and is thrown and hurt as usual by one that destroys blocks or by

@@ -1333,8 +1333,11 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
-        // OptiFine connected textures: another sprite, or one per quarter.
+        // OptiFine connected textures: another sprite, or one per quarter, and the overlays
+        // drawn over it (a few per face at most; more are dropped).
         let connected = &self.render.connected;
+        let mut overlays = [None; 8];
+        let mut count = 0;
         let pick = if connected.is_empty() {
             Pick::Keep
         } else {
@@ -1346,27 +1349,35 @@ impl Mesher<'_> {
                 [world.x, world.y, world.z],
                 |[dx, dy, dz]| pad.blocks[pi(pos[0] + dx, pos[1] + dy, pos[2] + dz)],
                 || Some(tints.biome(pos[0], pos[1], pos[2])),
+                |overlay| {
+                    if let Some(slot) = overlays.get_mut(count) {
+                        *slot = Some(overlay);
+                        count += 1;
+                    }
+                },
             )
         };
-        let mut corners = [(TerrainVertex::new([0.0; 3], [0.0; 2], 0, 0, 0), [0.0; 2]); 4];
-        for (i, corner) in corners.iter_mut().enumerate() {
-            let g = gray[i] as u32;
-            let rgb = match tint {
-                Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
-                None => [g; 3],
-            };
-            let p = q.positions[i];
-            *corner = (
-                TerrainVertex::new(
-                    [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+        let vertices = |tint: Option<u32>| {
+            std::array::from_fn::<_, 4, _>(|i| {
+                let g = gray[i] as u32;
+                let rgb = match tint {
+                    Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
+                    None => [g; 3],
+                };
+                let p = q.positions[i];
+                (
+                    TerrainVertex::new(
+                        [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+                        q.uv[i],
+                        0,
+                        emitting(pack_rgb(rgb), tier),
+                        pack_coords(lighting::with_emission(coords[i], q.light_emission)),
+                    ),
                     q.uv[i],
-                    0,
-                    emitting(pack_rgb(rgb), tier),
-                    pack_coords(lighting::with_emission(coords[i], q.light_emission)),
-                ),
-                q.uv[i],
-            );
-        }
+                )
+            })
+        };
+        let corners = vertices(tint);
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
@@ -1403,6 +1414,32 @@ impl Mesher<'_> {
                 }
             }
         }
+        // Overlays: the face again, after it (equal depth passes), tinted as their rule says.
+        // `layer=cutout` is an alpha cutout whatever the tile's alpha, but over a translucent
+        // face it must be in the translucent pass too, or the face would draw over it.
+        // Most faces have none: nothing below runs for them.
+        if count == 0 {
+            return;
+        }
+        let face_translucent = match pick {
+            Pick::Keep => self.translucent(own),
+            Pick::Tile(t) => self.translucent(tile(t)),
+            Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
+        };
+        for overlay in overlays[..count].iter().flatten().copied() {
+            let tint = overlay.tint.and_then(|(index, block)| {
+                let info = block
+                    .and_then(|b| self.tables.info.get(b as usize))
+                    .unwrap_or(state);
+                Self::tint(info, index, tints, pos)
+            });
+            let tile = TileLayer::Layer {
+                layer: overlay.layer,
+                translucent: overlay.translucent || face_translucent,
+                opaque: false,
+            };
+            self.quad_as(out, false, tile, vertices(tint).map(|c| c.0), false);
+        }
     }
     /// One terrain quad with sprite `tile`, in the pass its alpha needs (`solid_leaves`: no
     /// alpha cutout whatever the sprite).
@@ -1411,7 +1448,35 @@ impl Mesher<'_> {
         out: &mut SectionMesh,
         solid_leaves: bool,
         tile: TileLayer,
+        v: [TerrainVertex; 4],
+    ) {
+        self.quad_as(out, solid_leaves, tile, v, true);
+    }
+    /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
+    fn translucent(&self, tile: TileLayer) -> bool {
+        match tile {
+            TileLayer::Layer {
+                layer, translucent, ..
+            } => {
+                translucent
+                    || self
+                        .translucent_layers
+                        .get(usize::from(layer))
+                        .copied()
+                        .unwrap_or(false)
+            }
+            TileLayer::Skip | TileLayer::Default => false,
+        }
+    }
+    /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
+    /// when `by_sprite`: an overlay's pass is its rule's.
+    fn quad_as(
+        &self,
+        out: &mut SectionMesh,
+        solid_leaves: bool,
+        tile: TileLayer,
         mut v: [TerrainVertex; 4],
+        by_sprite: bool,
     ) {
         let TileLayer::Layer {
             layer,
@@ -1424,12 +1489,11 @@ impl Mesher<'_> {
         if self.tables.is_animated(layer) {
             out.note_sprite_layer(layer);
         }
-        let translucent = translucent
-            || self
-                .translucent_layers
-                .get(usize::from(layer))
-                .copied()
-                .unwrap_or(false);
+        let translucent = if by_sprite {
+            self.translucent(tile)
+        } else {
+            translucent
+        };
         // Quads over opaque texels draw in the solid layer: no alpha cutout (a dirt path's side
         // skips its clear top row). All four vertices share the layer.
         let layer = if opaque && !translucent || solid_leaves {
