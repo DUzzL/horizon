@@ -1054,7 +1054,10 @@ mod tests {
         };
         assert!(tints(&NoEnv).contains(&-65281), "no environment is magenta");
         let tinted = tints(&GrassEnv(&renderer));
-        assert!(!tinted.is_empty() && !tinted.contains(&-65281), "{tinted:?}");
+        assert!(
+            !tinted.is_empty() && !tinted.contains(&-65281),
+            "{tinted:?}"
+        );
     }
 
     #[test]
