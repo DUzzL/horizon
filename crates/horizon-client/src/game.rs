@@ -7783,7 +7783,8 @@ impl Game<'_> {
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .is_ok();
-            #[cfg(not(target_os = "macos"))]
+            // Windows already warped above, inside the clip's own position.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             if self.captured && self.focused {
                 warp(window);
             }
