@@ -95,6 +95,9 @@ pub(super) struct GuestPlay {
     pub(super) lectern: Option<super::lan_stations::GuestLectern>,
     /// The menu the mods last heard this guest open (`tick_player_menus`).
     pub(super) menu_heard: Option<super::native_menus::HeardMenu>,
+    /// The equipment the mods last heard this guest wear (`native_players_equipment`), by
+    /// `EquipmentSlot`: main hand, off hand, feet, legs, chest, head.
+    pub(super) equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 6]>>,
     /// What the guest's body was given for its effects and enchantments.
     potions: super::potions::BodyPotions,
     /// `ServerPlayer.getStats` and the inventory `inventory_changed` last saw.
@@ -3161,6 +3164,11 @@ impl Game<'_> {
         // count) falls instead of staying up for a player who is gone.
         self.guest_container_closed(host, conn);
         host.hub.close_container(conn);
+        // PlayerList.respawn builds a new `ServerPlayer`, whose `lastEquipmentItems` starts
+        // empty: the mods hear each worn item again from empty (`native_players_equipment`).
+        if let Some(play) = host.play.get_mut(&conn) {
+            play.equipment_heard = None;
+        }
         // PlayerList.respawn: a server's player comes back in its respawn
         // point's level: the Overworld, where the world spawn and beds are,
         // or another one's anchor or forced point, which its block resolves
@@ -3306,6 +3314,7 @@ impl Game<'_> {
         self.lan_containers_tick(host);
         self.tick_lan_mount_menus(host);
         self.tick_player_menus(host);
+        self.native_players_equipment(host);
         self.announce_guest_advancements(host);
         let conns: Vec<u32> = host
             .hub
