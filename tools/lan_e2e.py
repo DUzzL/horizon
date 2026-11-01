@@ -197,6 +197,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
              "moved wrongly" lines, not an endless loop of them.
 - minecarts: the host and the guest each get into a minecart on rails, sneak out beside it, and break
              it (#1222).
+- cart_mob_rider: a minecart with a pig in it runs about 3.3 blocks farther than an empty one in 40 ticks
+             (AbstractMinecart.getSlowdownFactor 0.997 when isVehicle, not only for a player).
 - frames:    the host and the guest each put a diamond in an item frame and turn it, and put a
              helmet on an armor stand and take it back (#1222).
 - hands:     the host and the guest each, at a cow that cares for none of it: draw a bow and shoot, and
@@ -6970,6 +6972,42 @@ def server_using(host, game):
 def flying(game, kind):
     """How many of the projectiles this side draws are of `kind` (a trident, an arrow)."""
     return sum(kind in q['kind'].lower() for q in game('status')['projectiles'])
+
+
+CHECKS += ['cart_mob_rider']
+
+
+def check_cart_mob_rider(host, guest, out):
+    """A minecart with a mob in it slows like a ridden one (AbstractMinecart.getSlowdownFactor: 0.997
+    when isVehicle, else 0.96), so with the same push it runs far past an empty one. 40 ticks on a
+    straight rail from Motion 0.4: the empty cart ends 2.7 to 3.3 blocks short of the occupied one."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    z += 8
+    host('command', command=f'fill {x - 2} {y - 1} {z - 1} {x + 40} {y - 1} {z + 4} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 1} {x + 40} {y + 3} {z + 4} minecraft:air')
+    host('command', command=f'fill {x} {y} {z} {x + 40} {y} {z} minecraft:rail[shape=east_west]')
+    host('command', command=f'fill {x} {y} {z + 3} {x + 40} {y} {z + 3} minecraft:rail[shape=east_west]')
+    host('command', command='tick freeze')
+    try:
+        host('command', command=f'summon minecraft:minecart {x + 0.5} {y + 0.1} {z + 0.5} {{Motion:[0.4d,0.0d,0.0d],Tags:["cmr_empty"]}}')
+        host('command', command=f'summon minecraft:minecart {x + 0.5} {y + 0.1} {z + 3.5} {{Motion:[0.4d,0.0d,0.0d],'
+             'Tags:["cmr_pig"],Passengers:[{id:"minecraft:pig",NoAI:1b}]}')
+        host('command', command='tick step 40')
+        host.wait(40)
+        carts = [o for o in host('status')['objects'] if o['kind'].endswith('minecart')]
+        empty = [o for o in carts if abs(o['position'][2] - (z + 0.5)) < 1][0]['position'][0] - (x + 0.5)
+        laden = [o for o in carts if abs(o['position'][2] - (z + 3.5)) < 1][0]['position'][0] - (x + 0.5)
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=minecraft:minecart,tag=cmr_empty]')
+        host('command', command='kill @e[type=minecraft:minecart,tag=cmr_pig]')
+        host('command', command='kill @e[type=minecraft:pig,distance=..60]')
+    detail = {'empty': round(empty, 3), 'with_pig': round(laden, 3)}
+    assert laden - empty > 2.0, f'a cart with a pig should outrun the empty one by more than 2 blocks: {detail}'
+    return detail
+
+
+CHECK_FNS.update(cart_mob_rider=check_cart_mob_rider)
 
 
 def check_held_use(host, guest, out):
