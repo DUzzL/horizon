@@ -106,6 +106,17 @@ impl ConnectedTextures {
         if rules.is_empty() {
             return Self::default();
         }
+        // The tiles decode side by side; the loop below inserts them in rule order, under the
+        // same names.
+        let tiles: Vec<String> = rules
+            .iter()
+            .flat_map(|rule| &rule.tiles)
+            .filter_map(|tile| match tile {
+                Tile::Texture(path) => Some(sprite_name(path)),
+                _ => None,
+            })
+            .collect();
+        sprites.prefetch(root, tiles.iter().map(String::as_str));
         let loaded = rules
             .into_iter()
             .filter_map(|rule| {

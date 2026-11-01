@@ -111,6 +111,7 @@ mod end_sky;
 mod flat;
 mod frame_gen;
 mod hdr;
+mod hdr_icc;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
@@ -126,6 +127,7 @@ mod occlusion;
 mod oit;
 mod oit_features;
 mod pack_atlas;
+mod pack_center_depth;
 pub mod pack_draw;
 mod pack_entities;
 mod pack_hand;
@@ -7793,6 +7795,9 @@ impl Renderer {
         if let Some(timer) = &mut self.own_timing {
             timer.submitted(&self.queue);
         }
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.submitted();
+        }
         let failed = checks.and_then(GpuChecks::pop);
         if let Some((request, buffer)) = readback {
             // Out of memory on the way: the PNG would be black; taken again at half the size.
@@ -8250,19 +8255,19 @@ impl Renderer {
         Ok([width, height])
     }
     /// The HDR10 copy (`Hdr::capture`) as a 16-bit PNG tagged BT.2020 with PQ (cICP, PNG's
-    /// third edition), with the peak and paper white as its content light levels (cLLI).
+    /// third edition), with the peak and paper white as its content light levels (cLLI), and
+    /// an ICC profile for the programs that don't read cICP (`hdr_icc`).
     fn write_hdr_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<()> {
         let Some(hdr) = &self.hdr else {
             return Ok(());
         };
         let pixels = hdr10_to_rgb16(&self.read_frame(buffer)?);
-        let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(std::fs::File::create(path)?),
-            self.config.width,
-            self.config.height,
-        );
-        encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Sixteen);
+        let mut info = png::Info::with_size(self.config.width, self.config.height);
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Sixteen;
+        info.icc_profile = Some(hdr_icc::profile().into());
+        let encoder =
+            png::Encoder::with_info(std::io::BufWriter::new(std::fs::File::create(path)?), info)?;
         let mut writer = encoder.write_header()?;
         // BT.2020 primaries, PQ, RGB, full range.
         writer.write_chunk(png::chunk::cICP, &[9, 16, 0, 1])?;

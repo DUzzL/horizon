@@ -67,12 +67,21 @@ fn bake_variant(
     turns: [u8; 3],
     lock: bool,
 ) -> Result<BakedModel> {
-    let model = library.resolve(name)?;
+    bake_resolved(root, sprites, &library.resolve(name)?, turns, lock)
+}
+/// Bakes a resolved `model`, turned and UV-locked as a variant says.
+fn bake_resolved(
+    root: &Path,
+    sprites: &mut Sprites,
+    model: &horizon_assets::resolve::ResolvedCuboidModel,
+    turns: [u8; 3],
+    lock: bool,
+) -> Result<BakedModel> {
     let particle = model
         .material("particle")?
         .map(|material| sprites.insert(root, &material.sprite))
         .transpose()?;
-    let faces: Vec<BakedFace> = bake_block_model(&model, BlockModelTransform::new(turns, lock))?
+    let faces: Vec<BakedFace> = bake_block_model(model, BlockModelTransform::new(turns, lock))?
         .into_iter()
         .map(|quad| {
             let layer = sprites.insert(root, &quad.material.sprite)?;
@@ -255,10 +264,24 @@ impl StateModels {
                 models.block_library_or_missing(root, names)?
             }
         };
+        let resolved: Vec<_> = variants
+            .iter()
+            .map(|(name, ..)| library.resolve(name))
+            .collect();
+        // Every texture the models name, decoded side by side before the bake adds them one
+        // by one in its own order.
+        sprites.prefetch(
+            root,
+            resolved
+                .iter()
+                .flatten()
+                .flat_map(|model| model.textures.values())
+                .map(|material| material.sprite.as_str()),
+        );
         let mut baked = Vec::with_capacity(variants.len());
         let mut index = BTreeMap::new();
-        for (name, turns, lock) in variants {
-            let model = bake_variant(root, sprites, &library, &name, turns, lock)?;
+        for ((name, turns, lock), model) in variants.into_iter().zip(resolved) {
+            let model = bake_resolved(root, sprites, &model?, turns, lock)?;
             index.insert((name.clone(), turns, lock), baked.len() as u32);
             let variant = Variant {
                 model: name,

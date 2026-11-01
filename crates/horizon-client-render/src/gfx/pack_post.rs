@@ -512,6 +512,8 @@ pub struct PackPost {
     page_groups: HashMap<u32, (wgpu::Buffer, wgpu::BindGroup)>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<super::pack_timing::PassTiming>,
+    /// `depthtex0` at the screen's centre, read back for `centerDepthSmooth`.
+    center_depth: Option<super::pack_center_depth::CenterDepth>,
     /// `shaders.properties`' custom uniforms, after the frame's in `uniforms.values`.
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
@@ -2242,6 +2244,7 @@ impl PackPost {
             block_ids,
             page_groups: HashMap::new(),
             timing: None,
+            center_depth: None,
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
             lightmap: world.lightmap,
@@ -2900,6 +2903,13 @@ impl PackPost {
             only_player: e.only.0,
             blocks: e.shadow[1].is_some(),
             only_lit: e.only.1,
+        }
+    }
+
+    /// After the frame's submission: the centre depth it copied starts its way back.
+    pub fn submitted(&mut self) {
+        if let Some(center) = &mut self.center_depth {
+            center.submitted();
         }
     }
 
@@ -3620,6 +3630,10 @@ impl PackPost {
         if let Some(t) = &mut self.timing {
             t.begin(device, queue);
         }
+        self.uniforms.center_depth_raw = self
+            .center_depth
+            .get_or_insert_with(|| super::pack_center_depth::CenterDepth::new(device))
+            .collect(device);
         self.uniforms.update(frame, inputs, size);
         // Until the camera's biome is known, `smooth` waits for the world's values.
         if !inputs.biome_known {
@@ -3858,6 +3872,10 @@ impl PackPost {
             self.draw_translucent(device, queue, encoder, size, terrain);
         }
         let targets = self.targets.as_ref().expect("resized");
+        // depthtex0 as the frame leaves it, for next frames' `centerDepthSmooth`.
+        if let Some(center) = &mut self.center_depth {
+            center.copy(device, encoder, &targets.depth_texture);
+        }
         let view = |m: u16, i: usize, alt: bool| {
             targets.color[i]
                 .as_ref()
