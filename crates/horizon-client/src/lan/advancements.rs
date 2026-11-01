@@ -19,8 +19,10 @@ pub struct ServerAdvancements {
     tree: std::sync::Arc<Tree>,
     kids: Vec<Vec<usize>>,
     layout: Vec<Option<(i32, f32)>>,
-    /// Recipe files by id.
-    recipes: BTreeMap<String, Value>,
+    /// Recipe files by id, as compact JSON text: a book entry parses its
+    /// recipe when a player gets it (a few µs), and the ~1,400 parsed files
+    /// would keep about 5 MB alive for the server's whole run.
+    recipes: BTreeMap<String, Box<str>>,
     displays: RecipeIndex,
     /// RecipeManager.unpackRecipeInfo's group numbers.
     groups: HashMap<String, i32>,
@@ -48,6 +50,10 @@ impl ServerAdvancements {
                 groups.entry(g.to_owned()).or_insert(next);
             }
         }
+        let recipes = recipes
+            .into_iter()
+            .map(|(id, r)| (id, r.to_string().into_boxed_str()))
+            .collect();
         Self {
             tree,
             kids,
@@ -351,14 +357,19 @@ impl ServerAdvancements {
     /// ClientboundRecipeBookAddPacket.Entry for each display of a recipe:
     /// highlighted, and with a notification unless the recipe turns it off.
     fn book_entries(&self, id: &str, sync: &SyncData, flags: i8) -> Vec<Vec<u8>> {
-        let Some(r) = self.recipes.get(id) else {
-            return Vec::new();
-        };
         let ids = self.displays.display_ids(id);
         if ids.len() != 1 {
             // Special recipes have no display; transmutations aren't unlocked on joining.
             return Vec::new();
         }
+        let Some(r) = self
+            .recipes
+            .get(id)
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        else {
+            return Vec::new();
+        };
+        let r = &r;
         let kind = r["type"].as_str().unwrap_or("");
         let item = |n: &str| sync.id("minecraft:item", n).unwrap_or(0);
         let slot = |n: &str| sync.id("minecraft:slot_display", n).unwrap_or(0);
