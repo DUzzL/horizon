@@ -203,15 +203,20 @@ impl ConnectedTextures {
                 })
                 .collect();
         }
-        // Panes whose sprites tile rules name (`matchTiles=glass`) are connected too.
-        for id in 0..out.states.len() {
+        // Panes whose sprites tile rules name (`matchTiles=glass`) are connected too, by a rule
+        // that can draw on them: here, one naming no block (a rule naming the pane is in its
+        // own list already).
+        for id in (0..out.states.len()).filter(|_| !out.by_layer.is_empty()) {
             let pane = registry
                 .state(BlockStateId(id as u32))
                 .is_some_and(|s| s.name.ends_with("glass_pane"));
             if pane && !out.states[id].has_rules {
                 out.states[id].has_rules = Face::ALL.into_iter().any(|f| {
-                    face_layer(BlockStateId(id as u32), f)
-                        .is_some_and(|l| !out.list(&out.by_layer, l as usize).is_empty())
+                    face_layer(BlockStateId(id as u32), f).is_some_and(|l| {
+                        out.list(&out.by_layer, l as usize)
+                            .iter()
+                            .any(|&i| out.rules[usize::from(i)].rule.match_blocks.is_empty())
+                    })
                 });
             }
         }
