@@ -780,7 +780,7 @@ mod tests {
             let mut encoder = png::Encoder::new(File::create(path).unwrap(), 16, 16);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
-            // Half transparent: item and block mipmaps treat its edges differently.
+            // Any pixels: whether a texture mips as an item is part of the shared-layer key.
             let pixels: Vec<u8> = (0..256)
                 .flat_map(|i| [9, 9, 9, if i % 2 == 0 { 255 } else { 0 }])
                 .collect();
