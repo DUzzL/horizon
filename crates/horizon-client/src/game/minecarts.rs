@@ -1320,8 +1320,8 @@ impl Game<'_> {
             if c.kind == CartKind::Hopper && c.enabled {
                 self.hopper_cart_suck(&mut c);
             }
-            self.native_tick_post_one(&round, id, kind);
             let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+                self.native_tick_post_one(&round, id, kind);
                 continue;
             };
             if alive {
@@ -1336,6 +1336,8 @@ impl Game<'_> {
                 self.release_vehicle_container(id);
                 self.carts.remove(i);
             }
+            // After the ticked cart is stored: a mod reads and changes the cart as it is now.
+            self.native_tick_post_one(&round, id, kind);
         }
         // On the server for every cart, the ridden ones too.
         for id in ids {

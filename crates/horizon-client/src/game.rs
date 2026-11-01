@@ -3778,10 +3778,10 @@ impl Game<'_> {
                 i += 1;
             }
         }
-        self.tick_dropped_items(&round);
+        self.tick_dropped_items(&mut round);
         self.native_tick_post_batch(round);
     }
-    fn tick_dropped_items(&mut self, round: &native_ticks::TickRound) {
+    fn tick_dropped_items(&mut self, round: &mut native_ticks::TickRound) {
         let mut items = std::mem::take(&mut self.dropped);
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -3796,6 +3796,8 @@ impl Game<'_> {
         let mut nearby = Vec::new();
         for i in 0..items.len() {
             if removed[i] {
+                // Merged into an earlier item before its own tick: it never ticked.
+                round.not_ticked(items[i].id);
                 continue;
             }
             let item = &mut items[i];

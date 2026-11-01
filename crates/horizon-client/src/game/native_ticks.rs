@@ -42,6 +42,13 @@ impl TickRound {
     pub(super) fn listening(&self) -> bool {
         self.listening
     }
+    /// The entity `id`, told its Pre, went before it ticked (an item merged into an earlier
+    /// one): it hears no Post.
+    pub(super) fn not_ticked(&mut self, id: u32) {
+        if self.listening {
+            self.ticking.retain(|(other, _)| *other != id);
+        }
+    }
 }
 
 impl Game<'_> {
@@ -123,5 +130,36 @@ impl Game<'_> {
         if round.listening {
             self.native_entity_tick_post(self.dim.id(), id, kind);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round() -> TickRound {
+        TickRound {
+            listening: true,
+            ..TickRound::default()
+        }
+    }
+
+    /// A canceled entity is skipped, and one that went before its tick (an item merged into an
+    /// earlier one) hears no Post; a round nobody listens to keeps nothing.
+    #[test]
+    fn a_round_keeps_the_entities_that_tick() {
+        let mut r = round();
+        r.ticking.push((1, TickKind::Fixed("minecraft:item")));
+        r.ticking.push((2, TickKind::Fixed("minecraft:item")));
+        r.canceled.push(3);
+        assert!(r.canceled(3));
+        assert!(!r.canceled(1));
+        r.not_ticked(2);
+        let left: Vec<_> = r.ticking.iter().map(|(id, kind)| (*id, kind.id())).collect();
+        assert_eq!(left, [(1, "minecraft:item")]);
+        let mut quiet = TickRound::default();
+        assert!(!quiet.listening());
+        quiet.not_ticked(1);
+        assert!(quiet.ticking.is_empty() && !quiet.canceled(1));
     }
 }
