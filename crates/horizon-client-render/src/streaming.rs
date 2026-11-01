@@ -906,10 +906,11 @@ impl Streaming {
     /// its new blocks taken, the sections that did not change kept as they
     /// were, and its light and its neighbours' worked out again here, off
     /// the game thread, as light is for the blocks a server changes one at a
-    /// time; the sections that changed remesh (with theirs) once lit. The
-    /// light `chunk` came with is not used: the sections that changed keep
-    /// their old light until then (so the sender need not read the light
-    /// the packet carries).
+    /// time; the sections that changed remesh (with theirs) once lit. Until
+    /// then the sections that changed show the light the packet carried (a
+    /// Horizon server sends the light from before its relight, then the
+    /// new light; another server's is already right, which matters where
+    /// the neighbours this light needs aren't all here).
     pub fn replace_remote(&mut self, world: &mut World, mut chunk: Chunk) {
         let key = (chunk.x, chunk.z);
         let Some(old) = world.chunks.get(&key).cloned() else {
@@ -2443,7 +2444,6 @@ fn keep_unchanged_sections(
         };
         if !same {
             out.blocks = true;
-            Arc::make_mut(&mut new.sections[s]).light = old.sections[s].light.clone();
             continue;
         }
         let biomes = new.sections[s].biomes.clone();
