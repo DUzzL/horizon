@@ -3052,8 +3052,10 @@ impl Mob {
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
+        // The native hook runs first, on the raw strength (NeoForge's `LivingKnockBackEvent` fires
+        // at the start of `LivingEntity.knockback`), then the resistance scales what it left.
         let mut knock = crate::health::Knock {
-            strength: power * (1.0 - self.attrs.knockback_resistance),
+            strength: power,
             x: xd,
             z: zd,
         };
@@ -3066,6 +3068,7 @@ impl Mob {
             x: mut xd,
             z: mut zd,
         } = knock;
+        let power = power * (1.0 - self.attrs.knockback_resistance);
         if power <= 0.0 {
             return;
         }

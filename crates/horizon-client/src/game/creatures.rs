@@ -6835,8 +6835,10 @@ fn knock_back(
     source: HurtSource<'_>,
 ) {
     let resistance = p.attribute("minecraft:knockback_resistance").unwrap_or(0.0);
+    // The native hook runs first, on the raw strength (`LivingKnockBackEvent`), then the
+    // resistance scales what it left.
     let mut knock = Knock {
-        strength: power * (1.0 - resistance),
+        strength: power,
         x: xd,
         z: zd,
     };
@@ -6848,6 +6850,7 @@ fn knock_back(
         x: mut xd,
         z: mut zd,
     } = knock;
+    let power = power * (1.0 - resistance);
     if power <= 0.0 {
         return;
     }

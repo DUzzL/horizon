@@ -64,8 +64,9 @@ pub struct Knock {
     pub z: f64,
 }
 /// The game's native knockback hook (`native_living_knockback`), set once by
-/// the game: `LivingEntity.knockback`, after the knockback resistance and
-/// before the motion changes. It may change the [`Knock`]; true cancels it.
+/// the game: `LivingEntity.knockback`, at its start (`LivingKnockBackEvent`), on the raw strength
+/// and before the knockback resistance and the motion change. It may change the [`Knock`]; true
+/// cancels it.
 pub static KNOCKBACK: OnceLock<fn(Hurting<'_>, &mut Knock) -> bool> = OnceLock::new();
 /// Whether [`KNOCKBACK`] canceled the knockback (never while it is unset). A
 /// value it leaves that is not a finite number is put back as it was.
