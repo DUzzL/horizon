@@ -1206,6 +1206,21 @@ impl Streaming {
             && self.meshing.is_empty()
             && self.pending() == 0)
     }
+    /// Whether the near terrain is still coming in: chunks generating,
+    /// decorating, finishing or being lit, or sections meshing for the first
+    /// time. Remeshing sections already drawn (block, light and fluid
+    /// updates) is not loading: it kept small machines' far terrain held
+    /// back (`Lod::set_near_loading`) for as long as anything nearby changed.
+    pub fn loading(&self) -> bool {
+        !(self.generating.is_empty()
+            && self.decorating == 0
+            && self.finishing.is_empty()
+            && self.lighting.is_empty())
+            || self
+                .meshing
+                .keys()
+                .any(|section| !self.compile_started.contains_key(section))
+    }
     /// How much work each stage holds: queued jobs, then what is in flight or
     /// waiting at each step from generation to meshing.
     pub fn stages(&self) -> [(&'static str, usize); 7] {
