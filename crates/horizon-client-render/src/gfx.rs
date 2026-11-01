@@ -4949,6 +4949,11 @@ impl Renderer {
         }
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
+        // A lost device cannot accept uploads either. Leave recovery to the
+        // owner instead of submitting atlas patches to the invalid device.
+        if self.device_lost() {
+            return Err("the graphics device was lost".into());
+        }
         let scaled = self.screenshot_size();
         let rendered = match scaled {
             Some(size) => self.draw_scaled_frame(frame, size),
@@ -4956,6 +4961,9 @@ impl Renderer {
         };
         // A frame that was not drawn still submits the section copies and
         // atlas patches (glyphs, skins, maps), which the caller already took.
+        if self.device_lost() {
+            return Err("the graphics device was lost".into());
+        }
         if !matches!(rendered, Ok(true)) && !frame.hud.patches.is_empty() {
             let section_copies = self.section_copies.take();
             let has_section_copies = section_copies.is_some();
@@ -4978,6 +4986,11 @@ impl Renderer {
         }
         // A scaled screenshot's frame never reached the window.
         rendered.map(|drawn| drawn && scaled.is_none())
+    }
+    /// Whether the device's loss callback has fired. A surface reconfigure
+    /// alone cannot restore resources belonging to a lost device.
+    pub fn device_lost(&self) -> bool {
+        self.device_lost.load(std::sync::atomic::Ordering::Relaxed)
     }
     /// The frame size of the pending `scaled` screenshot when it is larger than the
     /// window: the window's times the Resolution Scale (when above 100%) and

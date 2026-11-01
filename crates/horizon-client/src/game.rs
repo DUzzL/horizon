@@ -2254,6 +2254,8 @@ struct Game<'a> {
     screen: Screen,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    /// Avoid an endless rebuild loop if the new device is lost as well.
+    last_device_recovery: Option<Instant>,
     /// CPU geometry storage retained across frames, including empty/title frames.
     entity_vertices: Vec<Vertex>,
     /// Horizon Extras' dynamic lights this frame (`dynamic_lights.rs`), and how brightly each
@@ -13416,6 +13418,67 @@ impl Game<'_> {
     fn new_renderer(&self, window: Arc<Window>) -> Result<Renderer> {
         self.renderer_for(window, &self.pack, &self.gui)
     }
+    /// Rebuild GPU-owned state after the backend reports device loss.
+    fn recover_device(&mut self) -> Result<()> {
+        if !self.renderer.as_ref().is_some_and(Renderer::device_lost) {
+            return Ok(());
+        }
+        // Split-screen compositors and guests share the device; rebuilding one
+        // renderer alone would leave the other windows using invalid resources.
+        if self.options.paced_by_split {
+            return Err("the graphics device was lost during split-screen play".into());
+        }
+        let now = Instant::now();
+        if self
+            .last_device_recovery
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(60))
+        {
+            return Err("the graphics device was lost again after recovery".into());
+        }
+        self.last_device_recovery = Some(now);
+        let window = self
+            .window
+            .clone()
+            .ok_or("no window for graphics recovery")?;
+        log::warn!("Horizon: rebuilding the renderer after graphics device loss");
+        // Drop the old surface and device before opening another on this window.
+        let mut old = self
+            .renderer
+            .take()
+            .ok_or("no renderer for graphics recovery")?;
+        let screenshot = old.screenshot.take();
+        let screenshot_result = old.screenshot_result.take();
+        drop(old);
+        let mut renderer = build_renderer(
+            window,
+            self.options.offscreen,
+            &self.pack,
+            &self.gui,
+            None,
+            None,
+            self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            shader_packs::picked_pack_draws_flat(&self.settings),
+        )?;
+        renderer.screenshot = screenshot;
+        renderer.screenshot_result = screenshot_result;
+        self.renderer = Some(renderer);
+        self.skin_slots.forget();
+        self.maps.slots.forget();
+        self.map_patches.clear();
+        self.kept_block_entities.get_mut().clear();
+        horizon_client::ui_theme::reset_atlas();
+        self.clear_lod();
+        self.pending_uploads.clear();
+        self.streaming
+            .reload_resources(&mut self.world, self.pack.context.clone());
+        self.native_shaders = native_shaders::NativeShaders::picking(&std::mem::take(
+            &mut self.native_shaders.picked,
+        ));
+        self.apply_ui_settings();
+        log::info!("Horizon: graphics device recovered; rebuilding world meshes");
+        Ok(())
+    }
     fn renderer_for(
         &self,
         window: Arc<Window>,
@@ -17143,6 +17206,7 @@ impl Game<'_> {
                     self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
+                    self.recover_device()?;
                     self.observe_fullscreen();
                     self.sync_ime();
                     let now = Instant::now();
@@ -17225,7 +17289,14 @@ impl Game<'_> {
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();
-                    let rendered = self.render()?;
+                    let rendered = match self.render() {
+                        // The callback can fire during this frame; rebuild on
+                        // the next redraw rather than exiting on its error.
+                        Err(_) if self.renderer.as_ref().is_some_and(Renderer::device_lost) => {
+                            false
+                        }
+                        result => result?,
+                    };
                     self.apply_cursor_icon();
                     if let Some(threshold) = self.options.spikes
                         && let Some(r) = self.renderer.as_ref()
@@ -17608,6 +17679,7 @@ impl<'a> Game<'a> {
             screen: Screen::Playing,
             window: None,
             renderer: None,
+            last_device_recovery: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
             luminance: None,
