@@ -1917,10 +1917,7 @@ impl UiResources {
     pub fn server(root: &std::path::Path) -> Result<Self> {
         Ok(Self {
             atlas: HudAtlas::fonts(root)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces {
-                size: 1,
-                pixels: [0u8; 4].repeat(6),
-            }),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
         })
     }
 }
@@ -19393,7 +19390,7 @@ fn build_renderer(
             atlas.glint_armor.2,
         ),
         (&pack.forcefield.2, pack.forcefield.0),
-        &gui.panorama,
+        gui.panorama.clone(),
         prepared,
         previous,
         api,
@@ -19418,18 +19415,16 @@ fn loading_renderer(
     window: Arc<Window>,
     offscreen: bool,
     atlas: Option<&horizon_client::hud::HudAtlas>,
-    panorama: Option<&horizon_client::gfx::panorama::Faces>,
+    panorama: Option<&Arc<horizon_client::gfx::panorama::Faces>>,
     previous: Option<&Renderer>,
     api: horizon_client::graphics::GraphicsApi,
 ) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
     static EMPTY_GLINT: [u8; 4] = [0; 4];
-    let empty_panorama = horizon_client::gfx::panorama::Faces {
-        size: 1,
-        pixels: [0u8; 4].repeat(6),
-    };
-    let panorama = panorama.unwrap_or(&empty_panorama);
+    let panorama = panorama
+        .cloned()
+        .unwrap_or_else(|| Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])));
     let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice(), 1, 1), |a| {
         (a.pixels.as_slice(), a.width, a.height)
     });
@@ -19917,7 +19912,7 @@ impl Loading {
             window,
             offscreen,
             Some(&bundle.atlas),
-            Some(bundle.panorama.as_ref()),
+            Some(&bundle.panorama),
             self.renderer.as_ref(),
             self.settings.horizon.api,
         ) {

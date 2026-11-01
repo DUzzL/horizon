@@ -1715,7 +1715,7 @@ impl Renderer {
         glint: (&[u8], u32, u32),
         glint_armor: (&[u8], u32, u32),
         forcefield: (&[u8], u32),
-        panorama_faces: &panorama::Faces,
+        panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
         previous: Option<&Self>,
         api: GraphicsApi,
@@ -3421,12 +3421,8 @@ impl Renderer {
             (&entity_shader, &entity_layout, &entity_vertex),
             config.format.remove_srgb_suffix(),
         );
-        let panorama = panorama::Panorama::new(
-            &device,
-            &queue,
-            config.format.remove_srgb_suffix(),
-            panorama_faces,
-        );
+        let panorama =
+            panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
         if previous.is_none() {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
@@ -5274,12 +5270,15 @@ impl Renderer {
         ) * view_proj;
         if frame.title {
             self.panorama.prepare(
+                &self.device,
                 &self.queue,
                 self.config.width,
                 self.config.height,
                 frame.yaw,
                 frame.pitch,
             );
+        } else {
+            self.panorama.release();
         }
         let view = views.primary().view;
         // The hand's bob and view (`hand_globals`).
