@@ -3191,6 +3191,7 @@ impl Game<'_> {
             ]
         });
         let back = self.dim;
+        let left = super::Dim::from_id(&host.hub.guests[i].dimension);
         let away = server && host.hub.guests[i].dimension != level.id();
         if server {
             self.server_trips.retain(|t| !t.is(conn));
@@ -3280,6 +3281,17 @@ impl Game<'_> {
         // helpers reach them (as for native_perform_command).
         let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
         self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
+        // The player left another level for the respawn point's: placed for
+        // good they tell the mods now, else the trip that is still carrying
+        // them (a bed or anchor in another level, the world spawn's free
+        // column) does when it arrives (`arrive_server_trips`).
+        if away {
+            if let Some(trip) = self.server_trips.iter_mut().find(|t| t.is(conn)) {
+                trip.left = Some(left);
+            } else {
+                self.tell_mods_changed_dimension(host, conn, Some(left), level);
+            }
+        }
         if away && let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }

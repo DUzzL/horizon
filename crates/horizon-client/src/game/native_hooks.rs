@@ -2582,6 +2582,33 @@ impl Game<'_> {
     ) {
         let _ = (player, command, ran);
     }
+    /// `player` (`name`) changed dimension (NeoForge's
+    /// `PlayerChangedDimensionEvent`): `from` and `to` are dimension ids
+    /// (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`).
+    /// Heard once per move, when it has ended: the portal's exit is found
+    /// and the player stands there (after the destination has loaded), a
+    /// command's teleport has landed, or a respawn in another level than the
+    /// death's is placed for good (a bed or anchor, or the world spawn's
+    /// free column, after the fallback when a respawn block was gone). The
+    /// level of `to` is the one in place, and the player's state is swapped
+    /// in, as for `native_perform_command`: `native_acting_player`,
+    /// `native_tell`, the item helpers and the rest reach them. Heard for:
+    /// Nether and End portals (also riding a vehicle, and leaving the End as
+    /// its winner), `/execute in ... run tp` and any other command that
+    /// teleports a player into another level, and the death respawn. Not
+    /// heard: a move within a level (`/tp`, an End gateway), a player who
+    /// leaves before the move ends, a move that ends where it started (a
+    /// respawn in the dimension of the death), and anything outside a
+    /// dedicated server. @API:native_player_changed_dimension@.
+    pub(super) fn native_player_changed_dimension(
+        &mut self,
+        player: u128,
+        name: &str,
+        from: &str,
+        to: &str,
+    ) {
+        let _ = (player, name, from, to);
+    }
     /// A player's client started (`flying`) or stopped flying (vanilla's
     /// `handlePlayerAbilities`, which honours it only for a player who may
     /// fly: creative or spectator), heard once for each change, on a server,
