@@ -1658,29 +1658,66 @@ fn cem_key(model_key: &str) -> &str {
 }
 /// Every texture [`render_visible`] may look up for `m` now (keep the two in step: a texture
 /// drawn but not listed here never gets a random pick): the body's and each layer's, a
-/// custom model's own texture in their place, and the warden's glowing layers (whether they
-/// glow this frame or not). Random textures choose a variant for each.
+/// custom model's own texture beside them (`cem_texture` falls back to the vanilla one when
+/// the atlas lacks it, and only the layer a `.jem` was made for takes it, `paints_with_jem`),
+/// and the warden's glowing layers (whether they glow this frame or not). Random textures
+/// choose a variant for each.
 pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
+    fn push(names: &mut Vec<String>, custom: Option<&super::cem::CemLayer>, vanilla: String) {
+        if let Some(texture) = custom.and_then(|c| c.texture.clone()) {
+            names.push(texture);
+        }
+        names.push(vanilla);
+    }
     let cem = data
         .cem
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let custom = |key: &str, texture: String| {
-        cem.layer(key)
-            .and_then(|c| c.texture.clone())
-            .unwrap_or(texture)
-    };
     let (model_key, texture) = body(m);
-    let mut names = vec![custom(cem_key(&model_key), texture)];
-    for layer in layers(m, m.age as f32) {
-        names.push(custom(&layer.model, layer.texture));
-    }
+    let cem_key = cem_key(&model_key);
+    let mut names = Vec::new();
+    push(&mut names, cem.layer(cem_key), texture);
+    let mut all_layers = layers(m, m.age as f32);
     if m.species() == Species::Warden {
         for (model, texture, _) in super::warden::emissive_layers(m, 0.0) {
-            names.push(custom(model, texture.to_owned()));
+            all_layers.push(Layer {
+                model: model.into(),
+                texture: texture.into(),
+                color: 0,
+                full_bright: true,
+                scroll: 0.0,
+            });
         }
     }
+    let body_keys = [model_key.as_str(), cem_key];
+    for (i, layer) in all_layers.iter().enumerate() {
+        let custom = cem
+            .layer(&layer.model)
+            .filter(|_| paints_with_jem(&all_layers, i, body_keys));
+        push(&mut names, custom, layer.texture.clone());
+    }
     names
+}
+/// The texture a model drawn as `custom` takes: the `.jem`'s when the atlas has it, else
+/// `vanilla` (a texture the atlas lacks would hide the model).
+fn cem_texture<'a>(
+    custom: Option<&'a super::cem::CemLayer>,
+    vanilla: &'a str,
+    atlas: Atlas<'_>,
+) -> &'a str {
+    custom
+        .and_then(|c| c.texture.as_deref())
+        .filter(|t| atlas(t).is_some())
+        .unwrap_or(vanilla)
+}
+/// Whether `layers[i]` is the layer its model's `.jem` was made for, so the `.jem`'s texture
+/// paints it: the first drawn with that model (`sheep#wool`, a wolf's armour). Later layers
+/// on the same model are overlays (the armour's cracks), like those on the body's model
+/// (`body`: eyes, collars, a villager's type and profession), and keep their own textures
+/// over the new geometry.
+fn paints_with_jem(layers: &[Layer], i: usize, body: [&str; 2]) -> bool {
+    let key = layers[i].model.as_str();
+    !body.contains(&key) && layers[..i].iter().all(|l| l.model != key)
 }
 #[allow(clippy::too_many_arguments)]
 fn render_visible(
@@ -1704,20 +1741,17 @@ fn render_visible(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cem_key = cem_key(&model_key);
-    let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
-    let (model, texture) = match cem.layer(cem_key) {
-        Some(custom) => (
-            custom.model.clone(),
-            custom.texture.clone().unwrap_or(texture),
-        ),
-        None => (
-            m.kind
-                .layer(&model_key)
-                .cloned()
-                .unwrap_or_else(|| m.kind.model.clone()),
-            texture,
-        ),
+    let custom_body = cem.layer(cem_key);
+    let body_animation = custom_body.and_then(|c| c.animation.as_ref());
+    let model = match custom_body {
+        Some(custom) => custom.model.clone(),
+        None => m
+            .kind
+            .layer(&model_key)
+            .cloned()
+            .unwrap_or_else(|| m.kind.model.clone()),
     };
+    let texture = cem_texture(custom_body, &texture, atlas);
     // OptiFine random textures and ETF blinking: the sprite a texture draws with instead, when
     // the atlas has it: the variant the mob wears, then its blink frame while it blinks (or
     // sleeps). The texture keeps its name for everything else.
@@ -1768,7 +1802,7 @@ fn render_visible(
     let draw_body = |out: &mut Vec<Vertex>| {
         // A player or mannequin whose skin has no atlas sprite (an evicted or
         // never stored download) draws with its default skin, not invisibly.
-        let drawn = sprite(&texture).or_else(|| Some((texture.as_str(), atlas(&texture)?)));
+        let drawn = sprite(texture).or_else(|| Some((texture, atlas(texture)?)));
         let uv = drawn.map(|(_, uv)| uv).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
@@ -1833,23 +1867,24 @@ fn render_visible(
     // One Poses refilled for every layer (armour draws up to seven): it keeps
     // its maps' capacity.
     let mut layer_poses = Poses::default();
-    for mut layer in all_layers {
+    let body_keys = [model_key.as_str(), cem_key];
+    for (i, layer) in all_layers.iter().enumerate() {
         let custom = cem.layer(&layer.model);
+        // `layer.texture` stays the vanilla name (the villager hats below look for its
+        // `/type/` folder).
+        let texture = cem_texture(
+            custom.filter(|_| paints_with_jem(&all_layers, i, body_keys)),
+            &layer.texture,
+            atlas,
+        );
         let part = match custom {
-            Some(custom) => {
-                if let Some(texture) = &custom.texture {
-                    layer.texture.clone_from(texture);
-                }
-                custom.model.clone()
-            }
+            Some(custom) => custom.model.clone(),
             None => match m.kind.layer(&layer.model) {
                 Some(part) => part.clone(),
                 None => continue,
             },
         };
-        let Some((drawn, uv)) = sprite(&layer.texture)
-            .or_else(|| Some((layer.texture.as_str(), atlas(&layer.texture)?)))
-        else {
+        let Some((drawn, uv)) = sprite(texture).or_else(|| Some((texture, atlas(texture)?))) else {
             continue;
         };
         layer_poses.reset(&part);
@@ -1906,7 +1941,7 @@ fn render_visible(
                 out,
             );
         }
-        if translucent_layer(m, &layer) {
+        if translucent_layer(m, layer) {
             mark_oit(&mut out[start..]);
         }
         // The eyes render type's glowing eyes also shine in HDR output, at
@@ -2018,7 +2053,8 @@ pub fn part_matrix(
         .iter()
         .find_map(|c| part_matrix(c, m, poses, name, x_offset))
 }
-fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
+/// The first part named `name`, depth first.
+pub(super) fn find_part<'a>(part: &'a Part, name: &str) -> Option<&'a Part> {
     if part.name == name {
         return Some(part);
     }
