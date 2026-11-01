@@ -1189,30 +1189,6 @@ it moves only what the player sees, not where they are or aim.
   moved-too-quickly check, which can send them back, as vanilla's does. It answers false for a player not on this server,
   on a client, and inside a player's hook (call it from a tick hook).
 
-### A client mod's view and items
-
-`crates/horizon-client/src/game/native_claimed_items.rs`: helpers for client mods, for the player's own view and hands.
-
-- `native_view_hit()` gives the first block along the view within 1024 blocks and how far it is, and
-  `native_raycast(distance)` the same within `distance` (cut to 0 to 1024). Past the loaded chunks the ray goes on over
-  the distant terrain, a block at a time, and meets its ground: a target far off can be aimed at before its chunks
-  load. `NativeHit` holds the block, where the ray met it and the block's id. Both answer `None` with no player, or
-  with nothing in reach.
-- `native_claim_items(mod_id, ids)` claims up to 64 item ids (`minecraft:stick`, a content mod's own item) for mod
-  `mod_id`; a later call replaces the list, an empty one gives them up. Two mods claiming one id: the first in id
-  order has it. A right-click with a claimed item in the main hand is the mod's alone: the server never hears of it,
-  and the block or entity under the crosshair isn't used. A claimed item in the off hand does nothing on a
-  right-click. The use slows the player as an item in use does, which the server doesn't know of: on a LAN or
-  dedicated server the anticheat's movement check may log it. A claim wins over `native_use_duration` for the same
-  item.
-- `native_poll(mod_id)` gives the mod's events since its last poll, oldest first, at most 256: `UseStart(item, 0)`
-  when the right-click begins the use, and `UseStop(item, ticks)` when it ends, with the ticks it was held. It ends
-  when the button comes up, when the hand's item changes or leaves the claim, when the player respawns, and
-  when the game joins a server, so every `UseStart` has its `UseStop`. `NativeHeldItem` holds the stack's id, count,
-  slot, and its `minecraft:custom_name` and `minecraft:custom_data` as SNBT: items told apart by custom data (a
-  stick named "Designator") are told apart here. Poll from a client tick hook.
-- The stack in the main hand at any time is `native_held()` (API 9), on a client the player's own.
-
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
@@ -1247,23 +1223,6 @@ farther, as vanilla's attenuation does. A client half that hears from its server
 something happened can time the sound to the distance, such as a blast heard when its shock wave reaches the player:
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
-
-### Music
-
-The music a client mod chooses, for a soundtrack that follows the seasons or grows with the player's world.
-
-- `native_music(music, volume)` (client) is asked each client tick with what vanilla chose (`Minecraft.getSituationalMusic`
-  and `getMusicVolume`): the biome's track, the creative, underwater, boss or menu music, None for silence, and its volume.
-  Set `music` to a track of your own (`Music::new("mymod:music.spring", min_delay, max_delay, replace_current)`, the delays
-  in ticks between songs), None to stay quiet, or lower `volume` to fade what plays. The music manager plays it as it plays
-  vanilla's: the delays, the Music Frequency option and the Now Playing toast apply. A different track waits for the one
-  playing to end unless `replace_current` is set.
-- `native_music_layers(layers)` (client) is asked each client tick for tracks to loop over (or instead of) that music: push
-  a `MusicLayer { sound, volume }` for each. A layer eases to its volume by 0.025 a tick (two seconds from silent to full);
-  one left out fades out and stops, and starts from its beginning if asked for again. Layers that first appear in the same
-  tick start together: list every stem of a piece from the start, the quiet ones at 0, and raise them as the world fills
-  (a value such as a village's wellbeing, sent from the server half with mod messages). Layers play on the Music volume.
-- The sound events are a content mod's (`assets/<id>/sounds.json` with `"stream": true`, and its `.ogg` files).
 
 ### Falling blocks
 
@@ -1350,3 +1309,49 @@ malformed `minecraft:food` still makes the item edible, with no nutrition. Only 
   Horizon without the mod) fills in vanilla's defaults for the same stacks: a stone stack the server caps at 16 still
   looks like it stacks to 64 there.
 - The creative search tab matches vanilla's exported tooltip text, so a changed `item_name` is not searchable yet.
+
+## Trait mods (draft)
+
+A bundle declares its trait mod package by its path inside the bundle:
+
+```toml
+[api]
+path = "engine"
+```
+
+The package may use only crates and versions in Horizon's `Cargo.lock`, like mixin crates.
+The folder contains a Rust package with a `horizon-client` dependency. Its library exports
+`pub fn hooks() -> Box<dyn horizon_client::mod_api::Hooks>`. The launcher links this package
+into a generated game executable and calls `hooks()` in bundle order. The package is not a
+`[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
+injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
+
+A linked trait mod implements `horizon_client::mod_api::Hooks`. Mixin injections run first.
+An injection that returns early skips trait mods. A claimed cancellation also skips trait mods.
+Otherwise, trait mods run in their supplied order. The first `Cancel` stops dispatch.
+For replacement hooks, the first `Some` wins. Collection hooks call every mod. Mutable inputs are reborrowed in order, so each mod sees earlier changes. Receiverless hooks have no `Host`.
+
+Hook methods take `&self` and require `Send + Sync`. The process-wide mod list is installed once, like mixin module statics. One mod instance serves both
+the window's game and the server-thread game. A hook can also fire again inside
+the same mod: for example, `set_block` fires `block_changed`. Mods keep mutable
+state with interior mutability so these calls can share the instance safely. Data-load
+hooks can run on any loading thread; item default changes must be identical on every side.
+
+The trait has every hook carrying a `mod_api` entry in `native-hooks.json`.
+Level hooks use access-specific hosts rather than `Host`. `LevelHost` provides
+`block_state` through `LevelAccess::block_state`, client-side detection and
+`state_with_property`. `LevelRandomHost` provides vanilla's `Level.random` so
+mod draws come in vanilla's order. `LevelTicksHost` adds scheduling through
+`native_schedule_block_tick` and `native_schedule_fluid_tick`, while
+`LevelWriteHost` adds random access and `native_set_block_property`. Whole-block writes wait for a
+later slice that creates block entities, as vanilla's `setBlock` does. The game owns
+the tick queue; mods do not pass it back to these helpers.
+The following catalog hooks are not in the trait yet:
+
+- `world_drawn` and `render_needs` need a renderer trait.
+- `block_entity_submit` needs a renderer trait.
+- Newly added upstream hooks `player_command`, `perform_console_command`, `item_decorations`,
+  `client_resources_reloaded`, `camera_shake`, `screen_key_pressed_pre`, `screen_char_typed_pre`,
+  `screen_mouse_scrolled_pre`, `use_duration`, `use_animation`, `can_eat`,
+  `living_entity_use_item_start`, `living_entity_use_item_finish`, `render_hand`, `shader_params`
+  and `block_highlight` will join a later slice.

@@ -8,32 +8,11 @@
 //! players (the hub's: a dedicated server's, a LAN host's, single player's
 //! server thread's), never on a client's.
 use super::{Dim, Game, commands::execute, lan::LanHost};
+use horizon_client::mod_api::{NativeCommand, NativeServerPlayer};
 use horizon_client::{items::ItemStack, lan::data::component_nbt, text::Text};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, path::PathBuf};
-
-/// A player on the server, as a server hook sees them.
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NativeServerPlayer {
-    pub(crate) uuid: u128,
-    pub(crate) name: String,
-    /// The operator level, 0 to 4 (`ops.json`; single player's owner with
-    /// cheats on is 4).
-    pub(crate) permission: u8,
-    /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
-    pub(crate) dimension: String,
-    pub(crate) position: [f64; 3],
-    /// 0 survival, 1 creative, 2 adventure, 3 spectator.
-    pub(crate) game_mode: i32,
-    /// Health points, 20 at full; 0 once dead. API 21.
-    pub(crate) health: f32,
-    /// Where they look, in degrees (`yRot`, `xRot`), as their last move told
-    /// the server. API 49.
-    pub(crate) yaw: f32,
-    pub(crate) pitch: f32,
-}
 
 /// A sidebar a server mod shows one player (`native_sidebar`): its title and
 /// up to 15 lines, top first, each a text on the left and, where the score's
@@ -48,39 +27,6 @@ pub(crate) struct NativeSidebar {
 /// The objective a mod's sidebar is sent as: the player's client only; the
 /// server's scoreboard never holds it.
 const SIDEBAR_OBJECTIVE: &str = "horizon:native_sidebar";
-
-/// A command a native mod adds, as one usage: words, then arguments
-/// `<name:kind>`, optional ones last in brackets `[name:kind]`:
-/// `pay <player:player> <amount:integer>`, `balance [player:player]`,
-/// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
-/// rest of the line, last), `integer`, `number`, `boolean`, `player`,
-/// `item`, `block_pos`. Usages of one command share their words; the
-/// server merges them into one tree.
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NativeCommand {
-    pub(crate) usage: String,
-    /// The operator level a player needs to see and run it (0: everyone).
-    pub(crate) level: u8,
-}
-
-#[allow(dead_code)]
-impl NativeCommand {
-    /// A usage every player may run.
-    pub(crate) fn new(usage: &str) -> Self {
-        Self {
-            usage: usage.to_owned(),
-            level: 0,
-        }
-    }
-    /// The same, for operators of `level` and above.
-    pub(crate) fn op(usage: &str, level: u8) -> Self {
-        Self {
-            usage: usage.to_owned(),
-            level: level.min(4),
-        }
-    }
-}
 
 /// The brigadier parser of an argument kind, and its properties.
 fn parser(kind: &str) -> Option<(&'static str, Value)> {

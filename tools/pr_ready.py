@@ -374,6 +374,10 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
         Step("content root tests", CONTENT_ROOT_TESTS, summary=tests_passed,
              skip=None if crates is None or any(p.startswith(CONTENT_ROOT) for p in changed)
              else "content root untouched"),
+        Step("mod API up to date", "cargo test --locked -p xtask mod_api",
+             skip=None if any(p.startswith("xtask/") or p in (
+                 "native-hooks.json", "crates/horizon-client/src/game/native_hooks.rs") for p in changed)
+             else "native hooks untouched"),
         Step("tokens.css up to date", "cargo test --locked -p horizon-theme --lib tokens_css_is_up_to_date",
              skip=None if any(p.startswith(("crates/horizon-theme/", "xtask/")) for p in changed)
              else "theme untouched"),
@@ -471,7 +475,7 @@ def run_windows(steps, verbose):
             command = shlex.split(CI_CLIPPY)  # the server build's clippy runs in CI (Linux)
         elif step.name.startswith("tests"):
             command = shlex.split(step.command)
-        elif step.name == "tokens.css up to date":
+        elif step.name in ("tokens.css up to date", "mod API up to date"):
             command = shlex.split(step.command)
         elif step.name == "launcher rustfmt":
             command = ["cargo", "fmt", "--check"]

@@ -10,6 +10,7 @@ use horizon_client::{
     containers::BlockEntity,
     items::ItemStack,
     mobs::{Mob, Species, sulfur_cube},
+    mod_api::NativeDispensed,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
 };
@@ -98,10 +99,6 @@ fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
 }
 /// A dispenser's answer: the slot's new content and the level event played.
 type Dispensed = (Option<ItemStack>, i32);
-
-/// A dispenser hook's answer: the slot's remainder (None empties it) and the
-/// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
-pub(super) type NativeDispensed = (Option<ItemStack>, i32);
 
 /// None keeps vanilla's behaviour; an explicit empty remainder consumes the stack.
 fn mod_dispensed(answer: Option<NativeDispensed>) -> Option<Dispensed> {

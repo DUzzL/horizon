@@ -1324,6 +1324,7 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -5118,6 +5119,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "horizon-theme",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
