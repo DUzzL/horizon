@@ -166,12 +166,17 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - blast:     primed TNT going off beside a guest in survival hurts the guest and pushes it away
              (ServerExplosion.hurtEntities takes every player); facing it behind a raised shield, the
              guest takes nothing.
+- blast-projectiles: primed TNT going off pushes a flying arrow and a hanging snowball away (ServerExplosion.hurtEntities
+             takes every entity, Entity.pushFromExplosion), while an arrow lying in the floor stays put
+             (AbstractArrow.push does nothing in the ground).
 
 
 - worn:      iron armour the guest puts on in its inventory protects it: a 10-damage blow takes 6
              (armour 15, LivingEntity.getDamageAfterArmorAbsorb), and the full 10 without it.
 - plates:    a stone pressure plate the guest steps on is pressed on both sides, and comes up once
              the guest steps off (#848).
+- plate-projectiles: a guest's thrown trident, a firework rocket and a guest's fishing bobber press a wooden
+             pressure plate; a trident leaves a stone plate up, which senses only players and mobs (#5896).
 - swings:    each side sees the other's arm swing while it mines a block, and the guest sees its own
              swing when its hoe tills dirt (the server's use) (#848).
 - cracks:    each side sees the other player's crack on the block they mine grow, and go once it breaks
@@ -367,7 +372,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
-          'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
+          'worn', 'blast', 'blast-projectiles', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
           'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
@@ -3501,6 +3506,52 @@ def check_plates(host, guest, out):
     return detail
 
 
+def check_plate_projectiles(host, guest, out):
+    guest('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+
+    def press(block, dx, entity, nbt):
+        plate = (x + dx, y, z + 5)
+        guest('command', command=f'setblock {plate[0]} {plate[1]} {plate[2]} minecraft:{block}')
+        guest.wait(5)
+        at = f'{plate[0] + 0.5} {plate[1] + 0.05} {plate[2] + 0.5}'
+        guest('command', command=f'summon minecraft:{entity} {at} {nbt}')
+        state = wait_state(host, plate, 'powered', 'true', 15)
+        guest('command', command=f'kill @e[type=minecraft:{entity}]')
+        guest('command', command=f'setblock {plate[0]} {plate[1]} {plate[2]} minecraft:air')
+        return state
+
+    detail = {'rocket': press('oak_pressure_plate', 0, 'firework_rocket', '{LifeTime:60}')}
+    # A field of plates under the cast, so the bobber lands on one wherever it falls.
+    field = (x - 4, y, z + 2, x + 4, y, z + 7)
+    guest('command', command='fill {} {} {} {} {} {} minecraft:oak_pressure_plate'.format(*field))
+    guest('command', command='item replace entity @s weapon.mainhand with minecraft:fishing_rod')
+    guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 25')
+    guest.wait(10)
+    guest('use_item')
+    guest.wait(40)
+    detail['bobber'] = sum('powered=true' in b[3] for b in host.raw('blocks', *field)['blocks'])
+    guest('use_item')
+    # A real throw on each kind of plate: a stone plate senses only players and mobs.
+    for block, key in (('oak_pressure_plate', 'trident'), ('stone_pressure_plate', 'stone')):
+        guest('command', command='fill {} {} {} {} {} {} minecraft:air'.format(*field))
+        guest.wait(30)
+        guest('command', command='fill {} {} {} {} {} {} minecraft:{}'.format(*field, block))
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+        guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 30')
+        guest.wait(10)
+        guest('use_item', hold=1)
+        guest.wait(30)
+        detail[key] = sum('powered=true' in b[3] for b in host.raw('blocks', *field)['blocks'])
+        guest('command', command='kill @e[type=minecraft:trident]')
+    guest('command', command='fill {} {} {} {} {} {} minecraft:air'.format(*field))
+    assert detail['rocket'] == 'true', f'a rocket on a wooden plate: {detail}'
+    assert detail['bobber'] > 0, f'no plate under the bobber: {detail}'
+    assert detail['trident'] > 0, f'no plate under the trident: {detail}'
+    assert detail['stone'] == 0, f'a stone plate senses no trident: {detail}'
+    return detail
+
+
 def check_trials(host, guest, out):
     # The host watches as a spectator, whom neither block detects: only the guest can wake them.
     hx, hy, hz = pos_of(host)
@@ -4815,6 +4866,52 @@ def check_particles(host, guest, out):
     wrong.update({k: v for k, v in result.items() if k.endswith('@s') and not (v['own'] >= 30 and v['other'] == 0)})
     assert not wrong, f'particles: {wrong}\n{result}'
     return result
+
+
+def check_blast_projectiles(host, guest, out):
+    host('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    gx, gz = x + 6, z
+    floor = f'fill {gx - 6} {y - 1} {gz - 4} {gx + 6} {y - 1} {gz + 4} minecraft:bedrock'
+    detail = {}
+    try:
+        host('command', command=floor)
+        host('command', command=f'fill {gx - 6} {y} {gz - 4} {gx + 6} {y + 3} {gz + 4} minecraft:air')
+        host('command', command='kill @e[type=minecraft:arrow]')
+        host('command', command='kill @e[type=minecraft:snowball]')
+        # A snowball hanging north of the blast (the host stands west of it), and an arrow that settles into the floor.
+        host('command', command=f'summon minecraft:snowball {gx + 0.5} {y + 1.2} {gz - 1.5} {{NoGravity:1b}}')
+        host('command', command=f'summon minecraft:arrow {gx + 0.5} {y} {gz + 2.5}')
+        host.wait(20)
+        # `entities` lists mobs, items and orbs only: the server's own projectiles come from `simulation`.
+        def flying():
+            return host.raw('simulation')['projectiles']
+
+        def find(kind, near):
+            found = [e for e in flying() if e['kind'] == kind]
+            return min(found, key=lambda e: abs(e['position'][0] - near[0]) + abs(e['position'][2] - near[1]))
+        ball = find('Snowball', (gx + 0.5, gz - 1.5))
+        stuck = find('Arrow', (gx + 0.5, gz + 2.5))
+        # Arrows ignore NoGravity (arrow_from_nbt), so the flying one is summoned beside the fuse it shares.
+        host('command', command=f'summon minecraft:arrow {gx + 2.5} {y + 2.2} {gz + 0.5}')
+        host('command', command=f'summon minecraft:tnt {gx + 0.5} {y + 1} {gz + 0.5} {{fuse:5s}}')
+        air = find('Arrow', (gx + 2.5, gz + 0.5))
+        before = {'air': air['position'], 'ball': ball['position'], 'stuck': stuck['position']}
+        host.wait(8)  # the fuse is 5 ticks; a snowball that flies on would soon hit the wall and vanish
+        left = {e['id']: e['position'] for e in flying()}
+        after = {name: left.get(e['id']) for name, e in (('air', air), ('ball', ball), ('stuck', stuck))}
+        detail = {name: (None if after[name] is None else
+                         [round(after[name][i] - before[name][i], 2) for i in range(3)]) for name in before}
+        host.shot(out, 'blast-projectiles')
+    finally:
+        host('command', command='kill @e[type=minecraft:arrow]')
+        host('command', command='kill @e[type=minecraft:snowball]')
+        host('command', command=floor)
+        host('command', command='gamemode survival')
+    assert detail['air'] and detail['air'][0] > 0.5, f'the blast never pushed the flying arrow east: {detail}'
+    assert detail['ball'] and detail['ball'][2] < -0.5, f'the blast never pushed the snowball north: {detail}'
+    assert detail['stuck'] and max(abs(v) for v in detail['stuck']) < 0.05, f'an arrow in the floor moved: {detail}'
+    return detail
 
 
 def check_blast(host, guest, out):
@@ -6416,8 +6513,8 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
              'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
-             'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast,
-             'light': check_light, 'plates': check_plates, 'swings': check_swings,
+             'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'blast-projectiles': check_blast_projectiles,
+             'light': check_light, 'plates': check_plates, 'plate-projectiles': check_plate_projectiles, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
              'flight': check_flight, 'fireball': check_fireball, 'deflect': check_deflect,
              'barter': check_barter, 'worn': check_worn, 'kills': check_kills, 'looting': check_looting, 'leave': check_leave,
@@ -10894,6 +10991,31 @@ CHECKS += ['cushion_break_seated']
 CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
 
 
+def check_hoglin_wall(host, guest, out):
+    host('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    gx, gz = x + 6, z
+    box = f'{gx - 2} {y} {gz - 2} {gx + 2} {y + 3} {gz + 2}'
+    health = lambda: server_reply(host, 'data get entity @e[type=minecraft:hoglin,limit=1] Health', 'entity data')
+    try:
+        host('command', command='kill @e[type=minecraft:hoglin]')
+        host('command', command=f'fill {box} minecraft:stone')
+        host('command', command=f'summon minecraft:hoglin {gx + 0.5} {y + 1} {gz + 0.5} {{NoAI:1b}}')
+        before = health()
+        host.wait(40)
+        after = health()
+    finally:
+        host('command', command='kill @e[type=minecraft:hoglin]')
+        host('command', command=f'fill {box} minecraft:air')
+        host('command', command='gamemode survival')
+    assert before != after, f'a hoglin inside a wall took no damage: {before} -> {after}'
+    return {'before': before, 'after': after}
+
+
+CHECKS += ['hoglin-wall']
+CHECK_FNS['hoglin-wall'] = check_hoglin_wall
+
+
 def check_attack_over_slab(host, guest, out):
     """#5772: a mob whose centre a block hides from the eyes, but whose head shows over it, takes the
     hit the crosshair aims at its head. The attack packet names only the entity, so the server aims
@@ -10937,6 +11059,56 @@ def check_attack_over_slab(host, guest, out):
 
 CHECKS += ['attack_over_slab']
 CHECK_FNS['attack_over_slab'] = check_attack_over_slab
+
+
+def check_shulker_lift(host, guest, out):
+    """ShulkerBoxBlockEntity.tick moves the local player on each client, even with its menu open."""
+    hx, _, hz = pos_of(host)
+    x, y, z = int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8
+    box = (x, y, z)
+    modes = {player: player('state')['gamemode'] for player in (host, guest)}
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+4} {y+5} {z+4} minecraft:air')
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+4} {y-1} {z+4} minecraft:stone')
+    host('command', command=f'setblock {x} {y} {z} minecraft:shulker_box[facing=up]')
+    seen = {}
+    try:
+        for player in (host, guest):
+            other = guest if player is host else host
+            other('command', command=f'tp @s {x+3.5} {y} {z+0.5}')
+            for mode in ('survival', 'creative'):
+                player('command', command=f'gamemode {mode}')
+                player('command', command=f'tp @s {x+0.5} {y+1} {z+0.5}')
+                player.wait(15)
+                before = pos_of(player)
+                assert abs(before[1] - (y+1)) < 0.01, f'not standing on the box: {before}'
+                label = f'shulker-lift-{player.name}-{mode}'
+                player.shot(out, label + '-before')
+                player.raw('interact', *box)
+                player.raw('wait-for', 'screen', 'container', '--timeout', 10)
+                player.wait(20)
+                opened = pos_of(player)
+                player.shot(out, label + '-open')
+                # Let the player settle on the open lid: it must remain a supporting shape.
+                player.wait(20)
+                settled = pos_of(player)
+                player.raw('key', 'esc', 'tap')
+                player.wait(30)
+                closed = pos_of(player)
+                seen[label] = dict(before=before, opened=opened, settled=settled, closed=closed)
+                lab.write_json(out / 'shulker-lift.json', seen)
+                assert abs(opened[1] - (y+1.5)) < 0.02, f'opening lid did not lift {label}: {seen[label]}'
+                assert abs(settled[1] - (y+1.5)) < 0.02, f'open lid did not support {label}: {seen[label]}'
+                assert abs(closed[1] - (y+1)) < 0.02, f'closing lid did not lower {label}: {seen[label]}'
+        return seen
+    finally:
+        for player in (host, guest):
+            back_to_game(player)
+            player('command', command=f'gamemode {modes[player]}')
+        host('command', command=f'setblock {x} {y} {z} minecraft:air')
+
+
+CHECKS += ['shulker_lift']
+CHECK_FNS['shulker_lift'] = check_shulker_lift
 
 
 if __name__ == '__main__':

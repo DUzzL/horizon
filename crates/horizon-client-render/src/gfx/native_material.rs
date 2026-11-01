@@ -102,16 +102,38 @@ fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32>
         return select(vec4<f32>(0.5, 0.5, 1.0, 1.0), vec4<f32>(0.0), map == 1u);
     }
     let s = horizon_terrain_sprite_sampler;
+    // The maps may be smaller than the colour: the same footprint is fewer of their texels.
+    let scale = f32(textureDimensions(horizon_terrain_sprites).x)
+        / f32(textureDimensions(horizon_pbr_normals).x);
+    let l = max(lod - log2(scale), 0.0);
     if map == 0u {
-        return textureSampleLevel(horizon_pbr_normals, s, uv, i32(layer), lod);
+        return textureSampleLevel(horizon_pbr_normals, s, uv, i32(layer), l);
     }
-    return textureSampleLevel(horizon_pbr_specular, s, uv, i32(layer), lod);
+    return textureSampleLevel(horizon_pbr_specular, s, uv, i32(layer), l);
+}
+// The prelude's `block_texture`: a sprite of the terrain's arrays at a mip level.
+fn horizon_block_size() -> vec2<f32> {
+    return vec2<f32>(textureDimensions(horizon_terrain_sprites).xy);
+}
+fn horizon_block_sample(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
+    let s = horizon_terrain_sprite_sampler;
+    let l = i32(layer % horizon_terrain_SPRITE_SPLIT);
+    switch layer / horizon_terrain_SPRITE_SPLIT {
+        case 0u: { return textureSampleLevel(horizon_terrain_sprites, s, uv, l, lod); }
+        case 1u: { return textureSampleLevel(horizon_terrain_sprites_1, s, uv, l, lod); }
+        case 2u: { return textureSampleLevel(horizon_terrain_sprites_2, s, uv, l, lod); }
+        case 3u: { return textureSampleLevel(horizon_terrain_sprites_3, s, uv, l, lod); }
+        case 4u: { return textureSampleLevel(horizon_terrain_sprites_4, s, uv, l, lod); }
+        case 5u: { return textureSampleLevel(horizon_terrain_sprites_5, s, uv, l, lod); }
+        case 6u: { return textureSampleLevel(horizon_terrain_sprites_6, s, uv, l, lod); }
+        default: { return textureSampleLevel(horizon_terrain_sprites_7, s, uv, l, lod); }
+    }
 }
 fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32> {
     let albedo = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
     horizon_block_layer = in.layer & 0x7fffu;
-    // The mip level of this point in the maps: their own texels, as the sampler would pick.
-    let texels = in.uv * horizon_block_pbr_size();
+    // The mip level of this point in the texture: its texels, as the sampler would pick.
+    let texels = in.uv * horizon_block_size();
     let footprint = max(dot(dpdx(texels), dpdx(texels)), dot(dpdy(texels), dpdy(texels)));
     horizon_block_lod = max(0.5 * log2(max(footprint, 1e-8)), 0.0);
     // Water draws translucent and lava solid, so the pass resolves the fluid kind.

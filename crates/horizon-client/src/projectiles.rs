@@ -116,6 +116,15 @@ pub enum ProjectileKind {
     Thrown(&'static ThrownType),
 }
 impl ProjectileKind {
+    /// `EntityType.Builder.eyeHeight`: 0.13 for arrows and tridents, 0 for
+    /// wind charges, else the default 0.85 of the box height.
+    pub fn eye_height(&self) -> f64 {
+        match self {
+            Self::Arrow { .. } | Self::Trident => f64::from(0.13_f32),
+            Self::WindCharge | Self::BreezeWindCharge => 0.0,
+            _ => f64::from(self.size() as f32 * 0.85_f32),
+        }
+    }
     /// The width and height of its entity type's `sized(...)`.
     pub fn size(&self) -> f64 {
         match self {

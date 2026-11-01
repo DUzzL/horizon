@@ -19,7 +19,7 @@ const MAX_PASSENGERS_ON_ONE_HOGLIN: i32 = 3;
 
 /// `LivingEntity.getScale`: the `minecraft:scale` the server sent on any
 /// living entity (`extra.model_scale`, 0 when none came), 1 when unset.
-fn scale(m: &Mob) -> f64 {
+pub(super) fn scale(m: &Mob) -> f64 {
     if m.extra.model_scale > 0.0 {
         f64::from(m.extra.model_scale)
     } else {

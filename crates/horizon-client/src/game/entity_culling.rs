@@ -390,7 +390,7 @@ impl Game<'_> {
         let eligible = self.settings.horizon.entity_culling
             != horizon_client::graphics::EntityCullingMode::Off
             // Packs can replace an opaque block's model or texture.
-            && self.settings.resource_packs.iter().all(|id| id == "vanilla")
+            && self.model_packs_are_vanilla()
             && self.player.is_some()
             && !self.spectator()
             && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2])));

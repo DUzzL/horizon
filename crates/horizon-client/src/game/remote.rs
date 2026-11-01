@@ -431,6 +431,8 @@ pub(super) struct Remote {
     pub quiet_commands: bool,
     /// The server announced it carries mod messages.
     pub mod_net: bool,
+    /// The server samples far terrain for us, this far at most (`lod_net`).
+    pub far_terrain: Option<horizon_client::lod_net::Offer>,
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
@@ -880,6 +882,7 @@ impl Game<'_> {
         self.container = None;
         self.carried = None;
         self.using = None;
+        self.end_mod_use();
         self.clicks.miss_time = 0;
         // A new LocalPlayer has no effects: the server sends what it has
         // (ClientboundUpdateMobEffectPacket on placement).
@@ -934,6 +937,7 @@ impl Game<'_> {
             brand: "unknown".into(),
             quiet_commands: false,
             mod_net: false,
+            far_terrain: None,
             builtin: Arc::new(builtin),
             status: lang
                 .get("connect.connecting")
@@ -1768,12 +1772,26 @@ impl Game<'_> {
                         remote.mod_net = true;
                     }
                 }
+                Event::FarTerrain(offer) => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.far_terrain = Some(offer);
+                    }
+                }
                 Event::Reconfiguring => {
                     // handleConfigurationStart: the held-back chat shows, then
                     // clearClientLevel opens ServerReconfigScreen over no level.
                     self.flush_chat_queue();
                     self.send_chat_acknowledgement();
                     self.close_dialogs();
+                    // The server configuring us now (a proxy's next one)
+                    // offers its own far terrain, or none.
+                    if let Some(remote) = &mut self.remote {
+                        remote.far_terrain = None;
+                    }
+                    self.clear_lod();
+                    if let Some(remote) = &self.remote {
+                        remote.session.reset_far_terrain();
+                    }
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);
@@ -2910,6 +2928,7 @@ impl Game<'_> {
                 // again) and with no item in use.
                 self.potions.effects.clear();
                 self.using = None;
+                self.end_mod_use();
                 // After a death (no KEEP_ENTITY_DATA) the new LocalPlayer
                 // rides nothing: the server pairs a vehicle again with its
                 // passengers. A dimension change keeps the vehicle it travels in.
@@ -5374,6 +5393,10 @@ impl Game<'_> {
         self.native_net.to_server = 0;
         self.native_tick();
         self.tell_native_now();
+        // Far tiles the samplers asked for (`lod_net`).
+        if let Some(r) = &self.remote {
+            r.session.send_far_terrain();
+        }
         self.tick_chat_session();
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
@@ -5440,6 +5463,7 @@ impl Game<'_> {
         self.border.tick();
         self.player_border();
         self.tick_remote_entities(running);
+        self.tick_random_textures();
         // Breeze.tick's block dust: drawn by each client for the breezes it sees.
         if running {
             self.tick_breeze_effects();
@@ -6090,13 +6114,17 @@ impl Game<'_> {
             // The particles these mobs' own ticks draw on the client side.
             {
                 use horizon_client::mobs::{
-                    Species as S, cube, illusioner, nautilus, tame, wither,
+                    Species as S, cube, illager, illusioner, nautilus, tame, wither,
                 };
                 match m.species() {
                     S::Wolf => tame::client_tick(m, rain, &mut mob_fx),
                     S::Slime | S::MagmaCube | S::SulfurCube => cube::client_tick(m, &mut mob_fx),
                     S::Nautilus | S::ZombieNautilus => nautilus::client_tick(m, &mut mob_fx),
-                    S::Illusioner => illusioner::client_tick(m, &mut mob_fx),
+                    S::Illusioner => {
+                        illusioner::client_tick(m, &mut mob_fx);
+                        illager::cast_particles(m, &mut mob_fx);
+                    }
+                    S::Evoker => illager::cast_particles(m, &mut mob_fx),
                     S::Wither => wither::client_smoke(m, &mut mob_fx),
                     _ => {}
                 }
@@ -6833,6 +6861,10 @@ impl Game<'_> {
         if self.hands_busy() {
             return;
         }
+        // An item a mod claims: its use is the mod's, and the server never hears of it.
+        if self.mod_use_start() {
+            return;
+        }
         // Resolve the crosshair once. A passing entity interaction keeps
         // that target and may only fall back to using the item itself.
         let entity = self.entity_targeted();
@@ -7186,6 +7218,11 @@ impl Game<'_> {
             // CushionItem.useOn on a client level: SUCCESS once
             // `canBePlacedAt` holds, before the server's own checks.
             self.cushion_spawn(hit).is_some()
+        } else if &*stack.item == "minecraft:painting" {
+            // HangingEntityItem.useOn on a client level: SUCCESS once
+            // `Painting.create` finds a surviving variant, before the
+            // server spawns it.
+            self.painting_fits(hit, stack)
         } else {
             false
         }
@@ -7439,6 +7476,11 @@ impl Game<'_> {
         let Some(held) = self.with_hand(hand, |g| g.held().cloned()) else {
             return false;
         };
+        // A mod's claimed item is never used on the server; its own use
+        // starts from the main hand only (`mod_use_start`).
+        if self.native_input.claimant(&held.item).is_some() {
+            return false;
+        }
         let seq = self.next_sequence();
         self.send(S::UseItem(play::UseItem {
             hand: hand_id(hand),
@@ -7491,6 +7533,11 @@ impl Game<'_> {
                 self.audio.play(&name, Some(at), volume, pitch);
             }
             return succeeded;
+        }
+        // SpawnEggItem.use on the client succeeds after a SOURCE_ONLY block
+        // hit; the server alone tests LiquidBlock and the placement permission.
+        if held.item.ends_with("_spawn_egg") {
+            return self.spawn_egg_allowed(&held.item) && self.bucket_hit().is_some();
         }
         // Food starts being eaten (Consumable.startConsuming). A food that
         // can't be eaten (full and not always-edible) fails the use
@@ -7704,6 +7751,8 @@ impl Game<'_> {
     /// stack, its hunger and the sounds.
     fn remote_tick_using(&mut self) {
         let Some((slot, ticks)) = self.using else {
+            // A mod's use the game reset (the server stopping the use...).
+            self.end_mod_use();
             return;
         };
         let stack = self.stack_in(slot).cloned();
@@ -7715,12 +7764,17 @@ impl Game<'_> {
                 r.use_item = item;
             } else if r.use_item != item {
                 self.using = None;
+                self.end_mod_use();
                 return;
             }
         }
         // Another hotbar slot picked: LivingEntity.updatingUsingItem sees a
         // different stack in the hand. The off hand keeps its item.
         let in_hand = slot == self.selected || slot == super::shield::OFFHAND_SLOT;
+        // A mod's item: held until the button lets go, counted for the mod.
+        if self.mod_use_tick(slot, ticks, !self.right || !in_hand) {
+            return;
+        }
         // BrushItem.onUseTick: with no block aimed the use ends (the server
         // ends it too); a stroke shows its dust. Its sounds are the server's.
         if stack
@@ -9467,6 +9521,11 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.using.is_some()
     }
     fn release_using(&mut self) {
+        if let Some((slot, ticks)) = self.0.using
+            && self.0.mod_use_tick(slot, ticks, true)
+        {
+            return;
+        }
         self.0.release_remote_use();
     }
     fn start_attack(&mut self) -> bool {

@@ -119,7 +119,7 @@ enum AccountCmd {
     /// Renew an account's session for a game already running: prints the read-once session file
     /// it hands over (`--json`: {"session_file"} or {"authentication"} when it can't)
     Session { who: String },
-    /// Sign out: the account's tokens leave the keychain
+    /// Sign out: the account's tokens leave the keychain (and the secrets file, where it kept them)
     SignOut {
         /// Its name or UUID
         who: String,
