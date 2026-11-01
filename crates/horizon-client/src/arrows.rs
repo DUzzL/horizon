@@ -510,7 +510,7 @@ pub fn tick(p: &mut Projectile, scene: &ArrowScene, targets: &[(Who, Aabb)]) -> 
     };
     // Entity.setOldPosAndRot: the renderer interpolates from here, in flight
     // and stuck alike; ServerLevel.tickNonPassenger counts the tick.
-    p.previous = p.position;
+    p.set_old_pos_and_rot();
     p.age += 1;
     let hit = Ticker {
         p,

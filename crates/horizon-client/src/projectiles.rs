@@ -184,6 +184,10 @@ pub struct Projectile {
     pub velocity: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    /// `Entity.yRotO`/`xRotO`: the rotation the last tick ended with, which
+    /// the renderer interpolates from (`setOldPosAndRot`).
+    pub previous_yaw: f32,
+    pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
@@ -285,6 +289,8 @@ impl Projectile {
             velocity: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,
+            previous_yaw: 0.0,
+            previous_pitch: 0.0,
             age: 0,
             stuck: false,
             left_owner: false,
@@ -510,6 +516,17 @@ impl Projectile {
         let sd = (v.x * v.x + v.z * v.z).sqrt();
         self.yaw = v.x.atan2(v.z).to_degrees() as f32;
         self.pitch = v.y.atan2(sd).to_degrees() as f32;
+        // `Projectile.shoot` ends with `yRotO = getYRot(); xRotO = getXRot()`:
+        // a freshly shot projectile interpolates from the rotation it was
+        // aimed along, not from where it was created.
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
+    }
+    /// `Entity.setOldPosAndRot`: where the renderer interpolates from.
+    pub fn set_old_pos_and_rot(&mut self) {
+        self.previous = self.position;
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
     }
     /// A shulker's bullet from its block toward `target`, first leaving
     /// along an axis other than the one it is attached on.
@@ -780,7 +797,7 @@ impl Projectile {
         result
     }
     fn tick_inner(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.previous = self.position;
+        self.set_old_pos_and_rot();
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
             return self.tick_bullet(w);
