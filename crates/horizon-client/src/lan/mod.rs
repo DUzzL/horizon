@@ -410,6 +410,9 @@ impl Shared {
     pub fn motd(&self) -> String {
         self.motd.lock().unwrap().clone()
     }
+    pub fn set_motd(&self, motd: String) {
+        *self.motd.lock().unwrap() = motd;
+    }
     pub fn max_players(&self) -> usize {
         self.max_players.load(Ordering::Relaxed)
     }

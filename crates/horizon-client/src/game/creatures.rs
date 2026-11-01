@@ -3474,7 +3474,11 @@ impl Game<'_> {
             });
             let mut keep_flags = vec![true; projectiles.len()];
             for i in 0..projectiles.len() {
-                let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl) {
+                // A wind charge is pickable, so a pearl, an arrow or a trident can
+                // strike it (`Projectile.isPickable`, `Projectile.onHit`).
+                let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl)
+                    || projectiles[i].arrow.is_some()
+                {
                     wind_charge_hitboxes(&projectiles, &keep_flags, i)
                 } else {
                     Vec::new()
@@ -3502,9 +3506,18 @@ impl Game<'_> {
                     p.owner = shooter;
                 }
                 let (keep, hit) = match (p.arrow.is_some(), mob_shot || pvp, winds.is_empty()) {
-                    (true, false, _) => horizon_client::arrows::tick(p, &scene, &arrow_targets),
-                    (true, true, _) => {
+                    (true, false, true) => horizon_client::arrows::tick(p, &scene, &arrow_targets),
+                    (true, true, true) => {
                         horizon_client::arrows::tick(p, &scene, &arrow_targets_guests)
+                    }
+                    (true, with_guests, false) => {
+                        let mut targets = if with_guests {
+                            arrow_targets_guests.clone()
+                        } else {
+                            arrow_targets.clone()
+                        };
+                        targets.extend(winds);
+                        horizon_client::arrows::tick(p, &scene, &targets)
                     }
                     (false, false, true) => p.tick(&pw),
                     (false, true, true) => p.tick(&pw_guests),
@@ -4133,6 +4146,19 @@ impl Game<'_> {
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
             (ProjectileKind::Trident, Hit::Block { .. }) => {}
+            // AbstractArrow.onHitEntity on a wind charge: `hurtOrSimulate` fails
+            // (the charge turned in `Projectile.onHit`, which already ran), so the
+            // arrow takes `deflect(REVERSE, 0.2)` instead of vanishing.
+            (
+                ProjectileKind::Arrow { .. },
+                Hit::Entity {
+                    who: Who::Mob(id), ..
+                },
+            ) if wind_charge_hit(id).is_some() => {
+                let mut arrow = p.clone();
+                arrow_damage(&mut arrow, &mut self.world.random);
+                self.finish_arrow_hit(arrow, EntityHit::Refused);
+            }
             (ProjectileKind::Arrow { .. }, Hit::Entity { who, .. }) => {
                 let mut arrow = p.clone();
                 let amount = arrow_damage(&mut arrow, &mut self.world.random) + p.bonus.damage;
@@ -5882,7 +5908,9 @@ impl Game<'_> {
             }
             return Ok(true);
         }
-        let p = if fluid {
+        // useOn: a clicked block without a collision shape (vines, grass)
+        // takes the mob itself, any other the one on the clicked face.
+        let p = if fluid || self.collision_empty(hit.pos) {
             hit.pos
         } else {
             [

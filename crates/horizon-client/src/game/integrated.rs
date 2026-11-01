@@ -869,7 +869,12 @@ impl Game<'_> {
                 self.lan = Some(host);
                 let lines = self.as_console(|g| {
                     g.chat_capture = Some(Vec::new());
-                    g.run_command(&command);
+                    // A command a native mod registered goes to the mods
+                    // first, as the owner's own chat does (the console is
+                    // level 4, so every registered usage is allowed).
+                    if !g.perform_native_command(conn, 4, command.trim()) {
+                        g.run_command(&command);
+                    }
                     g.chat_capture.take().unwrap_or_default()
                 });
                 host = self.lan.take().expect("a command puts the hub back");

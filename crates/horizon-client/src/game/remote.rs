@@ -471,6 +471,9 @@ pub(super) struct Remote {
     /// the first teleport, which takes them then.
     abilities: Option<play::PlayerAbilities>,
     loaded_sent: bool,
+    /// The dimension of the client level the mods heard made
+    /// (`native_client_level_load`), to be told dropped once.
+    heard_level: Option<String>,
     /// `ClientPacketListener.levelLoadTracker`: the loading screen after a login
     /// or respawn, until the player's section is shown.
     pub(super) level_load: horizon_client::level_loading::LevelLoadTracker,
@@ -967,6 +970,7 @@ impl Game<'_> {
             carried: None,
             abilities: None,
             loaded_sent: false,
+            heard_level: None,
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
@@ -1073,6 +1077,10 @@ impl Game<'_> {
         self.clear_narrator();
         // A world is leaving either way: its icon attempt goes with it.
         self.world_icon = None;
+        // Minecraft.disconnect: the client level goes.
+        if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+            self.native_client_level_unload(&old);
+        }
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
@@ -2069,6 +2077,15 @@ impl Game<'_> {
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.clear_sections(self.world.layout());
             }
+            // The new ClientLevel is told before setLevel drops the old one.
+            let old = self
+                .remote
+                .as_mut()
+                .and_then(|r| r.heard_level.replace(spawn.dimension.clone()));
+            self.native_client_level_load(&spawn.dimension);
+            if let Some(old) = old {
+                self.native_client_level_unload(&old);
+            }
         }
         let has_sky = self
             .remote
@@ -2176,19 +2193,7 @@ impl Game<'_> {
         if let Some((_, mut loaded)) =
             horizon_client::save::decode_block_entity(&Tag::Compound(full))
         {
-            // The turn of a vault's item and a trial spawner's mob is the client's
-            // own, not in the tag: an update keeps it (VaultClientData).
-            match (self.world.block_entities.get(&key), &mut loaded) {
-                (Some(BlockEntity::Vault(old)), BlockEntity::Vault(new)) => {
-                    new.spin = old.spin;
-                    new.o_spin = old.o_spin;
-                }
-                (Some(BlockEntity::TrialSpawner(old)), BlockEntity::TrialSpawner(new)) => {
-                    new.spin = old.spin;
-                    new.o_spin = old.o_spin;
-                }
-                _ => {}
-            }
+            keep_client_state(self.world.block_entities.get(&key), &mut loaded);
             let command_block = matches!(loaded, BlockEntity::CommandBlock(_));
             self.world.block_entities.insert(key, loaded);
             self.update_spawner_display(key);
@@ -3484,6 +3489,7 @@ impl Game<'_> {
                                     && let Some(stack) = self.stack_in(slot).cloned()
                                 {
                                     self.use_duration = self.use_duration(&stack);
+                                    self.use_ticks_set = false;
                                 }
                             }
                             _ => {}
@@ -3601,10 +3607,14 @@ impl Game<'_> {
             }
             C::TakeItemEntity(p) => {
                 // ClientPacketListener.handleTakeItemEntity: the pickup sound at
-                // the item or arrow, whoever collects it (the server sends none).
-                // An orb's sound comes from the server, at the orb; an entity
-                // this client doesn't track sounds at this player.
-                let orb = self.orbs.iter().any(|o| o.id == p.item as u32);
+                // the orb, item or arrow, whoever collects it (the server sends
+                // none); an entity this client doesn't track sounds at this player.
+                let orb_at = self
+                    .orbs
+                    .iter()
+                    .find(|o| o.id == p.item as u32)
+                    .map(|o| o.position);
+                let orb = orb_at.is_some();
                 let item = self.dropped.iter().find(|d| d.id == p.item as u32);
                 let shot = self
                     .creatures
@@ -3630,7 +3640,17 @@ impl Game<'_> {
                     }
                     (None, None) => None,
                 };
-                if !orb && let Some(at) = at {
+                if let Some(o) = orb_at {
+                    let pitch = (self.world.random.next_float() - self.world.random.next_float())
+                        * 0.35
+                        + 0.9;
+                    self.audio.play(
+                        "minecraft:entity.experience_orb.pickup",
+                        Some([o.x, o.y, o.z]),
+                        0.1,
+                        pitch,
+                    );
+                } else if let Some(at) = at {
                     let pitch = ((self.world.random.next_float() - self.world.random.next_float())
                         * 0.7
                         + 1.0)
@@ -7031,6 +7051,18 @@ impl Game<'_> {
             } else {
                 (result, changes)
             };
+            // AbstractCauldronBlock.useItemOn, either hand: CauldronInteractions
+            // answers on the client as on the server and only the server acts,
+            // so a bucket the cauldron takes is not used again (UseItem).
+            let result = if result.consumes_action() || spectator {
+                result
+            } else {
+                match self.cauldron_outcome(hit.pos, held.as_ref()) {
+                    horizon_client::cauldron::Outcome::Success => InteractionResult::Success,
+                    horizon_client::cauldron::Outcome::Consume => InteractionResult::Consume,
+                    horizon_client::cauldron::Outcome::Pass => result,
+                }
+            };
             let reacts = result.consumes_action();
             // useItemOn on this client, unless a sneak with something in hand
             // skips it: RedStoneOreBlock's dust, and the wick smoke of a lit
@@ -7316,6 +7348,13 @@ impl Game<'_> {
         if self.keys.contains(&KeyCode::ShiftLeft) && hands_full {
             return (InteractionResult::Pass, DryUse::default());
         }
+        // AbstractCauldronBlock.useItemOn (CauldronInteractions): a bucket,
+        // bottle or dye the cauldron takes fills or lowers it, and the click
+        // ends there instead of falling through to Item.use (which would
+        // empty a water bucket into the face of the cauldron).
+        if let Some(reacts) = self.remote_cauldron_reacts(hit, held) {
+            return reacts;
+        }
         if self.jukebox_takes(hit.pos, held) {
             return (InteractionResult::Success, DryUse::default());
         }
@@ -7364,6 +7403,76 @@ impl Game<'_> {
             );
             (result, (level.changed.into_iter().collect(), level.sounds))
         })
+    }
+
+    /// `AbstractCauldronBlock.useItemOn` (`CauldronInteractions`) on this
+    /// client's level: the cauldron's new state and the sound it made, or
+    /// None when the item passes and `Item.use` still has its turn. The
+    /// interaction player is a copy: the hand and the inventory change only
+    /// when the server confirms them.
+    fn remote_cauldron_reacts(
+        &self,
+        hit: &super::Hit,
+        held: Option<&ItemStack>,
+    ) -> Option<(InteractionResult, DryUse)> {
+        use horizon_client::cauldron::{self, Outcome};
+        struct DryHand<'a> {
+            creative: bool,
+            hand: Option<ItemStack>,
+            inventory: &'a [Option<ItemStack>],
+        }
+        impl cauldron::Player for DryHand<'_> {
+            fn creative(&self) -> bool {
+                self.creative
+            }
+            fn hand(&mut self) -> &mut Option<ItemStack> {
+                &mut self.hand
+            }
+            fn add(&mut self, _: &mut ItemStack) -> bool {
+                true
+            }
+            fn contains(&self, stack: &ItemStack) -> bool {
+                self.inventory
+                    .iter()
+                    .flatten()
+                    .any(|have| have.same_item_same_components(stack))
+            }
+            fn drop_stack(&mut self, _: ItemStack) {}
+        }
+        let registry = self.pack.assets.registry;
+        let state = registry
+            .state(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
+            .filter(|s| s.name.ends_with("cauldron"))?
+            .clone();
+        let held = held?;
+        let above = self.world.block(hit.pos[0], hit.pos[1] + 1, hit.pos[2]);
+        let under_water = registry
+            .state(above)
+            .is_some_and(|s| s.name == "minecraft:water");
+        let removes_dye = cauldron::removes_dye(self.items(), &held.item);
+        let mut hand = DryHand {
+            creative: self.creative,
+            hand: Some(held.clone()),
+            inventory: &self.inventory,
+        };
+        let result = cauldron::interact(&state, under_water, removes_dye, &mut hand);
+        let reaction = match result.outcome {
+            Outcome::Pass => return None,
+            Outcome::Success => InteractionResult::Success,
+            Outcome::Consume => InteractionResult::Consume,
+        };
+        let pos = horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
+        let mut changes = Vec::new();
+        if let Some(block) = result.block
+            && let Ok(new) = registry.resolve(&block)
+        {
+            changes.push((pos, new));
+        }
+        let sounds = match result.sound {
+            Some(sound) => vec![(pos, std::sync::Arc::from(sound), 1.0, 1.0)],
+            None => Vec::new(),
+        };
+        Some((reaction, (changes, sounds)))
     }
 
     /// MultiPlayerGameMode.useItemOn inside startPrediction, for a block item:
@@ -7794,6 +7903,13 @@ impl Game<'_> {
         if self.mod_use_tick(slot, ticks, !self.right || !in_hand) {
             return;
         }
+        // updatingUsingItem runs here too: a use a mod's tick ran out stays
+        // frozen until let go (RELEASE_USE_ITEM) or the server finishes it.
+        if let Some(s) = stack.as_ref().filter(|_| in_hand)
+            && !self.use_item_ticked(s, ticks)
+        {
+            return;
+        }
         // BrushItem.onUseTick: with no block aimed the use ends (the server
         // ends it too); a stroke shows its dust. Its sounds are the server's.
         if stack
@@ -7828,7 +7944,10 @@ impl Game<'_> {
         }
         // A drawn bow, a charging crossbow, a raised shield...: held until
         // the button lets go.
-        if stack.as_ref().is_some_and(|s| self.held_until_released(s)) {
+        if let Some(s) = stack.as_ref().filter(|s| self.held_until_released(s)) {
+            if in_hand && (self.mod_use(s) || self.blocks_attacks(s).is_some()) {
+                self.item_on_use_tick(s, ticks);
+            }
             self.using = in_hand.then_some((slot, ticks + 1));
             return;
         }
@@ -7873,6 +7992,7 @@ impl Game<'_> {
             // player's own server.
             self.emit_consume(&consumable, &stack, 5);
         }
+        self.item_on_use_tick(&stack, ticks);
         self.using = Some((slot, ticks + 1));
     }
     /// `Player.handleEntityEvent(9)`: `completeUsingItem` on the client. A consumable's last crumbs, and FoodProperties.onConsume,
@@ -8285,14 +8405,21 @@ impl Game<'_> {
             direction: 0,
             sequence: 0,
         }));
+        // a mod's Stop may skip the item's release, and a mod's own release follows.
         let hand = self.used_hand();
         if let Some((slot, ticks)) = self.using.take()
             && let Some(hand) = hand
-            && self
-                .stack_in(slot)
-                .is_some_and(|s| &*s.item == "minecraft:trident")
+            && let Some(stack) = self.stack_in(slot).cloned()
         {
-            self.with_hand(hand, |g| g.release_trident(ticks));
+            self.with_hand(hand, |g| {
+                if !g.use_item_stopped(&stack, ticks) {
+                    return;
+                }
+                if &*stack.item == "minecraft:trident" {
+                    g.release_trident(g.ticks_held(&stack, ticks));
+                }
+                g.mod_release_using(&stack, ticks);
+            });
         }
     }
     /// ClientPacketListener.sendChat / sendCommand, signed with a chat
@@ -9339,14 +9466,15 @@ type DryUse = (DryChanges, Vec<DrySound>);
 type DryPlace = (horizon_core::position::BlockPos, DryChanges);
 
 /// The blocks a guest's hand flips that its use predicts (and hears at once): a wooden or
-/// copper door, trapdoor or fence gate, a lever or a button. An iron door or trapdoor has
-/// no hand use.
+/// copper door, trapdoor or fence gate, a lever, a button or a cauldron, whose fill level
+/// changes as the bucket, bottle or dye lands. An iron door or trapdoor has no hand use.
 pub(super) fn hand_operated(name: &str) -> bool {
     let name = name.trim_start_matches("minecraft:");
     ((name.ends_with("_door") || name.ends_with("_trapdoor")) && !name.starts_with("iron_"))
         || name.ends_with("_fence_gate")
         || name.ends_with("_button")
         || name == "lever"
+        || name.ends_with("cauldron")
 }
 
 impl<'w> DryLevel<'w> {
@@ -9444,7 +9572,9 @@ fn use_ends_click(info: &horizon_client::items::ItemInfo, fall_flying: bool) -> 
 /// Whether `Item.use` usually acts on this item (eats, drinks, equips, raises,
 /// throws, shoots, fills or places), which ends `Minecraft.startUseItem` at
 /// its hand. Tools and materials pass, and the off hand gets its turn. The
-/// server decides; this is the client's guess of whether to go on.
+/// server decides; this is the client's guess of whether to go on. A carrot or warped fungus
+/// on a stick is not here: `FoodOnAStickItem.use` passes on a client, and only the server's
+/// answer to a boost that can run swings the hand.
 fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
     let id = info.id.trim_start_matches("minecraft:");
     id.ends_with("_spear")
@@ -9480,8 +9610,6 @@ fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
                 | "goat_horn"
                 | "bundle"
                 | "brush"
-                | "carrot_on_a_stick"
-                | "warped_fungus_on_a_stick"
         )
 }
 
@@ -9489,6 +9617,31 @@ fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
 /// lets go past vanilla's 32 (a vanilla server still caps it at its own).
 fn client_view_distance(render_distance: i32) -> i8 {
     render_distance.clamp(2, i32::from(i8::MAX)) as i8
+}
+
+/// `ClientPacketListener.handleBlockEntityData` loads the tag into the existing
+/// block entity, so the state the client builds itself stays: copied from `old`
+/// into `new`, the block entity decoded from the tag.
+fn keep_client_state(old: Option<&BlockEntity>, new: &mut BlockEntity) {
+    match (old, new) {
+        // The turn of a vault's item and a trial spawner's mob (VaultClientData).
+        (Some(BlockEntity::Vault(old)), BlockEntity::Vault(new)) => {
+            new.spin = old.spin;
+            new.o_spin = old.o_spin;
+        }
+        (Some(BlockEntity::TrialSpawner(old)), BlockEntity::TrialSpawner(new)) => {
+            new.spin = old.spin;
+            new.o_spin = old.o_spin;
+        }
+        // A beacon's beam (`BeaconBlockEntity.loadAdditional` reads only the
+        // powers): a fresh one draws nothing until the next tick walks it again.
+        (Some(BlockEntity::Beacon(old)), BlockEntity::Beacon(new)) => {
+            new.sections.clone_from(&old.sections);
+            new.checking.clone_from(&old.checking);
+            new.last_check_y = old.last_check_y;
+        }
+        _ => {}
+    }
 }
 
 /// `LocalPlayer.onSyncedDataUpdated(DATA_LIVING_ENTITY_FLAGS)`: the server's
@@ -9724,7 +9877,46 @@ fn client_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::synced_local_use;
+    use super::{keep_client_state, synced_local_use};
+    use horizon_client::containers::{Beacon, BlockEntity};
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    fn a_beacon_update_tag_keeps_the_beam_the_client_walked() {
+        let old = BlockEntity::Beacon(Box::new(Beacon {
+            levels: 1,
+            primary: Some("minecraft:speed".into()),
+            sections: vec![(0xF9FFFE, 2)],
+            checking: vec![(0xF9FFFE, 1)],
+            last_check_y: 70,
+            ..Default::default()
+        }));
+        // BeaconBlockEntity.getUpdateTag: saveCustomOnly.
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:beacon".into())),
+            ("x", Tag::Int(0)),
+            ("y", Tag::Int(64)),
+            ("z", Tag::Int(0)),
+            ("primary_effect", Tag::String("minecraft:haste".into())),
+            (
+                "secondary_effect",
+                Tag::String("minecraft:regeneration".into()),
+            ),
+            ("Levels", Tag::Int(4)),
+        ]);
+        let (_, mut new) = horizon_client::save::decode_block_entity(&tag).unwrap();
+        keep_client_state(Some(&old), &mut new);
+        let BlockEntity::Beacon(b) = new else {
+            panic!("not a beacon");
+        };
+        assert_eq!(b.sections, vec![(0xF9FFFE, 2)]);
+        assert_eq!(b.checking, vec![(0xF9FFFE, 1)]);
+        assert_eq!(b.last_check_y, 70);
+        // The powers and the levels are the tag's.
+        assert_eq!(b.primary.as_deref(), Some("minecraft:haste"));
+        assert_eq!(b.secondary.as_deref(), Some("minecraft:regeneration"));
+        assert_eq!(b.levels, 4);
+    }
 
     #[test]
     fn the_server_stopping_the_use_lowers_the_shield() {
@@ -9855,6 +10047,22 @@ mod tests {
             chat_type_decorate(None, Decoration::Chat, &bound, &content)["translate"],
             "chat.type.text"
         );
+    }
+
+    /// A cauldron's fill level is a use this client predicts, and a guest's
+    /// host forwards its sound: every cauldron state counts, not only the
+    /// doors and levers.
+    #[test]
+    fn every_cauldron_counts_as_hand_operated() {
+        for name in [
+            "minecraft:cauldron",
+            "minecraft:water_cauldron",
+            "minecraft:lava_cauldron",
+            "minecraft:powder_snow_cauldron",
+        ] {
+            assert!(super::hand_operated(name), "{name}");
+        }
+        assert!(!super::hand_operated("minecraft:water"));
     }
 
     /// An NPC plugin lists the NPC, spawns it, and takes the entry off the list:
@@ -10379,6 +10587,14 @@ mod tests {
         for gliding in [false, true] {
             assert!(super::use_ends_click(shield, gliding));
             assert!(!super::use_ends_click(stick, gliding));
+            // FoodOnAStickItem.use passes on a client: no swing while the boost cools down.
+            for rod in [
+                "minecraft:carrot_on_a_stick",
+                "minecraft:warped_fungus_on_a_stick",
+            ] {
+                let rod = items.get(rod).unwrap();
+                assert!(!super::use_ends_click(rod, gliding), "{}", rod.id);
+            }
         }
     }
 }

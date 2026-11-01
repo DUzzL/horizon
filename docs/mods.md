@@ -85,6 +85,13 @@ A block names its template and what differs from it:
   "item": true }
 ```
 
+`random_ticks` makes a block tick randomly whatever its template does, as vanilla's
+`isRandomlyTicking(state)` does for its own blocks, so a crop, sapling or soil on a template that never
+ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a template that ticks), or
+`{ "property": "grown", "values": ["false"] }` for the states whose own state property (declared in
+`state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
+for a vanilla block that ticks, and its sections count it.
+
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
 connects to, or a machine whether it is running. Its states then become its
@@ -237,9 +244,11 @@ slot, and one on the container goes to the inventory, as a chest's does. `result
 container's faces and `inputs`, so leave result slots out of `inputs`. The data slots are the block entity's `data`
 (16-bit on the network, as vanilla's), all sent when it opens, then each change. A Horizon client shows it through the
 mod's own screen (`native_screen`); without one it closes again. Clients join a server only with the same mods' menu
-types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Not
-yet: per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra data, and
-client prediction of its clicks.
+types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Its
+clicks run on the server's vanilla menu engine (`menu::Kind::Mod`), shift-clicks routed as `ChestMenu`'s, and a native
+mod can decide what a slot takes in code with `native_menu_slot_rules` ([native-mods.md](native-mods.md#menu-slot-rules)).
+Not yet: declared per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra
+data, and client prediction of its clicks.
 
 #### Namespaces and limits
 

@@ -896,31 +896,6 @@ fn towards_closest_space(
         _ => Vec3::new(v.x, v.y, push),
     }
 }
-/// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:
-/// it absorbs the orbs that `canMerge` within 0.5 blocks of its box,
-/// adding their counts and keeping the smaller age.
-pub fn merge_orbs(orbs: &mut Vec<ExperienceOrb>) {
-    let mut removed = vec![false; orbs.len()];
-    for i in 0..orbs.len() {
-        if removed[i] || orbs[i].ticks % 20 != 1 {
-            continue;
-        }
-        let area = orbs[i].bounds().inflate(Vec3::new(0.5, 0.5, 0.5));
-        for j in 0..orbs.len() {
-            if j != i
-                && !removed[j]
-                && orbs[j].can_merge(orbs[i].id, orbs[i].value)
-                && orbs[j].bounds().intersects(area)
-            {
-                orbs[i].count += orbs[j].count;
-                orbs[i].age = orbs[i].age.min(orbs[j].age);
-                removed[j] = true;
-            }
-        }
-    }
-    let mut removed = removed.into_iter();
-    orbs.retain(|_| !removed.next().unwrap_or(false));
-}
 /// Player experience (Player.giveExperiencePoints / getXpNeededForNextLevel).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Experience {
@@ -2347,6 +2322,12 @@ mod armor_stand_motion_tests {
         let start = Vec3::new(20.5, 20.0, 20.5);
         let mut stand = ArmorStand::new(1, start, 0.0);
         stand.on_ground = false;
+        // A summoned stand has no motion yet: the first tick only builds it
+        // (vanilla moves by the velocity, then applies gravity), so it falls
+        // from the second tick on (measured on the real server: drop 0, 0, 0.0784 blocks).
+        tick_stand(&mut stand, &world, &facts, &collision);
+        assert_eq!(stand.position, start);
+        assert!((stand.velocity.y + 0.0784).abs() < 1e-6);
         tick_stand(&mut stand, &world, &facts, &collision);
         assert_eq!(stand.previous, start);
         assert!(
