@@ -1389,18 +1389,14 @@ impl Mesher<'_> {
             Pick::Keep => self.quad(out, solid_leaves, own, corners.map(|c| c.0)),
             Pick::Tile(t) => self.quad(out, solid_leaves, tile(t), corners.map(|c| c.0)),
             Pick::Quarters(tiles) => {
-                for (s0, t0) in [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)] {
-                    let sub = [
-                        (s0, t0),
-                        (s0 + 0.5, t0),
-                        (s0 + 0.5, t0 + 0.5),
-                        (s0, t0 + 0.5),
-                    ]
-                    .map(|(s, t)| bilinear(&corners, s, t));
-                    // The quarter of the sprite the piece covers: its UV centre.
-                    let [u, v] = [0, 1].map(|k| sub.iter().map(|c| c.1[k]).sum::<f32>() / 4.0);
-                    let quarter = usize::from(v >= 0.5) * 2 + usize::from(u >= 0.5);
-                    self.quad(out, solid_leaves, tile(tiles[quarter]), sub.map(|c| c.0));
+                let (ss, ts) = (split(&corners, 1), split(&corners, 3));
+                for s in ss.windows(2) {
+                    for t in ts.windows(2) {
+                        let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
+                            .map(|(s, t)| bilinear(&corners, s, t));
+                        let quarter = quarter_of(&piece);
+                        self.quad(out, solid_leaves, tile(tiles[quarter]), piece.map(|c| c.0));
+                    }
                 }
             }
         }
@@ -1449,6 +1445,34 @@ impl Mesher<'_> {
         target.extend(v);
     }
 }
+/// [`split`]'s cuts, without allocating: the first `.1` of `.0`.
+struct Cuts([f32; 3], usize);
+impl std::ops::Deref for Cuts {
+    type Target = [f32];
+    fn deref(&self) -> &[f32] {
+        &self.0[..self.1]
+    }
+}
+/// Where a quad's edge from corner 0 to corner `to` (1 for `s`, 3 for `t`) crosses the sprite's
+/// middle line: the cuts of a `ctm_compact` face, whose quarters meet at UV 0.5. An edge that
+/// stays on one side (a slab's side) is not cut.
+fn split(c: &[(TerrainVertex, [f32; 2]); 4], to: usize) -> Cuts {
+    let (a, b) = (c[0].1, c[to].1);
+    // The UV the edge runs along.
+    let k = usize::from((b[1] - a[1]).abs() > (b[0] - a[0]).abs());
+    let at = (0.5 - a[k]) / (b[k] - a[k]);
+    if at > 0.0 && at < 1.0 {
+        Cuts([0.0, at, 1.0], 3)
+    } else {
+        Cuts([0.0, 1.0, 1.0], 2)
+    }
+}
+/// The quarter of the sprite (top-left, top-right, bottom-left, bottom-right) a piece of a
+/// quad lies in, by its UV centre (v grows downward).
+fn quarter_of(piece: &[(TerrainVertex, [f32; 2]); 4]) -> usize {
+    let [u, v] = [0, 1].map(|k| piece.iter().map(|c| c.1[k]).sum::<f32>() / 4.0);
+    usize::from(v >= 0.5) * 2 + usize::from(u >= 0.5)
+}
 /// The vertex at `(s, t)` across a quad's corners (`s` from corner 0 to 1, `t` from 0 to 3),
 /// with its UV in sprite units: a quarter of a `ctm_compact` face. Blended within the quad's
 /// two triangles (0-1-2 and 0-2-3), as the GPU blends the whole quad, so a split face shades
@@ -1483,29 +1507,73 @@ pub fn borrow(region: &Region) -> [[Option<&Chunk>; 3]; 3] {
 mod quarter_tests {
     use super::*;
 
+    fn corner(pos: [f32; 3], uv: [f32; 2], red: u32, light: u16) -> (TerrainVertex, [f32; 2]) {
+        (TerrainVertex::new(pos, uv, 0, 0xFF00_0000 | red, light), uv)
+    }
+
     #[test]
     fn quarters_blend_the_corners_by_triangle() {
-        let corner = |pos: [f32; 3], uv: [f32; 2], red: u32, sky: u16| {
-            (TerrainVertex::new(pos, uv, 0, 0xFF00_0000 | red, sky), uv)
-        };
+        // Only corner 2 is lit: the GPU's triangles (0-1-2, 0-2-3) put half of it in the
+        // middle, where a bilinear blend would put a quarter and the other diagonal none.
         let c = [
             corner([0.0, 0.0, 0.0], [0.0, 0.0], 0, 0),
-            corner([1.0, 0.0, 0.0], [1.0, 0.0], 100, 16),
-            corner([1.0, 1.0, 0.0], [1.0, 1.0], 200, 32),
-            corner([0.0, 1.0, 0.0], [0.0, 1.0], 100, 16),
+            corner([1.0, 0.0, 0.0], [1.0, 0.0], 0, 0),
+            corner([1.0, 1.0, 0.0], [1.0, 1.0], 200, 0x2010),
+            corner([0.0, 1.0, 0.0], [0.0, 1.0], 0, 0),
         ];
         let (centre, uv) = bilinear(&c, 0.5, 0.5);
         assert_eq!(centre.pos, [0.5, 0.5, 0.0]);
         assert_eq!(uv, [0.5, 0.5]);
         assert_eq!(centre.color, 0xFF00_0000 | 100);
-        assert_eq!(centre.light, 16);
-        // On the 0-2 diagonal only corners 0 and 2 count, as in the GPU's triangles.
-        let (diagonal, _) = bilinear(&c, 0.25, 0.25);
-        assert_eq!(diagonal.color & 255, 50);
-        let (edge, _) = bilinear(&c, 0.5, 0.0);
+        assert_eq!(centre.light, 0x1008, "sky and block light blend apart");
+        // Off the diagonal, on the 0-1-2 triangle: corner 2 weighs t.
+        assert_eq!(bilinear(&c, 0.75, 0.25).0.color & 255, 50);
+        assert_eq!(bilinear(&c, 0.5, 0.0).0.pos, [0.5, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn compact_faces_cut_where_the_sprite_does() {
+        // A full face: cut in the middle both ways.
+        let full = [
+            corner([0.0, 1.0, 0.0], [0.0, 0.0], 0, 0),
+            corner([1.0, 1.0, 0.0], [1.0, 0.0], 0, 0),
+            corner([1.0, 0.0, 0.0], [1.0, 1.0], 0, 0),
+            corner([0.0, 0.0, 0.0], [0.0, 1.0], 0, 0),
+        ];
+        assert_eq!(*split(&full, 1), [0.0, 0.5, 1.0]);
+        assert_eq!(*split(&full, 3), [0.0, 0.5, 1.0]);
+        // A dirt path's side, v from 1/16: the sprite's middle is 8/15 of the way down.
+        let mut path = full;
+        path[0].1 = [0.0, 1.0 / 16.0];
+        path[1].1 = [1.0, 1.0 / 16.0];
         assert_eq!(
-            (edge.pos, edge.color & 255, edge.light),
-            ([0.5, 0.0, 0.0], 50, 8)
+            *split(&path, 3),
+            [0.0, (0.5 - 1.0 / 16.0) / (15.0 / 16.0), 1.0]
+        );
+        // A slab's lower side (v 0.5..1) is not cut across.
+        let mut slab = full;
+        slab[0].1 = [0.0, 0.5];
+        slab[1].1 = [1.0, 0.5];
+        assert_eq!(*split(&slab, 3), [0.0, 1.0]);
+        // Quarters by UV centre: top-left, top-right, bottom-left, bottom-right.
+        let piece = |s0: f32, t0: f32| {
+            [
+                (s0, t0),
+                (s0 + 0.5, t0),
+                (s0 + 0.5, t0 + 0.5),
+                (s0, t0 + 0.5),
+            ]
+            .map(|(s, t)| bilinear(&full, s, t))
+        };
+        assert_eq!(
+            [
+                piece(0.0, 0.0),
+                piece(0.5, 0.0),
+                piece(0.0, 0.5),
+                piece(0.5, 0.5)
+            ]
+            .map(|p| quarter_of(&p)),
+            [0, 1, 2, 3]
         );
     }
 }
