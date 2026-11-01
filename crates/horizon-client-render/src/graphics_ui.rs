@@ -61,6 +61,7 @@ pub enum H {
     BatteryMode,
     ShadowCache,
     GraphicsApi,
+    TranslucentBatching,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -358,6 +359,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
             ),
             h(
+                H::TranslucentBatching,
+                Saves,
+                "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
+            ),
+            h(
                 H::UploadBudget,
                 Low,
                 "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
@@ -370,11 +376,13 @@ pub fn rows(level: Level) -> Vec<Row> {
             ),
         ],
     };
-    // Only Windows and Linux have more than one graphics API.
+    // Only Windows and Linux have more than one graphics API, and translucent batching
+    // (Metal draws flat).
     if cfg!(target_os = "macos") {
-        rows.retain(
-            |row| !matches!(row, Row::Setting(s) if s.item == Item::Horizon(H::GraphicsApi)),
-        );
+        rows.retain(|row| {
+            !matches!(row, Row::Setting(s)
+                if matches!(s.item, Item::Horizon(H::GraphicsApi | H::TranslucentBatching)))
+        });
     }
     rows
 }
@@ -623,6 +631,12 @@ impl H {
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
+            // Greyed out where the device can't (`Item::blocked`): Off, as it is there,
+            // while the saved value waits for a device that can.
+            H::TranslucentBatching => labelled(
+                "Translucent Batching",
+                on_off(g.translucent_batching && crate::graphics::translucent_batching_offered()),
+            ),
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -718,6 +732,7 @@ impl H {
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -748,7 +763,8 @@ impl Item {
     /// the display offers HDR output, whatever `horizon-graphics.txt` says (a copied game
     /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
     /// the saved values wait for an HDR display), and its sliders do something only
-    /// while it is on.
+    /// while it is on; Translucent Batching switches only where the device can batch
+    /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can.
     fn blocked(self, s: &Settings) -> Option<&'static str> {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
@@ -764,6 +780,11 @@ impl Item {
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
+            Item::Horizon(H::TranslucentBatching)
+                if !crate::graphics::translucent_batching_offered() =>
+            {
+                Some("Your GPU or graphics API doesn't support it.")
+            }
             _ => None,
         }
     }
@@ -780,6 +801,7 @@ impl Item {
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
+            Item::Horizon(H::TranslucentBatching) => g.translucent_batching,
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -843,6 +865,7 @@ impl Item {
                     | H::BatteryMode
                     | H::ShadowCache
                     | H::GraphicsApi
+                    | H::TranslucentBatching
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen
@@ -1468,6 +1491,12 @@ impl GraphicsUi {
             && let Some(target) = self.focus
         {
             match target {
+                // A click focuses the greyed row; Enter there does nothing, as the click didn't.
+                Target::Item(item @ Item::Horizon(H::TranslucentBatching))
+                    if item.blocked(s).is_some() =>
+                {
+                    return (Vec::new(), true);
+                }
                 Target::Item(item) => {
                     if item.slider(s).is_some() {
                         self.can_change_value = !self.can_change_value;
@@ -1984,6 +2013,66 @@ mod tests {
             assert_eq!(s.horizon.preset, Preset::Custom);
         }
         assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
+    }
+
+    /// Translucent Batching: a switch on Advanced (not Simple), on by default, no part of a
+    /// preset, and greyed out, reading Off, where the device can't batch.
+    #[test]
+    fn translucent_batching_is_an_advanced_switch_where_the_device_can() {
+        use winit::keyboard::KeyCode as K;
+        let item = Item::Horizon(H::TranslucentBatching);
+        let has = |level| {
+            rows(level)
+                .iter()
+                .any(|r| matches!(r, Row::Setting(x) if x.item == item))
+        };
+        if cfg!(target_os = "macos") {
+            // Metal draws flat: never offered, so not shown.
+            assert!(!has(Level::Advanced));
+            return;
+        }
+        assert!(has(Level::Advanced) && !has(Level::Simple));
+        let mut s = Settings::default();
+        s.horizon.preset = Preset::Balanced;
+        assert_eq!(item.switch(&s), Some(true));
+        let mut ui = GraphicsUi::default();
+        let size = (480.0, 2000.0);
+        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
+        let w = widgets
+            .iter()
+            .find(|w| w.target == Target::Item(item))
+            .unwrap();
+        let point = (w.x + 1.0, w.y + 1.0);
+        let click = |ui: &mut GraphicsUi, s: &mut Settings| {
+            ui.click(Level::Advanced, s, point, size, [480, 2000], false, false)
+        };
+        // Where the device can't, the saved On reads Off, and neither a click nor Enter
+        // after it (the click focuses the row) does anything: no sound, no change, no save.
+        crate::graphics::offer_translucent_batching(false);
+        assert!(item.blocked(&s).is_some());
+        assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert!(click(&mut ui, &mut s).is_empty());
+        let enter = ui.key_modifiers(Level::Advanced, &mut s, K::Enter, false, size, [480, 2000]);
+        assert!(enter.0.is_empty());
+        assert!(s.horizon.translucent_batching);
+        // Where it can, a click switches it and keeps the preset.
+        crate::graphics::offer_translucent_batching(true);
+        assert_eq!(item.label(&s).plain(), "Translucent Batching: On");
+        assert_eq!(
+            click(&mut ui, &mut s),
+            [Action::ButtonClick, Action::Changed]
+        );
+        assert!(!s.horizon.translucent_batching);
+        assert_eq!(item.label(&s).plain(), "Translucent Batching: Off");
+        assert_eq!(s.horizon.preset, Preset::Balanced);
+        // No preset sets it.
+        for on in [false, true] {
+            s.horizon.translucent_batching = on;
+            for preset in Preset::ALL {
+                crate::graphics::apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.translucent_batching, on, "{preset:?}");
+            }
+        }
     }
 
     #[test]

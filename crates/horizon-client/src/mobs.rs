@@ -782,6 +782,8 @@ impl Damage {
 pub struct Attrs {
     pub speed: f64,
     pub attack_damage: f32,
+    /// `Attributes.ATTACK_KNOCKBACK`: what a melee hit adds to its push (half of it).
+    pub attack_knockback: f64,
     pub max_health: f32,
     pub follow_range: f64,
     pub knockback_resistance: f64,
@@ -1071,6 +1073,10 @@ pub struct Extra {
     /// What a piglin's or hoglin's brain remembers: its avoid target, the
     /// adults its sensor sees and the activity it is in.
     pub piglin: piglin::Memories,
+    /// What the native mods last heard it hold and wear
+    /// (`LivingEntity.lastEquipmentItems`, empty at first), by
+    /// `EquipmentSlot` ordinal: see `Mob::equipment_stacks`.
+    pub equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 8]>>,
 }
 impl Extra {
     pub fn set_main_hand(&mut self, item: Option<Arc<str>>) {
@@ -1277,6 +1283,11 @@ pub enum MobEvent {
         count: u32,
     },
     Sound(&'static str, [f64; 3], f32, f32),
+    /// `Entity.sendBubbleColumnParticles`: a mob at the top of the bubble column
+    /// block at `pos` (the splash and bubble particles over it).
+    BubbleColumnParticles {
+        pos: [i32; 3],
+    },
     /// `UseBonemeal`: the villager's bone meal grows the crop at `pos`
     /// (`BoneMealItem.growCrop`, then level event 1505).
     Bonemeal {
@@ -1989,6 +2000,62 @@ impl Seen {
     }
 }
 impl Mob {
+    /// What the mob holds and wears, by `EquipmentSlot` ordinal: main hand,
+    /// off hand, feet, legs, chest, head, body and saddle
+    /// (`ClientboundSetEquipmentPacket`'s slots).
+    pub fn equipment_stacks(&self) -> [Option<crate::items::ItemStack>; 8] {
+        use crate::items::ItemStack;
+        let e = &self.extra;
+        // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
+        // slot's item (6) in `head`.
+        let body = drops::head_is_body(self.species());
+        let wolf = self.species() == Species::Wolf;
+        let slots = [
+            (0usize, &e.main_hand, e.main_hand_stack()),
+            (1, &e.off_hand, None),
+            (2, &e.feet, e.armor[3].as_ref()),
+            (3, &e.legs, e.armor[2].as_ref()),
+            (4, &e.chest, e.armor[1].as_ref()),
+            // The body slot's item is no worn armour.
+            (
+                if body { 6 } else { 5 },
+                &e.head,
+                e.armor[0].as_ref().filter(|_| !body),
+            ),
+        ];
+        let mut out: [Option<ItemStack>; 8] = Default::default();
+        for (slot, item, worn) in slots {
+            let Some(item) = item else {
+                continue;
+            };
+            // The worn armour keeps its stack: a dyed leather piece keeps
+            // its colour.
+            out[slot] = Some(worn.cloned().unwrap_or_else(|| ItemStack {
+                item: item.clone(),
+                count: 1,
+                // A wolf's armor shows its cracks.
+                damage: if slot == 6 && wolf {
+                    e.body_damage.max(0) as u32
+                } else {
+                    0
+                },
+                extra: if slot == 6 && wolf {
+                    e.body_extra.clone()
+                } else {
+                    None
+                },
+            }));
+        }
+        if e.saddled {
+            out[7] = Some(e.saddle_stack.clone().unwrap_or(ItemStack {
+                item: Arc::from("minecraft:saddle"),
+                count: 1,
+                damage: 0,
+                extra: None,
+            }));
+        }
+        out
+    }
     pub fn burning_time(&self) -> f64 {
         let base = finalize::value(self, finalize::Attr::BurningTime);
         let protection: u32 = gear::ARMOR
@@ -2508,6 +2575,7 @@ impl Mob {
             attrs: Attrs {
                 speed: kind.speed,
                 attack_damage: kind.attack_damage,
+                attack_knockback: kind.attack_knockback,
                 max_health: kind.max_health,
                 follow_range: kind.follow_range,
                 knockback_resistance: kind.knockback_resistance,
@@ -2663,7 +2731,9 @@ impl Mob {
         if self.species() == Species::SulfurCube
             && !sulfur_cube::accepts_damage(self, &source, amount)
         {
-            return false;
+            // `SulfurCube.hurtServer` returns true for the blows it shrugs off and only knocks
+            // about, so `Player.attack` goes on with its extra knockback and its aftermath.
+            return sulfur_cube::immune_to(&source);
         }
         // LivingEntity.isInvulnerableTo: only #bypasses_invulnerability gets past it.
         if !self.alive()
@@ -2853,6 +2923,9 @@ impl Mob {
         ai::after_hurt(self, &source);
         if self.health <= 0.0 {
             self.health = 0.0;
+            // `LivingEntity.hurtServer`: a killing blow is taken by a
+            // `death_protection` item in either hand instead of dying.
+            self.use_death_protection(&source);
         }
         if knock {
             // playHurtSound (Mob: also resets the ambient sound clock) or the
@@ -2964,11 +3037,30 @@ impl Mob {
     /// took its share, before the motion changes and the draws of a random
     /// direction.
     pub fn knockback(&mut self, power: f64, xd: f64, zd: f64, source: &Damage) {
+        self.knockback_by(power, xd, zd, source, None);
+    }
+    /// `LivingEntity.knockback(power, xd, zd, source, damage, comesFromEffect = true)`: an extra
+    /// push of a blow (sprint, the Knockback enchantment). A sulfur cube with a block turns it
+    /// into its own launch (`SulfurCube.knockback`), scaled by `power * 0.25` and `sqrt(damage)`.
+    pub fn knockback_effect(&mut self, power: f64, xd: f64, zd: f64, source: &Damage, damage: f32) {
+        self.knockback_by(power, xd, zd, source, Some(damage));
+    }
+    fn knockback_by(&mut self, power: f64, xd: f64, zd: f64, source: &Damage, effect: Option<f32>) {
+        if let Some(damage) = effect
+            && self.species() == Species::SulfurCube
+            && sulfur_cube::has_body(self)
+            && source.attacker.is_some()
+            && sulfur_cube::knockback(self, (xd, zd), source.from, damage, Some(power))
+        {
+            return;
+        }
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
+        // The native hook runs first, on the raw strength (NeoForge's `LivingKnockBackEvent` fires
+        // at the start of `LivingEntity.knockback`), then the resistance scales what it left.
         let mut knock = crate::health::Knock {
-            strength: power * (1.0 - self.attrs.knockback_resistance),
+            strength: power,
             x: xd,
             z: zd,
         };
@@ -2981,6 +3073,7 @@ impl Mob {
             x: mut xd,
             z: mut zd,
         } = knock;
+        let power = power * (1.0 - self.attrs.knockback_resistance);
         if power <= 0.0 {
             return;
         }
@@ -3122,6 +3215,44 @@ impl Mob {
         let through = (damage - self.absorption).max(0.0);
         self.absorption = (self.absorption - (damage - through)).max(0.0);
         through
+    }
+    /// `LivingEntity.checkTotemDeathProtection`: the first hand with a
+    /// `death_protection` item uses it up, the mob survives at 1 health with
+    /// the totem's effects, and entity event 35 tells the clients.
+    fn use_death_protection(&mut self, source: &Damage) -> bool {
+        // `DamageTypeTags.BYPASSES_INVULNERABILITY`: the void and /kill take it.
+        if source.kind.bypasses_invulnerability() {
+            return false;
+        }
+        // `getItemInHand`: the main hand first. The totem is the only item in
+        // the shipped data with `minecraft:death_protection`.
+        const TOTEM: &str = "minecraft:totem_of_undying";
+        let main = self.extra.main_hand.as_deref() == Some(TOTEM);
+        let off = !main && self.extra.off_hand.as_deref() == Some(TOTEM);
+        if !main && !off {
+            return false;
+        }
+        if main {
+            self.extra.set_main_hand(None);
+        } else {
+            self.extra.off_hand = None;
+        }
+        // `setHealth(1.0F)`, then `DeathProtection.TOTEM_EFFECTS`.
+        self.health = 1.0;
+        for (effect, ticks, amplifier) in [
+            ("regeneration", 900, 1),
+            ("absorption", 100, 1),
+            ("fire_resistance", 800, 0),
+        ] {
+            self.add_effect(effect, ticks, amplifier);
+        }
+        let at = [self.position.x, self.position.y, self.position.z];
+        self.outbox.push(MobEvent::EntityEvent {
+            mob: self.id,
+            event: 35,
+            at,
+        });
+        true
     }
     /// `HealOrHarmMobEffect.applyInstantenousEffect`: a harming effect hurts a
     /// living mob (6 << amplifier, magic) and heals an undead one, a healing effect
@@ -4230,6 +4361,83 @@ mod armor_hurt_tests {
                 .outbox
                 .iter()
                 .any(|e| matches!(e, MobEvent::ArmorHurt { .. }))
+        );
+    }
+}
+
+#[cfg(test)]
+mod totem_tests {
+    use super::*;
+
+    fn fox() -> Mob {
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = Species::Fox;
+        t.max_health = 10.0;
+        Mob::new(1, Arc::new(t), Vec3::ZERO, 0.0)
+    }
+
+    /// `LivingEntity.checkTotemDeathProtection`: a totem in the mouth takes
+    /// the killing blow, the fox stays at 1 health with the totem's effects,
+    /// and entity event 35 tells the clients to draw it.
+    #[test]
+    fn a_totem_in_the_mouth_saves_a_fox() {
+        let mut m = fox();
+        m.extra
+            .set_main_hand(Some("minecraft:totem_of_undying".into()));
+        assert!(m.damage(1000.0, Damage::of(DamageKind::Generic)));
+        assert!(m.alive(), "the totem kept it alive");
+        assert_eq!(m.health, 1.0);
+        assert_eq!(m.extra.main_hand, None, "the totem was used up");
+        // DeathProtection.TOTEM_EFFECTS.
+        assert_eq!(
+            m.extra.effects,
+            vec![
+                ("minecraft:regeneration", 900, 1),
+                ("minecraft:absorption", 100, 1),
+                ("minecraft:fire_resistance", 800, 0),
+            ]
+        );
+        assert!(
+            m.outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::EntityEvent { event: 35, .. }))
+        );
+    }
+
+    /// `getItemInHand` asks the main hand first, then the off hand.
+    #[test]
+    fn a_totem_in_the_off_hand_saves_a_fox_too() {
+        let mut m = fox();
+        m.extra.off_hand = Some("minecraft:totem_of_undying".into());
+        assert!(m.damage(1000.0, Damage::of(DamageKind::Generic)));
+        assert!(m.alive());
+        assert_eq!(m.health, 1.0);
+        assert_eq!(m.extra.off_hand, None);
+    }
+
+    /// Without one in either hand the blow kills it as before.
+    #[test]
+    fn without_a_totem_the_blow_kills() {
+        let mut m = fox();
+        m.extra
+            .set_main_hand(Some("minecraft:sweet_berries".into()));
+        assert!(m.damage(1000.0, Damage::of(DamageKind::Generic)));
+        assert!(!m.alive());
+    }
+
+    /// `DamageTypeTags.BYPASSES_INVULNERABILITY` (`/kill`, the void) is not
+    /// something a totem answers.
+    #[test]
+    fn a_bypassing_killing_blow_ignores_the_totem() {
+        let mut m = fox();
+        m.extra
+            .set_main_hand(Some("minecraft:totem_of_undying".into()));
+        assert!(m.damage(1000.0, Damage::of(DamageKind::GenericKill)));
+        assert!(!m.alive());
+        assert_eq!(
+            m.extra.main_hand.as_deref(),
+            Some("minecraft:totem_of_undying"),
+            "the totem is still in the mouth"
         );
     }
 }

@@ -99,6 +99,9 @@ pub struct Sprites {
     still: std::collections::HashMap<(Vec<u8>, u64, u32, [u32; 2], [bool; 4]), u32>,
     /// Decoded textures kept on disk between launches ([`Sprites::with_disk_cache`]).
     disk: Option<crate::sprite_cache::SpriteCache>,
+    /// Textures [`Sprites::prefetch`] decoded ahead of their insert, by sprite name or
+    /// resource path.
+    ready: std::collections::HashMap<String, crate::sprite_cache::Decoded>,
 }
 /// Edge length of vanilla's block textures: the smallest array layer.
 pub const SPRITE_SIZE: u32 = 16;
@@ -242,6 +245,8 @@ impl Sprites {
         self.lay_out(false);
     }
     fn lay_out(&mut self, pixels: bool) {
+        // Prefetched textures nothing inserted.
+        self.ready = Default::default();
         let layers = self.native.len().max(1) as u64;
         let largest = self.native.iter().map(|n| n.0).max().unwrap_or(SPRITE_SIZE);
         self.minimum_size = self.native.iter().map(|n| n.0).min().unwrap_or(SPRITE_SIZE);
@@ -297,6 +302,14 @@ impl Sprites {
             }
         }
     }
+    /// [`Sprites::insert`] without the missing-texture fallback: a file that doesn't load is an
+    /// error, and nothing is added.
+    pub fn try_insert(&mut self, root: &Path, name: &str) -> Result<u32> {
+        match self.layers.get(name) {
+            Some(layer) => Ok(*layer),
+            None => self.load(root, name),
+        }
+    }
     /// The layer of a texture, added on first use. A texture that is missing
     /// or does not load (a resource pack's filter or a broken file) becomes
     /// vanilla's missing texture, as in a stitched atlas.
@@ -335,13 +348,50 @@ impl Sprites {
             }
         }
     }
+    /// Decode on every thread the textures about to be inserted: sprite names, or resource
+    /// paths outside `textures/` (as [`Sprites::insert_file`] takes them). A loader that adds
+    /// many (the block models, an OptiFine pack's tiles) calls this first and then inserts
+    /// them in its own order, so the layers are the same as without it. What is already a
+    /// layer or in the disk cache is skipped; what fails to decode is left for the insert,
+    /// which reports it.
+    pub fn prefetch<'a>(&mut self, root: &Path, names: impl IntoIterator<Item = &'a str>) {
+        let names: Vec<&str> = names
+            .into_iter()
+            .filter(|name| {
+                !self.layers.contains_key(*name)
+                    && !self.ready.contains_key(*name)
+                    && self.disk.as_ref().is_none_or(|d| d.get(name).is_none())
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let decoded = crate::par::par_map(&names, |name| {
+            if name.contains(':') {
+                Self::decode(root, name).ok()
+            } else {
+                Self::decode_file(&root.join(name), name).ok()
+            }
+        });
+        for (name, decoded) in names.into_iter().zip(decoded) {
+            if let Some(decoded) = decoded {
+                self.ready.insert(name.to_owned(), decoded);
+            }
+        }
+    }
     fn load(&mut self, root: &Path, name: &str) -> Result<u32> {
-        let cached = self.disk.as_ref().and_then(|d| d.get(name)).cloned();
+        // Custom Item Textures' files are outside `textures/`, which the disk cache's
+        // fingerprint covers: like `insert_file`'s, they skip it.
+        let cit = name.starts_with("horizon_cit:");
+        let disk = self.disk.as_mut().filter(|_| !cit);
+        let cached = disk.as_ref().and_then(|d| d.get(name)).cloned();
         let decoded = match cached {
             Some(decoded) => decoded,
             None => {
-                let decoded = Self::decode(root, name)?;
-                if let Some(disk) = &mut self.disk {
+                let decoded = match self.ready.remove(name) {
+                    Some(decoded) => decoded,
+                    None => Self::decode(root, name)?,
+                };
+                if let Some(disk) = disk {
                     disk.insert(name, decoded.clone());
                 }
                 decoded
@@ -357,16 +407,20 @@ impl Sprites {
         if let Some(layer) = self.layers.get(resource) {
             return Ok(*layer);
         }
-        let decoded = Self::decode_file(&root.join(resource), resource)?;
+        let decoded = match self.ready.remove(resource) {
+            Some(decoded) => decoded,
+            None => Self::decode_file(&root.join(resource), resource)?,
+        };
         self.register(root, resource, decoded)
     }
     /// Read and decode one texture and its `.mcmeta`.
     fn decode(root: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
-        let (namespace, path) = name.split_once(':').ok_or("invalid sprite identifier")?;
-        Self::decode_file(
-            &root.join(format!("assets/{namespace}/textures/{path}.png")),
-            name,
-        )
+        if !name.contains(':') {
+            return Err("invalid sprite identifier".into());
+        }
+        // `texture_path`, so Custom Item Textures' `horizon_cit:` sprites find their file.
+        let path = crate::atlas_sources::texture_path(root, name, "textures");
+        Self::decode_file(&path, name)
     }
     fn decode_file(path: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
         let metadata = match fs::read_to_string(path.with_extension("png.mcmeta")) {
@@ -462,8 +516,8 @@ impl Sprites {
         let count = frames.len() as u32;
         let layer = u32::try_from(self.native.len())?;
         let pbr = match name.split_once(':') {
-            Some((namespace, path)) if labpbr_maps() => {
-                let path = root.join(format!("assets/{namespace}/textures/{path}.png"));
+            Some(_) if labpbr_maps() => {
+                let path = crate::atlas_sources::texture_path(root, name, "textures");
                 ["_n", "_s"].map(|suffix| pbr_map(&path, suffix, count))
             }
             _ => [None, None],
@@ -473,9 +527,11 @@ impl Sprites {
             strategy,
             alpha_cutoff_bias,
             has_transparent,
-            item: name
-                .split_once(':')
-                .is_some_and(|(_, p)| p.starts_with("item/")),
+            // Custom Item Textures' ids are all item textures.
+            item: name.starts_with("horizon_cit:")
+                || name
+                    .split_once(':')
+                    .is_some_and(|(_, p)| p.starts_with("item/")),
             dither_cutouts: crate::mipmap::dither_cutouts(),
         };
         let still = (animation.is_none() && frames.len() == 1).then(|| {
@@ -703,6 +759,172 @@ mod tests {
                 .is_err()
         );
         assert_eq!(sprites.count(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn custom_item_texture_ids_load_with_their_animation() {
+        let root = std::env::temp_dir().join(format!("horizon-sprite-cit-{}", std::process::id()));
+        let file = root.join("assets/minecraft/optifine/cit/a.png");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut encoder = png::Encoder::new(File::create(&file).unwrap(), 16, 48);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = (0..16 * 48).flat_map(|_| [200, 10, 10, 255]).collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        fs::write(file.with_extension("png.mcmeta"), r#"{"animation":{}}"#).unwrap();
+        let mut sprites = Sprites::default();
+        sprites
+            .insert(&root, "horizon_cit:minecraft/optifine/cit/a")
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        // The missing texture would not animate: this one is the file, in three frames.
+        assert_eq!(sprites.animations.len(), 1);
+        assert_eq!(sprites.animations[0].frame_count(), 3);
+    }
+    #[test]
+    fn custom_item_textures_skip_the_disk_cache() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-cit-disk-{}", std::process::id()));
+        // A realistic root: the cache's fingerprint walks the `textures` trees.
+        let vanilla = root.join("assets/minecraft/textures/item/stick.png");
+        let file = root.join("assets/minecraft/optifine/cit/a.png");
+        let write = |path: &Path, red: u8| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut encoder = png::Encoder::new(File::create(path).unwrap(), 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let pixels: Vec<u8> = (0..256).flat_map(|_| [red, 0, 0, 255]).collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        };
+        write(&vanilla, 1);
+        write(&file, 10);
+        let id = "horizon_cit:minecraft/optifine/cit/a";
+        let red = |sprites: &Sprites, layer: u32| sprites.native[layer as usize].1[0][0];
+        let mut first = Sprites::with_disk_cache(&root);
+        let layer = first.insert(&root, id).unwrap();
+        assert_eq!(red(&first, layer), 10);
+        first.save_disk_cache();
+        // The pack's file changes; `textures/` does not, so a cached copy would still match.
+        write(&file, 20);
+        let mut second = Sprites::with_disk_cache(&root);
+        let layer = second.insert(&root, id).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(red(&second, layer), 20);
+    }
+    #[test]
+    fn custom_item_textures_mip_as_items() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-cit-mip-{}", std::process::id()));
+        let write = |rel: &str| {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut encoder = png::Encoder::new(File::create(path).unwrap(), 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            // Any pixels: whether a texture mips as an item is part of the shared-layer key.
+            let pixels: Vec<u8> = (0..256)
+                .flat_map(|i| [9, 9, 9, if i % 2 == 0 { 255 } else { 0 }])
+                .collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        };
+        write("assets/a/textures/block/x.png");
+        write("assets/a/textures/item/x.png");
+        write("assets/minecraft/optifine/cit/x.png");
+        let mut sprites = Sprites::default();
+        let block = sprites.insert(&root, "a:block/x").unwrap();
+        let item = sprites.insert(&root, "a:item/x").unwrap();
+        let cit = sprites
+            .insert(&root, "horizon_cit:minecraft/optifine/cit/x")
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        // The same pixels share a layer only with the same mipmap settings: the CIT texture's
+        // are the item's.
+        assert_ne!(block, item);
+        assert_eq!(cit, item);
+    }
+    #[test]
+    fn prefetched_textures_take_the_layers_inserting_alone_gives() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-sprite-prefetch-{}", std::process::id()));
+        let png = |path: &str, side: u32, seed: u8| {
+            let file = root.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let mut encoder = png::Encoder::new(File::create(file).unwrap(), side, side);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let pixels: Vec<u8> = (0..side * side)
+                .flat_map(|i| {
+                    [
+                        seed,
+                        i as u8,
+                        (i >> 8) as u8,
+                        if i % 3 == 0 { 0 } else { 255 },
+                    ]
+                })
+                .collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        };
+        for i in 0..40u8 {
+            png(
+                &format!("assets/minecraft/textures/block/b{i}.png"),
+                16 << (i % 3),
+                i,
+            );
+        }
+        // Two textures alike share a layer; a tile outside `textures/`, a broken file and a
+        // missing one take the paths they take without prefetching.
+        png("assets/minecraft/textures/block/same.png", 16, 3);
+        png("assets/minecraft/optifine/ctm/glass/0.png", 32, 77);
+        fs::write(
+            root.join("assets/minecraft/textures/block/broken.png"),
+            b"no png",
+        )
+        .unwrap();
+        let names: Vec<String> = (0..40)
+            .map(|i| format!("minecraft:block/b{}", (i * 7) % 40))
+            .chain(["minecraft:block/same", "minecraft:block/broken"].map(String::from))
+            .chain(["minecraft:block/missing", "minecraft:block/b3"].map(String::from))
+            .collect();
+        let tile = "assets/minecraft/optifine/ctm/glass/0.png";
+        let load = |prefetch: bool| {
+            let mut sprites = Sprites::default();
+            if prefetch {
+                sprites.prefetch(&root, names.iter().map(String::as_str).chain([tile]));
+            }
+            let mut layers: Vec<u32> = names
+                .iter()
+                .map(|name| sprites.insert(&root, name).unwrap())
+                .collect();
+            layers.push(sprites.insert_file(&root, tile).unwrap());
+            sprites.finish();
+            (
+                layers,
+                sprites.layers,
+                sprites.pixels,
+                sprites.translucent,
+                sprites.size,
+            )
+        };
+        let alone = load(false);
+        assert_eq!(load(true), alone);
+        // The textures alike and the broken one's missing texture: fewer layers than names.
+        assert!(alone.1.values().max().unwrap() + 1 < names.len() as u32);
         fs::remove_dir_all(&root).unwrap();
     }
     #[test]

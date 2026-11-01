@@ -112,7 +112,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// `AbstractArrow.tick` on a client: water drag before the move, air drag
 /// after it, then gravity; a block it reaches holds it (`inGround`).
 fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    p.previous = p.position;
+    p.set_old_pos_and_rot();
     p.age += 1;
     // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
     // the ticks in a block.
@@ -316,6 +316,7 @@ impl Game<'_> {
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
             "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
+                no_gravity: false,
                 id,
                 position: at,
                 previous: at,
@@ -623,7 +624,7 @@ impl Game<'_> {
                     ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
-                        p.previous = p.position;
+                        p.set_old_pos_and_rot();
                         p.age += 1;
                         p.position = p.position.add_vector(p.velocity);
                     }
@@ -855,6 +856,41 @@ mod tests {
             assert!((0.0..0.3125 + 1e-12).contains(&(y - at.y)), "{y}");
             assert!((z - at.z).abs() <= 0.3125 * 0.5 + 1e-12, "{z}");
         }
+    }
+
+    /// `Entity.setOldPosAndRot`: what the renderer interpolates a projectile's
+    /// rotation from is the rotation the last tick ended with. An arrow shot
+    /// straight up at the lowest power a bow fires turns over within a few
+    /// ticks, so every tick has to carry the value of the one before it.
+    #[test]
+    fn a_remote_arrow_keeps_the_rotation_the_last_tick_drew() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 100.0, 0.0),
+            None,
+        );
+        let mut random = horizon_core::random::LegacyRandom::new(7);
+        p.shoot(&mut random, [0.0, 1.0, 0.0], 0.3, 0.0);
+        // `Projectile.shoot` ends with `yRotO = getYRot(); xRotO = getXRot()`.
+        assert_eq!(p.previous_pitch, p.pitch);
+        assert_eq!(p.previous_yaw, p.yaw);
+        assert!((p.pitch - 90.0).abs() < 1.0e-4, "aimed up: {}", p.pitch);
+        let (mut yaw, mut pitch) = (p.yaw, p.pitch);
+        for _ in 0..30 {
+            remote_arrow_tick(&mut p, &Empty);
+            assert_eq!(p.previous_pitch, pitch);
+            assert_eq!(p.previous_yaw, yaw);
+            (yaw, pitch) = (p.yaw, p.pitch);
+        }
+        assert!(
+            p.pitch < 0.0,
+            "the arrow turned over as it fell: {}",
+            p.pitch
+        );
     }
 
     #[test]

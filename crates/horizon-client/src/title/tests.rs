@@ -1821,3 +1821,209 @@ fn a_finished_optimization_stamps_the_level_data() {
     let version = root.get("Data").and_then(|d| d.get("DataVersion"));
     assert!(matches!(version, Some(Tag::Int(v)) if *v == horizon_world::DATA_VERSION));
 }
+
+/// `AbstractButton.extractDefaultLabel`: a label too wide for its button is
+/// slid inside it, not drawn centred over the buttons beside it (`so_so`'s
+/// 590 px World Type label on Create World, `hi_in`'s Join Server).
+#[test]
+fn a_button_label_wider_than_its_button_stays_inside_it() {
+    let atlas = HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    let mut b = Button {
+        x: 100.0,
+        y: 40.0,
+        w: 100.0,
+        label: "Create Backup and Load the World Anyway".into(),
+        enabled: true,
+        id: 40,
+        icon: None,
+        trailing: None,
+    };
+    assert!(HudBatch::text_width(&atlas, &b.label) > b.w - 4.0);
+    let mut batch = HudBatch::new([640, 480]);
+    b.draw_label(&mut batch, &atlas, u32::MAX);
+    assert!(!batch.vertices.is_empty());
+    for v in &batch.vertices {
+        assert!(
+            (b.x + 2.0..=b.x + b.w - 2.0).contains(&v.pos[0])
+                && (b.y..=b.y + 20.0).contains(&v.pos[1]),
+            "label vertex {:?} outside the button",
+            v.pos
+        );
+    }
+    // A label that fits is centred in the button, as `centered_left` does.
+    b.label = "Done".into();
+    let width = HudBatch::text_width(&atlas, &b.label);
+    let mut batch = HudBatch::new([640, 480]);
+    b.draw_label(&mut batch, &atlas, u32::MAX);
+    let lo = batch
+        .vertices
+        .iter()
+        .map(|v| v.pos[0])
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        (lo - (b.x + 2.0 + (b.w - 4.0) / 2.0 - (width / 2.0).floor())).abs() < 0.001,
+        "a fitting label starts at {lo}"
+    );
+}
+
+#[test]
+fn the_single_biome_preset_is_customized_into_the_generator() {
+    let mut f = Fixture::new();
+    fs::create_dir_all(f.root.join("worldgen")).unwrap();
+    fs::write(
+        f.root.join("worldgen/biomes.json"),
+        r#"{"minecraft:jungle":{},"minecraft:plains":{},"minecraft:badlands":{}}"#,
+    )
+    .unwrap();
+    f.click("Singleplayer");
+    let size = (480.0, 262.0);
+    let labels = |f: &Fixture| -> Vec<(String, f32, f32, bool)> {
+        f.title
+            .buttons(size.0, size.1)
+            .into_iter()
+            .map(|b| (b.label, b.x, b.y, b.enabled))
+            .collect()
+    };
+    // The World tab: World Type and Customize (PresetEditor.EDITORS has a
+    // screen for the flat and the single-biome presets only).
+    f.title.click(54.0 + 124.0 + 10.0, 10.0, size);
+    let world = labels(&f);
+    let customize = world[1].clone();
+    assert!(!customize.3);
+    let cycle = (world[0].1 + 10.0, world[0].2 + 10.0);
+    f.title.click(cycle.0, cycle.1, size);
+    assert!(labels(&f)[1].3, "flat worlds have CreateFlatWorldScreen");
+    for _ in 0..3 {
+        f.title.click(cycle.0, cycle.1, size);
+    }
+    let Mode::Create { options, .. } = &f.title.mode else {
+        panic!()
+    };
+    assert_eq!(
+        options.world_type,
+        crate::save::WorldPreset::SingleBiomeSurface
+    );
+    assert!(labels(&f)[1].3, "single biome has CreateBuffetWorldScreen");
+    // Customize opens the biome screen over the worlds' registry data.
+    let (action, sound) = f.title.click(customize.1 + 10.0, customize.2 + 10.0, size);
+    assert!(sound && action == Action::None);
+    let Mode::CreateBuffet { buffet, .. } = &f.title.mode else {
+        panic!("{:?}", f.title.mode)
+    };
+    // Badlands, Jungle and Plains, by name; the preset's own biome is picked.
+    assert_eq!(buffet.rows().len(), 3);
+    assert_eq!(buffet.selected(), Some(2));
+    // A press on the list's second row (rows are 20 high from y 40).
+    f.title.click(240.0, 70.0, size);
+    let Mode::CreateBuffet { buffet, .. } = &f.title.mode else {
+        panic!()
+    };
+    assert_eq!(buffet.biome, "minecraft:jungle");
+    // Done hands it back to Create New World, which writes it as the
+    // overworld's fixed biome source.
+    let done = f
+        .title
+        .buttons(size.0, size.1)
+        .into_iter()
+        .find(|b| b.id == 80)
+        .unwrap();
+    assert!(done.enabled);
+    f.title.click(done.x + 10.0, done.y + 10.0, size);
+    let Mode::Create { options, .. } = &f.title.mode else {
+        panic!("{:?}", f.title.mode)
+    };
+    assert_eq!(options.single_biome, "minecraft:jungle");
+    let Action::Create { options, .. } = f.title.create_action() else {
+        panic!()
+    };
+    let dir = f.root.join("single_biome");
+    crate::save::write_world_gen_settings_with(
+        &dir,
+        1,
+        options.world_gen(),
+        None,
+        options.single_biome(),
+    )
+    .unwrap();
+    let settings = crate::save::world_gen_settings(&dir).unwrap();
+    let generator = settings
+        .get("dimensions")
+        .and_then(|d| d.get("minecraft:overworld"))
+        .and_then(|o| o.get("generator"))
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        crate::save::text(generator.get("biome_source").and_then(|s| s.get("biome"))),
+        Some("minecraft:jungle".to_owned())
+    );
+    assert_eq!(
+        crate::save::WorldGen::read(&dir).map(|g| g.preset),
+        Some(crate::save::WorldPreset::SingleBiomeSurface)
+    );
+    // Re-Create starts the screen on the world's own biome.
+    let options = WorldOptions::of_world(
+        &crate::save::Level::read(&dir).unwrap_or_default(),
+        false,
+        &dir,
+    );
+    assert_eq!(options.single_biome, "minecraft:jungle");
+}
+
+#[test]
+fn the_single_biome_screen_cancels_and_filters_without_choosing() {
+    let mut f = Fixture::new();
+    fs::create_dir_all(f.root.join("worldgen")).unwrap();
+    fs::write(
+        f.root.join("worldgen/biomes.json"),
+        r#"{"minecraft:jungle":{},"minecraft:plains":{},"minecraft:badlands":{}}"#,
+    )
+    .unwrap();
+    f.click("Singleplayer");
+    let size = (480.0, 262.0);
+    f.title.click(54.0 + 124.0 + 10.0, 10.0, size);
+    let cycle = (labels_at(&f).0, labels_at(&f).1 + 10.0);
+    for _ in 0..4 {
+        f.title.click(cycle.0, cycle.1, size);
+    }
+    let customize = labels_at(&f).2;
+    f.title.click(customize.0, customize.1, size);
+    // The search box narrows the rows, and a query that hides the chosen
+    // biome leaves Done disabled until a row is picked.
+    f.title.click(240.0, 32.0, size);
+    f.title.type_text("jung");
+    let Mode::CreateBuffet { buffet, .. } = &f.title.mode else {
+        panic!()
+    };
+    assert_eq!(buffet.rows().len(), 1);
+    assert_eq!(buffet.selected(), None);
+    let done = f
+        .title
+        .buttons(size.0, size.1)
+        .into_iter()
+        .find(|b| b.id == 80)
+        .unwrap();
+    assert!(!done.enabled);
+    // Cancel keeps the preset's own biome (plains).
+    let cancel = f
+        .title
+        .buttons(size.0, size.1)
+        .into_iter()
+        .find(|b| b.id == 81)
+        .unwrap();
+    f.title.click(cancel.x + 10.0, cancel.y + 10.0, size);
+    let Mode::Create { options, .. } = &f.title.mode else {
+        panic!("{:?}", f.title.mode)
+    };
+    assert_eq!(options.single_biome, "minecraft:plains");
+}
+
+/// The World tab's (World Type x, y; Customize centre) for a Create screen.
+fn labels_at(f: &Fixture) -> (f32, f32, (f32, f32)) {
+    let buttons = f.title.buttons(480.0, 262.0);
+    let customize = &buttons[1];
+    (
+        buttons[0].x + 10.0,
+        buttons[0].y,
+        (customize.x + 10.0, customize.y + 10.0),
+    )
+}

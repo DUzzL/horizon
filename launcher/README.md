@@ -96,7 +96,7 @@ The opening, then Play ([clip](docs/opening.webm)):
   from the window or `horizon-launcher play` adds to it (`instance list` shows it too). Each
   instance plays the launcher's version, which follows updates, unless the Play page's version
   picker keeps it on another installed one (to keep an old world on the version it was made
-  with); picking the version marked "follows updates" lets it follow again.
+  with); picking the version marked "auto-update" lets it follow again.
 - **Export**: Home's Instance row has **Export…**: the selected instance (or a port) as a `.mrpack`
   (Modrinth's modpack format: resource packs the browser installed from Modrinth are listed by
   their download, the rest is in `overrides/`) or a `.zip` of the game folder's layout, with the
@@ -265,6 +265,15 @@ minimize, maximize/restore and close; macOS and Linux keep their system title ba
 
 The launcher looks for a newer Nightly when it starts and every 30 minutes while it is open, and
 shows a small "available, Install" line on Play.
+
+Release lists and commits come from GitHub's API, which allows 60 anonymous calls an hour per
+address: players behind a shared one (a school, a dorm, a carrier's NAT) spend them together.
+So each answer is kept in `cache/github/` in the data folder and used again for 5 minutes without
+asking, then revalidated with its ETag. When GitHub answers with its rate limit, or not at all,
+Horizon's own releases are read through Kira's read-only mirror
+(`https://mcp.playhorizon.dev/github/public`; `HORIZON_GITHUB_MIRROR` replaces it, empty turns it
+off); when both fail the last saved answer is used, else the error names both. The release files
+themselves come from their download links, which that limit doesn't cover.
 
 It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
 `vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:

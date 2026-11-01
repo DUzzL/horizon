@@ -224,6 +224,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
+            no_gravity: false,
             id: 1,
             health: 5,
             fire_ticks: 0,
@@ -244,6 +245,7 @@ mod tests {
             bob_offset: 0.0,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let mut still = item.clone();
         assert!(still.tick(

@@ -180,7 +180,14 @@ impl Game<'_> {
             | Target::Crystal(id)
             | Target::Dragon(id)
             | Target::Tnt(id)
+            | Target::Falling(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
+            // It keeps its UUID with itself.
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| uuid_text(s.uuid)),
             // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
         }
@@ -213,13 +220,24 @@ impl Game<'_> {
             | Target::Boat(id)
             | Target::Cart(id)
             | Target::Tnt(id)
+            | Target::Orb(id)
+            | Target::Projectile(id)
+            | Target::Crystal(id)
+            | Target::Dragon(id)
             | Target::Other(id) => self.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
-            Target::Guest(_)
-            | Target::Orb(_)
-            | Target::Projectile(_)
-            | Target::Crystal(_)
-            | Target::Dragon(_) => None,
+            // A server's player: the saved compound the guest's file is written from.
+            Target::Guest(conn) => self.command_guest(conn).and_then(|g| g.saved.as_ref()),
+            Target::Spawner(id) => self
+                .ominous_spawners
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.raw.as_deref()),
+            Target::Falling(id) => self
+                .falling
+                .iter()
+                .find(|f| f.id == id)
+                .and_then(|f| f.saved.as_ref().map(|s| &s.1)),
         };
         match raw.and_then(|r| r.get("Tags")) {
             Some(Tag::List(l)) => l
