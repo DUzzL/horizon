@@ -921,7 +921,7 @@ impl<'a> Plan<'a> {
                     .iter()
                     .map(|(name, property)| (name.clone(), property.values().len() as u32))
                     .collect();
-                let order = block_order(&states, &properties, &declared, combos.len() as u32);
+                let order = block_order(&states, properties, &declared, combos.len() as u32);
                 // The lookup from (template state, combination) to the state's row.
                 let mut rows = vec![0; order.len()];
                 for (position, &(state, combo)) in order.iter().enumerate() {
