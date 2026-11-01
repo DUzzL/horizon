@@ -312,7 +312,8 @@ impl Attachments {
         }
         Ok(())
     }
-    /// Remove a value, retaining all other namespaces and names.
+    /// Remove a value, retaining all other namespaces and names. A saved value
+    /// that does not decode is removed too, and its error returned.
     pub fn remove<T: Clone + Send + Sync + 'static>(
         &mut self,
         ty: &AttachmentType<T>,
@@ -321,12 +322,12 @@ impl Attachments {
         if !self.entries.contains_key(&key) {
             return Ok(None);
         }
-        let value = self.get(ty)?;
+        let value = self.get(ty);
         self.entries.remove(&key);
         if let Some(Tag::Compound(names)) = self.raw.get_mut(&ty.namespace.into()) {
             names.remove(&ty.name.into());
         }
-        Ok(Some(value))
+        value.map(Some)
     }
 }
 
@@ -407,5 +408,7 @@ mod tests {
         let mut map = Attachments::from_nbt(saved.clone());
         assert_eq!(map.get(&COUNTER), Err(AttachmentError::Decode));
         assert_eq!(map.to_nbt(), saved);
+        assert_eq!(map.remove(&COUNTER), Err(AttachmentError::Decode));
+        assert_eq!(map.remove(&COUNTER), Ok(None), "removed all the same");
     }
 }
