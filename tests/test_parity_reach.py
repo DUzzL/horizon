@@ -138,6 +138,7 @@ class ReachTests(unittest.TestCase):
             '[[example]]\nname = "client_probe"\npath = "../a/examples/probe/main.rs"\n',
             "crates/a/src/shared.rs": "pub mod used;\n",
             "crates/a/src/lib.rs": "pub fn game_only() {}\n",
+            "crates/a/Cargo.toml": '[package]\nname = "a"\nautobins = false\nautoexamples = false\n',
             "crates/a/examples/probe/main.rs": "extern crate b as legacy;\nfn main() { legacy::used::helper(); }\n",
             "crates/b/src/main.rs": "compile_error!(\"disabled auto-bin\");\n",
             "crates/b/examples/ignored.rs": "compile_error!(\"disabled auto-example\");\n",
@@ -148,6 +149,8 @@ class ReachTests(unittest.TestCase):
         self.assertIn((self.root / "crates/a/examples/probe/main.rs").resolve(), roots)
         self.assertNotIn((self.root / "crates/b/src/main.rs").resolve(), roots)
         self.assertTrue(graph.is_library("crates/a/src/shared.rs"))
+        self.assertEqual(graph.entries([["example", "client_probe", "dev", ["-p", "a"], True]],
+                                       {"crates/a/examples/probe/main.rs"}), {"crates/a/examples/probe/main.rs"})
         reached = graph.reachable({"crates/a/examples/probe/main.rs"},
                                   {"crates/a/examples/probe/main.rs", "crates/a/src/shared.rs", "crates/a/src/used.rs"})
         self.assertIn("crates/a/src/used.rs", reached)

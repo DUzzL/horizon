@@ -260,6 +260,11 @@ class SourceGraph:
             packages = [value for flag, value in zip(selection, selection[1:]) if flag == "-p"] or \
                 [manifest.parent.name for manifest in sorted((self.root / "crates").glob("*/Cargo.toml"))]
             roots = set()
+            if name and not any(name in self.targets(self.root / "crates" / package) for package in packages):
+                owners = [manifest.parent.name for manifest in (self.root / "crates").glob("*/Cargo.toml")
+                          if self.targets(manifest.parent).get(name, (None,))[0] == kind.rstrip("s")]
+                if len(owners) == 1:
+                    packages = [*packages, owners[0]]
             for package in packages:
                 crate = self.root / "crates" / package
                 targets = self.targets(crate)

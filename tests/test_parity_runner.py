@@ -30,6 +30,19 @@ class ParityRunnerTests(unittest.TestCase):
         self.assertEqual(parity.artifacts_of(["cargo", "build", "--release", "-p", "horizon-world", "--bin=horizon-world"]),
                          [["bin", "horizon-world", "release", ["-p", "horizon-world"], False]])
 
+    def test_prebuild_follows_a_moved_target_without_losing_features(self):
+        selection = ["-p", "horizon-client", "--no-default-features", "--features", "horizon-client/rng-trace"]
+        artifacts = [["example", "client_probe", "fast", selection, True],
+                     ["bin", "horizon-ctl", "fast", selection, False]]
+        packages = {("example", "client_probe"): "horizon-client-lib", ("bin", "horizon-ctl"): "horizon-client-lib"}
+        commands = parity.prebuild_commands(artifacts, packages)
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertEqual(command[:5], ["cargo", "build", "--locked", "--profile", "fast"])
+            self.assertEqual(command[5:5 + len(selection)], selection)
+            self.assertEqual(command[5 + len(selection):7 + len(selection)], ["-p", "horizon-client-lib"])
+        self.assertEqual(artifacts[0][3], selection)
+
     def test_prebuild_repeats_each_harness_selection(self):
         artifacts = [
             *parity.artifacts_of(["cargo", "build", "--release", "-p", "horizon-world", "--example", "a"]),
@@ -577,6 +590,17 @@ class WorkspaceManifestTests(unittest.TestCase):
         # A feature that reaches an external package counts.
         optional = {"crates/horizon-client/Cargo.toml": self.CLIENT + '\n[features]\nfast = ["wgpu/x"]\n'}
         self.assertEqual(self.verdict({"crates/horizon-client/Cargo.toml": self.CLIENT}, optional), set())
+
+    def test_external_feature_sources_are_not_discarded(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)):
+            root = Path(temp)
+            (root / "crates/core").mkdir(parents=True)
+            (root / "shared").mkdir()
+            (root / "crates/core/Cargo.toml").write_text(
+                '[package]\nname = "core"\n[lib]\npath = "../../shared/lib.rs"\n'
+                '[features]\nextra = []\n')
+            (root / "shared/lib.rs").write_text('#[cfg(feature = "extra")]\nfn extra() {}\n')
+            self.assertFalse(parity.feature_sources_changed("core", "extra", {"crates/core/Cargo.toml"}))
 
     def test_without_a_base_everything_counts(self):
         self.assertEqual(parity.workspace_only_manifests({"Cargo.lock"}, None), set())
