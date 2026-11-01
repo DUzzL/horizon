@@ -2828,6 +2828,11 @@ struct Game<'a> {
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_acting: Option<u32>,
     player_attachments: horizon_world::attachments::Attachments,
+    /// The joined guests' attachments, by UUID: here rather than in their
+    /// records, so a hook in one guest's turn (when the hub is out of
+    /// `self.lan`) still reaches the others'. The acting guest's are in
+    /// `player_attachments` for the turn.
+    guest_attachments: HashMap<u128, horizon_world::attachments::Attachments>,
     /// The block the acting player is breaking (`break_block`): its destroy
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
     /// with the player excluded); the events after it are not.
@@ -14698,7 +14703,9 @@ impl Game<'_> {
         {
             // The vehicle tree goes into a player's file when they leave
             // (`take_parent_vehicle`); here it stays in the chunk saves.
-            for g in host.hub.guests.iter().filter(|g| g.placed) {
+            let mut host = host;
+            for g in host.hub.guests.iter_mut().filter(|g| g.placed) {
+                self.guest_attachments_into(g);
                 horizon_client::lan::playerdata::save(g, &self.world_root);
             }
             self.lan = Some(host);
@@ -18194,6 +18201,7 @@ impl<'a> Game<'a> {
             lid_openers: HashMap::new(),
             lan_acting: None,
             player_attachments: Default::default(),
+            guest_attachments: HashMap::new(),
             lan_break_pos: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),

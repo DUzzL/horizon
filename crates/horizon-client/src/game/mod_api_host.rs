@@ -48,6 +48,15 @@ fn world_attachments(
 }
 
 impl Game<'_> {
+    /// A guest's attachments back in their record, for `playerdata` to save.
+    pub(super) fn guest_attachments_into(&self, guest: &mut horizon_client::lan::guest::Guest) {
+        guest.attachments = self
+            .guest_attachments
+            .get(&guest.uuid)
+            .cloned()
+            .unwrap_or_default();
+    }
+
     pub(super) fn native_authoritative(&self) -> bool {
         self.serving.is_some() || self.options.dedicated.is_some()
     }
@@ -94,15 +103,8 @@ impl Game<'_> {
                 return Ok(&mut self.player_attachments);
             }
             return self
-                .lan
-                .as_mut()
-                .and_then(|host| {
-                    host.hub
-                        .guests
-                        .iter_mut()
-                        .find(|guest| guest.uuid == uuid && guest.placed)
-                })
-                .map(|guest| &mut guest.attachments)
+                .guest_attachments
+                .get_mut(&uuid)
                 .ok_or(AttachmentError::MissingHolder);
         }
         world_attachments(&mut self.world, holder)
