@@ -797,6 +797,11 @@ pub fn mob_to_nbt(
             put_memories(map, m);
             crate::mobs::villager::write_nbt(m, map);
         }
+        // Dolphin.addAdditionalSaveData: the fish it was fed, and how wet it is.
+        "minecraft:dolphin" => {
+            map.insert("GotFish".into(), Tag::Byte(i8::from(m.extra.flag)));
+            map.insert("Moistness".into(), Tag::Int(m.extra.counter));
+        }
         "minecraft:wandering_trader" => {
             put_offers(map, m);
             // WanderingTrader.addAdditionalSaveData: the visit's countdown and
@@ -1762,6 +1767,12 @@ pub fn mob_from_nbt(
         }
         crate::mobs::zombie_villager::read_nbt(&mut m, tag);
     }
+    if m.species() == crate::mobs::Species::Dolphin {
+        // Dolphin.readAdditionalSaveData: a save that names neither field is an
+        // unfed dolphin at full moistness.
+        m.extra.flag = flag(tag, "GotFish");
+        m.extra.counter = number(tag.get("Moistness")).unwrap_or(2400) as i32;
+    }
     if m.species() == crate::mobs::Species::Axolotl {
         restore_axolotl_memories(&mut m, tag);
     }
@@ -2084,6 +2095,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         bob_offset,
         ticks: 0,
         needs_sync: false,
+        stuck: Vec3::ZERO,
     })
 }
 
@@ -3167,6 +3179,7 @@ mod tests {
             ticks: 0,
             bob_offset: 0.0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -4019,6 +4032,49 @@ mod sheep_nbt_tests {
         assert_eq!(number(tag.get("Age")), Some(-21359));
         assert_eq!(number(tag.get("AgeLocked")), Some(0));
         assert_eq!(number(tag.get("VillagerDataFinalized")), Some(1));
+    }
+
+    /// `Dolphin.addAdditionalSaveData`: a fed dolphin stays fed and a wet one
+    /// stays wet across a reload; a save with neither field reads as an unfed
+    /// dolphin at full moistness.
+    #[test]
+    fn a_dolphins_moistness_and_fish_survive_a_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        // A fresh dolphin starts full, as `Dolphin`'s field does.
+        let mut m = Mob::new(
+            1,
+            types["minecraft:dolphin"].clone(),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        assert_eq!(m.extra.counter, 2400);
+        m.extra.flag = true;
+        m.extra.counter = 123;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Moistness")), Some(123));
+        assert_eq!(number(tag.get("GotFish")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert!(back.extra.flag, "fed");
+        assert_eq!(back.extra.counter, 123);
+        // A save with neither field: unfed, full.
+        let bare = Tag::compound([
+            ("id", string("minecraft:dolphin")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+        ]);
+        let back = mob_from_nbt(&bare, &types, 3, None).unwrap();
+        assert!(!back.extra.flag);
+        assert_eq!(back.extra.counter, 2400);
     }
 
     /// `WanderingTrader.addAdditionalSaveData`: the visit's countdown and the

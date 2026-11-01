@@ -2095,6 +2095,59 @@ pub fn in_view_distance(center: (i32, i32), radius: i32, x: i32, z: i32) -> bool
     let (dx, dz) = (gap(x - center.0), gap(z - center.1));
     dx * dx + dz * dz < i64::from(radius) * i64::from(radius)
 }
+/// How long a view's columns are waited for (`ViewArrival`): a server may never
+/// fill it.
+const VIEW_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Whether the columns of a view (centre, radius) have all arrived, as a client
+/// sees them come: a server forgets the old view's columns, then sends the new
+/// ones nearest first, so the view's outermost ones come last. Single player
+/// joins its integrated server the same way, so `Streaming::busy` cannot see
+/// what is not sent yet.
+#[derive(Default)]
+pub struct ViewArrival {
+    view: ((i32, i32), i32),
+    since: Option<std::time::Instant>,
+    arrived: bool,
+}
+impl ViewArrival {
+    /// Whether columns of `view` have yet to arrive (`has`): its outermost ones,
+    /// at both ends of each of its rows and columns (`in_view_distance`). Once
+    /// they have, false until the view changes; false too once it is no longer
+    /// `recent`, and for a radius below 0 (no view).
+    pub fn arriving(
+        &mut self,
+        view: ((i32, i32), i32),
+        now: std::time::Instant,
+        has: impl Fn((i32, i32)) -> bool,
+    ) -> bool {
+        if self.since.is_none() || view != self.view {
+            (self.view, self.since, self.arrived) = (view, Some(now), false);
+        }
+        let ((x, z), r) = view;
+        if self.arrived || r < 0 || !self.recent(now) {
+            return false;
+        }
+        self.arrived = (-r..=r).all(|d| {
+            // How far row (and column) `d` reaches: `in_view_distance` solved for it.
+            let gap = i64::from((d.abs() - 1).max(0));
+            let room = i64::from(r).pow(2) - gap * gap;
+            room <= 0 || {
+                let e = (room - 1).isqrt() as i32 + 1;
+                // Both ends of row `d`, and of column `d`.
+                [-e, e]
+                    .into_iter()
+                    .all(|e| has((x + d, z + e)) && has((x + e, z + d)))
+            }
+        });
+        !self.arrived
+    }
+    /// Whether the view `arriving` was last given changed less than `VIEW_WAIT`
+    /// ago: until then sections meshed are its terrain coming in, later an edit's.
+    pub fn recent(&self, now: std::time::Instant) -> bool {
+        self.since
+            .is_some_and(|since| now.saturating_duration_since(since) < VIEW_WAIT)
+    }
+}
 /// The rings around a `/forceload`ed chunk, in chunks. Vanilla's FORCED
 /// ticket is level 31 (`ChunkMap.FORCED_TICKET_LEVEL`), the level rises one
 /// per ring (`ChunkTracker.computeLevelFromNeighbor`), and the level picks
@@ -2821,6 +2874,45 @@ mod tests {
                 -x
             );
         }
+    }
+
+    /// A view has arrived once the columns at both ends of each of its rows and
+    /// columns are in: exactly those with a neighbour outside it, at every radius.
+    /// Then it stays arrived until it changes; a view is `recent`, and waited for,
+    /// `VIEW_WAIT` at most, and one of no radius not at all.
+    #[test]
+    fn a_view_has_arrived_once_its_outermost_columns_are_in() {
+        let start = std::time::Instant::now();
+        let center = (3, -4);
+        for r in 0..=16 {
+            let view: FxHashSet<(i32, i32)> = (-r - 1..=r + 1)
+                .flat_map(|x| (-r - 1..=r + 1).map(move |z| (center.0 + x, center.1 + z)))
+                .filter(|&(x, z)| in_view_distance(center, r, x, z))
+                .collect();
+            let arriving = |has: &dyn Fn((i32, i32)) -> bool| {
+                ViewArrival::default().arriving((center, r), start, has)
+            };
+            assert!(!arriving(&|c| view.contains(&c)), "radius {r}");
+            for &(x, z) in &view {
+                let edge = [(x + 1, z), (x - 1, z), (x, z + 1), (x, z - 1)]
+                    .iter()
+                    .any(|c| !view.contains(c));
+                let missing = arriving(&|c| c != (x, z) && view.contains(&c));
+                assert_eq!(missing, edge, "radius {r}, column ({x}, {z})");
+            }
+        }
+        let mut arrival = ViewArrival::default();
+        let (none, all) = (|_| false, |_| true);
+        assert!(arrival.arriving(((0, 0), 2), start, none));
+        assert!(!arrival.arriving(((0, 0), 2), start, all));
+        assert!(!arrival.arriving(((0, 0), 2), start, none));
+        // Moved: waited for again, until `VIEW_WAIT` after the move.
+        let (late, ms) = (start + VIEW_WAIT, std::time::Duration::from_millis(1));
+        assert!(arrival.arriving(((1, 0), 2), start, none));
+        assert!(arrival.arriving(((1, 0), 2), late - ms, none));
+        assert!(arrival.recent(late - ms) && !arrival.recent(late));
+        assert!(!arrival.arriving(((1, 0), 2), late, none));
+        assert!(!arrival.arriving(((1, 0), -1), start, none));
     }
 
     struct GenerationFixture {

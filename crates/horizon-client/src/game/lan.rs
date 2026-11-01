@@ -2485,6 +2485,12 @@ impl Game<'_> {
         if event == 45 && self.options.execution_role.is_client() {
             self.fox_eat_particles(id as u32);
         }
+        // Entity event 35: a mob's death protection fired
+        // (`LivingEntity.checkTotemDeathProtection`); the clients draw the
+        // totem particles and play its sound.
+        if event == 35 && self.options.execution_role.is_client() {
+            self.remote_totem(id);
+        }
     }
     /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
     /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
