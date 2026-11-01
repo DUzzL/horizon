@@ -590,6 +590,14 @@ impl DamageKind {
     pub fn bypasses_invulnerability(self) -> bool {
         matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
     }
+    /// DamageTypeTags.BYPASSES_EFFECTS
+    pub fn bypasses_effects(self) -> bool {
+        matches!(self, DamageKind::Starve)
+    }
+    /// DamageTypeTags.BYPASSES_RESISTANCE
+    pub fn bypasses_resistance(self) -> bool {
+        matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
+    }
 }
 /// `source.getEntity()` of a blow, as `SulfurCube.knockback` reads it: `getEyePosition()`,
 /// `getLookAngle()` and `position()`.
@@ -1165,6 +1173,8 @@ pub struct Mob {
     pub glowing: bool,
     pub air: i32,
     pub last_hurt: f32,
+    /// `LivingEntity.getAbsorptionAmount`: golden hearts that soak damage before health.
+    pub absorption: f32,
     pub last_damage: Option<(Damage, i64)>,
     /// `LivingEntity.combatTracker`: the hits taken lately.
     pub combat: combat::Tracker,
@@ -2469,6 +2479,7 @@ impl Mob {
             glowing: false,
             air: 300,
             last_hurt: 0.0,
+            absorption: 0.0,
             last_damage: None,
             combat: combat::Tracker::default(),
             removed: false,
@@ -2724,6 +2735,22 @@ impl Mob {
         if epf > 0.0 {
             amount *= 1.0 - epf / 25.0;
         }
+        // LivingEntity.getDamageAfterMagicAbsorb: Resistance takes 20% per level off
+        // (`#bypasses_resistance` and `#bypasses_effects` skip it).
+        if !source.kind.bypasses_effects()
+            && !source.kind.bypasses_resistance()
+            && let Some(&(_, _, amp)) = self
+                .extra
+                .effects
+                .iter()
+                .find(|e| e.0 == "minecraft:resistance")
+        {
+            let remainder = 25i32.wrapping_sub(amp.wrapping_add(1).wrapping_mul(5));
+            amount = (amount * remainder as f32 / 25.0).max(0.0);
+            if amount <= 0.0 {
+                return false;
+            }
+        }
         // Witch.getDamageAfterMagicAbsorb: none from its own doing, else
         // 85% less from `#witch_resistant_to`.
         if self.species() == Species::Witch {
@@ -2750,6 +2777,7 @@ impl Mob {
             if absorbed {
                 self.hurt_wolf_armor(dealt);
             } else {
+                let dealt = self.soak_absorption(dealt);
                 self.health -= dealt;
             }
             self.last_hurt = amount;
@@ -2761,7 +2789,8 @@ impl Mob {
             if absorbed {
                 self.hurt_wolf_armor(amount);
             } else {
-                self.health -= amount;
+                let through = self.soak_absorption(amount);
+                self.health -= through;
             }
             self.hurt_time = 10;
             amount
@@ -3061,8 +3090,41 @@ impl Mob {
             self.extra.hidden_effects.push(effect);
         }
     }
+    /// `LivingEntity.actuallyHurt`: the absorption amount takes the damage first;
+    /// what is left reaches the health.
+    pub fn soak_absorption(&mut self, damage: f32) -> f32 {
+        let through = (damage - self.absorption).max(0.0);
+        self.absorption = (self.absorption - (damage - through)).max(0.0);
+        through
+    }
+    /// `HealOrHarmMobEffect.applyInstantenousEffect`: a harming effect hurts a
+    /// living mob (6 << amplifier, magic) and heals an undead one, a healing effect
+    /// the reverse (4 << amplifier), both scaled by `scale`.
+    pub fn apply_heal_or_harm(&mut self, harm: bool, inverted: bool, amplifier: i32, scale: f64) {
+        let amp = amplifier.clamp(0, 30);
+        if harm != inverted {
+            self.damage(
+                (scale * f64::from(6i32 << amp)) as i32 as f32,
+                Damage::of(DamageKind::Magic),
+            );
+        } else {
+            let heal = (scale * f64::from(4i32 << amp)) as i32 as f32;
+            self.health = (self.health + heal).min(self.attrs.max_health);
+        }
+    }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
+        // AbsorptionMobEffect.addAttributeModifiers: at least 4 hearts-halves per level.
+        if effect == "minecraft:absorption"
+            && self
+                .extra
+                .effects
+                .iter()
+                .find(|e| e.0 == effect)
+                .is_none_or(|e| amplifier > e.2)
+        {
+            self.absorption = self.absorption.max(4.0 * (amplifier + 1) as f32);
+        }
         if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
             // MobEffectInstance.update: a stronger effect replaces with its
             // own duration, an equal one only extends it; a weaker one is

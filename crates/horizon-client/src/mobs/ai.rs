@@ -2514,6 +2514,17 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             "minecraft:wither" if count % interval(40) == 0 => {
                 m.damage(1.0, Damage::of(DamageKind::Magic));
             }
+            // InstantenousMobEffect: applied on every tick it has time left
+            // (`/effect give` keeps the effect listed for its few ticks; the hit
+            // frames let a harming one through once).
+            "minecraft:instant_damage" | "minecraft:instant_health" if count >= 1 => {
+                m.apply_heal_or_harm(
+                    *effect == "minecraft:instant_damage",
+                    m.kind.flags.undead,
+                    *amp,
+                    1.0,
+                );
+            }
             "minecraft:regeneration"
                 if count % interval(50) == 0 && !m.kind.flags.undead && m.alive() =>
             {
@@ -2536,6 +2547,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         }
         if !infinite {
             *ticks -= 1;
+        }
+    }
+    // AbsorptionMobEffect.removeAttributeModifiers: the hearts it gave go with it.
+    for (effect, ticks, amp) in &effects {
+        if *effect == "minecraft:absorption" && *ticks <= 0 && *ticks != -1 {
+            m.absorption = (m.absorption - 4.0 * (*amp + 1) as f32).max(0.0);
         }
     }
     effects.retain(|e| e.1 > 0 || e.1 == -1);
@@ -2795,6 +2812,68 @@ mod poison_effect_tests {
             zombie.health, initial_zombie_health,
             "undead mobs are immune to poison"
         );
+    }
+
+    /// A mob's effects act on it: instant health and harm (inverted for the
+    /// undead), Resistance taking 20% a level off a hit, Absorption soaking
+    /// damage before health, Slow Falling capping gravity while it falls.
+    #[test]
+    fn mob_effects_heal_harm_resist_absorb_and_slow_the_fall() {
+        use std::sync::Arc;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let make = |name: &str| {
+            let kind = Arc::new(data.types.get(name).unwrap().clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+            m.attrs.max_health = 100.0;
+            m.health = 60.0;
+            m
+        };
+        // instant_health 1 heals 8 a tick, instant_damage 0 hurts 6 once (hit frames).
+        let mut golem = make("minecraft:iron_golem");
+        golem.add_effect("instant_health", 6, 1);
+        tick_effects(&mut golem, None);
+        assert_eq!(golem.health, 68.0);
+        let mut golem = make("minecraft:iron_golem");
+        golem.add_effect("instant_damage", 6, 0);
+        tick_effects(&mut golem, None);
+        assert_eq!(golem.health, 54.0);
+        // The undead are healed by harm.
+        let mut zombie = make("minecraft:zombie");
+        zombie.add_effect("instant_damage", 6, 0);
+        tick_effects(&mut zombie, None);
+        assert_eq!(zombie.health, 64.0);
+        // Resistance V (amplifier 4) takes it all, III takes 80%.
+        let mut golem = make("minecraft:iron_golem");
+        golem.health = 100.0;
+        golem.add_effect("resistance", 100, 4);
+        golem.damage(5.0, Damage::of(DamageKind::Generic));
+        assert_eq!(golem.health, 100.0);
+        let mut golem = make("minecraft:iron_golem");
+        golem.health = 100.0;
+        golem.add_effect("resistance", 100, 2);
+        golem.damage(10.0, Damage::of(DamageKind::Generic));
+        assert_eq!(golem.health, 96.0);
+        // Absorption II: 8 hearts-halves, 5 damage leaves 3 and costs no health.
+        let mut golem = make("minecraft:iron_golem");
+        golem.health = 100.0;
+        golem.add_effect("absorption", 100, 1);
+        assert_eq!(golem.absorption, 8.0);
+        golem.damage(5.0, Damage::of(DamageKind::Generic));
+        assert_eq!((golem.health, golem.absorption), (100.0, 3.0));
+        // Slow Falling: gravity floors at 0.01 while falling, not while rising.
+        let mut pig = make("minecraft:pig");
+        let full = pig.effective_gravity();
+        pig.add_effect("slow_falling", 100, 0);
+        assert!(full > 0.01);
+        assert_eq!(pig.effective_gravity(), 0.01);
+        pig.velocity.y = 0.5;
+        assert_eq!(pig.effective_gravity(), full);
     }
 }
 
