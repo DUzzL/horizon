@@ -3017,7 +3017,7 @@ mod emissive_tests {
 
     #[test]
     fn an_emissive_overlay_draws_the_body_again_at_full_brightness() {
-        let lit = 3 * 16 | (5 * 16) << 8;
+        let lit = (3 * 16) | ((5 * 16) << 8);
         let m = silverfish();
         let draw = |data: &MobData| {
             let mut out = Vec::new();
