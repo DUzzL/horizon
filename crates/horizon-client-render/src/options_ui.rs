@@ -4941,6 +4941,24 @@ impl OptionsUi {
 mod tests {
     use super::*;
 
+    /// The window allows the input method only while `typing` says a search
+    /// box has the focus (`Game::text_field_focused`), so a page without one
+    /// must not claim the keys: the movement and menu keys keep working there.
+    #[test]
+    fn only_a_focused_search_box_takes_text() {
+        let mut ui = OptionsUi::default();
+        assert!(!ui.typing(), "the main page has no text box");
+        ui.show(Page::Language);
+        assert!(ui.typing(), "the language list's search takes the keys");
+        ui.show(Page::Video);
+        assert!(!ui.typing(), "the settings search is not focused");
+        ui.settings_search.focused = true;
+        assert!(ui.typing(), "the settings search, once focused, does");
+        ui.settings_search.focused = false;
+        ui.show(Page::Packs);
+        assert!(!ui.typing(), "the pack screen's search is not open yet");
+    }
+
     #[test]
     fn accessibility_sliders_and_toggles_survive_options_round_trip() {
         let mut s = Settings::default();
