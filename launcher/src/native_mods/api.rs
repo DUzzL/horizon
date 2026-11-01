@@ -140,7 +140,7 @@ pub(super) fn stage(
     }
     let mut deps = toml::Table::new();
     for name in ["horizon-client", "horizon-threads", "horizon-mods"] {
-        deps.insert(name.into(), path_dep(&format!("../crates/{name}")));
+        deps.insert(name.into(), path_dep(&format!("../{name}")));
     }
     let mut members = Vec::new();
     for (i, (index, bundle)) in mods.iter().enumerate() {
@@ -355,6 +355,14 @@ mod tests {
             game["package"]["build"].as_str(),
             Some("../horizon-client/build.rs")
         );
+        assert!(stage_dir
+            .join(GAME)
+            .join(
+                game["dependencies"]["horizon-client"]["path"]
+                    .as_str()
+                    .unwrap()
+            )
+            .ends_with("crates/native-game/../horizon-client"));
         fs::remove_dir_all(dir).unwrap();
     }
 
