@@ -49,6 +49,9 @@ pub struct Choice {
     countdown: u8,
     /// Drawing found a texture with rules and no pick: choose on the next tick.
     missed: AtomicBool,
+    /// A miss was answered since the last regular check: one per check, so a texture drawing
+    /// keeps missing (never listed by `drawn_textures`) can't make the mob choose every tick.
+    answered: bool,
 }
 
 impl Clone for Choice {
@@ -61,6 +64,7 @@ impl Clone for Choice {
             primary: self.primary,
             countdown: self.countdown,
             missed: AtomicBool::new(self.missed.load(Ordering::Relaxed)),
+            answered: self.answered,
         }
     }
 }
@@ -82,11 +86,17 @@ impl Choice {
             self.countdown = (stagger % u32::from(RECHECK)) as u8;
             return true;
         }
-        if self.missed.swap(false, Ordering::Relaxed) || self.countdown == 0 {
+        if self.countdown == 0 {
             self.countdown = RECHECK - 1;
+            self.answered = false;
+            self.missed.store(false, Ordering::Relaxed);
             return true;
         }
         self.countdown -= 1;
+        if self.missed.swap(false, Ordering::Relaxed) && !self.answered {
+            self.answered = true;
+            return true;
+        }
         false
     }
 }
@@ -270,15 +280,19 @@ mod tests {
         }
     }
 
-    /// A temp pack of `files` (path under `optifine/random/entity`, contents), scanned.
+    /// A temp pack of `files` (path under `optifine/random/entity`, or from the root when it
+    /// starts with `assets/`; contents), scanned.
     fn pack(name: &str, files: &[(&str, &str)]) -> RandomTextures {
         let root =
             std::env::temp_dir().join(format!("horizon-mob-random-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for (path, text) in files {
-            let path = root
-                .join("assets/minecraft/optifine/random/entity")
-                .join(path);
+            let path = if path.starts_with("assets/") {
+                root.join(path)
+            } else {
+                root.join("assets/minecraft/optifine/random/entity")
+                    .join(path)
+            };
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
@@ -452,6 +466,39 @@ mod tests {
         assert_eq!(texture(&m, &t, "entity/cow/cow"), None);
         assert!(m.random_textures.due(&t, 1));
         assert!(!m.random_textures.due(&t, 1));
+        // Still missing (never listed): no second choice until the regular check.
+        assert_eq!(texture(&m, &t, "entity/cow/cow"), None);
+        assert!(!m.random_textures.due(&t, 1));
+    }
+
+    #[test]
+    fn a_layer_without_rules_follows_the_bodys_pick_or_miss() {
+        // The wool's variants are in ETF's folder, which holds no rules, so it follows the body
+        // (whose rules are in OptiFine's): `sheep_wool1.png` doesn't stand in for a miss.
+        let t = pack(
+            "follow",
+            &[
+                ("sheep/sheep.properties", "textures.1=2\nbiomes.1=desert"),
+                ("sheep/sheep2.png", ""),
+                (
+                    "assets/minecraft/etf/random/entity/sheep/sheep_wool1.png",
+                    "",
+                ),
+                (
+                    "assets/minecraft/etf/random/entity/sheep/sheep_wool2.png",
+                    "",
+                ),
+            ],
+        );
+        let mut plains = mob(Species::Sheep);
+        choose(&mut plains, &t, &data(), Some(seen("minecraft:plains")), 0);
+        assert_eq!(texture(&plains, &t, WOOL), None);
+        let mut desert = mob(Species::Sheep);
+        choose(&mut desert, &t, &data(), Some(seen("minecraft:desert")), 0);
+        assert_eq!(
+            texture(&desert, &t, WOOL),
+            Some("minecraft:etf/random/entity/sheep/sheep_wool2")
+        );
     }
 
     #[test]
