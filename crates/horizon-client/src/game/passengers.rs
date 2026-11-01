@@ -40,6 +40,12 @@ impl Game<'_> {
         }
         let boats: std::collections::HashSet<u32> = self.boats.iter().map(|b| b.id).collect();
         let carts: std::collections::HashSet<u32> = self.carts.iter().map(|c| c.id).collect();
+        let tnts: std::collections::HashSet<u32> = self
+            .tnts
+            .iter()
+            .map(|t| t.id)
+            .filter(|&id| id != 0)
+            .collect();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()
@@ -57,6 +63,7 @@ impl Game<'_> {
                 && !self.mobs[i].removed
                 && (boats.contains(&v)
                     || carts.contains(&v)
+                    || tnts.contains(&v)
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -79,6 +86,7 @@ impl Game<'_> {
     pub(super) fn position_riders(&mut self) {
         self.seat_boat_mobs();
         self.seat_cart_mobs();
+        self.seat_tnt_mobs();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()

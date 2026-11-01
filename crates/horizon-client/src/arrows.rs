@@ -32,8 +32,8 @@ use horizon_world::{
 use std::{collections::HashSet, fmt};
 
 /// `EntityType.ARROW` (and tipped/spectral arrows): 0.5 x 0.5, eyes at 0.13.
-const WIDTH: f32 = 0.5;
-const HEIGHT: f32 = 0.5;
+pub const WIDTH: f32 = 0.5;
+pub const HEIGHT: f32 = 0.5;
 const EYE_HEIGHT: f32 = 0.13;
 
 /// `AbstractArrow.Pickup`.
@@ -478,7 +478,7 @@ pub fn blocks_inside(from: Vec3, to: Vec3) -> Vec<BlockPos> {
     inside
 }
 /// `Projectile.lerpRotation`.
-fn lerp_rotation(mut old: f32, new: f32) -> f32 {
+pub fn lerp_rotation(mut old: f32, new: f32) -> f32 {
     while new - old < -180.0 {
         old -= 360.0;
     }

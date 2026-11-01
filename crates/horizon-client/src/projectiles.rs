@@ -49,6 +49,12 @@ pub fn register_thrown_types(types: impl IntoIterator<Item = (String, String, f3
 pub fn thrown_types() -> &'static [ThrownType] {
     THROWN_TYPES.get().map_or(&[], Vec::as_slice)
 }
+/// the lib's tests' one mod type, `ruby:bolt` thrown from `ruby:gem`: the
+/// registry is set once per process, so every test registers the same.
+#[cfg(test)]
+pub(crate) fn register_test_types() {
+    let _ = register_thrown_types([("ruby:bolt".into(), "ruby:gem".into(), 2.0)]);
+}
 /// the mod type with entity type `id`; out of line, as vanilla's never are.
 #[cold]
 #[inline(never)]
@@ -110,6 +116,19 @@ pub enum ProjectileKind {
     Thrown(&'static ThrownType),
 }
 impl ProjectileKind {
+    /// Wind charges take no push from an explosion (vanilla leaves their motion at 0).
+    pub fn ignores_blast(&self) -> bool {
+        matches!(self, Self::WindCharge | Self::BreezeWindCharge)
+    }
+    /// `EntityType.Builder.eyeHeight`: 0.13 for arrows and tridents, 0 for
+    /// wind charges, else the default 0.85 of the box height.
+    pub fn eye_height(&self) -> f64 {
+        match self {
+            Self::Arrow { .. } | Self::Trident => f64::from(0.13_f32),
+            Self::WindCharge | Self::BreezeWindCharge => 0.0,
+            _ => f64::from(self.size() as f32 * 0.85_f32),
+        }
+    }
     /// The width and height of its entity type's `sized(...)`.
     pub fn size(&self) -> f64 {
         match self {
@@ -182,6 +201,8 @@ pub struct Projectile {
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
     pub touching_water: bool,
+    /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
+    pub no_gravity: bool,
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -271,6 +292,7 @@ impl Projectile {
             acceleration,
             needs_sync: false,
             touching_water: false,
+            no_gravity: false,
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
                 Box::new(crate::arrows::ArrowState::new(
@@ -399,7 +421,11 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
+    /// `Entity.getGravity`: none with `NoGravity`, else the kind's default.
     fn gravity(&self) -> f64 {
+        if self.no_gravity {
+            return 0.0;
+        }
         match self.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
             ProjectileKind::SmallFireball
@@ -965,6 +991,18 @@ mod tests {
         assert!((p.position.x - 0.99).abs() < 1e-9);
     }
     #[test]
+    fn a_snowball_with_no_gravity_stays_where_it_was_summoned() {
+        // Entity.getGravity is 0 with NoGravity: at rest, it never moves.
+        let start = Vec3::new(0.5, 100.0, 0.5);
+        let mut p = Projectile::new(ProjectileKind::Snowball, start, None);
+        p.no_gravity = true;
+        let w = Empty(vec![]);
+        for _ in 0..20 {
+            p.tick(&w);
+        }
+        assert_eq!((p.position, p.velocity), (start, Vec3::ZERO));
+    }
+    #[test]
     fn a_mod_thrown_type_flies_tick_for_tick_as_a_snowball() {
         static BOLT: ThrownType = ThrownType {
             id: "ruby:bolt",
@@ -1002,11 +1040,10 @@ mod tests {
         ));
     }
 
-    /// the only test that registers: the registry is set once per process.
+    /// the registry is set once per process: every test registers the same.
     #[test]
     fn mod_thrown_types_are_found_by_id_and_item_once_registered() {
-        let bolt = ("ruby:bolt".to_owned(), "ruby:gem".to_owned(), 2.0);
-        assert!(register_thrown_types([bolt]));
+        register_test_types();
         assert!(!register_thrown_types([(
             "ruby:late".into(),
             "ruby:x".into(),

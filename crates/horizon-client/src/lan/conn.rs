@@ -39,6 +39,13 @@ const KEEP_ALIVE_EVERY: Duration = Duration::from_secs(15);
 /// ReadTimeoutHandler(30) in ServerConnectionListener: a connection that sends
 /// nothing for 30 s.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the handshake, a status request and the login may wait for the client's next packet,
+/// where vanilla waits 30 s: a client answers these at once, and each connection holds a thread
+/// and one of the places the server keeps for connections, which a crowd of silent or slow
+/// sockets would otherwise take for 30 s each. Configuration and play keep [`READ_TIMEOUT`] (a
+/// resource pack downloads in configuration).
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Packets queued for one client beyond this many bytes disconnect it.
 const MAX_PENDING: usize = 96 << 20;
 /// Vanilla's server-side disconnect during login is a JSON component.
@@ -457,8 +464,15 @@ pub fn serve(
     {
         return serve_legacy(stream, &shared);
     }
+    // A peer that stops reading (a frozen game, a dropped network) would otherwise hold
+    // its writer in a full send buffer for good, or until TCP gives up minutes later, and
+    // its thread and its place among the server's connections with it.
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
     serve_connection(Connection::from_stream(stream).map_err(e)?, address, shared)
 }
+
+/// How long one write may wait on a peer that reads nothing: as long as a read may wait.
+const WRITE_TIMEOUT: Duration = READ_TIMEOUT;
 
 /// The address a memory connection logs in from: no network peer has port 0.
 pub const MEMORY_ADDRESS: std::net::SocketAddr = std::net::SocketAddr::V4(
@@ -480,9 +494,7 @@ fn serve_connection(
     shared: Arc<Shared>,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
-    c.reader
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .map_err(e)?;
+    c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
     let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
         handshake::Serverbound::Intention(i) => i,
@@ -881,6 +893,7 @@ fn login_and_configure(
             _ => return Err("unexpected packet during login".into()),
         }
     }
+    c.reader.set_read_timeout(Some(READ_TIMEOUT)).map_err(e)?;
     // Configuration.
     let sync_data = shared.sync();
     let sync: &SyncData = &sync_data;
@@ -977,6 +990,16 @@ fn login_and_configure(
             cfg::Clientbound::CustomPayload(cfg::CustomPayload {
                 channel: horizon_protocol::mod_net::CHANNEL.into(),
                 data: Vec::new(),
+            }),
+        )?;
+    }
+    // And how far it samples far terrain for it (crate::lod_net).
+    if brand == "horizon" && shared.config.lod_distance > 0 {
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: crate::lod_net::CHANNEL.into(),
+                data: crate::lod_net::Offer::new(shared.config.lod_distance).encode(),
             }),
         )?;
     }
@@ -1187,6 +1210,7 @@ fn wait_alive<T>(
 }
 
 fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::SocketAddr) {
+    shared.entered_play();
     let conn_id = shared.next_id();
     let events = shared.events.clone();
     let _ = c.reader.set_read_timeout(Some(READ_TIMEOUT));
@@ -1258,9 +1282,11 @@ fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::So
     };
     let _ = tx.send(Out::Close);
     let _ = events.send(NetEvent::Left(conn_id, reason));
+    shared.closing.fetch_add(1, Ordering::AcqRel);
     if let Some(t) = writer_thread {
         let _ = t.join();
     }
+    shared.closing.fetch_sub(1, Ordering::AcqRel);
     shared.release(parts.uuid);
 }
 

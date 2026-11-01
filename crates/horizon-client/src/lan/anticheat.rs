@@ -157,7 +157,7 @@ impl Hub {
         };
         if ac.config.runs(Check::Prediction) {
             let g = &mut self.guests[i];
-            let (input, sprinting) = (g.input, g.sprinting);
+            let (input, sprinting) = (g.input, g.anticheat.sprinting);
             g.anticheat
                 .record
                 .get_or_insert_default()
@@ -435,8 +435,12 @@ impl Hub {
         let mut events = Vec::new();
         if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
             let ticks = if over.ticks == 1 { "tick" } else { "ticks" };
+            // The worst tick as played, so the log tells a lag, a glide or a ladder from a cheat.
+            let worst = over
+                .at_worst
+                .map_or(String::new(), |p| format!("; {}", p.describe()));
             let detail = format!(
-                "moved up to {:.3} blocks off what its keys allow ({} {ticks})",
+                "moved up to {:.3} blocks off what its keys allow ({} {ticks}{worst})",
                 over.worst, over.ticks
             );
             let weight = over.weight;

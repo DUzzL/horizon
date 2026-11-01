@@ -148,6 +148,23 @@ impl Game<'_> {
             self.ui.vanilla_root.clone()
         }
     }
+    /// Whether all active packs preserve vanilla's block models. The server
+    /// overlay sits above the local selection and must be included too.
+    pub(super) fn model_packs_are_vanilla(&self) -> bool {
+        self.settings.horizon.vanilla_models_with_server_packs(
+            self.settings.resource_packs.iter().map(String::as_str),
+            self.server_packs.active.iter().map(|pack| pack.id.as_str()),
+        )
+    }
+    /// The leaf mode that is safe for the current local and server packs.
+    pub(super) fn effective_leaf_culling(&self) -> horizon_client::graphics::LeafCullingMode {
+        self.settings
+            .horizon
+            .leaf_culling_effective_with_server_packs(
+                self.settings.resource_packs.iter().map(String::as_str),
+                self.server_packs.active.iter().map(|pack| pack.id.as_str()),
+            )
+    }
     /// The packs the pack screen offers and the current selection
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
@@ -281,6 +298,7 @@ impl Game<'_> {
             gui,
             pack,
             textures,
+            cem,
         } = staged;
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
@@ -298,6 +316,8 @@ impl Game<'_> {
                     self.renderer.as_ref(),
                     Some(textures),
                     self.settings.horizon.api,
+                    self.settings.horizon.translucent_batching,
+                    super::shader_packs::picked_pack_draws_flat(&self.settings),
                 )
             })
             .transpose()
@@ -326,8 +346,13 @@ impl Game<'_> {
         // The new atlas's skin and map slots are blank: players and maps
         // upload into it again instead of naming sprites it does not have.
         self.skin_slots.forget();
+        self.skin_downloads
+            .borrow_mut()
+            .set_resource_root(self.options.resources.clone());
         self.maps.slots.forget();
         self.map_patches.clear();
+        // Kept mod block entities name the old atlas's sprites.
+        self.kept_block_entities.get_mut().clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles
@@ -341,11 +366,31 @@ impl Game<'_> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             horizon_client::mobs::villager_hats::VillagerHats::load(&root);
+        *self
+            .res
+            .mob_data()
+            .cem
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cem;
+        // The random entity textures the new atlas packs: every mob chooses again.
+        *self
+            .res
+            .mob_data()
+            .random_textures
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::mem::take(&mut self.gui.atlas.random_textures);
+        for m in &mut self.mobs {
+            m.random_textures.forget_picks();
+        }
         horizon_client::ui::load_metadata(&root);
         lang::set(lang::Language::load(&[&root], &lang::code()));
         self.refresh_remote_language();
         self.audio.reload(&root);
         self.clear_lod();
+        // A pack that may replace leaf models falls back to `Off` before the
+        // reload marks every section dirty.
+        self.streaming.leaf_culling = self.effective_leaf_culling();
         self.streaming.reload_resources(&mut self.world, context);
         self.pending_uploads.clear();
         // New GPU textures: a renderer built from the reloaded resources; the
@@ -367,6 +412,7 @@ impl Game<'_> {
         self.ui.chat.rescale(&self.gui.atlas);
         // The creative screen survives the reload; item names may not.
         self.creative_screen.forget_items();
+        self.native_client_resources_reloaded();
         Ok(())
     }
 }
@@ -417,12 +463,17 @@ pub(super) fn stage_pack(
         context.light.clone(),
     )?;
     let textures = prepare_renderer_textures(&pack);
+    let cem = Arc::new(horizon_client::mobs::cem::CemModels::load(
+        &root,
+        res.mob_types(),
+    ));
     progress.set(3);
     Ok(StagedPack {
         root,
         gui,
         pack,
         textures,
+        cem,
     })
 }
 
@@ -433,6 +484,8 @@ pub(super) struct StagedPack {
     pub gui: UiResources,
     pub pack: PackResources,
     pub textures: PreparedTextures,
+    /// The packs' custom entity models (OptiFine CEM).
+    pub cem: Arc<horizon_client::mobs::cem::CemModels>,
 }
 
 /// `LoadingOverlay`'s stage lines for a pack reload, indexed by `progress`.
