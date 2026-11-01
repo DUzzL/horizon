@@ -198,6 +198,8 @@ impl SyncData {
             advancements: super::advancements::ServerAdvancements::load(
                 Path::new(""),
                 &horizon_world::loot::PackOverlay::NONE,
+                BTreeMap::new(),
+                HashMap::new(),
             ),
             content_identity: None,
         }
@@ -264,9 +266,13 @@ impl SyncData {
             features: vec!["minecraft:vanilla".to_owned()],
             commands: super::commands::CommandTree::load(resources),
             recipes: Vec::new(),
-            advancements: super::advancements::ServerAdvancements::load(resources, overlay),
+            advancements: {
+                let (recipes, groups) = super::recipes::network_recipes(resources, overlay);
+                super::advancements::ServerAdvancements::load(resources, overlay, recipes, groups)
+            },
         };
-        sync.recipes = super::recipes::update_recipes(resources, &sync, overlay);
+        sync.recipes =
+            super::recipes::update_recipes(&sync.advancements.recipes, resources, &sync, overlay);
         Ok(sync)
     }
 
