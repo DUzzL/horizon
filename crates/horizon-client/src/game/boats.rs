@@ -1046,6 +1046,10 @@ impl Game<'_> {
     /// `getDismountLocationForPassenger`: in front of the player if there is
     /// floor there, else on top of the boat.
     pub(super) fn dismount(&mut self, i: usize) {
+        let id = self.boats[i].id;
+        if self.riding == Some(id) && !self.native_may_leave(id) {
+            return;
+        }
         self.riding = None;
         let target = self.boat_dismount_target(i, 0.6, self.yaw);
         if let Some(p) = self.player.as_mut() {
@@ -1234,6 +1238,9 @@ impl Game<'_> {
             || !self.boat_has_room(i)
         {
             return false;
+        }
+        if !self.native_may_board(self.boats[i].id) {
+            return true;
         }
         self.riding = Some(self.boats[i].id);
         self.yaw = self.boats[i].yaw;
