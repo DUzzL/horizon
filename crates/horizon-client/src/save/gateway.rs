@@ -194,7 +194,7 @@ mod tests {
                 BlockPos::new(1, 75, 1),
                 BlockState {
                     name: "minecraft:air".into(),
-                    properties: BTreeMap::new(),
+                    properties: Default::default(),
                 },
             )
             .unwrap();

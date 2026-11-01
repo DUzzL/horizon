@@ -39,6 +39,13 @@ const KEEP_ALIVE_EVERY: Duration = Duration::from_secs(15);
 /// ReadTimeoutHandler(30) in ServerConnectionListener: a connection that sends
 /// nothing for 30 s.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the handshake, a status request and the login may wait for the client's next packet,
+/// where vanilla waits 30 s: a client answers these at once, and each connection holds a thread
+/// and one of the places the server keeps for connections, which a crowd of silent or slow
+/// sockets would otherwise take for 30 s each. Configuration and play keep [`READ_TIMEOUT`] (a
+/// resource pack downloads in configuration).
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Packets queued for one client beyond this many bytes disconnect it.
 const MAX_PENDING: usize = 96 << 20;
 /// Vanilla's server-side disconnect during login is a JSON component.
@@ -480,9 +487,7 @@ fn serve_connection(
     shared: Arc<Shared>,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
-    c.reader
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .map_err(e)?;
+    c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
     let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
         handshake::Serverbound::Intention(i) => i,
@@ -881,6 +886,7 @@ fn login_and_configure(
             _ => return Err("unexpected packet during login".into()),
         }
     }
+    c.reader.set_read_timeout(Some(READ_TIMEOUT)).map_err(e)?;
     // Configuration.
     let sync_data = shared.sync();
     let sync: &SyncData = &sync_data;
@@ -1187,6 +1193,7 @@ fn wait_alive<T>(
 }
 
 fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::SocketAddr) {
+    shared.entered_play();
     let conn_id = shared.next_id();
     let events = shared.events.clone();
     let _ = c.reader.set_read_timeout(Some(READ_TIMEOUT));
