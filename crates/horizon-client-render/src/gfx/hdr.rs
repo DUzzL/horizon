@@ -366,7 +366,11 @@ impl Hdr {
     /// Keeps the world as drawn so far, before the hand and HUD cover it, then zeroes the
     /// frame's alpha: the world's marks live on in the copy, and whatever draws from here
     /// on raises the alpha where it covers the world.
-    pub fn keep_world(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn keep_world(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let Some(t) = &self.targets else {
             return;
         };
@@ -387,6 +391,7 @@ impl Hdr {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon HDR UI mask"),
+            timestamp_writes: timing.and_then(|t| t.writes("HDR UI mask")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -397,7 +402,11 @@ impl Hdr {
     /// After the hand: its pixels' alpha goes down to 1/255, below anything the HUD and
     /// menus leave, so HDR output tells the hand (the world's brightness, never lifted)
     /// from the UI (UI Brightness).
-    pub fn mark_hand(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn mark_hand(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
         let Some(t) = &self.targets else {
             return;
         };
@@ -413,6 +422,7 @@ impl Hdr {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon HDR hand mark"),
+            timestamp_writes: timing.and_then(|t| t.writes("HDR hand mark")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -434,6 +444,7 @@ impl Hdr {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::Texture,
         world: bool,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let Some(t) = &self.targets else {
             return;
@@ -443,7 +454,7 @@ impl Hdr {
             0,
             bytemuck::cast_slice(&self.params(world, self.output == Output::Pq)),
         );
-        Self::draw(encoder, &self.pipeline, &t.group, target);
+        Self::draw(encoder, &self.pipeline, &t.group, target, timing);
     }
 
     /// The frame `present` writes, as HDR10 (BT.2020, PQ, 10 bits a channel) whatever
@@ -494,7 +505,7 @@ impl Hdr {
             0,
             bytemuck::cast_slice(&self.params(world, true)),
         );
-        Self::draw(encoder, &self.capture_pipeline, &group, &texture);
+        Self::draw(encoder, &self.capture_pipeline, &group, &texture, None);
         Some(texture)
     }
 
@@ -528,6 +539,7 @@ impl Hdr {
         pipeline: &wgpu::RenderPipeline,
         group: &wgpu::BindGroup,
         target: &wgpu::Texture,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let view = target.create_view(&Default::default());
         let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -541,6 +553,7 @@ impl Hdr {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon HDR"),
+            timestamp_writes: timing.and_then(|t| t.writes("HDR output")),
             color_attachments: &attachments,
             ..Default::default()
         });

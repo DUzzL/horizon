@@ -103,10 +103,14 @@ impl Status {
     }
 }
 
-static OPERATIONS: Mutex<()> = Mutex::new(());
+/// The process lock of the stores that share one keychain ([`SecretStore::operations`]).
+pub(super) fn process_lock() -> &'static Mutex<()> {
+    static OPERATIONS: Mutex<()> = Mutex::new(());
+    &OPERATIONS
+}
 
-pub(super) struct Operation {
-    _process: MutexGuard<'static, ()>,
+pub(super) struct Operation<'a> {
+    _process: MutexGuard<'a, ()>,
     _file: Option<File>,
 }
 
@@ -117,7 +121,7 @@ const BUSY: &str = "Another account operation is running. Try again in a moment.
 
 /// Serialize refresh with sign-in, sign-out and launch, before reading any credential.
 /// The file is a lock only: it never contains tokens. Fail closed if locking fails.
-pub(super) fn lock(store: &dyn SecretStore) -> Result<Operation, String> {
+pub(super) fn lock(store: &dyn SecretStore) -> Result<Operation<'_>, String> {
     lock_within(store, None)
 }
 
@@ -125,7 +129,7 @@ pub(super) fn lock(store: &dyn SecretStore) -> Result<Operation, String> {
 pub(super) fn lock_within(
     store: &dyn SecretStore,
     within: Option<Duration>,
-) -> Result<Operation, String> {
+) -> Result<Operation<'_>, String> {
     let deadline = within.map(|d| Instant::now() + d);
     // Waits for `take` to stop answering None (busy), or until the deadline.
     let wait = |take: &mut dyn FnMut() -> Result<Option<()>, String>| loop {
@@ -138,8 +142,8 @@ pub(super) fn lock_within(
     let failed = "Account operation failed. Restart the launcher.";
     let mut process = None;
     match deadline {
-        None => process = Some(OPERATIONS.lock().map_err(|_| failed)?),
-        Some(_) => wait(&mut || match OPERATIONS.try_lock() {
+        None => process = Some(store.operations().lock().map_err(|_| failed)?),
+        Some(_) => wait(&mut || match store.operations().try_lock() {
             Ok(guard) => {
                 process = Some(guard);
                 Ok(Some(()))

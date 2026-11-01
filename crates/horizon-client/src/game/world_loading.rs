@@ -52,10 +52,43 @@ impl WorldRequest {
         // Before any chunk is read: a loaded container with a loot table is rolled as its chunk
         // is decoded (`save::roll_loaded_loot`), and the spawn chunks are read while the world
         // opens. Every world opens here: in-frame, on the server thread, on a dedicated server.
-        horizon_client::structure_blocks::loot_data(
-            &options.resources,
-            &horizon_world::loot::PackOverlay::NONE,
-        );
+        let loot = || {
+            horizon_client::structure_blocks::loot_data(
+                &options.resources,
+                &horizon_world::loot::PackOverlay::NONE,
+            );
+        };
+        // Bone meal's and saplings' features, over the plain worldgen bundle.
+        let live_features = || growth::install_live_features(res, pack, options);
+        if res.threads() <= 1 {
+            loot();
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade)?;
+            live_features();
+            return Ok(prepared);
+        }
+        // Neither needs the world: they load beside it (the generator's decoration keeps one
+        // core busy) and are done before it opens. A bundle both read loads once.
+        std::thread::scope(|scope| {
+            let loot = scope.spawn(loot);
+            let live_features = scope.spawn(live_features);
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade);
+            for helper in [loot, live_features] {
+                helper
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            }
+            prepared
+        })
+    }
+
+    fn prepare_world(
+        self,
+        res: &Resources,
+        pack: &PackResources,
+        options: &Options,
+        settings: &Settings,
+        upgrade: &horizon_world::datafix::progress::UpgradeProgress,
+    ) -> Result<PreparedWorld> {
         let Self {
             save_root,
             folder,
@@ -226,8 +259,6 @@ impl WorldRequest {
                 thunder_level: if thunder { (1.0, 1.0) } else { (0.0, 0.0) },
             };
         }
-
-        growth::install_live_features(res, pack, options);
 
         // Persist new metadata on the worker too, before publishing the world.
         if !save_root.join("level.dat").exists() {
@@ -638,6 +669,18 @@ pub(super) fn make_streaming(
                 shape,
             )
         });
+    // `DebugLevelSource`: the overworld of the Debug preset.
+    let debug = (dim == Dim::Overworld)
+        .then(|| horizon_client::save::world_gen_settings(world_root))
+        .flatten()
+        .and_then(|s| {
+            horizon_client::debugworld::DebugTerrain::from_settings(
+                &s,
+                pack.assets.registry,
+                res.biomes(),
+                shape,
+            )
+        });
     // `FlatLevelSource.createState`: a superflat world whose settings let structure sets
     // generate runs them on its flat ground.
     let flat_structures = (dim == Dim::Overworld)
@@ -666,7 +709,18 @@ pub(super) fn make_streaming(
             }
         }
     });
-    let mut streaming = if let Some(inner) = flat_vanilla {
+    let mut streaming = if let Some(inner) = debug {
+        Streaming::new(
+            Arc::new(Persistent {
+                inner: Arc::new(inner),
+                save: save.clone(),
+                registry: pack.assets.clone(),
+                biomes: biomes.clone(),
+            }),
+            pack.context.clone(),
+            res.threads(),
+        )
+    } else if let Some(inner) = flat_vanilla {
         inner.search_rings_behind();
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",
@@ -765,6 +819,9 @@ pub(super) fn make_streaming(
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
+    streaming.leaf_culling = settings
+        .horizon
+        .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
     streaming.sky_light = dim != Dim::Nether;
     streaming.nether_shading = dim == Dim::Nether;

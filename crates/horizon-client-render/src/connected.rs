@@ -10,6 +10,7 @@ use horizon_optifine::ctm::{
     self, Connect, Method, Orient, Rule, Tile,
     connect::{self as geometry, Axes, Axis, Face},
 };
+use horizon_world::block_state_properties::BlockProperties;
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{collections::HashMap, path::Path};
 
@@ -158,7 +159,7 @@ impl ConnectedTextures {
     /// registry skips), `layer` answering a sprite name's layer.
     fn build<'a>(
         rules: Vec<LoadedRule>,
-        states: impl Iterator<Item = Option<(&'a str, &'a std::collections::BTreeMap<String, String>)>>,
+        states: impl Iterator<Item = Option<(&'a str, &'a BlockProperties)>>,
         layer: impl Fn(&str) -> Option<u32>,
     ) -> Self {
         let mut out = Self {
@@ -391,7 +392,6 @@ impl ConnectedTextures {
 mod tests {
     use super::*;
     use horizon_optifine::Properties;
-    use std::collections::BTreeMap;
 
     /// A tile whose layer says which tile of its rule it is: rule `r`'s tile `i` is layer
     /// `1000 * (r + 1) + i`.
@@ -434,7 +434,7 @@ mod tests {
     /// State 0 air, 1 glass, 2 stone, 3 and 4 oak logs (axis y, x), 5 and 6 a door (lower,
     /// upper); the stone sprite is layer 7.
     fn world(files: &[(&str, &str)]) -> ConnectedTextures {
-        let props = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+        let props = |pairs: &[(&str, &str)]| -> BlockProperties {
             pairs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

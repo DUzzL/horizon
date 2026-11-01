@@ -103,12 +103,14 @@ pub(super) fn content_root(
             }
             register_mob_effects(&mods);
             register_entity_types(&mods);
+            register_menu_types(&mods);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
             register_mob_effects(&[]);
             register_entity_types(&[]);
+            register_menu_types(&[]);
             root.to_owned()
         }
     }
@@ -161,8 +163,33 @@ fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
     }
 }
 
+/// the mods' menu types, as their entity types: set once, from the startup
+/// root.
+fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_client::containers;
+    let menus = horizon_client::mod_content::menu_types(mods);
+    let set = containers::register_mod_menu_types(menus.iter().map(|m| {
+        let results = m.results.iter().map(|&r| usize::from(r)).collect();
+        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+    }));
+    if !set
+        && containers::mod_menu_types()
+            .iter()
+            .map(|m| m.id)
+            .ne(menus.iter().map(|m| m.id.as_str()))
+    {
+        log::warn!("Horizon: the mods' menu types changed; restart the game to use them");
+    }
+}
+
 /// What the launcher writes beside a game it built with native mods: their ids under `mods`.
 const BUILD_INFO: &str = "native-mods.json";
+
+/// Whether the launcher built this game with native mods (`built`: its [`BUILD_INFO`]).
+fn built_with_mods(built: &str) -> bool {
+    let info: serde_json::Value = serde_json::from_str(built).unwrap_or_default();
+    info["mods"].as_array().is_some_and(|mods| !mods.is_empty())
+}
 
 /// A row for each native mod the launcher installed in `dir` (`<id>.hnmod`) that this game wasn't
 /// built with (`built`: its [`BUILD_INFO`], empty for a release or Nightly) and that has no row
@@ -212,7 +239,7 @@ impl Game<'_> {
     /// mods don't run any more: their rows say so, and the player hears it once in the chat
     /// (`tell_native_now`).
     pub(super) fn start_mods(&mut self) {
-        let dir = Self::options_path().with_file_name(mod_list::DIR);
+        let dir = Self::game_dir().join(mod_list::DIR);
         let mut paths = horizon_mods::find(&dir);
         paths.retain(|p| !self.mods.dev.contains(p));
         paths.extend(self.mods.dev.iter().cloned());
@@ -251,7 +278,16 @@ impl Game<'_> {
             .ok()
             .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
             .unwrap_or_default();
-        let native_dir = Self::options_path().with_file_name(mod_list::NATIVE_DIR);
+        horizon_client::gfx::native_render::set_mods_built_in(
+            built_with_mods(&built)
+                || self
+                    .settings
+                    .mods
+                    .installed
+                    .iter()
+                    .any(|m| m.native.is_some()),
+        );
+        let native_dir = Self::game_dir().join(mod_list::NATIVE_DIR);
         let unbuilt = not_built(&native_dir, &built, &self.settings.mods.installed);
         self.settings.mods.installed.extend(unbuilt);
         let installed = &self.settings.mods.installed;
@@ -267,9 +303,7 @@ impl Game<'_> {
             return;
         }
         let names = std::mem::take(&mut self.mods.stopped).join(", ");
-        let seen = Self::options_path()
-            .with_file_name(mod_list::DIR)
-            .join(NOTICE_SEEN);
+        let seen = Self::game_dir().join(mod_list::DIR).join(NOTICE_SEEN);
         if seen.exists() {
             return;
         }
@@ -278,12 +312,6 @@ impl Game<'_> {
         )));
         let _ = std::fs::write(&seen, "");
     }
-}
-
-/// A mod gave `block` block entity `id`, but the block's template has none,
-/// so breaking it would never remove it: the block gets none.
-pub(super) fn warn_no_block_entity(block: &str, id: &str) {
-    log::warn!("{block}: no block entity {id}, its template has none (copy a chest or furnace)");
 }
 
 #[cfg(test)]

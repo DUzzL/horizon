@@ -116,7 +116,10 @@ impl Custom {
                     .push(format!("{}: type `{ty}` is not supported", e.key));
                 continue;
             }
-            match Parser::new(&e.value, &mut out.calls).expr_all() {
+            // Tolerate one final terminator, while leaving extra statements to the parser.
+            let value = e.value.trim();
+            let value = value.strip_suffix(';').unwrap_or(value).trim_end();
+            match Parser::new(value, &mut out.calls).expr_all() {
                 Ok(expr) => out.items.push(Item {
                     name: name.to_owned(),
                     ty: ty.to_owned(),
@@ -538,6 +541,29 @@ mod tests {
 
     fn custom(text: &str) -> Custom {
         Custom::parse(&Properties::parse(text, &Macros::standard()))
+    }
+
+    #[test]
+    fn one_trailing_terminator_preserves_variable_and_uniform_values() {
+        for text in [
+            "variable.float.base = 0.25;\nuniform.float.answer = base * 2;\n",
+            "variable.float.base = 0.25;  \nuniform.float.answer = base * 2;  \n",
+            "variable.float.base = 0.25\nuniform.float.answer = base * 2\n",
+        ] {
+            let mut parsed = custom(text);
+            assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+            assert_eq!(parsed.eval(0.016, &|_| None), [Val::scalar(0.5)]);
+            assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        }
+    }
+
+    #[test]
+    fn terminator_does_not_allow_extra_statements_or_empty_expressions() {
+        for expression in ["0.5; 0.1", "0.5;;", ";"] {
+            let parsed = custom(&format!("uniform.float.answer = {expression}\n"));
+            assert!(!parsed.notes.is_empty(), "{expression}");
+            assert_eq!(parsed.uniforms().count(), 0);
+        }
     }
 
     #[test]

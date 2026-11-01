@@ -507,9 +507,11 @@ impl Launcher {
         let mark = instance.as_ref().and_then(|i| self.instance_mark(i, 28.));
         tiles.push(
             tile("instance-icon-none".into(), icon.is_none() && !pictured)
+                .overflow_hidden()
                 .child(match mark {
                     Some(mark) => instance_icons::centred(mark, 28., self.scale).into_any_element(),
                     None => text(theme::MICRO)
+                        .text_size(px(8.5))
                         .text_color(t.muted)
                         .child(tr("NONE"))
                         .into_any_element(),
@@ -663,7 +665,7 @@ impl Launcher {
                 // A Java kind's list can make it taller than the window.
                 .overflow_y_scroll()
                 .bg(plate::alpha(n.page, 0.8))
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .occlude()
                 .child(card),
         )

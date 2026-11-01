@@ -648,6 +648,12 @@ pub trait LevelAccess {
     ) -> u8 {
         0
     }
+    /// Whether a block entity a mod made lives at `pos` (`native_block_entity`),
+    /// whatever its block's template: it is removed with its block and no piston
+    /// moves it, as for a template that has one.
+    fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
+        false
+    }
     /// Load saved block-entity data into the block entity of the block just
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
     /// tree placed gets its bees. Levels without block entities drop it.

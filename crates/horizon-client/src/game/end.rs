@@ -392,9 +392,7 @@ impl Game<'_> {
             // EnderEyeItem.use: startUsingItem (getUseDuration 0, so the use
             // lasts until the button lets go), then the eye is thrown towards
             // the nearest stronghold if there is one (CONSUME without).
-            if self.using.is_none() {
-                self.using = Some((self.held_slot(), 0));
-            }
+            self.start_using_item();
             self.throw_ender_eye();
             return Ok(true);
         };
@@ -491,6 +489,9 @@ impl Game<'_> {
         if self.dim == Dim::End {
             self.tick_fight();
             self.tick_dragon_fireballs();
+        } else {
+            // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
+            self.tick_fight();
         }
         self.tick_crystals();
         self.tick_eyes();
