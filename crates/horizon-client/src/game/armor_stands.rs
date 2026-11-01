@@ -816,12 +816,6 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
-        let emissive = self
-            .res
-            .mob_data()
-            .emissive
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for a in &self.armor_stands {
             let entity_start = out.len();
             // ArmorStand.shouldRenderAtSqrDistance: 256 times the box's mean
@@ -892,6 +886,12 @@ impl Game<'_> {
         let assets = &self.armor_stand_assets;
         let sprites = &self.gui.atlas.sprites;
         let uv_of = |name: &str| sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        let emissive = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(wood) = uv_of("entity/armorstand/armorstand") else {
             return;
         };
