@@ -319,7 +319,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // block is already replaced, so only the entity goes away.
             self.remove_moving_piston(pos);
         } else if block_changed
-            && self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+            && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+                || self.level.has_mod_block_entity(pos))
             && !self.keeps_block_entity(state, old)
         {
             // BlockEntity.preRemoveSideEffects (unless UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS)

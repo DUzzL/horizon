@@ -189,12 +189,12 @@ impl Game<'_> {
             self.avatar.add_walked(dx, dz);
         }
     }
-    /// `SpyglassItem.use`: start scoping.
+    /// `SpyglassItem.use`: the sound, then start scoping (a mod's `Start`
+    /// may refuse that, not the sound).
     pub(super) fn use_spyglass(&mut self) {
-        if self.start_using_item() {
-            let at = self.eye_position();
-            self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
-        }
+        let at = self.eye_position();
+        self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
+        self.start_using_item();
     }
     /// `SpyglassItem.releaseUsing` / `finishUsingItem` (after 1200 ticks).
     pub(super) fn stop_spyglass(&mut self) {

@@ -306,7 +306,7 @@ impl Launcher {
             .flex_none()
             .flex_col()
             .gap(px(8.))
-            .w(px(320.))
+            .w(px(360.))
             .p(px(20.));
         if let Some(line) = summary {
             card = card

@@ -28,7 +28,8 @@ the commit of the installed version the build starts from.
 
 A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`, with a few
 free functions in other crates: [render hook points](#render-hook-points), [items' default
-components](#items-default-components), `horizon_world::loot::native_loot_table_load`; empty functions the game
+components](#items-default-components), `horizon_world::loot::native_loot_table_load`, [menu slot
+rules](#menu-slot-rules); empty functions the game
 calls at fixed places, plus helpers, kept stable across releases) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
@@ -414,6 +415,21 @@ dropped it silently — reaches `native_consume_effect(kind, data)` when the ite
 thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
 sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
 
+### A mod's own loot functions and conditions
+
+A loot table's function or condition that names a `type` in a namespace outside `minecraft:` — where the
+loot roll used to silently skip it — reaches `native_loot_function(kind, data, ctx, stack)` or
+`native_loot_condition(kind, data, ctx, holds)` when the table rolls. The function changes the stack; the
+condition says whether it holds. The context brings the entity, the damage, the player who killed it, the
+tool, the block, the luck, the biome and a seed from the roll's random. An unclaimed function leaves the
+stack, an unclaimed condition fails, as unknown kinds do; a bare type name is minecraft's own.
+
+The tables the items engine rolls (block drops, entity drops, `loot_table`, `interact_loot` and the
+built-in tables) answer the condition hook, with the tool and the block in the context; the function hook
+there follows when the stack types converge. In the items engine's context the `entity`, `damage`, `player`
+and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
+fields are `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
@@ -764,9 +780,11 @@ Every path the build's tools see — the toolchain, the Cargo home, `native/` an
 TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
 `backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
 refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
-MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
-folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
-a drive with an ASCII path resolves to that and needs neither.
+MinGW-w64's tools can't open — it is a real folder under `ProgramData` named for it (`horizon-launcher-<id>`),
+and only when that can't be created the data folder's short (8.3) name. A short name alone is not enough
+(#6009): rustc canonicalizes its own path to find its sysroot, which spells the long name again for the
+linker. A data folder that is itself a junction to a drive with an ASCII path resolves to that and needs
+neither.
 
 ## Install from GitHub
 
@@ -1359,6 +1377,20 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+
+### Menu slot rules
+
+`crates/horizon-client/src/menu.rs`: `native_menu_slot_rules(menu, slot, stack, may_place, max_stack)`, a free function
+a bundle targets as `horizon_client::menu::native_menu_slot_rules`. A content mod menu type's container slot `slot`
+(from 0) is asked whether it takes `stack` (`Slot.mayPlace`) and how many it holds (`Slot.getMaxStackSize`), as a
+NeoForge mod's own `Slot` overrides them. `may_place` and `max_stack` come in with the type's own answer (false on one
+of its `results` ([mods.md](mods.md#menu-types)), true elsewhere, and 99): change them for your own menu types.
+`max_stack` is kept to 1 to 99, and the item's own stack size still caps it. It runs inside a click, a drag or a
+shift-click (several times for one), with no level or player at hand: answer from the stack, and fast. It is asked
+only for a server's players (single player's server thread, LAN guests, a dedicated server), never in-frame
+(`--in-frame`), and vanilla's menus never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
+shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
+slot from filling that way, lower `max_stack`.
 
 ### Items' default components
 

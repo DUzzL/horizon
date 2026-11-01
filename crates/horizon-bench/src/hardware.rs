@@ -227,7 +227,7 @@ fn key_value<'a>(text: &'a str, key: &str, sep: char) -> Option<&'a str> {
 
 #[cfg(target_os = "windows")]
 fn os_version() -> Option<String> {
-    output("cmd", &["/C", "ver"])
+    horizon_telemetry::system::windows_version()
 }
 
 #[cfg(target_os = "windows")]

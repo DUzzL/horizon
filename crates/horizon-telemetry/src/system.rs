@@ -26,6 +26,44 @@ pub fn command_output(program: &str, args: &[&str]) -> Option<String> {
     (out.status.success() && !text.is_empty()).then_some(text)
 }
 
+/// `Windows 11 (26100.2033)`: the build numbers from the registry. `cmd /C ver`
+/// prints the display language's own word for "Version" in the console's OEM
+/// code page, so the same build read as UTF-8 carries U+FFFD in it and differs
+/// between two machines running the same build.
+pub fn windows_version() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    const KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+    let value = |name: &str| command_output("reg", &["query", KEY, "/v", name]);
+    windows_version_text(&value("CurrentBuild")?, value("UBR").as_deref())
+}
+
+/// The build and its update revision from the last column of two `reg query`
+/// replies (`CurrentBuild    REG_SZ    26100`, `UBR    REG_DWORD    0x7f1`).
+/// Build 22000 is the first Windows 11.
+fn windows_version_text(build: &str, ubr: Option<&str>) -> Option<String> {
+    let build = number(last_column(build)?)?;
+    let release = if build >= 22_000 { "11" } else { "10" };
+    Some(match ubr.and_then(last_column).and_then(number) {
+        Some(ubr) => format!("Windows {release} ({build}.{ubr})"),
+        None => format!("Windows {release} ({build})"),
+    })
+}
+
+/// The value a `reg query` reply prints in its last column.
+fn last_column(reply: &str) -> Option<&str> {
+    reply.split_whitespace().last()
+}
+
+/// A decimal, or the `0x`-prefixed hex a `REG_DWORD` prints.
+fn number(text: &str) -> Option<u32> {
+    match text.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
+}
+
 fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
@@ -45,7 +83,7 @@ fn os_version() -> Option<String> {
     } else if cfg!(target_os = "macos") {
         command_output("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}"))
     } else if cfg!(windows) {
-        command_output("cmd", &["/C", "ver"])
+        windows_version()
     } else {
         None
     }
@@ -590,6 +628,23 @@ mod tests {
             Some("32788148 kB")
         );
         assert_eq!(field("NAME=x", "PRETTY_NAME"), None);
+    }
+
+    #[test]
+    fn the_windows_version_comes_from_the_build_numbers() {
+        assert_eq!(
+            windows_version_text(
+                "    CurrentBuild    REG_SZ    26100",
+                Some("    UBR    REG_DWORD    0x7f1")
+            )
+            .as_deref(),
+            Some("Windows 11 (26100.2033)")
+        );
+        assert_eq!(
+            windows_version_text("    CurrentBuild    REG_SZ    19045", None).as_deref(),
+            Some("Windows 10 (19045)")
+        );
+        assert_eq!(windows_version_text("", None), None);
     }
 
     #[test]
