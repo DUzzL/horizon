@@ -636,7 +636,9 @@ impl Game<'_> {
                             mob.extra
                                 .mount
                                 .and_then(|id| self.mobs.iter().find(|m| m.id == id))
-                                .map(|v| v.limb_position - v.limb_speed * (1.0 - alpha as f32)),
+                                .map(|v| {
+                                    horizon_client::mobs::anim::walk_position(v, alpha as f32)
+                                }),
                         ),
                     }
                 },
