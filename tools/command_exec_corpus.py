@@ -355,6 +355,21 @@ def entities():
         cmd('/tp @e[type=minecraft:tnt] 4.5 215 8.5'),
         cmd('/kill @e[type=minecraft:tnt]'),
         cmd('/execute if entity @e[type=minecraft:tnt]'),
+        # So is a falling block, named after its block (`getTypeName`).
+        cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
+        cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
+        cmd('/tag @e[type=minecraft:falling_block,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:falling_block,limit=1] BlockState.Name'),
+        cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:falling_block]'),
+        cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # And the thrown items.
+        *[c for kind in ('snowball', 'egg', 'ender_pearl') for c in (
+            cmd(f'/summon minecraft:{kind} 4.5 210 8.5 {{NoGravity:1b}}'),
+            cmd(f'/execute if entity @e[type=minecraft:{kind}]'),
+            cmd(f'/data get entity @e[type=minecraft:{kind},limit=1] Item.id'),
+            cmd(f'/kill @e[type=minecraft:{kind}]'),
+        )],
         *setup('/kill @e[type=minecraft:armor_stand]'),
         {'op': 'tick', 'n': 25},
         cmd('/execute if entity @e[tag=h]'),

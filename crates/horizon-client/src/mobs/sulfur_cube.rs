@@ -1378,6 +1378,7 @@ mod resistance_tests {
                 [1.0, 64.5, 0.0],
                 1.0,
                 None,
+                1.0,
             )
         };
         let base = push(0.0, 4.0);
