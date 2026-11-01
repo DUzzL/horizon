@@ -28,7 +28,8 @@ the commit of the installed version the build starts from.
 
 A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`, with a few
 free functions in other crates: [render hook points](#render-hook-points), [items' default
-components](#items-default-components), `horizon_world::loot::native_loot_table_load`; empty functions the game
+components](#items-default-components), `horizon_world::loot::native_loot_table_load`, [menu slot
+rules](#menu-slot-rules); empty functions the game
 calls at fixed places, plus helpers, kept stable across releases) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
@@ -414,6 +415,21 @@ dropped it silently — reaches `native_consume_effect(kind, data)` when the ite
 thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
 sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
 
+### A mod's own loot functions and conditions
+
+A loot table's function or condition that names a `type` in a namespace outside `minecraft:` — where the
+loot roll used to silently skip it — reaches `native_loot_function(kind, data, ctx, stack)` or
+`native_loot_condition(kind, data, ctx, holds)` when the table rolls. The function changes the stack; the
+condition says whether it holds. The context brings the entity, the damage, the player who killed it, the
+tool, the block, the luck, the biome and a seed from the roll's random. An unclaimed function leaves the
+stack, an unclaimed condition fails, as unknown kinds do; a bare type name is minecraft's own.
+
+The tables the items engine rolls (block drops, entity drops, `loot_table`, `interact_loot` and the
+built-in tables) answer the condition hook, with the tool and the block in the context; the function hook
+there follows when the stack types converge. In the items engine's context the `entity`, `damage`, `player`
+and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
+fields are `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
@@ -764,9 +780,11 @@ Every path the build's tools see — the toolchain, the Cargo home, `native/` an
 TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
 `backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
 refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
-MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
-folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
-a drive with an ASCII path resolves to that and needs neither.
+MinGW-w64's tools can't open — it is a real folder under `ProgramData` named for it (`horizon-launcher-<id>`),
+and only when that can't be created the data folder's short (8.3) name. A short name alone is not enough
+(#6009): rustc canonicalizes its own path to find its sysroot, which spells the long name again for the
+linker. A data folder that is itself a junction to a drive with an ASCII path resolves to that and needs
+neither.
 
 ## Install from GitHub
 
@@ -953,7 +971,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_perform_console_command(command, ran)`**: a registered command typed on the dedicated server's console
   (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
   helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
-  registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+  registered goes to vanilla's dispatcher as before. The single player owner's console (`horizon-ctl command`, the MCP
+  command tool) is a player's: it reaches `native_perform_command` with the owner, at level 4.
 - **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
   `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
   (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
@@ -1269,6 +1288,45 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
 - It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
   loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
 
+### Bulk block edits
+
+`crates/horizon-client/src/game/native_world_edit.rs`: a helper for server mods, for the level in place, on a server only.
+It names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_edit_blocks(dimension, edit)` makes many blocks at once: `NativeBlockEdit` holds a `palette` of block states and
+  a list of `filters` (block predicates, `#minecraft:logs`), both written as commands write them, and `runs`, each
+  `height` blocks up column (`x`, `z`) from `y`, set to palette entry `block`, only where filter `only` passes the block
+  there. With `surface` (`NativeHeightmap`: `WorldSurface`, `MotionBlocking`, `MotionBlockingNoLeaves` or `OceanFloor`),
+  `y` counts from that height of the column, read once a column before anything changes. Runs are made in order, each
+  seeing the changes of those before it.
+- The blocks go straight into the chunks, a section packed once however many of its blocks change, as `fill ... strict`
+  does: no neighbour is told, nothing drops, and no block updates or ticks; light is worked out again for the chunks
+  changed, and they go to the players whole. A block replaced by another loses its block entity, and a new block gets
+  the one `native_set_block` would give it (a mod block's own, API 15, included).
+- It answers the number of blocks changed. Runs in chunks that aren't loaded, and the parts of runs outside the level's
+  height, are left out. It answers `Err`, changing nothing, on a client, for another dimension, a palette entry or filter
+  that doesn't read or carries NBT (`chest{...}`: refused, set states only), a run naming a palette entry or filter past
+  the end, or more than 65536 filters.
+
+### Column reads
+
+`crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
+only, that read many columns in one call. They name the level they mean by its `dimension` (`minecraft:overworld`), as
+`native_set_block` does, and answer `Err` with the reason, reading nothing, on a client, for another dimension or for
+a read too big, so a mod can tell "ask for less" from "wrong level". They run on the server tick: read a big area in
+pieces.
+
+- `native_surface_heights(dimension, columns, heightmap)` answers each column's height on `heightmap` (`NativeHeightmap`,
+  as `native_edit_blocks` reads it: one above the highest block that counts), `None` for a column whose chunk isn't
+  loaded; at most 65,536 columns a call.
+- `native_read_columns(dimension, columns, heightmap, (below, above))` reads, for each column, the blocks from `below`
+  under its height to `above` - 1 over it, bottom first: `NativeColumnBlocks` holds the heights (`bases`), the block
+  names seen (`palette`), the blocks as indexes into it, a column after another, and three biome tints a column (grass,
+  foliage and water, at the column's top). Blocks outside the level's height, and every block of a column not loaded,
+  read as air (its tints as 0). `below + above` must be 1 to the level's height, and the read at most 1,048,576 blocks.
+  The tints are the biome's own at the column's top, not blended over the biome blend radius as the game draws them, so
+  near a biome border they can differ from what players see by a few blocks.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
@@ -1320,6 +1378,20 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+
+### Menu slot rules
+
+`crates/horizon-client/src/menu.rs`: `native_menu_slot_rules(menu, slot, stack, may_place, max_stack)`, a free function
+a bundle targets as `horizon_client::menu::native_menu_slot_rules`. A content mod menu type's container slot `slot`
+(from 0) is asked whether it takes `stack` (`Slot.mayPlace`) and how many it holds (`Slot.getMaxStackSize`), as a
+NeoForge mod's own `Slot` overrides them. `may_place` and `max_stack` come in with the type's own answer (false on one
+of its `results` ([mods.md](mods.md#menu-types)), true elsewhere, and 99): change them for your own menu types.
+`max_stack` is kept to 1 to 99, and the item's own stack size still caps it. It runs inside a click, a drag or a
+shift-click (several times for one), with no level or player at hand: answer from the stack, and fast. It is asked
+only for a server's players (single player's server thread, LAN guests, a dedicated server), never in-frame
+(`--in-frame`), and vanilla's menus never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
+shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
+slot from filling that way, lower `max_stack`.
 
 ### Items' default components
 

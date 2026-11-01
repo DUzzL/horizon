@@ -1,0 +1,20 @@
+{
+  "hooks": [
+    {
+      "name": "gui_layer_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_gui_layer_pre",
+      "neoforge": "RenderGuiLayerEvent.Pre",
+      "side": "client",
+      "cancellable": true
+    },
+    {
+      "name": "gui_layer_post",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_gui_layer_post",
+      "neoforge": "RenderGuiLayerEvent.Post",
+      "side": "client",
+      "cancellable": false
+    }
+  ],
+  "rust_summary": "HUD layers around vanilla's own (`native_gui_layer_pre`, `native_gui_layer_post`).",
+  "doc_summary": "`native_gui_layer_pre(layer, batch, canceled)` and `native_gui_layer_post(layer, batch)` fire around each vanilla HUD layer Horizon draws, in its paint order, so a mod places its own drawing below a layer (in `pre`) or above it (in `post`), NeoForge's `RegisterGuiLayersEvent` registerBelow/registerAbove, and hides a layer by setting `canceled` in `pre` (`RenderGuiLayerEvent.Pre`). Layer ids: `minecraft:crosshair`, `hotbar`, `effects`, `boss_overlay`, `vehicle_health` (riding a mount), `contextual_info_bar` (the jump bar, locator bar or experience bar with the level number), `player_health` (health, armor, food and air rows, one pass), `selected_item_name`, `sleep_overlay`, `overlay_message` (action bar), `title`, `scoreboard_sidebar`, `subtitle_overlay`, `chat` (the unfocused lines) and `tab_list`. F1 hides the layers it hides in vanilla, and then nothing fires for them. The camera overlays (drawn by the screen-effects pass) and the debug screen are not layers. A hidden layer still runs its game logic (the health rows' blink, the bubble pop sound) and `post` still fires. Bundles need \"hooks\": @API:gui_layers@."
+}

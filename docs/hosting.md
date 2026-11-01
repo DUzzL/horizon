@@ -447,6 +447,27 @@ Where it differs from vanilla: a connection that hasn't logged in within 30 seco
 at once, and a command a client's TCP splits in two still works. A command shows as the console's (`Server`, not
 `Rcon`), and `broadcast-rcon-to-ops` isn't honoured yet.
 
+### Tools that read the query
+
+Server lists, status pages and monitoring tools (`mcstatus`, Prometheus exporters, hosting panels) often read the
+MOTD, the version and who is online through vanilla's GS4 query, a UDP port, and Horizon's server serves it. It's off
+by default; turn it on in `server.toml`:
+
+```toml
+[properties]
+enable-query = true
+"query.port" = 25565
+```
+
+It listens on UDP on the address `[server] bind` names (every address when it's empty), as vanilla's does: the same
+number as the game's TCP port is fine, they are different ports. The query tells anyone who can reach the port the
+player names and the version, and has no password: open the port only if you want that. As in vanilla, a port
+outside 1 to 65535 leaves it off with a warning in the log, and a port already in use is a warning too. The
+settings are read when the server starts. To turn it off again, set `enable-query = false`.
+
+Where it differs from vanilla: while the game isn't running (starting, restarting) nothing answers, and who is
+online is read from the game at most once a second.
+
 ## 7. Backups
 
 ```sh

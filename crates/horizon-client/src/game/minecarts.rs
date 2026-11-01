@@ -532,10 +532,21 @@ impl Game<'_> {
         }
         out
     }
+    /// `Entity.isVehicle` for a cart: the local player, a LAN guest or a mob
+    /// sits in it. `getSlowdownFactor` (0.997) and the 0.75 speed scale key on
+    /// this, not on who rides.
+    fn cart_is_vehicle(&self, id: u32) -> bool {
+        self.riding == Some(id)
+            || self.ridden_by_guest(id)
+            || self
+                .mobs
+                .iter()
+                .any(|m| !m.removed && m.extra.mount == Some(id))
+    }
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(&mut self, c: &mut Minecart, pos: [i32; 3], rail: &Rail, intent: [f64; 2]) {
         c.fall_distance = 0.0;
-        let ridden = Some(c.id) == self.riding;
+        let ridden = self.cart_is_vehicle(c.id);
         let (x, z) = (c.position.x, c.position.z);
         let old = self.rail_pos(x, c.position.y, z);
         let mut y = f64::from(pos[1]);
@@ -700,7 +711,7 @@ impl Game<'_> {
     /// recomputed per rail (slope, halt, boost).
     fn move_along_track_new(&mut self, c: &mut Minecart, _rail: &Rail, intent: [f64; 2]) {
         c.fall_distance = 0.0;
-        let ridden = Some(c.id) == self.riding;
+        let ridden = self.cart_is_vehicle(c.id);
         // `TrackIteration`: the slope, halt and boost speeds each apply once
         // per tick, and the iteration keeps moving while distance is left.
         let mut first = true;
@@ -1433,6 +1444,10 @@ impl Game<'_> {
     }
     /// `getDismountLocationForPassenger`: beside the cart (across its facing), else on top.
     pub(super) fn dismount_cart(&mut self, i: usize) {
+        let id = self.carts[i].id;
+        if self.riding == Some(id) && !self.native_may_leave(id) {
+            return;
+        }
         self.riding = None;
         let c = &self.carts[i];
         let (bx, by, bz) = (
@@ -1592,7 +1607,10 @@ impl Game<'_> {
                 if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
-                self.riding = Some(self.carts[i].id);
+                if !self.native_may_board(id) {
+                    return true;
+                }
+                self.riding = Some(id);
             }
             // AbstractMinecartContainer.interact: no sneak check.
             CartKind::Chest | CartKind::Hopper => self.open_cart_container(i),
@@ -1730,6 +1748,8 @@ impl Game<'_> {
         let (damage, _, _, magic) = self.melee_damage(self.carts[i].kind.id(), false);
         self.hurt_cart(i, damage, self.creative, burning);
         self.vehicle_attack_sounds(area, magic.then_some(id));
+        // Player.onAttack: the hit starts the attack strength again.
+        self.attack_ticks = 0;
         self.swing_arm();
         true
     }

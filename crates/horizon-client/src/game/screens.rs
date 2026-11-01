@@ -325,7 +325,7 @@ impl Game<'_> {
             batch.sprite_scaled(atlas, sprite, x + 3.0, y + 3.0, 15.0, 15.0, u32::MAX);
             if hover {
                 tooltip = Some(if i == FRIENDS_ICON {
-                    Text::literal(horizon_client::friends_screen::TITLE)
+                    Text::literal(horizon_client::friends_screen::title())
                 } else {
                     Text::translate(ICON_LABELS[i], &[])
                 });

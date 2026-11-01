@@ -164,7 +164,8 @@ impl Game<'_> {
                     .and_then(|a| a.last_state)
                     .map(|s| self.state_to_nbt(s));
                 entity_nbt::arrow_to_nbt(p, random_uuid(), owner, in_block, None)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))?
+                    .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))
+                    .or_else(|| entity_nbt::throwable_to_nbt(p, random_uuid(), owner, None))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -175,6 +176,36 @@ impl Game<'_> {
                 let d = self.dragon.as_ref().filter(|d| d.id == id)?;
                 let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
                 d.to_nbt(uuid.unwrap_or_else(random_uuid), raw)
+            }
+            Target::Tnt(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.tnts.iter().find(|t| t.id == id)?;
+                entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
+            }
+            Target::Falling(id) => {
+                let f = self.falling.iter().find(|f| f.id == id)?.clone();
+                let (uuid, raw) = match &f.saved {
+                    Some(saved) => (saved.0, Some(&saved.1)),
+                    None => (self.uuid_for(id), None),
+                };
+                let tag = entity_nbt::falling_block_to_nbt(
+                    self.state_to_nbt(f.state),
+                    f.position,
+                    f.velocity,
+                    f.age,
+                    f.drop_item,
+                    f.damage,
+                    f.fall_distance,
+                    uuid,
+                );
+                crate::game::persist::with_raw(tag, raw)
             }
         })
     }
@@ -776,6 +807,10 @@ impl Game<'_> {
             Some(Target::Cart(id))
         } else if self.others.iter().any(|o| o.id == id) {
             Some(Target::Other(id))
+        } else if self.tnts.iter().any(|t| t.id == id) {
+            Some(Target::Tnt(id))
+        } else if self.falling.iter().any(|f| f.id == id) {
+            Some(Target::Falling(id))
         } else {
             None
         }

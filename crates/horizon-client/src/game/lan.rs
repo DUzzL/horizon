@@ -2334,6 +2334,15 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
+        host.hub.collect_tracking();
+        if !host.hub.native_tracking.is_empty() {
+            self.lan = Some(host);
+            self.run_native_tracking();
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the tracking events");
+        }
         if !paused {
             self.tick_guests(&mut host);
         }
@@ -2724,6 +2733,22 @@ impl Game<'_> {
                 host.hub.swing(m.id as i32, 0, at, None);
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
+        }
+        if let Some(d) = self.dragon.as_ref().filter(|d| d.id != 0) {
+            let id = d.id;
+            let dead = !d.alive();
+            let old = host
+                .mob_state
+                .get(&self.dim)
+                .and_then(|s| s.get(&id))
+                .copied();
+            let at = [d.position.x, d.position.y, d.position.z];
+            if d.hurt_time > old.map_or(0, |o| o.0) && !dead {
+                let (kind, cause, direct) =
+                    d.last_source.unwrap_or(("minecraft:generic", None, None));
+                host.hub.damage_event(id as i32, kind, cause, direct, at);
+            }
+            seen.insert(id, (d.hurt_time, dead, None));
         }
         // LivingEntity.hurtServer for the in-frame LAN host's player (guests
         // broadcast directly from HealthEvent::DamageBroadcast): a hit that

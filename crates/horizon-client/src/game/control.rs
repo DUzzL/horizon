@@ -407,6 +407,13 @@ impl Game<'_> {
                     )
                     .into());
                 }
+                // ConfirmScreen.keyPressed: Escape answers no, nothing else goes past it.
+                if self.command_prompt.is_some() {
+                    if key == KeyCode::Escape && arg(2)? != "up" {
+                        self.answer_command_prompt(false);
+                    }
+                    return ok();
+                }
                 // A server's dialog takes the keys, in configuration too.
                 if self.dialog_open() {
                     if arg(2)? != "up" {

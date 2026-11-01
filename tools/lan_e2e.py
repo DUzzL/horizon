@@ -135,6 +135,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - eat-on-block: sweet berries clicked on a block they can't be planted on: the guest's own screen
              plays the eating and the server eats one, a click released early eats nothing, and on
              dirt they are planted and not eaten (BlockItem.useOn).
+- cauldron:  a water bucket (creative), a lava bucket and an empty bucket (survival) used on a
+             cauldron's side fill or empty the cauldron only: nothing is poured beside it, not even
+             for the moment before the server answers (#5294).
 - consume-release: the host and the guest each cancel eating a golden apple and drinking milk from
               either hand: use ends on client and server, the item and effects stay, and holding
               use to completion still consumes the item (#1293).
@@ -197,6 +200,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
              "moved wrongly" lines, not an endless loop of them.
 - minecarts: the host and the guest each get into a minecart on rails, sneak out beside it, and break
              it (#1222).
+- cart_mob_rider: a minecart with a pig in it runs about 3.3 blocks farther than an empty one in 40 ticks
+             (AbstractMinecart.getSlowdownFactor 0.997 when isVehicle, not only for a player).
 - frames:    the host and the guest each put a diamond in an item frame and turn it, and put a
              helmet on an armor stand and take it back (#1222).
 - hands:     the host and the guest each, at a cow that cares for none of it: draw a bow and shoot, and
@@ -371,7 +376,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
-          'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
+          'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
@@ -4023,6 +4028,55 @@ def check_eat_on_block(host, guest, out):
     return detail
 
 
+def check_cauldron(host, guest, out):
+    """A bucket used on a cauldron's side fills or empties the cauldron only: the guest's
+    client ends the click at the block (CauldronInteractions answers SUCCESS there too), so
+    no UseItem follows that would pour the bucket again beside it."""
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    cauldron, beside = (x + 2, y, z), (x + 1, y, z)
+    guest('command', command=f'fill {x - 1} {y - 1} {z - 1} {x + 3} {y - 1} {z + 1} minecraft:stone')
+    guest('command', command=f'fill {x - 1} {y} {z - 1} {x + 3} {y + 2} {z + 1} minecraft:air')
+    block = lambda p: guest.raw('block', *p).get('block')
+
+    def use(item, gamemode, start):
+        guest('command', command=f'gamemode {gamemode}')
+        guest('command', command='clear @s')
+        guest('command', command=f'give @s {item}')
+        guest('command', command=f'setblock {beside[0]} {beside[1]} {beside[2]} minecraft:air')
+        guest('command', command=f'setblock {cauldron[0]} {cauldron[1]} {cauldron[2]} {start}')
+        for _ in range(20):
+            guest.wait(5)
+            if guest.raw('block', *cauldron)['state'].startswith(start.partition('[')[0]):
+                break
+        guest.raw('select', item)
+        guest.raw('look-at-block', *cauldron, 'west')
+        guest.wait(2)
+        # A pour the client predicts beside it lasts only until the server's ack.
+        replies = guest.script(['mouse right click'] + [f'block {beside[0]} {beside[1]} {beside[2]}'] * 12,
+                               every=True)
+        seen = {r['block'] for r in replies if 'block' in r}
+        guest.wait(20)
+        seen.add(block(beside))
+        return {'cauldron': guest.raw('block', *cauldron)['state'], 'beside': sorted(seen),
+                'counts': guest('inventory')['counts']}
+
+    detail = {
+        'creative': use('minecraft:water_bucket', 'creative', 'minecraft:cauldron'),
+        'survival': use('minecraft:lava_bucket', 'survival', 'minecraft:cauldron'),
+        'fill': use('minecraft:bucket', 'survival', 'minecraft:water_cauldron[level=3]'),
+    }
+    guest('command', command='gamemode creative')
+    creative, survival, fill = detail['creative'], detail['survival'], detail['fill']
+    assert 'water_cauldron' in creative['cauldron'] and creative['beside'] == ['minecraft:air'], \
+        f'the water bucket was poured beside the cauldron too: {detail}'
+    assert 'lava_cauldron' in survival['cauldron'] and survival['beside'] == ['minecraft:air'] \
+        and survival['counts'].get('minecraft:bucket') == 1, f'the lava bucket was not emptied into the cauldron: {detail}'
+    assert fill['cauldron'].startswith('minecraft:cauldron') and fill['beside'] == ['minecraft:air'] \
+        and fill['counts'].get('minecraft:water_bucket') == 1 and 'minecraft:bucket' not in fill['counts'], \
+        f'the bucket was not filled from the cauldron alone: {detail}'
+    return detail
+
+
 def watch_mining(miner, pos, seen):
     """Mine the block at `pos` (by hand, for seconds) and sample `seen()` meanwhile."""
     dig = threading.Thread(target=miner.raw, args=('break', *pos))
@@ -6614,7 +6668,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
-             'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
+             'eat': check_eat, 'eat-on-block': check_eat_on_block, 'cauldron': check_cauldron, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'blast-projectiles': check_blast_projectiles,
              'light': check_light, 'plates': check_plates, 'plate-projectiles': check_plate_projectiles, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
@@ -6728,7 +6782,7 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client',
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib',
                         '--bin', 'horizon-client', '--bin', 'horizon-ctl'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
@@ -7037,6 +7091,42 @@ def server_using(host, game):
 def flying(game, kind):
     """How many of the projectiles this side draws are of `kind` (a trident, an arrow)."""
     return sum(kind in q['kind'].lower() for q in game('status')['projectiles'])
+
+
+CHECKS += ['cart_mob_rider']
+
+
+def check_cart_mob_rider(host, guest, out):
+    """A minecart with a mob in it slows like a ridden one (AbstractMinecart.getSlowdownFactor: 0.997
+    when isVehicle, else 0.96), so with the same push it runs far past an empty one. 40 ticks on a
+    straight rail from Motion 0.4: the empty cart ends 2.7 to 3.3 blocks short of the occupied one."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    z += 8
+    host('command', command=f'fill {x - 2} {y - 1} {z - 1} {x + 40} {y - 1} {z + 4} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 1} {x + 40} {y + 3} {z + 4} minecraft:air')
+    host('command', command=f'fill {x} {y} {z} {x + 40} {y} {z} minecraft:rail[shape=east_west]')
+    host('command', command=f'fill {x} {y} {z + 3} {x + 40} {y} {z + 3} minecraft:rail[shape=east_west]')
+    host('command', command='tick freeze')
+    try:
+        host('command', command=f'summon minecraft:minecart {x + 0.5} {y + 0.1} {z + 0.5} {{Motion:[0.4d,0.0d,0.0d],Tags:["cmr_empty"]}}')
+        host('command', command=f'summon minecraft:minecart {x + 0.5} {y + 0.1} {z + 3.5} {{Motion:[0.4d,0.0d,0.0d],'
+             'Tags:["cmr_pig"],Passengers:[{id:"minecraft:pig",NoAI:1b}]}')
+        host('command', command='tick step 40')
+        host.wait(40)
+        carts = [o for o in host('status')['objects'] if o['kind'].endswith('minecart')]
+        empty = [o for o in carts if abs(o['position'][2] - (z + 0.5)) < 1][0]['position'][0] - (x + 0.5)
+        laden = [o for o in carts if abs(o['position'][2] - (z + 3.5)) < 1][0]['position'][0] - (x + 0.5)
+    finally:
+        host('command', command='tick unfreeze')
+        host('command', command='kill @e[type=minecraft:minecart,tag=cmr_empty]')
+        host('command', command='kill @e[type=minecraft:minecart,tag=cmr_pig]')
+        host('command', command='kill @e[type=minecraft:pig,distance=..60]')
+    detail = {'empty': round(empty, 3), 'with_pig': round(laden, 3)}
+    assert laden - empty > 2.0, f'a cart with a pig should outrun the empty one by more than 2 blocks: {detail}'
+    return detail
+
+
+CHECK_FNS.update(cart_mob_rider=check_cart_mob_rider)
 
 
 def check_held_use(host, guest, out):
