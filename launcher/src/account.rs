@@ -623,10 +623,16 @@ pub trait SecretStore: Send + Sync {
     fn lock_file(&self) -> Option<PathBuf> {
         None
     }
+    /// The in-process half of that lock. The system keychain is one per computer, so every
+    /// handle to it shares the process-wide lock; a memory store's secrets are its own, and so
+    /// is its lock: two of them (one per unit test) never wait for each other.
+    fn operations(&self) -> &Mutex<()> {
+        session::process_lock()
+    }
 }
 
 #[derive(Default)]
-pub struct MemoryStore(Mutex<HashMap<String, String>>);
+pub struct MemoryStore(Mutex<HashMap<String, String>>, Mutex<()>);
 impl SecretStore for MemoryStore {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         Ok(self.0.lock().unwrap().get(key).cloned())
@@ -641,6 +647,9 @@ impl SecretStore for MemoryStore {
     }
     fn persistent(&self) -> bool {
         false
+    }
+    fn operations(&self) -> &Mutex<()> {
+        &self.1
     }
 }
 

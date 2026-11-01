@@ -283,6 +283,8 @@ struct Shared {
     /// Workers that have freed their buffers ([`IDLE_RELEASE`]) and taken no
     /// job since: the last of them gives the freed memory back to the OS.
     released: AtomicUsize,
+    /// The workers that started.
+    workers: AtomicUsize,
 }
 #[derive(Default)]
 struct MeshPool {
@@ -623,8 +625,8 @@ impl Streaming {
             done: Mailbox::default(),
             meshes: Mutex::new(MeshPool::default()),
             released: AtomicUsize::new(0),
+            workers: AtomicUsize::new(0),
         });
-        let workers = threads.max(1);
         let light_tables = context.light.clone();
         let saves: Arc<dyn Saves> = generator.clone();
         let threads = (0..threads.max(1))
@@ -678,7 +680,7 @@ impl Streaming {
                                         // runs short: once every worker has freed its own,
                                         // hand them back.
                                         if shared.released.fetch_add(1, Ordering::Relaxed) + 1
-                                            == workers
+                                            == shared.workers.load(Ordering::Relaxed)
                                         {
                                             // No worker needs retained mesh capacity now.
                                             // Drop it outside the pool lock before asking
@@ -789,9 +791,16 @@ impl Streaming {
                             shared.done.send(done);
                         }
                     })
-                    .expect("spawn worker")
             })
-            .collect();
+            // A thread the system refuses (a container's process limit reached) leaves the pool a
+            // worker short: a server that panicked here went down with its players' moves unsaved.
+            .filter_map(|spawned| {
+                spawned
+                    .inspect_err(|e| log::error!("Horizon: chunk worker not started: {e}"))
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        shared.workers.store(threads.len(), Ordering::Relaxed);
         let non_air_sections = {
             let generator = generator.clone();
             Arc::new(move |p: &Proto| generator.non_air_sections(p))
@@ -2362,6 +2371,7 @@ mod tests {
         mesh.solid.resize(64, bytemuck::Zeroable::zeroed());
         mesh.translucent.resize(16, bytemuck::Zeroable::zeroed());
         mesh.block_entities.push(([1, 2, 3], 7));
+        mesh.lights.push(([1, 2, 3], 7));
         mesh.visibility = 0;
         mesh.sides = crate::mesher::Sides::unsorted(16);
         let capacities = mesh.capacity_bytes();
@@ -2378,6 +2388,7 @@ mod tests {
         assert!(reused.solid.is_empty());
         assert!(reused.translucent.is_empty());
         assert!(reused.block_entities.is_empty());
+        assert!(reused.lights.is_empty());
         assert_eq!(reused.visibility, crate::mesher::ALL_VISIBLE);
         assert_eq!(reused.sides, crate::mesher::Sides::default());
         assert_eq!(pool.bytes, 0);
