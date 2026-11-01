@@ -444,8 +444,10 @@ read when the server starts. To turn it off again, set `enable-rcon = false`: ta
 `server.toml` leaves what `server.properties` already holds, as for any other key.
 
 Where it differs from vanilla: a connection that hasn't logged in within 30 seconds is closed, at most 16 are open
-at once, and a command a client's TCP splits in two still works. A command shows as the console's (`Server`, not
-`Rcon`), and `broadcast-rcon-to-ops` isn't honoured yet.
+at once, and a command a client's TCP splits in two still works.
+
+A command runs from a source named `Rcon`: operators in game see what it did as `[Rcon: ...]` (gray, italic) unless
+`broadcast-rcon-to-ops` is `false`, and a `say` shows as `[Rcon] ...`.
 
 ### Tools that read the query
 

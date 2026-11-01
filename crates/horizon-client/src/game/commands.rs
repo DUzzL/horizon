@@ -255,9 +255,14 @@ impl Game<'_> {
             self.cart_command_success(cart, message, false);
             return;
         }
-        if self.ui.rules.bool("send_command_feedback") {
+        if self.accepts_success() {
             self.system_message(message);
         }
+    }
+    /// `CommandSource.acceptsSuccess`: a player's source takes success feedback while
+    /// `send_command_feedback` is on; the server console's and an RCON client's always do.
+    fn accepts_success(&self) -> bool {
+        self.console_broadcast.is_some() || self.ui.rules.bool("send_command_feedback")
     }
     /// sendSuccess honouring `send_command_feedback`.
     pub(super) fn feedback(&mut self, message: Text) {
@@ -272,7 +277,7 @@ impl Game<'_> {
             self.cart_command_success(cart, message, true);
             return;
         }
-        if self.ui.rules.bool("send_command_feedback") {
+        if self.accepts_success() {
             self.system_message(message.clone());
         }
         self.broadcast_to_admins(message);
@@ -340,7 +345,9 @@ impl Game<'_> {
         // the server's own source, "Server".
         let who = match self.command_source.and_then(|s| s.entity) {
             Some(entity) => self.target_name(entity),
-            None if self.console_broadcast.is_some() => Text::literal("Server".to_owned()),
+            None if self.console_broadcast.is_some() => {
+                Text::literal(if self.rcon_source { "Rcon" } else { "Server" }.to_owned())
+            }
             None => self.player_display_name(),
         };
         let line = Text::translate("chat.type.admin", &[who, message])
