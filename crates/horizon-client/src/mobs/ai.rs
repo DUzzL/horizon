@@ -2313,22 +2313,22 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             seconds: burn,
         });
     }
-    let knock = super::gear::knockback(m);
-    if knock > 0 {
-        let (dx, dz) = match who {
-            Who::Player => cx.w.player.as_ref().map_or((0.0, 0.0), |p| {
-                (p.position.x - m.position.x, p.position.z - m.position.z)
-            }),
-            Who::Mob(id) => cx.w.seen(id).map_or((0.0, 0.0), |s| {
-                (s.position.x - m.position.x, s.position.z - m.position.z)
-            }),
-        };
-        let len = (dx * dx + dz * dz).sqrt().max(1e-5);
-        let k = f64::from(knock) * 0.5;
-        cx.events.push(MobEvent::Push {
+    // `Mob.doHurtTarget`: `causeExtraKnockback(target, getKnockback(...))`. `getKnockback` is the
+    // `attack_knockback` attribute plus the Knockback enchantment, halved; the push goes along the
+    // attacker's facing through `LivingEntity.knockback` (so the target's resistance applies), and
+    // slows the attacker.
+    let power = (m.attrs.attack_knockback as f32 + super::gear::knockback(m) as f32) / 2.0;
+    if power > 0.0 {
+        use horizon_core::geometry::trig::Mth;
+        let to_rad = std::f32::consts::PI / 180.0;
+        cx.events.push(MobEvent::Knockback {
             target: who,
-            velocity: [dx / len * k, 0.1, dz / len * k],
+            power: f64::from(power),
+            x: f64::from((m.yaw * to_rad).msin()),
+            z: f64::from(-(m.yaw * to_rad).mcos()),
+            source,
         });
+        m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
     }
     // Zombies set their target on fire while burning (Zombie.doHurtTarget).
     if m.fire_ticks > 0 && matches!(m.species(), Species::Zombie) && m.random.next_float() < 0.3 {
