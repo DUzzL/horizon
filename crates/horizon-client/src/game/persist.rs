@@ -354,6 +354,8 @@ impl Game<'_> {
                             self.next_entity += 1;
                             orb.id = self.next_entity;
                             let (id, p) = (orb.id, orb.position);
+                            // An orb that came through a portal keeps its cooldown.
+                            self.restore_portal_cooldown(id, &tag);
                             self.orbs.push(orb);
                             let kind = "minecraft:experience_orb";
                             if !moved
@@ -387,12 +389,20 @@ impl Game<'_> {
                     | "minecraft:breeze_wind_charge" => {
                         if let Some(mut p) = entity_nbt::fireball_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
+                            // A projectile that came through a portal keeps its cooldown.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
                     id if entity_nbt::throwable_kind(id).is_some() => {
                         if let Some(mut p) = entity_nbt::throwable_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
+                            // A projectile that came through a portal keeps its cooldown.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
