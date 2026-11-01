@@ -186,9 +186,7 @@ impl Game<'_> {
         if stack.damage + 1 >= max || (riptide && !self.in_water_or_rain()) {
             return true;
         }
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
-        }
+        self.start_using_item();
         true
     }
     fn in_water_or_rain(&mut self) -> bool {
@@ -593,15 +591,18 @@ impl Game<'_> {
                     );
                     t.dealt_damage = true;
                     let mut hurt_at = None;
+                    let aim = self.attacker_aim(Some(Who::Player));
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         let from = Some([t.position.x, t.position.y, t.position.z]);
-                        let hurt = m.damage(
+                        let hurt = m.damage_projectile(
                             damage,
                             Damage {
                                 kind: DamageKind::Arrow,
                                 attacker: Some(Who::Player),
                                 from,
                             },
+                            aim,
+                            [t.velocity.x, t.velocity.z],
                         );
                         if hurt {
                             hurt_at = Some([m.position.x, m.position.y, m.position.z]);

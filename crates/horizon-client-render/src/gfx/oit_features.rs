@@ -176,7 +176,7 @@ impl Features {
                 &entity_module,
                 entities,
                 &entity_buffers,
-                kind("text", "entity", None, offset),
+                kind("text", "entity", Some(wgpu::Face::Back), offset),
             ),
             crumbling: set(
                 &entity_module,
@@ -188,7 +188,12 @@ impl Features {
                 &entity_module,
                 entities,
                 &entity_buffers,
-                kind("entity shadows", "shadow", None, shadow_bias),
+                kind(
+                    "entity shadows",
+                    "shadow",
+                    Some(wgpu::Face::Back),
+                    shadow_bias,
+                ),
             ),
             swirl: set(
                 &entity_module,

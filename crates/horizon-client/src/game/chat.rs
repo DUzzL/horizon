@@ -4,7 +4,7 @@ use super::{Game, Screen};
 use horizon_client::{
     chat::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
-        SYSTEM_INDICATOR,
+        SYSTEM_INDICATOR, normalize_chat_message,
     },
     command::Registries,
     gamerules::GameRules,
@@ -19,13 +19,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The tree the chat parses and completes with: a server's, once it has
-/// sent one (ClientPacketListener.commands), else the game's own.
+/// The tree the chat parses and completes with: `Remote::chat_tree`, which is
+/// a server's, once it has sent one (ClientPacketListener.commands), else the
+/// game's own, plus the commands native mods own (`chat_tree_for`).
 pub(super) fn chat_tree(
     remote: &Option<super::remote::Remote>,
 ) -> &horizon_client::command::Dispatcher {
-    match remote.as_ref().and_then(|r| r.commands.as_ref()) {
-        Some(tree) => tree,
+    match remote.as_ref() {
+        Some(server) => &server.chat_tree,
         None => horizon_client::command::vanilla::game_dispatcher(),
     }
 }
@@ -33,6 +34,42 @@ use winit::{
     event::KeyEvent,
     keyboard::{KeyCode, PhysicalKey},
 };
+
+/// `base` with the commands native mods own (`native_commands`) added: each a
+/// literal that takes the rest of the line as it was typed, run by
+/// `native_command` (`Dispatcher::with_mod_commands`), so the chat box colours
+/// and completes them as it does the game's own.
+pub(super) fn with_native_commands(
+    base: &horizon_client::command::Dispatcher,
+    names: &[&str],
+) -> horizon_client::command::Dispatcher {
+    // A name the tree already has keeps that command (colour, completion).
+    base.with_mod_commands(
+        names
+            .iter()
+            .copied()
+            .filter(|name| base.find(name).is_none()),
+    )
+}
+
+impl Game<'_> {
+    /// The tree the chat box colours, completes and parses with for the
+    /// world's connection: `base`, the tree the server sent, or the game's own
+    /// before it does. Built where that base changes — once per connection —
+    /// rather than at each keystroke, and asking the mods then, not per key.
+    pub(super) fn chat_tree_for(
+        &mut self,
+        base: Option<&horizon_client::command::Dispatcher>,
+    ) -> horizon_client::command::Dispatcher {
+        let mut names = Vec::new();
+        self.native_commands(&mut names);
+        let base = match base {
+            Some(tree) => tree,
+            None => horizon_client::command::vanilla::game_dispatcher(),
+        };
+        with_native_commands(base, &names)
+    }
+}
 
 /// The local player's name (offline single player).
 pub const PLAYER_NAME: &str = "Player";
@@ -398,6 +435,9 @@ impl Game<'_> {
             ]
             .map(String::from),
         );
+        // content mods' thrown types.
+        let thrown = horizon_client::projectiles::thrown_types().iter();
+        summonable.extend(thrown.map(|t| t.id.to_owned()));
         summonable.sort();
         summonable.dedup();
         reg.summonable = summonable;
@@ -820,14 +860,17 @@ impl Game<'_> {
             screen.type_text(&m, &c, text);
         }
     }
-    /// ChatScreen.handleChatInput: history, then a command or a chat line.
-    /// The Chat option's restrictions stop the message here too, so a
-    /// control-socket `chat` cannot send what the player's setting hides.
+    /// ChatScreen.handleChatInput: the message comes in normalized
+    /// (`normalizeChatMessage`: trimmed, whitespace runs collapsed, cut to the
+    /// 256 UTF-16 units the packet holds), into history, then as a command or
+    /// a chat line. The Chat option's restrictions stop the message here too,
+    /// so a control-socket `chat` cannot send what the player's setting hides.
     pub(super) fn handle_chat_input(&mut self, message: &str) {
-        if !self.chat_abilities().allows(message) {
+        let message = normalize_chat_message(message);
+        if message.is_empty() || !self.chat_abilities().allows(&message) {
             return;
         }
-        self.ui.chat.add_recent(message);
+        self.ui.chat.add_recent(&message);
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
         if self.remote.is_some() {
@@ -836,7 +879,7 @@ impl Game<'_> {
             {
                 return;
             }
-            self.send_chat(message);
+            self.send_chat(&message);
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
@@ -847,7 +890,7 @@ impl Game<'_> {
         } else {
             let line = Text::translate(
                 "chat.type.text",
-                &[self.player_display_name(), Text::literal(message)],
+                &[self.player_display_name(), Text::literal(message.as_str())],
             );
             let focused = self.screen == Screen::Chat;
             self.ui.chat.add(
@@ -858,7 +901,7 @@ impl Game<'_> {
                 self.ticks,
                 focused,
             );
-            self.lan_host_chat(message);
+            self.lan_host_chat(&message);
         }
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {
@@ -982,6 +1025,15 @@ impl Game<'_> {
         let Some(url) = &self.link_prompt else {
             return;
         };
+        // ConfirmLinkScreen: the question and the link (its warning is a
+        // widget of its own, not narrated).
+        horizon_client::widgets::begin_screen(|| {
+            super::screen_info::confirm(
+                "chat/confirm_link",
+                &super::screen_info::tr("chat.link.confirm", &[]),
+                url,
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         horizon_client::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -1029,7 +1081,7 @@ impl Game<'_> {
             return;
         }
         if self.remote.is_some() {
-            self.send_chat(&format!("/{command}"));
+            self.send_unattended_command(command);
         } else {
             self.run_command(command);
         }
@@ -1083,6 +1135,17 @@ impl Game<'_> {
         let Some(mut screen) = self.ui.chat_screen.take() else {
             return;
         };
+        // ChatScreen.updateNarrationState: the restricted prompt is
+        // `displayMode.showRestrictedPrompt`, the abilities' restrictions.
+        let in_bed = self.ui.in_bed_chat && self.sleeping.is_some();
+        horizon_client::widgets::begin_screen(|| {
+            super::screen_info::chat(
+                in_bed,
+                screen.value(),
+                screen.abilities.any_restriction(),
+                &super::screen_info::tr,
+            )
+        });
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1103,7 +1166,7 @@ impl Game<'_> {
         let draws = screen.draw(&m, mouse, blink, background);
         horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
-        if self.ui.in_bed_chat && self.sleeping.is_some() {
+        if in_bed {
             let (x, y, w, h) = Self::leave_bed_button(batch.width, batch.height);
             let label = Text::literal(horizon_client::lang::get_or(
                 "multiplayer.stopSleeping",
@@ -1223,6 +1286,7 @@ impl Game<'_> {
         self.world.health_rules.fall_damage = self.ui.rules.bool("fall_damage");
         self.world.health_rules.fire_damage = self.ui.rules.bool("fire_damage");
         self.world.health_rules.freeze_damage = self.ui.rules.bool("freeze_damage");
+        horizon_client::mobs::sulfur_cube::set_tnt_explodes(self.ui.rules.bool("tnt_explodes"));
         use horizon_world::food::Difficulty;
         self.world.health_rules.difficulty = match self.ui.difficulty {
             0 => Difficulty::Peaceful,
@@ -1316,6 +1380,8 @@ impl Game<'_> {
     /// cause is known to the client).
     pub(super) fn death_message(&mut self) {
         let cause = self.ui.death_cause.take();
+        let player = self.native_acting_id();
+        self.native_player_died(player, cause.as_deref());
         self.ui.died_at = Some(std::time::Instant::now());
         self.ui.death_text = None;
         self.ui.death_confirm = None;
@@ -1369,6 +1435,7 @@ impl Game<'_> {
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.clone(),
             size: None,
+            scaled: true,
         });
         self.ui.screenshot_message = Some(path);
     }
@@ -1488,5 +1555,41 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &command_export(&dir).unwrap()));
         assert!(command_export(&dir.join("missing")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A native mod's command is in the tree the chat box uses (#456): known
+    /// rather than red, and offered as it types. With no mod claiming one the
+    /// tree is the game's own, as it was before the mods were asked.
+    #[test]
+    fn native_mod_commands_join_the_chat_tree() {
+        let reg = Registries::default();
+        let vanilla = horizon_client::command::vanilla::game_dispatcher();
+        let plain = with_native_commands(vanilla, &[]);
+        assert_eq!(plain.nodes.len(), vanilla.nodes.len());
+        assert!(plain.find("flyspeed").is_none());
+        let tree = with_native_commands(vanilla, &["flyspeed"]);
+        assert!(tree.find("flyspeed").is_some());
+        // The rest of the line goes to the mod, as `native_command` gets it.
+        let parse = tree.parse("flyspeed 4", &reg);
+        assert_eq!(
+            parse.executable().unwrap().1,
+            horizon_client::command::MOD_COMMAND
+        );
+        let parse = tree.parse("fly", &reg);
+        let offered: Vec<String> = tree
+            .client_suggestions(&parse, 3, &reg)
+            .1
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        assert!(offered.contains(&"flyspeed".to_owned()), "{offered:?}");
+        // A name the game has keeps that command: the chat still knows it.
+        let shared = with_native_commands(vanilla, &["help"]);
+        assert!(shared.find("help").is_some());
+        assert_eq!(
+            shared.parse("help", &reg).executable().map(|e| e.1),
+            vanilla.parse("help", &reg).executable().map(|e| e.1)
+        );
+        assert_eq!(shared.nodes.len(), vanilla.nodes.len());
     }
 }
