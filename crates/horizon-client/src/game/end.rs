@@ -489,6 +489,9 @@ impl Game<'_> {
         if self.dim == Dim::End {
             self.tick_fight();
             self.tick_dragon_fireballs();
+        } else {
+            // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
+            self.tick_fight();
         }
         self.tick_crystals();
         self.tick_eyes();
