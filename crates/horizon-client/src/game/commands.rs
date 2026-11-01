@@ -3548,6 +3548,32 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     out
 }
 
+/// BlockPredicateArgument test, against the registry and the block tags.
+pub(super) fn block_input_matches(
+    registry: &horizon_world::registry::BlockRegistry,
+    tags: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    b: &BlockInput,
+    state: BlockStateId,
+) -> bool {
+    let Some(s) = registry.state(state) else {
+        return false;
+    };
+    let name_ok = if b.tag {
+        let tag = b.id.trim_start_matches("minecraft:");
+        tags.get(tag)
+            .or_else(|| tags.get(&b.id))
+            .is_some_and(|set| {
+                set.contains(&s.name) || set.contains(s.name.trim_start_matches("minecraft:"))
+            })
+    } else {
+        s.name == b.id
+    };
+    name_ok
+        && b.properties
+            .iter()
+            .all(|(k, v)| s.properties.get(k) == Some(v))
+}
+
 #[cfg(test)]
 mod look_at_tests {
     use super::{Target, non_player_entity_id};
