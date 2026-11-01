@@ -7501,7 +7501,7 @@ impl Game<'_> {
     /// pad latched, keeps its state: `set_down(false, needs_toggle)` leaves
     /// those alone, and a toggle the player asked for is meant to outlive the
     /// key. A mapping rebound away from its modifier is left alone too: the
-    /// modifier says nothing about it.
+    /// modifier says nothing about it, and so is one a controller holds.
     ///
     /// Only `physical_keys` is cleared directly here; the logical `self.keys`
     /// entries for sneak and sprint are left to the toggle loop below, because
@@ -7533,7 +7533,10 @@ impl Game<'_> {
                 Some(KeyCode::ControlLeft | KeyCode::ControlRight) => control,
                 _ => continue,
             };
-            if !held {
+            // A controller's stick click acts as the key without setting the modifier: it is held
+            // while the pad holds it (or its release waits for a tick), not when the keyboard says.
+            let pad = self.pad.holds_action(&self.settings.controller, mapping);
+            if !held && !pad {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
             }
