@@ -2945,6 +2945,14 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// Whether a mod hears projectiles' impacts (`native_projectile_impact`):
+    /// set `hears`. Asked once a server tick before the projectiles fly; only
+    /// then does the tick keep the copy of each flying projectile that a
+    /// canceled impact flies on from, so a game without such a mod pays
+    /// nothing. Server-side. API @API:projectile_impact@.
+    pub(super) fn native_hears_projectile_impacts(&self, hears: &mut bool) {
+        let _ = hears;
+    }
     /// A projectile hit something (NeoForge's `ProjectileImpactEvent`, posted
     /// where vanilla's projectile has found what it meets, before the hit
     /// acts): `projectile` (its entity id) of type `kind` (`minecraft:arrow`),
@@ -2964,7 +2972,8 @@ impl Game<'_> {
     /// shulker bullets, from players, mobs and dispensers. It does not fire for
     /// a breeze's deflection, for a hit on a wind charge, for fireworks or for
     /// fishing bobbers. A dragon part or End crystal is told by the id of the
-    /// dragon or crystal. Server-side. API @API:projectile_impact@.
+    /// dragon or crystal. Heard only when a mod also sets
+    /// `native_hears_projectile_impacts`. Server-side. API @API:projectile_impact@.
     pub(super) fn native_projectile_impact(
         &mut self,
         dimension: &str,

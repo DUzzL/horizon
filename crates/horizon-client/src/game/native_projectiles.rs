@@ -45,11 +45,18 @@ fn projectile_type(p: &Projectile) -> &'static str {
 }
 
 impl Game<'_> {
-    /// Whether this game is a server that flies projectiles for the mods: the
+    /// Whether this game is a server that flies projectiles for the mods (the
     /// server thread or a dedicated server, never the deprecated in-frame path
-    /// nor a client.
+    /// nor a client) and a mod asked to hear their impacts
+    /// (`native_hears_projectile_impacts`). Without one, the tick keeps no copy
+    /// of its projectiles: it costs nothing.
     pub(super) fn native_hears_impacts(&self) -> bool {
-        self.serving.is_some() || self.options.dedicated.is_some()
+        if self.serving.is_none() && self.options.dedicated.is_none() {
+            return false;
+        }
+        let mut hears = false;
+        self.native_hears_projectile_impacts(&mut hears);
+        hears
     }
 
     /// The entity id of the one who shot `p`: a mob's, a player's, else 0.
