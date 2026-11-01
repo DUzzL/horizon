@@ -2182,7 +2182,6 @@ impl Game<'_> {
     ) {
         let _ = (player, command, ran);
     }
-<<<<<<< HEAD
     /// A player's client started (`flying`) or stopped flying (vanilla's
     /// `handlePlayerAbilities`, which honours it only for a player who may
     /// fly: creative or spectator), heard once for each change, on a server,
@@ -2202,7 +2201,7 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         let _ = (player, name, flying, cancel);
-=======
+    }
     /// A command a player typed (NeoForge's `CommandEvent`, before
     /// `Commands.performCommand` runs it), without its slash: any command,
     /// vanilla's and the mods' own, also one the player may not run. Set
@@ -2235,7 +2234,6 @@ impl Game<'_> {
     /// before. @API:native_perform_console_command@.
     pub(super) fn native_perform_console_command(&mut self, command: &str, ran: &mut bool) {
         let _ = (command, ran);
->>>>>>> upstream/main
     }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
