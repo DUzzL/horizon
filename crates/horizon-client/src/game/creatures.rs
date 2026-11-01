@@ -6835,8 +6835,10 @@ fn knock_back(
     source: HurtSource<'_>,
 ) {
     let resistance = p.attribute("minecraft:knockback_resistance").unwrap_or(0.0);
+    // The native hook runs first, on the raw strength (`LivingKnockBackEvent`), then the
+    // resistance scales what it left.
     let mut knock = Knock {
-        strength: power * (1.0 - resistance),
+        strength: power,
         x: xd,
         z: zd,
     };
@@ -6848,6 +6850,7 @@ fn knock_back(
         x: mut xd,
         z: mut zd,
     } = knock;
+    let power = power * (1.0 - resistance);
     if power <= 0.0 {
         return;
     }
@@ -7229,8 +7232,9 @@ mod knockback_tests {
         assert_eq!(seen(9201), [(9201, named, made)]);
         // Twice the strength, direction turned around.
         assert_eq!(push(9202, 0.0), (0.0, 0.4, 0.8));
-        // After the resistance: a 0.5 resistance hands the hook half the strength.
+        // Before the resistance (`LivingKnockBackEvent`): a 0.5 resistance still hands the hook
+        // the raw strength, and the push that follows is halved.
         assert_eq!(push(9203, 0.5), (0.0, 0.2, -0.2));
-        assert_eq!(seen(9203)[0].2.strength, 0.2);
+        assert_eq!(seen(9203)[0].2.strength, 0.4);
     }
 }
