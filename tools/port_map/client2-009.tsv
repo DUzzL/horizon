@@ -1,7 +1,7 @@
 ActiveTextCollector.accept	inline	crates/horizon-client-render/src/screen_draw.rs::text	default overload: left-aligned text at x,y with default parameters
-ActiveTextCollector.acceptScrolling	missing		minor: forwards to the scrolling helper, which Horizon lacks; long text is clipped
+ActiveTextCollector.acceptScrolling	port	crates/horizon-client-render/src/screen_draw.rs::scrolling_text	gap: minor: only the screen_draw widgets (Button) scroll; ui.rs centered_text clips
 ActiveTextCollector.acceptScrollingWithDefaultCenter	port	crates/horizon-client-render/src/ui.rs::centered_text	gap: minor: centres the message; wider text is clipped instead of scrolled
-ActiveTextCollector.defaultScrollingHelper	missing		minor: wider text does not slide back and forth; ui.rs centered_text clips it
+ActiveTextCollector.defaultScrollingHelper	port	crates/horizon-client-render/src/screen_draw.rs::scrolling_text	gap: minor: only the screen_draw widgets (Button) call it; ui.rs centered_text still clips wider text. The offset is screen_draw.rs::scroll_offset
 ActiveTextCollector.findElementUnderCursor	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: hit test covers chat lines only; book links use game/books.rs book_link_at
 ActiveTextCollector.isPointInRectangle	port	crates/horizon-client-render/src/ui.rs::hovered	half-open rectangle test with the same bounds
 ActiveTextCollector.ClickableStyleFinder.accept	port	crates/horizon-client-render/src/chat.rs::Chat::style_at	gap: minor: only chat lines are searched for click and hover styles
@@ -62,7 +62,7 @@ GuiGraphicsExtractor.textRendererForWidget	skip:ui		builds a text collector for 
 GuiGraphicsExtractor.textRenderer	skip:ui		builds a text collector; Horizon draws text directly
 GuiGraphicsExtractor.createDefaultTextParameters	skip:ui		default pose, opacity and scissor for text; Horizon passes colour and rectangle directly
 GuiGraphicsExtractor.RenderingTextCollector.accept	port	crates/horizon-client-render/src/screen_draw.rs::text	gap: minor: no hover or click registration here (see Chat::style_at)
-GuiGraphicsExtractor.RenderingTextCollector.acceptScrolling	missing		minor: no scrolling text (see defaultScrollingHelper)
+GuiGraphicsExtractor.RenderingTextCollector.acceptScrolling	port	crates/horizon-client-render/src/screen_draw.rs::scrolling_text	gap: minor: only the screen_draw widgets (Button) scroll; ui.rs centered_text clips
 GuiGraphicsExtractor.ScissorStack.push	inline	crates/horizon-client-render/src/screen_draw.rs::paint	gap: minor: the pushed rectangle replaces the current one; it is not intersected
 GuiGraphicsExtractor.ScissorStack.pop	inline	crates/horizon-client-render/src/screen_draw.rs::paint	gap: minor: Draw::NoScissor clears the scissor instead of restoring the enclosing one
 GuiGraphicsExtractor.ScissorStack.containsPoint	missing		minor: hover ignores the scissor, so a widget clipped out of view can still highlight

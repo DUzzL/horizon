@@ -149,7 +149,12 @@ pub fn main() -> horizon_client::Result<()> {
             }
         }
         let mouse = (int(&c["mouse"][0]), int(&c["mouse"][1]));
-        let draws = screen.draw(&m, mouse, c["blink"].as_u64().unwrap_or(0));
+        let draws = screen.draw(
+            &m,
+            mouse,
+            c["blink"].as_u64().unwrap_or(0),
+            c["now"].as_i64().unwrap_or(0),
+        );
         let screen_name = if screen.confirming() {
             "confirm"
         } else {
