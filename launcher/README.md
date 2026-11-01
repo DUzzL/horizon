@@ -490,7 +490,9 @@ On Windows, `cargo test --bin horizon-launcher desktop_list_renders_the_viewport
     cargo build --release
 
 On NixOS, `nix-shell` in this folder provides the libraries GPUI links to (Wayland, X11,
-xkbcommon, Vulkan, fontconfig). macOS needs Xcode's command line tools. The `launcher`
+xkbcommon, Vulkan, fontconfig) and the ALSA and libudev files a native mod build looks up, so
+start the launcher from that shell to build native mods as well (#5248). macOS needs Xcode's
+command line tools. The `launcher`
 workflow builds all three platforms on every push to the `launcher` branch (or a
 `launcher-*` one), then installs the latest Horizon into a temporary folder and checks that the
 client starts (`--help`) and that the binaries import only system libraries (Windows).
