@@ -3197,21 +3197,36 @@ impl Game<'_> {
         let owner = owner.filter(|_| projectile);
         let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
-        if let Some(player) = self.player.as_mut()
-            && let Some(id) = self.motion.health.damage.id(damage_type)
-            && let Ok(o) = player.hurt_caused_by(
-                &self.motion.health,
-                self.world.health_rules,
-                id,
-                amount,
-                blocking,
-                living_cause,
+        let result = self.player.as_mut().and_then(|player| {
+            let id = self.motion.health.damage.id(damage_type)?;
+            player
+                .hurt_caused_by(
+                    &self.motion.health,
+                    self.world.health_rules,
+                    id,
+                    amount,
+                    blocking,
+                    living_cause,
+                    causing,
+                )
+                .ok()
+        });
+        if let Some(o) = result {
+            outcome = o;
+        }
+        // LivingEntity.hurtServer: applyItemBlocking, and with it the item's
+        // own knockback (blockedByItem), runs before dealDefaultKnockback.
+        if raised {
+            let source = HurtSource {
+                damage_type,
                 causing,
-            )
-            && {
-                outcome = o;
-                o.hurt
-            }
+                direct: 0,
+            };
+            self.after_block(outcome, (attacker, projectile), source);
+        }
+        if let Some(o) = result
+            && o.hurt
+            && let Some(player) = self.player.as_mut()
         {
             // LivingEntity.hurtServer's dealDefaultKnockback: not inside the
             // hurt cooldown (a stronger hit there only adds its difference).
@@ -3274,14 +3289,6 @@ impl Game<'_> {
                 actual: amount - outcome.blocked,
                 blocked: outcome.blocked > 0.0,
             });
-        }
-        if raised {
-            let source = HurtSource {
-                damage_type,
-                causing,
-                direct: 0,
-            };
-            self.after_block(outcome, (attacker, projectile), source);
         }
         outcome.hurt
     }
