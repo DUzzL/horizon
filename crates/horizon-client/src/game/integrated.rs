@@ -688,8 +688,9 @@ impl Game<'_> {
         // `load_world`, with the world `serve` started preparing.
         startup::time("server.wait_rest", || self.join_world_rest())?;
         self.perf.world_opening();
-        let world = startup::time("server.world_prepare", || opening.world?.finish())?;
-        startup::time("server.finish_open_world", || self.finish_open_world(world))?;
+        let open_step = startup::step("server.open_world");
+        self.finish_open_world(opening.world?.finish()?)?;
+        drop(open_step);
         if let Some(sync) = opening.sync {
             sync.adopt(&self.pack_files());
         }
