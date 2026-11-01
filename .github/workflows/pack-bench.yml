@@ -48,8 +48,11 @@ jobs:
           git fetch https://github.com/horizon-rust/horizon.git "$BASE"
           git worktree add ../base FETCH_HEAD
           cp crates/horizon-client-render/examples/pack_load_bench.rs ../base/crates/horizon-client-render/examples/
+          # A bench row that times a function the base lacks keeps it from building there: then
+          # the branch's own rows compare the two ways.
           (cd ../base && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo run --profile fast -p horizon-client-render \
-            --example pack_load_bench -- --scale "$SCALE") > base.md
+            --example pack_load_bench -- --scale "$SCALE") > base.md \
+            || echo "The bench does not build on the base." > base.md
       - name: Summary
         run: |
           {
