@@ -3,8 +3,8 @@
 //! input. How they look comes from `graphics_style`.
 use crate::{
     graphics::{
-      FarDetail, GraphicsApi, EntityCullingMode, LeafCullingMode, Overlay, Pacing, 
-      PresentMode, Preset, Upscaling,
+        EntityCullingMode, FarDetail, GraphicsApi, LeafCullingMode, Overlay, Pacing, PresentMode,
+        Preset, Upscaling,
     },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
@@ -671,6 +671,7 @@ impl H {
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }

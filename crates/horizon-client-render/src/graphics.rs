@@ -885,7 +885,6 @@ mod tests {
             far_detail: FarDetail::Reduced,
             cave_culling: false,
             entity_culling: EntityCullingMode::Synchronous,
-            entity_culling: true,
             leaf_culling: LeafCullingMode::SolidAggressive,
             chunk_updates: 12,
             upload_budget_kib: 4096,
