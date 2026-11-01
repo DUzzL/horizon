@@ -1188,7 +1188,7 @@ impl Game<'_> {
         let PhysicalKey::Code(key) = event.physical_key else {
             return;
         };
-        let ctrl = self.keys.contains(&winit::keyboard::KeyCode::ControlLeft);
+        let ctrl = self.has_control_down_with_quirk();
         let shortcut = self.edit_shortcut(event);
         let types_text = self.types_text();
         let shift = self.has_shift_down();
