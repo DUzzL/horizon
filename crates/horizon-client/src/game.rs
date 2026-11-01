@@ -15188,11 +15188,11 @@ impl Game<'_> {
         let emissive_layers = if self.title.is_none() {
             let mut requests = Vec::new();
             self.native_emissive(&mut requests);
-            horizon_client::native_emissive::mappings(
+            // Native mods' overlays first, then the packs' OptiFine emissive blocks.
+            horizon_client::native_emissive::table(
                 &self.pack.render.sprite_layers,
-                requests
-                    .into_iter()
-                    .take(horizon_client::native_emissive::MAX),
+                requests,
+                &self.pack.render.emissive,
             )
         } else {
             Vec::new()
