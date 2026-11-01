@@ -1611,6 +1611,11 @@ impl Lod {
     pub fn observing(&self) -> usize {
         self.shared.observed.lock().unwrap().len()
     }
+    /// Whether tiles new to the plan are being sampled: far terrain on its way,
+    /// meshed as soon as it is.
+    pub fn sampling(&self) -> bool {
+        !self.pending.is_empty()
+    }
     /// Keeps a visited chunk's summary, unless it is unchanged.
     fn finish_observed(&mut self, key: (i32, i32), columns: ReducedColumns) {
         if self
