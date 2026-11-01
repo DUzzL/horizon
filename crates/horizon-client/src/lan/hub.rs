@@ -227,6 +227,8 @@ pub struct Hub {
     /// The world is superflat (`ServerLevel.isFlat`, a world-wide flag, sent as
     /// `CommonPlayerSpawnInfo.isFlat` in every dimension).
     pub flat_world: bool,
+    /// The world is the Debug preset (`CommonPlayerSpawnInfo.isDebug`).
+    pub debug_world: bool,
     /// Who rides what, set by the game before each tick.
     pub riding: super::entity::Riding,
     /// The scoreboard's teams, set by the game each tick, for players'
@@ -514,6 +516,7 @@ impl Hub {
             far: None,
             singleplayer_owner: None,
             flat_world: false,
+            debug_world: false,
             riding: Default::default(),
             last_clock: i64::MIN,
             last_rate: 0.0,
@@ -843,7 +846,7 @@ impl Hub {
             seed: horizon_core::biome::obfuscate_seed(self.config.seed),
             game_type: g.game_mode,
             previous_game_type: None,
-            debug: false,
+            debug: self.debug_world,
             flat: self.flat_world,
             // Player.getLastDeathLocation.
             last_death: g
@@ -1919,7 +1922,7 @@ impl Hub {
     }
 
     fn broadcast_block_changes(&mut self, world: &mut World) {
-        // Chunks changed in bulk (a mod's block edit) go whole to those who see them: one packet each, where a
+        // Chunks changed in bulk (`World::edit_runs`) go whole to those who see them: one packet each, where a
         // change of each block would be thousands (the client lights and meshes them once, on its workers).
         let bulk: Vec<(i32, i32)> = if world.bulk_log.is_empty() {
             Vec::new()

@@ -171,7 +171,8 @@ pub(super) struct LanHost {
     /// see; the players' hurt time by entity id.
     mob_state: HashMap<super::Dim, HashMap<u32, (i32, bool, Option<i32>)>>,
     /// The guest each mob sees as its player, when not the host (game/lan_mobs.rs).
-    pub mob_players: HashMap<u32, u32>,
+    /// Looked up per mob each tick: a fast hasher (never iterated).
+    pub mob_players: horizon_client::fast_hash::FxHashMap<u32, u32>,
     /// An integrated server's owner (game/integrated.rs).
     pub owner: Option<Owner>,
     /// The players' locator bars, one waypoint manager per level by
@@ -1403,6 +1404,7 @@ impl Game<'_> {
         let host_entity = self.next_entity as i32;
         let mut hub = Hub::new(lan, sync, encoder, config);
         hub.flat_world = self.world_flat;
+        hub.debug_world = self.world_debug;
         let port = hub.lan.port;
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
@@ -1420,7 +1422,7 @@ impl Game<'_> {
             play: HashMap::new(),
             broken: Vec::new(),
             mob_state: HashMap::new(),
-            mob_players: HashMap::new(),
+            mob_players: Default::default(),
             owner: None,
             waypoints: Default::default(),
             waypoint_dead: Default::default(),
@@ -1832,7 +1834,7 @@ impl Game<'_> {
     fn lan_entities(
         &self,
         host_entity: Option<i32>,
-        mob_players: &HashMap<u32, u32>,
+        mob_players: &horizon_client::fast_hash::FxHashMap<u32, u32>,
         hub: &mut Hub,
         out: &mut States,
     ) {

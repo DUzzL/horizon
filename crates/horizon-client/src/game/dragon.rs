@@ -2436,13 +2436,17 @@ impl Game<'_> {
         }
         let (health, rules) = (&self.motion.health, self.world.health_rules);
         let id = health.damage.id("minecraft:mob_attack");
+        let mut canceled = false;
         if let Some(p) = self.player.as_mut() {
             push_seen_with_hurt(p, push, |p| {
-                if let Some(id) = id.filter(|_| hurts) {
-                    let _ = p.hurt(health, rules, id, 5.0);
+                if let Some(id) = id.filter(|_| hurts)
+                    && let Ok(o) = p.hurt_blocking(health, rules, id, 5.0, None)
+                {
+                    canceled = o.canceled;
                 }
             });
         }
+        self.combat.forget_noted(canceled);
     }
     /// Damage from the dragon, which is its causing entity
     /// (`DamageSources.mobAttack(dragon)`, `indirectMagic(cloud, dragon)`): the

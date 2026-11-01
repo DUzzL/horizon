@@ -299,7 +299,7 @@
   "Add from GitHub": "Adicionar do GitHub",
   "Add a native mod from GitHub": "Adicionar um mod nativo do GitHub",
   "A link to a repository (its latest release), a release, a branch or tag, or a commit. The launcher installs one exact release file or commit, never a branch that moves.": "Um link para um repositório (sua versão mais recente), uma versão, um branch ou tag, ou um commit. O launcher instala um arquivo de versão ou commit exato, nunca um branch que muda.",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "{mods} instalado(s) do GitHub ({source}). Faça a compilação em Configurações > Mods nativos.",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "{mods} instalado(s) do GitHub ({source}). Faça a compilação na página Mods.",
   "{id} is up to date.": "{id} está atualizado.",
   "Asking GitHub about {owner}/{repo}…": "Consultando o GitHub sobre {owner}/{repo}…",
   "Downloading {source}…": "Baixando {source}…",

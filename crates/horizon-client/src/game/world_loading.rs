@@ -638,6 +638,18 @@ pub(super) fn make_streaming(
                 shape,
             )
         });
+    // `DebugLevelSource`: the overworld of the Debug preset.
+    let debug = (dim == Dim::Overworld)
+        .then(|| horizon_client::save::world_gen_settings(world_root))
+        .flatten()
+        .and_then(|s| {
+            horizon_client::debugworld::DebugTerrain::from_settings(
+                &s,
+                pack.assets.registry,
+                res.biomes(),
+                shape,
+            )
+        });
     // `FlatLevelSource.createState`: a superflat world whose settings let structure sets
     // generate runs them on its flat ground.
     let flat_structures = (dim == Dim::Overworld)
@@ -666,7 +678,18 @@ pub(super) fn make_streaming(
             }
         }
     });
-    let mut streaming = if let Some(inner) = flat_vanilla {
+    let mut streaming = if let Some(inner) = debug {
+        Streaming::new(
+            Arc::new(Persistent {
+                inner: Arc::new(inner),
+                save: save.clone(),
+                registry: pack.assets.clone(),
+                biomes: biomes.clone(),
+            }),
+            pack.context.clone(),
+            res.threads(),
+        )
+    } else if let Some(inner) = flat_vanilla {
         inner.search_rings_behind();
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",

@@ -2151,6 +2151,11 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         .collect();
     namespaces.sort();
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
+    let mod_ids: Vec<&str> = mods.iter().map(|m| m.id.as_str()).collect();
+    overlay.write(
+        horizon_items::content_namespaces::MOD_IDS_MARKER,
+        &serde_json::to_vec(&mod_ids)?,
+    )?;
     let remainders: BTreeMap<&str, &str> = plan
         .items
         .iter()

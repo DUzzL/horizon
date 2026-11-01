@@ -1,8 +1,0 @@
-{
-  "hooks": [
-    {"name": "screen_render_post", "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_render_post"}
-  ],
-  "rust_summary": "`native_screen_render_post` (`ScreenEvent.Render.Post`: draw over the open\nscreen, given its id, menu type, title, container panel, slot count, mouse\nand partial tick).",
-  "doc_summary": "`native_screen_render_post`, the point of `ScreenEvent.Render.Post`: a native mod draws over the open screen after it and its tooltips, given its id, the server-opened menu's vanilla type (`menu`) and title, its container panel, its slot count, the mouse in GUI pixels and the partial tick (`NativeScreenView`). Every container, station and mod window draws on the inventory screen and so reports `inventory`: tell them apart by `menu` and `title` (None on a window the client opened) and by `slots`. It does not fire on the title screen, nor for the prompts, books and sign editors drawn over gameplay after it. Bundles that use it need \"hooks\": @API:screen_render_post@.",
-  "comments": []
-}

@@ -174,6 +174,7 @@ hardcore = false
 path = ""                    # the game program; empty: the one beside horizon-server
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true
+low_memory = false           # true: less memory, slightly slower ticks (see below)
 
 [backups]
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
@@ -518,6 +519,24 @@ short:
   stopped it.
 
 For more than 50 active players, give it more cores.
+
+### Less memory: `low_memory`
+
+Off by default. On Linux, the game's allocator (mimalloc) backs its memory with transparent huge pages
+(2 MB each) where the system allows them. Many of those pages are only partly used, so the server holds
+more memory than it needs, but the tick runs a little faster. Under `[engine]`, `low_memory = true` starts
+the game with huge pages off. Measured on a 4-core EPYC VPS with 20 bots playing (2026-11-01):
+
+| | Default | `low_memory = true` |
+|---|---|---|
+| Memory, idle after start | ~300 MB | ~245 MB (−60 MB) |
+| Memory, 20 players | ~1180 MB | ~980 MB (−190 MB) |
+| Average tick, 20 players | 27.1 ms | 27.5 ms (+1.2 %) |
+| Start | 2.1 s | 2.2 s |
+
+Turn it on when memory is what you're short of, for example on a small VPS. It applies at the next start.
+A game started without `horizon-server` (`horizon-client --dedicated`, a container of your own) gets the same
+effect from the environment variable `MIMALLOC_ALLOW_THP=0`. On macOS and Windows it changes nothing.
 
 ## When something goes wrong
 

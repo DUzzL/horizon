@@ -1,8 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "a mod's own advancement criteria triggers (`native_trigger_criterion`,\nin `native_criteria.rs`).",
-  "doc_summary": "[advancement triggers](#advancement-triggers) of a mod's own: `native_trigger_criterion(uuid, trigger, test)` fires a trigger\nan advancement of a content mod or a data pack names (`mymod:pipe_connected`) for one player, as a NeoForge mod's\n`SimpleCriterionTrigger.trigger`. Bundles that use it need `\"hooks\": @API:native_criteria@`.",
-  "comments": [
-    "crates/horizon-client/src/game/native_criteria.rs"
-  ]
-}

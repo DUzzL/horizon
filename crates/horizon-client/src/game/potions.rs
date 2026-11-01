@@ -710,6 +710,7 @@ impl Game<'_> {
         let creative = self.creative;
         let rules = self.world.health_rules;
         let Some(p) = self.player.as_mut() else {
+            self.combat.forget_noted(false);
             return;
         };
         match action {
@@ -721,12 +722,14 @@ impl Game<'_> {
                 }
             }
             EffectAction::Hurt(source, amount) => {
-                if creative {
-                    return;
+                let mut canceled = false;
+                if !creative
+                    && let Some(id) = self.motion.health.damage.id(source)
+                    && let Ok(o) = p.hurt_blocking(&self.motion.health, rules, id, amount, None)
+                {
+                    canceled = o.canceled;
                 }
-                if let Some(id) = self.motion.health.damage.id(source) {
-                    let _ = p.hurt(&self.motion.health, rules, id, amount);
-                }
+                self.combat.forget_noted(canceled);
             }
             EffectAction::Poison => {
                 if !creative

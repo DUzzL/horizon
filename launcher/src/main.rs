@@ -58,9 +58,9 @@ mod worlds_page;
 
 use gpui::{
     actions, div, ease_out_quint, prelude::*, px, relative, size, Animation, AnimationExt,
-    AnyElement, App, Application, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle,
-    FontWeight, Hsla, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseDownEvent, PathPromptOptions,
-    Pixels, Point, SharedString, Stateful, Subscription, Window, WindowBounds, WindowOptions,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle, FontWeight, Hsla,
+    KeyBinding, KeyDownEvent, Menu, MenuItem, MouseDownEvent, PathPromptOptions, Pixels, Point,
+    SharedString, Stateful, Subscription, Window, WindowBounds, WindowOptions,
 };
 use horizon_launcher::account::{self, Accounts, SignIn, SignInState};
 use horizon_launcher::backend::{self, Job, Msg, Release, Running, Settings, Updates};
@@ -447,7 +447,7 @@ impl Launcher {
             long_list: cull::Cull::default(),
             opening: (!settings.skip_opening).then(|| {
                 let focus = cx.focus_handle();
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 Opening {
                     started: None,
                     reveal: None,
@@ -1740,6 +1740,7 @@ fn keyboard(el: Stateful<Div>, t: &Theme) -> Stateful<Div> {
         offset: gpui::point(px(0.), px(0.)),
         blur_radius: px(0.5),
         spread_radius: px(spread),
+        inset: false,
     };
     el.tab_index(0).focus(move |s| {
         if KEYBOARD.load(Ordering::Relaxed) {
@@ -3526,13 +3527,13 @@ impl Launcher {
                 tr("For example --server-thread"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.args_focus);
+                window.focus(&this.args_focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.args_input, ev, cx) {
                     line_edit::Key::Pass => return,
-                    line_edit::Key::Escape => window.blur(),
+                    line_edit::Key::Escape => window.blur(cx),
                     line_edit::Key::Edited => {
                         this.settings.game_args = this.args_input.text().to_string();
                         this.settings.save();
@@ -3585,13 +3586,13 @@ impl Launcher {
                 tr("For example http://127.0.0.1:7890"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.proxy_focus);
+                window.focus(&this.proxy_focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.proxy_input, ev, cx) {
                     line_edit::Key::Pass => return,
-                    line_edit::Key::Escape => window.blur(),
+                    line_edit::Key::Escape => window.blur(cx),
                     line_edit::Key::Edited => this.save_proxy(),
                     _ => {}
                 }
@@ -4344,7 +4345,7 @@ impl Render for Launcher {
         if self.bench.as_ref().is_some_and(perf::Bench::scrolling) {
             self.bench_scroll(window);
         }
-        self.servers.note_focus(window);
+        self.servers.note_focus(window, cx);
         self.friend_focused = self.friend_focus.is_focused(window);
         self.mods.note_focus(window);
         self.github.note_focus(window);
@@ -4375,7 +4376,7 @@ impl Render for Launcher {
         let (reveal, held) = self.opening_phase(window);
         let ui = ease_out_cubic((reveal - 0.3) / 0.7);
         if self.opening.is_none() && window.focused(cx).is_none() {
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
         }
         let (sky, next) = self.sky.render(
             &t.night,
@@ -4398,9 +4399,9 @@ impl Render for Launcher {
                     "tab" => {
                         KEYBOARD.store(true, Ordering::Relaxed);
                         if k.modifiers.shift {
-                            window.focus_prev();
+                            window.focus_prev(cx);
                         } else {
-                            window.focus_next();
+                            window.focus_next(cx);
                         }
                     }
                     "escape" if this.servers_escape() => {}
@@ -4583,7 +4584,7 @@ impl Launcher {
         let handle = &self.content_scroll.handle;
         let mut offset = handle.offset();
         offset.y -= px(24.);
-        if -offset.y > handle.max_offset().height {
+        if -offset.y > handle.max_offset().y {
             offset.y = px(0.);
         }
         handle.set_offset(offset);
@@ -4643,10 +4644,12 @@ fn menus() -> Vec<Menu> {
         Menu {
             name: "Horizon Launcher".into(),
             items: vec![MenuItem::action("Quit Horizon Launcher", Quit)],
+            disabled: false,
         },
         Menu {
             name: "Window".into(),
             items: vec![MenuItem::action("Close Window", CloseWindow)],
+            disabled: false,
         },
     ]
 }
@@ -4660,13 +4663,14 @@ fn main() {
     backend::exe_path();
     #[cfg(windows)]
     backend::remove_replaced_binaries();
+    backend::cleanup_launcher_updates();
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
     // that build their own agents (`horizon-port-pack`) are told before anything starts.
     horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
     if let Some(code) = cli::run() {
         std::process::exit(code);
     }
-    Application::new()
+    gpui_platform::application()
         .with_assets(blocks::Assets)
         .run(|cx: &mut App| {
             cx.text_system()
@@ -4700,12 +4704,20 @@ fn main() {
                     #[cfg(target_os = "linux")]
                     window_decorations: Some(gpui::WindowDecorations::Client),
                     app_id: Some("horizon-launcher".into()),
+                    // GPUI draws a window without focus at most every 33 ms to save energy. A
+                    // benchmark's window often starts without it (KDE keeps focus from windows
+                    // a background process opens), and it measures drawing, not that limit.
+                    inactive_frame_interval: if perf::Bench::wanted() {
+                        None
+                    } else {
+                        WindowOptions::default().inactive_frame_interval
+                    },
                     ..Default::default()
                 },
                 |window, cx| cx.new(|cx| Launcher::new(window, cx)),
             )
             .expect("window");
-            cx.on_window_closed(shut_down).detach();
+            cx.on_window_closed(|cx, _| shut_down(cx)).detach();
             cx.activate(true);
         });
 }
@@ -4747,7 +4759,7 @@ mod tests {
         use super::{key_bindings, CloseWindow, Quit};
         use gpui::{Keymap, Keystroke};
         let keymap = Keymap::new(key_bindings());
-        let key = |s: &str| [Keystroke::parse(s).unwrap()];
+        let key = |s: &'static str| [Keystroke::parse(s).unwrap()];
         let (hit, _) = keymap.bindings_for_input(&key("cmd-q"), &[]);
         assert!(hit.iter().any(|b| b.action().partial_eq(&Quit)));
         let (hit, _) = keymap.bindings_for_input(&key("cmd-w"), &[]);

@@ -540,7 +540,7 @@
   "The source of {source}. Its release ships {file}, a content mod: installing those from GitHub is not supported yet.": "Der Quellcode von {source}. Das Release enthält {file}, eine Inhalts-Mod: Die Installation solcher Mods von GitHub wird noch nicht unterstützt.",
   "Build anyway": "Trotzdem bauen",
   "A name, 3 to 16 letters": "Name, 3 bis 16 Buchstaben",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "{mods} von GitHub ({source}) installiert. Kompiliere es unter Einstellungen > Native Mods.",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "{mods} von GitHub ({source}) installiert. Kompiliere es auf der Seite Mods.",
   "Settings, Keys, Generate access token. It's kept in this computer's keychain and only sent to Tailscale.": "Settings, Keys, Generate access token. Es wird im Schlüsselbund dieses Computers gespeichert und nur an Tailscale gesendet.",
   "{id} is up to date.": "{id} ist aktuell.",
   "Done": "Done",

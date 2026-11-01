@@ -337,6 +337,8 @@ pub struct Shared {
     next: AtomicU32,
     stop: AtomicBool,
     random: Mutex<u64>,
+    /// Connections accepted from the network whose thread still runs.
+    connections: AtomicUsize,
 }
 impl Shared {
     /// The registries and tags a new connection is sent.
@@ -536,6 +538,7 @@ impl Lan {
             reserved: Mutex::new(HashSet::new()),
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
+            connections: AtomicUsize::new(0),
             random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
             config,
         });
@@ -646,14 +649,35 @@ impl Drop for Lan {
     }
 }
 
+/// Connections from the network accepted beyond the server's player limit.
+const SPARE_CONNECTIONS: usize = 64;
+
+/// An accepted connection, uncounted once its thread ends (or couldn't start).
+struct Counted(Arc<Shared>);
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.connections.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
     while !shared.stop.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, addr)) => {
-                let shared = shared.clone();
+                // A thread a connection, where vanilla's Netty has a few for all: past the players
+                // the server takes and [`SPARE_CONNECTIONS`] more (logins, server-list pings), a
+                // new one is closed at once, so that a flood of sockets can't use up the threads a
+                // container allows and crash the server.
+                let most = shared.max_players().saturating_add(SPARE_CONNECTIONS);
+                if shared.connections.fetch_add(1, Ordering::AcqRel) >= most {
+                    shared.connections.fetch_sub(1, Ordering::AcqRel);
+                    drop(stream);
+                    continue;
+                }
+                let counted = Counted(shared.clone());
                 let _ = std::thread::Builder::new()
                     .name("horizon-lan-conn".into())
-                    .spawn(move || handle(stream, addr, shared));
+                    .spawn(move || handle(stream, addr, counted.0.clone()));
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(25));
@@ -676,4 +700,57 @@ pub fn available_port() -> u16 {
     TcpListener::bind(("0.0.0.0", 0))
         .and_then(|l| l.local_addr())
         .map_or(25565, |a| a.port())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Read, time::Instant};
+
+    /// Sockets that never say a word each hold a connection thread until their read times out: past
+    /// the player limit and [`SPARE_CONNECTIONS`], a new one is closed at once instead of taking one
+    /// more thread, and the room comes back as they go.
+    #[test]
+    fn a_flood_of_silent_sockets_is_turned_away() {
+        let config = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "Flood".into(), 1)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        let address = (std::net::Ipv4Addr::LOCALHOST, lan.port);
+        let most = 1 + SPARE_CONNECTIONS;
+        let held: Vec<TcpStream> = (0..most)
+            .map(|_| TcpStream::connect(address).unwrap())
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while lan.shared.connections.load(Ordering::Acquire) < most {
+            assert!(
+                Instant::now() < deadline,
+                "the held sockets were not all accepted"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut late = TcpStream::connect(address).unwrap();
+        late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut byte = [0u8; 1];
+        assert!(
+            match late.read(&mut byte) {
+                Ok(n) => n == 0,
+                Err(e) => !matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ),
+            },
+            "the socket past the limit should be closed"
+        );
+        assert_eq!(lan.shared.connections.load(Ordering::Acquire), most);
+        drop(held);
+        while lan.shared.connections.load(Ordering::Acquire) > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the closed sockets' threads did not end"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }

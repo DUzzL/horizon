@@ -1,9 +1,0 @@
-{
-  "hooks": [
-    {"name": "screen_mouse_button_pressed_pre", "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_button_pressed_pre"},
-    {"name": "screen_mouse_button_released_pre", "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_button_released_pre"}
-  ],
-  "rust_summary": "the open screen hears of a mouse button going down or up before it acts\n(`native_screen_mouse_button_pressed_pre`, `native_screen_mouse_button_released_pre`, the\n`ScreenEvent.MouseButtonPressed.Pre` and `.MouseButtonReleased.Pre` points, with the screen, the\nGLFW button and the modifiers), and the helpers the input hooks share (`screen_view_now`,\n`screen_hooks_open`).",
-  "doc_summary": "the open screen hears of a mouse button going down (`native_screen_mouse_button_pressed_pre`) or up (`native_screen_mouse_button_released_pre`) before it acts, as vanilla's `ScreenEvent.MouseButtonPressed.Pre` and `.MouseButtonReleased.Pre`: the screen, the GLFW button (0 left, 1 right, 2 middle, 3 back, 4 forward; a button past those is the platform's own number, which differs between systems) and GLFW's modifier bits (shift 1, control 2, alt 4, super 8), with the pointer in `screen.mouse`. A cancelled press goes no further (no slot, screen button, drag or hotbar key); cancel a release only when its press was cancelled, or a drag it ended stays held. They fire on the window only, never on the title screen itself (Options and the pack list opened from it do fire), the connect and loading screens, the prompts, books and sign editors drawn over gameplay, or while a world loads or saves, and never for a gamepad or keyboard-focus click. Bundles need \"hooks\": @API:screen_mouse_button@.",
-  "comments": []
-}
