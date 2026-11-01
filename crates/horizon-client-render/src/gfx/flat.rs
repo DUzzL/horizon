@@ -982,7 +982,7 @@ mod tests {
     /// of the draws the test saw, in order, and their calls count them.
     #[test]
     fn flatten_writes_the_indices_of_the_per_section_draws() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("no GPU adapter: skipped");
             return;

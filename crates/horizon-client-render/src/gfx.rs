@@ -37,6 +37,8 @@ fn entity_shader() -> String {
 mod crumbling_tests;
 mod entity_batch;
 mod entity_outline;
+#[cfg(test)]
+pub(crate) mod test_gpu;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
