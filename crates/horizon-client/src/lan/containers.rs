@@ -264,8 +264,7 @@ impl Hub {
             drag: None,
             sent_data: Vec::new(),
             hidden: Vec::new(),
-            results: mod_type.map_or_else(Vec::new, |t| t.results.clone()),
-            data_slots: mod_type.map(|t| t.data_slots),
+            mod_type,
         });
         self.send_menu_content(i, items);
     }
@@ -324,8 +323,7 @@ impl Hub {
             drag: None,
             sent_data: Vec::new(),
             hidden: Vec::new(),
-            results: Vec::new(),
-            data_slots: None,
+            mod_type: None,
         });
         self.send_menu_content(i, items);
         Some(window)
@@ -562,11 +560,6 @@ impl Hub {
             .as_ref()
             .filter(|_| in_menu)
             .map_or_else(Vec::new, |m| m.hidden.clone());
-        let results = self.guests[i]
-            .menu
-            .as_ref()
-            .filter(|_| in_menu)
-            .map_or_else(Vec::new, |m| m.results.clone());
         let guest = &mut self.guests[i];
         let mut items = source.and_then(|s| s.read(world, guest));
         if in_menu && items.is_none() {
@@ -577,7 +570,6 @@ impl Hub {
             container: items.as_deref_mut(),
             shulker,
             hidden: &hidden,
-            results: &results,
         };
         let (drops, changed) = menu::click(
             &mut view,
@@ -805,10 +797,10 @@ impl Hub {
             // A mod's menu: the data slots its tick set. A mod menu type's
             // `ContainerData` has as many as it declares, all sent on open
             // (`sendInitialData`), 0 where the tick set none.
-            Some(BlockEntity::Mod(e)) if m.data_slots.is_some() || !e.data.is_empty() => {
+            Some(BlockEntity::Mod(e)) if m.mod_type.is_some() || !e.data.is_empty() => {
                 let mut data = e.data.clone();
-                if let Some(n) = m.data_slots {
-                    data.resize(n, 0);
+                if let Some(t) = m.mod_type {
+                    data.resize(t.data_slots, 0);
                 }
                 data
             }
