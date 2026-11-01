@@ -50,13 +50,15 @@ pub(super) enum Field {
     Wrapper,
     LaunchEnv,
     PostExit,
+    /// Home's memory row (`launch_page.rs`).
+    MemoryLimit,
     /// Settings' new offline name (`switch_page.rs`).
     OfflineName,
     DeleteServer,
 }
 
 impl Field {
-    const ALL: [Field; 22] = [
+    const ALL: [Field; 23] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -77,6 +79,7 @@ impl Field {
         Field::Wrapper,
         Field::LaunchEnv,
         Field::PostExit,
+        Field::MemoryLimit,
         Field::OfflineName,
         Field::DeleteServer,
     ];
@@ -265,6 +268,11 @@ impl Servers {
 
     pub(super) fn value(&self, f: Field) -> &str {
         self.texts.get(&f).map_or("", LineEdit::text)
+    }
+
+    /// Whether this field has the keyboard, as of this frame.
+    pub(super) fn has_focus(&self, f: Field) -> bool {
+        self.focused == Some(f)
     }
 
     /// Which field has the keyboard, read every frame.
@@ -1008,6 +1016,7 @@ impl Launcher {
             Field::PreLaunch | Field::Wrapper | Field::LaunchEnv | Field::PostExit => {
                 self.save_launch()
             }
+            Field::MemoryLimit => self.memory_enter(),
             Field::OfflineName => self.offline_name_enter(),
             Field::ServerName | Field::ServerAddress => self.add_server(),
         }
