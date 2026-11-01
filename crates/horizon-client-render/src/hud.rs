@@ -788,18 +788,23 @@ impl HudAtlas {
                     named.len() - kept.len()
                 );
             }
-            // A dropped variant beside its texture takes its walked overlay with it: nothing
-            // would draw it.
+            // A dropped variant beside its texture takes its walked overlay and blink frames
+            // (and theirs) with it: nothing would draw them.
             let png = format!("{}.png", emissive.suffix);
+            let png = png.as_str();
             let orphans: HashSet<PathBuf> = named
                 .keys()
                 .filter(|p| !kept.contains(*p))
-                .filter_map(|p| {
-                    Some(PathBuf::from(format!(
-                        "{}{png}",
-                        p.to_str()?.strip_suffix(".png")?
-                    )))
+                .filter_map(|p| p.to_str()?.strip_suffix(".png").map(str::to_owned))
+                .flat_map(|stem| {
+                    ["", "_blink", "_blink2"]
+                        .into_iter()
+                        .flat_map(move |frame| {
+                            [format!("{stem}{frame}.png"), format!("{stem}{frame}{png}")]
+                        })
                 })
+                .map(PathBuf::from)
+                .filter(|p| !named.contains_key(p))
                 .collect();
             files.retain(|p| (!named.contains_key(p) || kept.contains(p)) && !orphans.contains(p));
             // Those beside their texture are walked already.
