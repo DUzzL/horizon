@@ -88,6 +88,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         vanilla_items: tab.items.iter().cloned().collect(),
         effects: Vec::new(),
         entity_types: Vec::new(),
+        menu_types: Vec::new(),
         states: 0,
         defaults: BTreeMap::new(),
         sounds: BTreeMap::new(),
@@ -527,7 +528,7 @@ fn content_root_loads_with_every_table() {
         BlockFacts::load_with_behaviours(&root, new, &shared_json).unwrap();
     let independent_behaviours = horizon_world::level::Behaviours::load(new, &root).unwrap();
     let (deferred_facts, gameplay) =
-        BlockFacts::load_with_projection(&root, new, &shared_json).unwrap();
+        BlockFacts::load_with_projection(&root, new, &shared_json, true).unwrap();
     let deferred_behaviours =
         horizon_world::level::Behaviours::load_with_gameplay(new, &root, &shared_json, &gameplay)
             .unwrap();
@@ -743,7 +744,7 @@ fn shared_behaviour_document_matches_independent_loaders() {
     let original = BlockFacts::load(&root, assets.registry).unwrap();
     let (shared, b) = BlockFacts::load_with_behaviours(&root, assets.registry, &doc).unwrap();
     let (deferred_facts, projection) =
-        BlockFacts::load_with_projection(&root, assets.registry, &doc).unwrap();
+        BlockFacts::load_with_projection(&root, assets.registry, &doc, true).unwrap();
     let deferred = horizon_world::level::Behaviours::load_with_gameplay(
         assets.registry,
         &root,
@@ -1416,6 +1417,54 @@ fn content_root_registers_a_mod_entity_type() {
     ] {
         assert!(ids.as_array().unwrap().contains(&"example:bolt".into()));
     }
+    // its size and eyes are the snowball's, for `execute anchored eyes` and spawners.
+    let types: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("entity-types.json")).unwrap()).unwrap();
+    assert!(types["minecraft:snowball"].is_object());
+    assert_eq!(types["example:bolt"], types["minecraft:snowball"]);
+    // the rewritten table keeps vanilla's floats to the bit (a zombie's speed).
+    let speed = |root: &Path| {
+        let attributes =
+            crate::mobs::exact_attributes(&fs::read(root.join("entity-types.json")).unwrap());
+        attributes["minecraft:zombie"]["minecraft:movement_speed"]
+    };
+    assert_eq!(speed(&root).to_bits(), speed(&base).to_bits());
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    let identity = crate::content_identity::identity;
+    assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// a mod's menu type gets the menu network id after vanilla's last, and it
+/// changes the content identity.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_registers_a_mod_menu_type() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-menu-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("example"),
+        &[
+            ("horizon-mod.toml", &manifest("example", "")),
+            (
+                "data/example/horizon/menu/press.json",
+                r#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let report = |root: &Path| {
+        horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
+    };
+    let (vanilla, ids) = (report(&base), report(&root));
+    let vanilla = vanilla.get("minecraft:menu").unwrap();
+    let ids = ids.get("minecraft:menu").unwrap();
+    let count = (0..).take_while(|&i| vanilla.name(i).is_some()).count() as i32;
+    assert_eq!(ids.id("example:press"), Some(count));
+    assert_eq!(ids.id("minecraft:furnace"), vanilla.id("minecraft:furnace"));
     assert!(root.join(crate::content_identity::MARKER).exists());
     let identity = crate::content_identity::identity;
     assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());

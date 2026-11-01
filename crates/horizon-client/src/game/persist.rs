@@ -94,7 +94,7 @@ fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
 }
 /// The loaded compound underneath the fields Horizon models: what the entity was
 /// loaded with, with every key of `modelled` replacing its loaded value.
-fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
+pub(super) fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
     let (Some(Tag::Compound(raw)), Tag::Compound(modelled)) = (raw, &modelled) else {
         return modelled;
     };
@@ -305,7 +305,7 @@ impl Game<'_> {
                 if uuid.is_some_and(|u| self.restored_vehicle(u).is_some()) {
                     continue;
                 }
-                if matches!(
+                if (matches!(
                     kind.as_str(),
                     "minecraft:experience_orb"
                         | "minecraft:arrow"
@@ -319,7 +319,8 @@ impl Game<'_> {
                         | "minecraft:falling_block"
                         | "minecraft:end_crystal"
                         | "minecraft:ender_dragon"
-                ) && let Some(at) = entity_nbt::position(&tag)
+                ) || horizon_client::projectiles::thrown_type(&kind).is_some())
+                    && let Some(at) = entity_nbt::position(&tag)
                 {
                     self.persist
                         .anon
@@ -372,6 +373,11 @@ impl Game<'_> {
                                 a.last_state = in_block.and_then(|t| self.state_from_nbt(&t));
                             }
                             self.claim_owner(&mut p);
+                            // An arrow that came through a portal keeps its
+                            // cooldown: it does not go straight back through.
+                            self.next_entity += 1;
+                            p.id = self.next_entity;
+                            self.restore_portal_cooldown(p.id, &tag);
                             self.add_projectile(p);
                         }
                     }
@@ -384,7 +390,7 @@ impl Game<'_> {
                             self.add_projectile(p);
                         }
                     }
-                    "minecraft:snowball" | "minecraft:egg" | "minecraft:ender_pearl" => {
+                    id if entity_nbt::throwable_kind(id).is_some() => {
                         if let Some(mut p) = entity_nbt::throwable_from_nbt(&tag, player_uuid) {
                             self.claim_owner(&mut p);
                             self.add_projectile(p);
@@ -406,6 +412,14 @@ impl Game<'_> {
                                 velocity,
                                 age,
                                 no_gravity,
+                                portal: horizon_client::nether_portal::PortalState {
+                                    cooldown: horizon_client::save::number(
+                                        tag.get("PortalCooldown"),
+                                    )
+                                    .unwrap_or(0)
+                                        as i32,
+                                    process: None,
+                                },
                                 drop_item,
                                 fall_distance,
                                 stuck: Vec3::ZERO,
@@ -423,20 +437,32 @@ impl Game<'_> {
                         }
                     }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
+                    // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
                     "minecraft:tnt" => {
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         if let Some(position) = entity_nbt::position(&tag) {
+                            self.next_entity += 1;
+                            let id = self.next_entity;
                             let fuse = match tag.get("fuse") {
                                 Some(Tag::Short(f)) => i32::from(*f),
                                 _ => 80,
                             };
                             self.tnts.push(super::tnt::PrimedTnt {
-                                id: 0,
+                                id,
                                 position,
                                 previous: position,
                                 velocity: entity_nbt::motion(&tag),
                                 fuse,
                                 on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                                owner: None,
+                                guest: None,
                             });
+                            // `Entity.load`: the `PortalCooldown` of one that just came through.
+                            self.remember(id, uuid, tag);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     k if super::boats::any_boat_wood(k)
@@ -1093,9 +1119,11 @@ impl Game<'_> {
                     f.fall_distance,
                     uuid,
                 );
-                out.entry(chunk_of(f.position))
-                    .or_default()
-                    .push(with_raw(tag, raw.as_ref()));
+                let mut tag = with_raw(tag, raw.as_ref());
+                if let Tag::Compound(fields) = &mut tag {
+                    fields.insert("PortalCooldown".into(), Tag::Int(f.portal.cooldown));
+                }
+                out.entry(chunk_of(f.position)).or_default().push(tag);
             }
         }
         let boats: Vec<usize> = (0..self.boats.len())

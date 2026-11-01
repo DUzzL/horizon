@@ -6,6 +6,7 @@ use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::section_mask::SectionMask;
 use crate::{
     chunk::Chunk,
+    graphics::LeafCullingMode,
     light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
@@ -149,6 +150,8 @@ pub trait LodSampler: Send {
     fn reduced_column(&mut self, x: i32, z: i32, _width: i32) -> crate::lod::Column {
         self.column(x, z)
     }
+    /// `side` x `side` columns from (`x`, `z`), `stride` blocks apart; none
+    /// when sampling failed and should be tried again later.
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
         let mut columns = Vec::with_capacity(side * side);
         for dz in 0..side {
@@ -194,7 +197,7 @@ impl<G: ChunkGenerator> Saves for G {
     }
 }
 /// Per-job mesher inputs that change with the dimension or the options.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MeshSettings {
     nether: bool,
     shader_pack_lighting: bool,
@@ -202,6 +205,8 @@ struct MeshSettings {
     blend_radius: i32,
     smooth_lighting: bool,
     cutout_leaves: bool,
+    translucent_layers: Arc<[bool]>,
+    leaf_culling: LeafCullingMode,
 }
 enum Job {
     Generate(i32, i32),
@@ -215,6 +220,8 @@ enum Job {
     /// Proto chunks checked out to be saved (`ChunkGenerator::save_protos`),
     /// off the main thread like vanilla's IOWorker.
     Save(Vec<((i32, i32), Proto)>),
+    /// A proto chunk checked out for its light view (`light_region`).
+    LightView(i32, i32, Proto),
     /// Meshes the renderer is done with (`Streaming::free`): their memory
     /// is given back here, not in the frame.
     Free(Vec<((i32, i32, i32), SectionMesh)>),
@@ -235,6 +242,8 @@ pub enum Done {
     Lit(i32, i32, Vec<crate::chunk::Light>, u64),
     Meshed(i32, i32, i32, SectionMesh, u64),
     Saved(Vec<((i32, i32), Proto)>),
+    /// A proto chunk back from `Job::LightView`, with its view.
+    LightView(i32, i32, Proto, Option<Chunk>),
 }
 struct Queued {
     priority: i64,
@@ -279,6 +288,8 @@ struct Shared {
     /// Workers that have freed their buffers ([`IDLE_RELEASE`]) and taken no
     /// job since: the last of them gives the freed memory back to the OS.
     released: AtomicUsize,
+    /// The workers that started.
+    workers: AtomicUsize,
 }
 #[derive(Default)]
 struct MeshPool {
@@ -352,7 +363,6 @@ pub struct Streaming {
     /// Columns generated and saved as they were left behind: new when they
     /// next arrive, though read from the save (`World::loaded_chunks`).
     dropped_new: FxHashSet<(i32, i32)>,
-    light_view: Arc<dyn Fn(&Proto) -> Option<Chunk> + Send + Sync>,
     non_air_sections: Arc<dyn Fn(&Proto) -> Option<SectionMask> + Send + Sync>,
     threads: Vec<thread::JoinHandle<()>>,
     order: u64,
@@ -377,6 +387,8 @@ pub struct Streaming {
     decorating_finals: HashSet<(i32, i32)>,
     /// Save jobs in flight.
     saving: usize,
+    /// Proto chunks checked out to a worker for their light view.
+    viewing: FxHashSet<(i32, i32)>,
     /// Vanilla's decoration order around the player, and the centre and
     /// radius it was last ranked for.
     decoration_order: DecorationOrder,
@@ -429,6 +441,11 @@ pub struct Streaming {
     /// The `ao` and `cutoutLeaves` options.
     pub smooth_lighting: bool,
     pub cutout_leaves: bool,
+    /// Sprite layers a shader pack draws in the translucent pass (`[[materials]]
+    /// translucent`), by layer; empty without one.
+    pub translucent_layers: Arc<[bool]>,
+    /// What the mesher does with leaf faces inside a canopy (`LeafCullingMode`).
+    pub leaf_culling: LeafCullingMode,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
     light_tables: Arc<LightTables>,
     /// Applied edits by sequence, replayed onto light jobs snapshotted before them.
@@ -618,8 +635,8 @@ impl Streaming {
             done: Mailbox::default(),
             meshes: Mutex::new(MeshPool::default()),
             released: AtomicUsize::new(0),
+            workers: AtomicUsize::new(0),
         });
-        let workers = threads.max(1);
         let light_tables = context.light.clone();
         let saves: Arc<dyn Saves> = generator.clone();
         let threads = (0..threads.max(1))
@@ -673,7 +690,7 @@ impl Streaming {
                                         // runs short: once every worker has freed its own,
                                         // hand them back.
                                         if shared.released.fetch_add(1, Ordering::Relaxed) + 1
-                                            == workers
+                                            == shared.workers.load(Ordering::Relaxed)
                                         {
                                             // No worker needs retained mesh capacity now.
                                             // Drop it outside the pool lock before asking
@@ -732,6 +749,10 @@ impl Streaming {
                                     generator.save_protos(&refs);
                                     Done::Saved(protos)
                                 }
+                                Job::LightView(x, z, proto) => {
+                                    let view = generator.light_view(&proto);
+                                    Done::LightView(x, z, proto, view)
+                                }
                                 Job::Free(meshes) => {
                                     for (_, mesh) in meshes {
                                         let rejected = shared.meshes.lock().unwrap().put(mesh);
@@ -759,6 +780,8 @@ impl Streaming {
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
+                                        translucent_layers: &settings.translucent_layers,
+                                        leaf_culling: settings.leaf_culling,
                                         assets: &context.assets,
                                         render: &context.render,
                                         tables: &context.tables,
@@ -780,20 +803,22 @@ impl Streaming {
                             shared.done.send(done);
                         }
                     })
-                    .expect("spawn worker")
             })
-            .collect();
-        let light_view = {
-            let generator = generator.clone();
-            Arc::new(move |p: &Proto| generator.light_view(p))
-        };
+            // A thread the system refuses (a container's process limit reached) leaves the pool a
+            // worker short: a server that panicked here went down with its players' moves unsaved.
+            .filter_map(|spawned| {
+                spawned
+                    .inspect_err(|e| log::error!("Horizon: chunk worker not started: {e}"))
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        shared.workers.store(threads.len(), Ordering::Relaxed);
         let non_air_sections = {
             let generator = generator.clone();
             Arc::new(move |p: &Proto| generator.non_air_sections(p))
         };
         Self {
             shared,
-            light_view,
             non_air_sections,
             threads,
             order: 0,
@@ -808,6 +833,7 @@ impl Streaming {
             decorating: 0,
             decorating_finals: HashSet::new(),
             saving: 0,
+            viewing: Default::default(),
             decoration_order: DecorationOrder::default(),
             order_area: None,
             queue_basis: Default::default(),
@@ -837,6 +863,8 @@ impl Streaming {
             biome_blend: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: Arc::from([]),
+            leaf_culling: LeafCullingMode::Off,
             light_tables,
             light_log: Vec::new(),
             light_edit_sequence: 0,
@@ -888,9 +916,56 @@ impl Streaming {
             }
         }
     }
+    /// A resident column a server sent again whole (it changed it in bulk):
+    /// its new blocks taken, the sections that did not change kept as they
+    /// were, and its light and its neighbours' worked out again here, off
+    /// the game thread, as light is for the blocks a server changes one at a
+    /// time; the sections that changed remesh (with theirs) once lit. Until
+    /// then the sections that changed show the light the packet carried (a
+    /// Horizon server sends the light from before its relight, then the
+    /// new light; another server's is already right, which matters where
+    /// the neighbours this light needs aren't all here).
+    pub fn replace_remote(&mut self, world: &mut World, mut chunk: Chunk) {
+        let key = (chunk.x, chunk.z);
+        let Some(old) = world.chunks.get(&key).cloned() else {
+            return self.insert_remote(world, chunk);
+        };
+        if !self.lit.contains(&key) {
+            return self.insert_remote(world, chunk);
+        }
+        // The cells whose blocks changed, by section: they remesh with the neighbours within a block of them (as
+        // vanilla's `setBlocksDirty`), not every section round each section changed (which, for the few blocks a
+        // section often changes in a bulk edit, is mostly sections that did not).
+        let mut cells = crate::light::LightChanges::default();
+        cells.keyed(world.layout());
+        let kept = keep_unchanged_sections(&old, &mut chunk, &mut cells);
+        chunk.light_loaded = old.light_loaded;
+        chunk.lit = true;
+        world.chunks.insert(key, Arc::new(chunk));
+        world.revision = world.revision.wrapping_add(1);
+        // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
+        // blends across the border: above and below too, as a block's tint can sample the biome quart of the
+        // section next to it (`BiomeManager.getBiome`'s zoom reaches a quart beyond the block).
+        Self::light_updated(world, key.0, key.1, &kept.biomes);
+        // A section with the same blocks and new light takes the packet's light (vanilla's
+        // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
+        Self::light_updated(world, key.0, key.1, &kept.light);
+        if !kept.blocks {
+            return;
+        }
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                world.dirty_light.insert((key.0 + dx, key.1 + dz));
+            }
+        }
+        cells.dirty_sections(|section| {
+            world.dirty_sections.insert(section);
+        });
+    }
     /// A server's light update for a resident column: the sections whose
     /// light changed and their neighbours remesh
-    /// (`setSectionDirtyWithNeighbors`).
+    /// (`setSectionDirtyWithNeighbors`). A resent column's sections with new
+    /// biomes remesh the same way.
     pub fn light_updated(world: &mut World, x: i32, z: i32, sections: &[usize]) {
         for &sy in sections {
             for dz in -1..=1 {
@@ -1092,28 +1167,42 @@ impl Streaming {
     /// The 3x3 a light job reads: the finished columns, and for a neighbour
     /// that will not finish (past the area), its decorated proto chunk, as
     /// vanilla lights its last FULL ring against neighbours at FEATURES.
+    /// A proto neighbour without its view yet is checked out to a worker,
+    /// which builds the view off the server thread (`Job::LightView`); the
+    /// region is asked for again once it is back.
     fn light_region(&mut self, world: &World, x: i32, z: i32) -> Option<Box<Region>> {
         let mut region: Region = Default::default();
+        let mut complete = true;
         for dz in 0..3 {
             for dx in 0..3 {
                 let n = (x + dx as i32 - 1, z + dz as i32 - 1);
-                region[dz][dx] = Some(match world.chunks.get(&n) {
-                    Some(chunk) => chunk.clone(),
+                region[dz][dx] = match world.chunks.get(&n) {
+                    Some(chunk) => Some(chunk.clone()),
                     None if !self.in_range(n.0, n.1, 1) && self.decorated.contains(&n) => {
                         if let Some(view) = self.light_views.get(&n) {
-                            view.clone()
+                            Some(view.clone())
                         } else {
-                            let proto = self.protos.get(&n)?.as_ref()?;
-                            let view = Arc::new((self.light_view)(proto)?);
-                            self.light_views.insert(n, view.clone());
-                            view
+                            let proto = self.protos.get_mut(&n)?.take()?;
+                            self.viewing.insert(n);
+                            self.submit(Some((x, z)), 0, Job::LightView(n.0, n.1, proto));
+                            complete = false;
+                            None
                         }
                     }
                     None => return None,
-                });
+                };
             }
         }
-        Some(Box::new(region))
+        complete.then(|| Box::new(region))
+    }
+    /// A proto chunk back from its light view: the view waits in
+    /// `light_views` for the light jobs that asked for it.
+    fn receive_light_view(&mut self, x: i32, z: i32, proto: Proto, view: Option<Chunk>) {
+        self.viewing.remove(&(x, z));
+        self.protos.insert((x, z), Some(proto));
+        if let Some(view) = view {
+            self.light_views.insert((x, z), Arc::new(view));
+        }
     }
     /// Whether `light_region` would find all nine columns: the same walk
     /// without building the snapshot, so the scheduler can rank the ready
@@ -1201,6 +1290,7 @@ impl Streaming {
     pub fn busy(&self) -> bool {
         !(self.generating.is_empty()
             && self.decorating == 0
+            && self.viewing.is_empty()
             && self.finishing.is_empty()
             && self.lighting.is_empty()
             && self.meshing.is_empty()
@@ -1264,6 +1354,7 @@ impl Streaming {
                 }
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
+                Done::LightView(x, z, proto, view) => self.receive_light_view(x, z, proto, view),
                 Done::Lit(x, z, sections, seq) => {
                     if self.lighting.get(&(x, z)) != Some(&seq) {
                         continue;
@@ -1680,6 +1771,8 @@ impl Streaming {
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
+                            translucent_layers: self.translucent_layers.clone(),
+                            leaf_culling: self.leaf_culling,
                         },
                     ),
                 );
@@ -1822,7 +1915,11 @@ impl Streaming {
             return;
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while self.decorating > 0 || !self.finishing.is_empty() || self.saving > 0 {
+        while self.decorating > 0
+            || !self.finishing.is_empty()
+            || self.saving > 0
+            || !self.viewing.is_empty()
+        {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.shared.done.recv_timeout(left) {
                 Some(Done::Decorated(x, z, region, finals, writes)) => {
@@ -1830,6 +1927,9 @@ impl Streaming {
                 }
                 Some(Done::Generated(chunk)) => self.receive_generated(chunk, world),
                 Some(Done::Saved(protos)) => self.receive_saved(protos),
+                Some(Done::LightView(x, z, proto, view)) => {
+                    self.receive_light_view(x, z, proto, view)
+                }
                 Some(other) => self.deferred.push(other),
                 None => {
                     log::warn!("Horizon: chunk generation did not finish before saving");
@@ -1860,13 +1960,18 @@ impl Streaming {
                 }
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
+                Done::LightView(x, z, proto, view) => self.receive_light_view(x, z, proto, view),
                 other => self.deferred.push(other),
             }
             if started.elapsed() >= std::time::Duration::from_millis(2) {
                 return false;
             }
         }
-        if self.decorating > 0 || !self.finishing.is_empty() || self.saving > 0 {
+        if self.decorating > 0
+            || !self.finishing.is_empty()
+            || self.saving > 0
+            || !self.viewing.is_empty()
+        {
             return false;
         }
         let written: Vec<_> = self.written.drain().collect();
@@ -1940,7 +2045,11 @@ impl Streaming {
                 counts[1] += 1;
             } else {
                 counts[2] += 1;
-                if self.light_region(world, key.0, key.1).is_some() {
+                if self.light_region(world, key.0, key.1).is_some()
+                    || (-1..=1).any(|dz| {
+                        (-1..=1).any(|dx| self.viewing.contains(&(key.0 + dx, key.1 + dz)))
+                    })
+                {
                     world.dirty_light.insert(key);
                 }
             }
@@ -2315,9 +2424,135 @@ fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
     }
     candidates.sort_unstable();
 }
+/// What `keep_unchanged_sections` found changed.
+#[derive(Debug, Default, PartialEq)]
+struct Resent {
+    /// Any section's blocks changed (in a way light or the mesher sees).
+    blocks: bool,
+    /// The sections whose blocks did not change but whose biomes did.
+    biomes: Vec<usize>,
+    /// The sections whose blocks did not change but whose light the packet changes.
+    light: Vec<usize>,
+}
+/// `new`, a resident column `old` sent again, takes `old`'s sections whose
+/// blocks it holds unchanged, with `new`'s biomes and light; the sections whose blocks
+/// changed keep `old`'s light (until lit again) and their cells' classes go in
+/// `cells`.
+fn keep_unchanged_sections(
+    old: &Chunk,
+    new: &mut Chunk,
+    cells: &mut crate::light::LightChanges,
+) -> Resent {
+    let (mut a, mut b) = (Box::new([0u32; 4096]), Box::new([0u32; 4096]));
+    let mut out = Resent::default();
+    let (x, z) = (new.x, new.z);
+    for s in 0..new.sections.len().min(old.sections.len()) {
+        // (sections stored alike hold the same blocks: most of a column sent again, found without unpacking)
+        let same = old.sections[s].blocks.same_storage(&new.sections[s].blocks) || {
+            old.sections[s].unpack(&mut a);
+            new.sections[s].unpack(&mut b);
+            let classes = crate::light::LightChanges::classes_differing(&a, &b);
+            if classes != 0 {
+                cells.add((x, s as i32, z), classes);
+            }
+            classes == 0
+        };
+        if !same {
+            out.blocks = true;
+            continue;
+        }
+        let biomes = new.sections[s].biomes.clone();
+        let changed = !same_values(&old.sections[s].biomes, &biomes);
+        let light = (!same_light(&old.sections[s].light, &new.sections[s].light))
+            .then(|| new.sections[s].light.clone());
+        new.sections[s] = old.sections[s].clone();
+        if changed {
+            Arc::make_mut(&mut new.sections[s]).biomes = biomes;
+            out.biomes.push(s);
+        }
+        if let Some(light) = light {
+            Arc::make_mut(&mut new.sections[s]).light = light;
+            out.light.push(s);
+        }
+    }
+    out
+}
+/// Whether two sections' packed light (4,096 cells) holds the same values.
+fn same_light(a: &crate::chunk::Light, b: &crate::chunk::Light) -> bool {
+    use crate::chunk::Light;
+    match (a, b) {
+        (Light::Uniform(x), Light::Uniform(y)) => x == y,
+        (Light::Full(x), Light::Full(y)) => x == y,
+        (Light::Uniform(v), Light::Full(f)) | (Light::Full(f), Light::Uniform(v)) => {
+            f.iter().all(|c| c == v)
+        }
+    }
+}
+/// Whether two biome containers (64 cells) hold the same values.
+fn same_values(
+    a: &horizon_core::paletted::PalettedContainer,
+    b: &horizon_core::paletted::PalettedContainer,
+) -> bool {
+    if a.same_storage(b) {
+        return true;
+    }
+    let (mut x, mut y) = ([0u32; 64], [0u32; 64]);
+    a.unpack(&mut x);
+    b.unpack(&mut y);
+    x == y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resent_column_keeps_its_sections_but_takes_new_biomes() {
+        let mut old = Chunk::empty(2, -3);
+        old.set(1, 10, 1, 1);
+        old.set(1, 40, 1, 1);
+        old.set_biome_cell(0, 0, 0, 1);
+        let mut new = old.clone();
+        // a new biome under the same blocks (section 0), and a block changed (section 6)
+        new.set_biome_cell(0, 0, 0, 3);
+        new.set(1, 40, 1, 2);
+        let mut cells = crate::light::LightChanges::default();
+        cells.keyed(crate::chunk::ColumnLayout::VANILLA);
+        let kept = keep_unchanged_sections(&old, &mut new, &mut cells);
+        assert_eq!(
+            kept,
+            Resent {
+                blocks: true,
+                biomes: vec![0],
+                light: vec![],
+            }
+        );
+        assert_eq!(new.biome(0, -64, 0), 3);
+        assert_eq!(new.block(1, -54, 1).0, 0);
+        assert_eq!(new.block(1, 40, 1).0, 2);
+        // the sections alike are shared with the old column
+        assert!(Arc::ptr_eq(&new.sections[1], &old.sections[1]));
+        assert!(!Arc::ptr_eq(&new.sections[0], &old.sections[0]));
+        // nothing changed: nothing to do
+        let mut same = old.clone();
+        let kept = keep_unchanged_sections(&old, &mut same, &mut cells);
+        assert_eq!(kept, Resent::default());
+        assert!(Arc::ptr_eq(&same.sections[0], &old.sections[0]));
+        // the same blocks under new light: the packet's light, as vanilla applies it
+        let mut lit = old.clone();
+        Arc::make_mut(&mut lit.sections[2]).light = crate::chunk::Light::Uniform(0xF0);
+        Arc::make_mut(&mut old.sections[2]).light = crate::chunk::Light::Uniform(0x50);
+        let kept = keep_unchanged_sections(&old, &mut lit, &mut cells);
+        assert_eq!(
+            kept,
+            Resent {
+                light: vec![2],
+                ..Resent::default()
+            }
+        );
+        assert_eq!(lit.sections[2].light.get(0), 0xF0);
+        assert!(Arc::ptr_eq(&lit.sections[1], &old.sections[1]));
+    }
 
     #[test]
     fn mesh_pool_reuses_capacity_with_clean_geometry_state() {
@@ -2325,6 +2560,7 @@ mod tests {
         mesh.solid.resize(64, bytemuck::Zeroable::zeroed());
         mesh.translucent.resize(16, bytemuck::Zeroable::zeroed());
         mesh.block_entities.push(([1, 2, 3], 7));
+        mesh.lights.push(([1, 2, 3], 7));
         mesh.visibility = 0;
         mesh.sides = crate::mesher::Sides::unsorted(16);
         let capacities = mesh.capacity_bytes();
@@ -2341,6 +2577,7 @@ mod tests {
         assert!(reused.solid.is_empty());
         assert!(reused.translucent.is_empty());
         assert!(reused.block_entities.is_empty());
+        assert!(reused.lights.is_empty());
         assert_eq!(reused.visibility, crate::mesher::ALL_VISIBLE);
         assert_eq!(reused.sides, crate::mesher::Sides::default());
         assert_eq!(pool.bytes, 0);

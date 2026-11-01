@@ -2266,10 +2266,14 @@ pub fn resolve_version(requested: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "No version is installed yet.".into())
 }
 
-/// Removes an installed version and moves the selection to the newest one left if needed.
+/// Removes an installed version, unless a program runs from it, and moves the selection to the
+/// newest one left if needed.
 pub fn remove_version(tag: &str) -> Result<(), String> {
     if !installed().iter().any(|t| t == tag) {
         return Err(format!("{tag} is not installed."));
+    }
+    if in_use(tag) {
+        return Err(format!("{tag} is running. Quit it first."));
     }
     remove(tag)?;
     let mut settings = Settings::load();
@@ -2836,71 +2840,19 @@ fn find_app(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Whether the bundle's signature (Developer ID or ad hoc) is whole: every file it seals is there
-/// and unchanged.
-#[cfg(target_os = "macos")]
-fn signature_holds(app: &Path) -> bool {
-    Command::new("codesign")
-        .args(["--verify", "--deep", "--strict"])
-        .arg(app)
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// Puts the bundle `new` in place of `app`: copied beside it first (`ditto` keeps its links,
-/// modes and signature) and checked, then the old one is moved aside and the new one renamed in,
-/// so `app` is never half written, and checked again where it lands (the old one comes back if it
-/// doesn't hold). The running launcher keeps its open files and works on.
+/// Puts a verified app bundle in place, retaining old bundles until no process uses them.
 #[cfg(target_os = "macos")]
 fn replace_bundle(new: &Path, app: &Path) -> Result<(), String> {
-    let dir = app.parent().ok_or("The app has no folder.")?;
-    let name = app.file_name().unwrap_or_default().to_string_lossy();
-    let staged = dir.join(format!(".{name}.update-{}", std::process::id()));
-    let old = dir.join(format!(".{name}.old-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&staged);
-    let copied = Command::new("ditto")
-        .arg(new)
-        .arg(&staged)
-        .status()
-        .map_err(|e| format!("ditto: {e}"))?;
-    if !copied.success() {
-        let _ = fs::remove_dir_all(&staged);
-        return Err(format!(
-            "Could not copy the new app next to {}.",
-            app.display()
-        ));
+    crate::mac_update::replace_bundle(new, app)
+}
+
+/// Retired macOS launchers are removed only once their executable is no longer in use.
+/// Run for every entry point (GUI, CLI and MCP), before a command can return or exec.
+pub fn cleanup_launcher_updates() {
+    #[cfg(target_os = "macos")]
+    if let Some(app) = app_bundle(exe_path()) {
+        crate::mac_update::cleanup(app);
     }
-    if !signature_holds(&staged) {
-        let _ = fs::remove_dir_all(&staged);
-        return Err(
-            "The downloaded app's signature doesn't hold; the launcher stays as it is.".into(),
-        );
-    }
-    fs::rename(app, &old).map_err(|e| {
-        let _ = fs::remove_dir_all(&staged);
-        format!("Could not move {} aside: {e}", app.display())
-    })?;
-    if let Err(e) = fs::rename(&staged, app) {
-        let _ = fs::rename(&old, app);
-        let _ = fs::remove_dir_all(&staged);
-        return Err(format!(
-            "Could not put the new app at {}: {e}",
-            app.display()
-        ));
-    }
-    if !signature_holds(app) {
-        let failed = dir.join(format!(".{name}.failed-{}", std::process::id()));
-        if fs::rename(app, &failed).is_ok() && fs::rename(&old, app).is_ok() {
-            let _ = fs::remove_dir_all(&failed);
-        }
-        return Err(format!(
-            "The new app's signature doesn't hold at {}; the launcher stays as it was.",
-            app.display()
-        ));
-    }
-    let _ = fs::remove_dir_all(&old);
-    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]

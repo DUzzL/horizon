@@ -85,17 +85,22 @@ impl Game<'_> {
             _ => Ok(None),
         }
     }
+    /// This player's `options.txt`: in the game folder, or in `--player-dir` when several
+    /// players share one (`logging::set_player_dir`).
     pub(super) fn options_path() -> std::path::PathBuf {
+        // Splitscreen's second player has its own options (`split::options_path`).
         if let Some(path) = super::split::options_path() {
             return path;
         }
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join("options.txt")
+        horizon_client::logging::player_dir().join("options.txt")
     }
-    /// `shaderpacks/` beside `options.txt`.
+    /// The game folder (the working directory): what its players share, saves, packs, mods.
+    pub(super) fn game_dir() -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default()
+    }
+    /// `shaderpacks/` in the game folder.
     pub(super) fn shader_packs_dir() -> std::path::PathBuf {
-        Self::options_path().with_file_name(horizon_client::shader_pack_list::DIR)
+        Self::game_dir().join(horizon_client::shader_pack_list::DIR)
     }
     pub(super) fn gui_size(&self) -> (f32, f32) {
         let size = self
@@ -367,7 +372,7 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::OpenModFolder => {
-                    let dir = Self::options_path().with_file_name(horizon_client::mod_list::DIR);
+                    let dir = Self::game_dir().join(horizon_client::mod_list::DIR);
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
@@ -441,6 +446,11 @@ impl Game<'_> {
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
     pub(super) fn apply_ui_settings(&mut self) {
+        if horizon_client_render::mipmap::set_dither_cutouts(
+            self.settings.horizon.dither_cutout_mips,
+        ) {
+            self.reload_packs();
+        }
         self.apply_fullscreen();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
@@ -460,6 +470,9 @@ impl Game<'_> {
                 s.horizon.fxaa,
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
+            );
+            r.set_frame_generation(
+                s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr(
                 s.horizon.hdr,

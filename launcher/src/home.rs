@@ -306,7 +306,7 @@ impl Launcher {
             .flex_none()
             .flex_col()
             .gap(px(8.))
-            .w(px(320.))
+            .w(px(360.))
             .p(px(20.));
         if let Some(line) = summary {
             card = card
@@ -373,14 +373,14 @@ impl Launcher {
                 tr("Paste an invite code"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.friend_focus);
+                window.focus(&this.friend_focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.friend_code, ev, cx) {
                     line_edit::Key::Pass => return,
                     line_edit::Key::Enter => this.join_friend(),
-                    line_edit::Key::Escape => window.blur(),
+                    line_edit::Key::Escape => window.blur(cx),
                     _ => {}
                 }
                 cx.stop_propagation();

@@ -28,6 +28,36 @@ fn set_key(tag: &mut Tag, key: &str, value: Tag) {
         c.insert(JavaString::from(key), value);
     }
 }
+/// `EntityType.loadEntityRecursive` snaps every entity of the stack,
+/// passengers included, to the position (`/summon`, `native_summon`).
+pub(in crate::game) fn place_summoned(tag: &mut Tag, pos: [f64; 3]) {
+    let p = pos.map(|v| Tag::Double(v.to_bits()));
+    set_key(tag, "Pos", Tag::List(p.to_vec()));
+    // Entity.load: an absent Fire reads as 0 (until the entity moves).
+    if tag.get("Fire").is_none() {
+        set_key(tag, "Fire", Tag::Short(0));
+    }
+    if tag.get("Rotation").is_none() {
+        set_key(
+            tag,
+            "Rotation",
+            Tag::List(vec![
+                Tag::Float(0.0f32.to_bits()),
+                Tag::Float(0.0f32.to_bits()),
+            ]),
+        );
+    }
+    if let Tag::Compound(c) = tag
+        && let Some(Tag::List(riders)) = c.get_mut(&"Passengers".into())
+    {
+        for r in riders {
+            if matches!(r, Tag::Compound(_)) {
+                place_summoned(r, pos);
+            }
+        }
+    }
+}
+
 impl Game<'_> {
     // ---- entity data ---------------------------------------------------
 
@@ -145,6 +175,18 @@ impl Game<'_> {
                 let d = self.dragon.as_ref().filter(|d| d.id == id)?;
                 let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
                 d.to_nbt(uuid.unwrap_or_else(random_uuid), raw)
+            }
+            Target::Tnt(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.tnts.iter().find(|t| t.id == id)?;
+                entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
             }
         })
     }
@@ -762,36 +804,7 @@ impl Game<'_> {
             return Err(err("argument.nbt.expected.compound", &[]));
         }
         set_key(&mut tag, "id", Tag::String(kind.into()));
-        // EntityType.loadEntityRecursive snaps every entity of the stack,
-        // passengers included, to the position.
-        fn place(tag: &mut Tag, pos: [f64; 3]) {
-            let p = pos.map(|v| Tag::Double(v.to_bits()));
-            set_key(tag, "Pos", Tag::List(p.to_vec()));
-            // Entity.load: an absent Fire reads as 0 (until the entity moves).
-            if tag.get("Fire").is_none() {
-                set_key(tag, "Fire", Tag::Short(0));
-            }
-            if tag.get("Rotation").is_none() {
-                set_key(
-                    tag,
-                    "Rotation",
-                    Tag::List(vec![
-                        Tag::Float(0.0f32.to_bits()),
-                        Tag::Float(0.0f32.to_bits()),
-                    ]),
-                );
-            }
-            if let Tag::Compound(c) = tag
-                && let Some(Tag::List(riders)) = c.get_mut(&"Passengers".into())
-            {
-                for r in riders {
-                    if matches!(r, Tag::Compound(_)) {
-                        place(r, pos);
-                    }
-                }
-            }
-        }
-        place(&mut tag, pos);
+        place_summoned(&mut tag, pos);
         let from = self.mobs.len();
         let canceled = self.persist.joins_canceled;
         let target = self.spawn_entity_from_nbt(tag);

@@ -96,6 +96,11 @@ pub struct RenderAssets {
     pub translucent_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
+    /// The resource packs' LabPBR maps (normals, specular), layer by layer at `pbr_size`:
+    /// empty when they ship none.
+    pub pbr_normals: Vec<u8>,
+    pub pbr_specular: Vec<u8>,
+    pub pbr_size: u32,
     /// OptiFine connected textures (empty without `optifine/ctm` files).
     pub connected: crate::connected::ConnectedTextures,
 }
@@ -286,6 +291,9 @@ impl RenderAssets {
             sprite_layers: sprites.layers,
             translucent_layers: sprites.translucent,
             sprite_mips: sprites.mips,
+            pbr_normals: sprites.normals,
+            pbr_specular: sprites.specular,
+            pbr_size: sprites.pbr_size,
             connected,
         })
     }

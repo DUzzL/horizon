@@ -51,6 +51,7 @@ wgsl_types! {
     [f32; 3] => "vec3<f32>",
     [f32; 4] => "vec4<f32>",
     [[f32; 4]; 4] => "mat4x4<f32>",
+    [[f32; 4]; 8] => "array<vec4<f32>, 8>",
 }
 
 /// A uniform struct: the Rust type the renderer uploads, and its WGSL.
@@ -175,6 +176,30 @@ uniform! {
         has_reflection: u32,
         /// The size of `reflection`, in pixels: half the world's picture.
         reflection_resolution: [f32; 2],
+        /// Eight values a native mod hands its own pack each frame (`native_shader_params`,
+        /// docs/native-mods.md): what they mean is that mod's, such as where and when
+        /// something happened in the world. All 0 when no mod sets them.
+        mods: [[f32; 4]; 8],
+        /// Unit vector toward the body casting this frame's shadows: the sun by day, the moon
+        /// by night.
+        light_direction: [f32; 3],
+        /// 1 while `shadow_map` holds this frame's shadow map, else 0.
+        has_shadow: u32,
+        /// Camera-relative world to the shadow camera's clip space, before the distortion
+        /// (orthographic, looking along `-light_direction`; z 0 at the light, 1 away from it).
+        shadow_view_proj: [[f32; 4]; 4],
+        /// Half the side of the square the shadow map covers, in blocks (the manifest's
+        /// `[shadow] distance`); 0 without a shadow map.
+        shadow_distance: f32,
+        /// How strongly the shadow map is distorted toward its centre, 0..1: a point at
+        /// shadow clip `xy` is stored at `xy / (length(xy) * k + 1 - k)`, so texels near the
+        /// camera cover less ground (`shadow_position` applies it).
+        shadow_distortion: f32,
+        /// The shadow map's side, in texels; 0 without a shadow map.
+        shadow_resolution: f32,
+        /// The ground one shadow texel covers at the map's centre, in blocks (for a bias that
+        /// scales with it); 0 without a shadow map.
+        shadow_center_texel: f32,
     }
 }
 
@@ -209,6 +234,7 @@ pub const MATERIAL_INPUT: Struct = Struct {
         uv: "vec2<f32>" = "The texture coordinate inside the block atlas.",
         translucent: "bool" = "Drawn in the translucent pass (water, stained glass, ice).",
         tags: "u32" = "The pack's sprite tags this surface's sprite has: bit i for the manifest's i-th `[[tags]]`.",
+        material: "u32" = "The `[[materials]]` id of this surface's sprite (0 when no entry names it).",
         screen: "vec2<f32>" = "Where the point is on the screen, 0..1 from the top left (`opaque_depth` and `opaque_color` at `screen * frame.resolution`).",
         face: "u32" = "For a fluid, which face of the block the point is on, `Direction` order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. 0 elsewhere.",
         fluid: "u32" = "0 not a fluid, 1 water, 2 lava.",
@@ -239,6 +265,34 @@ pub const SKY_INPUT: Struct = Struct {
     },
 };
 
+/// The vertex stage's input: one corner of a block's surface.
+pub const VERTEX_INPUT: Struct = Struct {
+    name: "VertexInput",
+    doc: "One corner of a block's surface, for `fn vertex(input: VertexInput) -> vec3<f32>`, which returns where it is drawn (camera-relative, in blocks; `input.position` where it stays).",
+    fields: fields! {
+        position: "vec3<f32>" = "The corner, camera-relative, in blocks (`+ frame.camera_position` for the world's).",
+        uv: "vec2<f32>" = "The texture coordinate inside the block's sprite.",
+        material: "u32" = "The `[[materials]]` id of the block's sprite (0 when none matches).",
+        light: "vec2<f32>" = "Block and sky light, 0..1.",
+        tint: "vec4<f32>" = "The vertex colour (biome tint, face shade, ambient occlusion); alpha 1.",
+        face: "u32" = "For a fluid, the face of the block the corner is on (as `MaterialInput.face`), else 0.",
+        fluid: "u32" = "1 on a fluid's surface (water or lava), else 0.",
+    },
+};
+
+/// The weather stage's input: one point of a rain or snow streak.
+pub const WEATHER_INPUT: Struct = Struct {
+    name: "WeatherInput",
+    doc: "One point of a rain or snow streak, for `fn weather(input: WeatherInput) -> vec4<f32>`, \
+          which returns the colour blended over the world (alpha its opacity).",
+    fields: fields! {
+        color: "vec4<f32>" = "The rain or snow texture's colour here times the streak's vertex colour (alpha 0.1..1).",
+        light: "vec2<f32>" = "Block and sky light, 0..1.",
+        position: "vec3<f32>" = "The point, camera-relative, in blocks.",
+        snow: "bool" = "A snow streak (rain otherwise).",
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,9 +300,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 41);
+        assert_eq!(wgsl.fields.len(), 49);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 13 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 6 * 64 + 15 * 16 + 8 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

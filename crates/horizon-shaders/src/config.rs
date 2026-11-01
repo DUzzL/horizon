@@ -131,6 +131,9 @@ pub struct Shadow {
     pub voxel_distance: f32,
     /// `shadowIntervalSize`: the shadow camera moves in steps of this many blocks (0: none).
     pub interval: f32,
+    /// Native packs: the snap's remainder is euclidean, so the centre is within half an interval
+    /// of the player at negative coordinates too. `shaders/` packs keep Iris's.
+    pub euclidean_snap: bool,
     /// `sunPathRotation`, degrees.
     pub sun_path_rotation: f32,
     /// `shadowMapFov`: a perspective projection of this many degrees instead of orthographic.
@@ -156,6 +159,7 @@ impl Default for Shadow {
             render_mul: -1.0,
             voxel_distance: 160.0,
             interval: 2.0,
+            euclidean_snap: false,
             sun_path_rotation: 0.0,
             fov: None,
             near: 0.05,
