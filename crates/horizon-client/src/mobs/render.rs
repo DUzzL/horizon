@@ -2259,6 +2259,17 @@ mod tests {
                 .custom_name()
                 .is_none()
         );
+        // An admiring piglin holds gold beside its crossbow. Both the item
+        // id and the model components must come from the appropriate hand.
+        extra.off_hand = Some("minecraft:gold_ingot".into());
+        assert_eq!(
+            &*held_item_stack(&extra, true).unwrap().item,
+            "minecraft:gold_ingot"
+        );
+        assert_eq!(
+            &*held_item_stack(&extra, false).unwrap().item,
+            "minecraft:crossbow"
+        );
         extra.off_hand = None;
         assert!(held_item_stack(&extra, true).is_none());
     }

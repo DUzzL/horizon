@@ -1,9 +1,12 @@
 //! Connected textures (`optifine/ctm/**/*.properties`): the rules a pack defines, which block
-//! faces each one applies to, and its replacement tiles.
+//! faces each one applies to, and its replacement tiles. Choosing a tile from the neighbours is
+//! [`connect`]'s.
 //!
 //! Written from OptiFine's `ctm.properties` documentation and template images, and Continuity's
 //! wiki (its "Continuity Connected Textures Specification" page) for what OptiFine does where the
 //! documentation is silent; no mod's source was read.
+
+pub mod connect;
 
 use crate::{BlockMatch, IdList, Name, Properties, RangeList};
 use std::path::Path;
@@ -216,7 +219,8 @@ pub fn load(root: &Path) -> Vec<Rule> {
     rules
 }
 
-fn sort(rules: &mut [Rule]) {
+/// [`load`]'s order, for rules gathered elsewhere.
+pub fn sort(rules: &mut [Rule]) {
     rules.sort_by(|a, b| (b.prioritize, b.weight, &a.path).cmp(&(a.prioritize, a.weight, &b.path)));
 }
 

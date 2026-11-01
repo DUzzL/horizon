@@ -15,20 +15,23 @@ use std::path::{Path, PathBuf};
 /// The extension is the caller's: OptiFine adds `.png` to textures that have none.
 ///
 /// `None` when the path would leave the resource root or is malformed: a `..` or `.` segment, an
-/// empty one (`a//b`, a leading `/`), as vanilla's resource paths refuse them, or a backslash.
-/// Callers join the result onto the overlay root, so a pack must never name a file outside it.
+/// empty one (`a//b`, a leading `/`), as vanilla's resource paths refuse them, or a `\` (see
+/// [`valid`]). Callers join the result onto the overlay root, so a pack must never name a file
+/// outside it.
 pub fn resolve(props: &str, value: &str) -> Option<String> {
     in_root(resolve_unchecked(props, value))
 }
 
-/// `path` when it stays inside the resource root ([`resolve`]'s test). A `\` is refused too:
-/// Windows would read it as a separator (vanilla's resource paths never hold one).
+/// Whether a resource path stays in the root: no `.`, `..` or empty segment, and no `\` (a
+/// separator on Windows, where `..\..` would climb).
+pub fn valid(path: &str) -> bool {
+    path.split('/')
+        .all(|segment| !matches!(segment, "" | "." | "..") && !segment.contains('\\'))
+}
+
+/// `path` when it stays inside the resource root ([`valid`]).
 pub(crate) fn in_root(path: String) -> Option<String> {
-    (!path.contains('\\')
-        && path
-            .split('/')
-            .all(|segment| !matches!(segment, "" | "." | "..")))
-    .then_some(path)
+    valid(&path).then_some(path)
 }
 
 fn resolve_unchecked(props: &str, value: &str) -> String {
@@ -57,6 +60,12 @@ fn resolve_unchecked(props: &str, value: &str) -> String {
 /// `assets/*/mcpatcher/<feature>/` of `root`, as sorted resource paths. `feature` is a folder
 /// (`ctm`, `cit`, `random/entity`, `sky/world0`).
 pub fn properties_files(root: &Path, feature: &str) -> Vec<String> {
+    properties_files_in(root, &["optifine", "mcpatcher"], feature)
+}
+
+/// `properties_files` under other top folders too, for a feature a mod reads from its own
+/// (CIT Resewn's `citresewn/cit/`).
+pub fn properties_files_in(root: &Path, tops: &[&str], feature: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
@@ -64,7 +73,7 @@ pub fn properties_files(root: &Path, feature: &str) -> Vec<String> {
     };
     for ns in namespaces.flatten() {
         let ns = ns.file_name().to_string_lossy().into_owned();
-        for top in ["optifine", "mcpatcher"] {
+        for top in tops {
             let base = format!("assets/{ns}/{top}/{feature}");
             walk(
                 &root.join(&base),
@@ -169,6 +178,7 @@ mod tests {
             "a/./b",
             "..\\..\\x.jpm",
             "~/..\\..\\x",
+            "..\\..\\x.png",
         ] {
             assert_eq!(resolve(props, bad), None, "{bad}");
         }

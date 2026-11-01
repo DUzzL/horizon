@@ -771,6 +771,7 @@ impl Game<'_> {
             thundering: weather && thunder > 0.9,
             nether: self.dim == Dim::Nether,
             block_tags: &self.items().block_tags,
+            landing: &self.motion.landing,
             biomes: world_biomes!(self),
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             universal_anger: self.ui.rules.bool("universal_anger"),
@@ -1774,6 +1775,40 @@ impl Game<'_> {
                     self.mob_hits_player(amount, from, kind);
                 }
                 MobEvent::ElderCurse { at } => self.elder_curse(at),
+                MobEvent::SetVelocity { target, velocity } => {
+                    let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
+                    match target {
+                        Who::Player => {
+                            if let Some(p) = self.player.as_mut() {
+                                p.velocity = v;
+                            }
+                        }
+                        Who::Mob(id) => {
+                            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                                m.velocity = v;
+                            }
+                        }
+                    }
+                }
+                MobEvent::RemoveKilled { target } => {
+                    // The bite that killed it ran `LivingEntity.die` (loot, such
+                    // as a magma cube's froglight, and experience) before
+                    // `eatEntity` removes it: a removed mob never reaches the
+                    // next tick's deaths, so it dies here first.
+                    if let Some(m) = self
+                        .mobs
+                        .iter()
+                        .find(|m| m.id == target && !m.alive() && !m.removed)
+                        .cloned()
+                    {
+                        if self.died.insert(target) {
+                            self.mob_died(&m);
+                        }
+                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target) {
+                            m.removed = true;
+                        }
+                    }
+                }
                 MobEvent::Push { target, velocity } => {
                     let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
                     match target {
@@ -5730,12 +5765,28 @@ impl Game<'_> {
         );
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
+        let mob_type = parent.kind.clone();
         let target = self.mob_entity(&self.mobs[index]);
-        let Some(id) = self.spawn_mob_spawned(&kind, at) else {
-            return false;
+        let id = if species == Species::Piglin {
+            // SpawnEggItem.spawnOffspringFromSpawnEgg: a non-AgeableMob is
+            // constructed, then setBaby(true), without finalizeSpawn. Giving
+            // it adult spawn gear first leaves the baby holding a weapon.
+            self.next_entity += 1;
+            let id = self.next_entity;
+            self.mobs
+                .push(Mob::new(id, mob_type, Vec3::new(at[0], at[1], at[2]), 0.0));
+            id
+        } else {
+            let Some(id) = self.spawn_mob_spawned(&kind, at) else {
+                return false;
+            };
+            id
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
+        }
+        if species == Species::Piglin {
+            self.native_mobs_joined(self.mobs.len() - 1, false);
         }
         // `Mob.checkAndHandleImportantInteractions` then calls
         // `onOffspringSpawnedFromEgg`: `Fox`'s makes the baby trust the player
@@ -6846,6 +6897,7 @@ mod pearl_tests {
             thundering: false,
             nether: false,
             block_tags: &items.block_tags,
+            landing: &motion.landing,
             biomes: &biomes,
             mob_griefing: true,
             universal_anger: false,
