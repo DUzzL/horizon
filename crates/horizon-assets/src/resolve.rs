@@ -103,7 +103,8 @@ impl ModelLibrary {
         })
     }
     /// This library plus `extra` models; an `extra` model replaces a
-    /// same-named one. Every existing model is shared, not copied.
+    /// same-named one, but not the built-in missing and generated models.
+    /// Every existing model is shared, not copied.
     pub fn overlaid(&self, extra: BTreeMap<String, CuboidModel>) -> Result<Self> {
         let mut models = self.models.clone();
         let mut added = BTreeSet::new();
@@ -112,8 +113,8 @@ impl ModelLibrary {
             if !added.insert(name.clone()) {
                 return Err(error("duplicate normalized model identifier"));
             }
-            // As in `from_models`, the built-in missing model cannot be replaced.
-            if name != MISSING_MODEL {
+            // As in `from_models` and `with_item_generator`, the built-ins win.
+            if name != MISSING_MODEL && name != GENERATED_MODEL {
                 models.insert(name, Arc::new(model));
             }
         }
@@ -131,7 +132,9 @@ impl ModelLibrary {
     /// `name`'s resolved model with a virtual child in front of it that has
     /// only `textures`: the child's slots win, and `#references` anywhere in
     /// the chain re-bind through them (so `builtin/generated`'s
-    /// `particle: #layer0` follows a replaced `layer0`).
+    /// `particle: #layer0` follows a replaced `layer0`). A cyclic chain is an
+    /// error, as for `resolve`: a caller wanting the missing model falls
+    /// back to it.
     pub fn resolve_with_textures(
         &self,
         name: &str,
@@ -410,6 +413,92 @@ mod tests {
             &base.models["minecraft:item/apple"],
             &over.models["minecraft:item/apple"]
         ));
+    }
+    fn material(sprite: &str) -> TextureSlot {
+        TextureSlot::Material(Material {
+            sprite: sprite.to_owned(),
+            force_translucent: false,
+        })
+    }
+    #[test]
+    fn child_slots_take_part_in_reference_chains() {
+        let library = library(&[
+            (
+                "item/two",
+                r##"{"textures":{"layer0":"#tex","layer1":"item/b","tex":"item/a"}}"##,
+            ),
+            ("horizon:loop", r#"{"parent":"horizon:loop2"}"#),
+            ("horizon:loop2", r#"{"parent":"horizon:loop"}"#),
+        ]);
+        let child = BTreeMap::from([
+            // A base alias binds through a slot only the child sets...
+            ("tex".to_owned(), material(CIT)),
+            // ...and a child alias through the base's slots.
+            (
+                "particle".to_owned(),
+                TextureSlot::Reference("layer1".to_owned()),
+            ),
+            // A child alias to itself resolves to nothing, without looping.
+            ("self".to_owned(), TextureSlot::Reference("self".to_owned())),
+        ]);
+        let model = library.resolve_with_textures("item/two", &child).unwrap();
+        assert_eq!(model.material("layer0").unwrap().unwrap().sprite, CIT);
+        assert_eq!(
+            model.material("particle").unwrap().unwrap().sprite,
+            "minecraft:item/b"
+        );
+        assert_eq!(model.material("self").unwrap(), None);
+        assert!(model.unresolved_textures.contains("self"));
+        // An absent base is the missing cube under the child; a cyclic one an error.
+        let absent = library
+            .resolve_with_textures("item/absent", &child)
+            .unwrap();
+        assert_eq!(absent.elements().len(), 1);
+        assert!(
+            library
+                .resolve_with_textures("horizon:loop", &child)
+                .is_err()
+        );
+    }
+    #[test]
+    fn an_overlay_replaces_parents_but_not_the_built_ins_and_refuses_twins() {
+        let base = library(&[
+            ("item/generated", GENERATED),
+            ("item/handheld", r#"{"parent":"item/generated"}"#),
+            (
+                "item/sword",
+                r#"{"parent":"item/handheld","textures":{"layer0":"item/sword"}}"#,
+            ),
+        ]);
+        let model = |json: &str| CuboidModel::from_json(json).unwrap();
+        let over = base
+            .overlaid(BTreeMap::from([
+                (
+                    "item/handheld".to_owned(),
+                    model(
+                        r#"{"parent":"item/generated","display":{"head":{"rotation":[0,45,0]}}}"#,
+                    ),
+                ),
+                // Neither built-in can be replaced.
+                ("builtin/missing".to_owned(), model(r#"{"elements":[]}"#)),
+                ("builtin/generated".to_owned(), model("{}")),
+            ]))
+            .unwrap();
+        // The base's sword sees the overlay's parent; the base library does not.
+        let head = |l: &ModelLibrary| l.resolve("item/sword").unwrap().display.contexts[4].clone();
+        let DisplayTransform::Explicit(Some(rotated)) = head(&over) else {
+            panic!("the replaced parent's head transform");
+        };
+        assert_eq!(rotated.rotation, [0.0, 45.0, 0.0]);
+        assert_ne!(head(&base), head(&over));
+        assert!(over.resolve("item/sword").unwrap().uses_item_generator());
+        assert_eq!(over.resolve("item/absent").unwrap().elements().len(), 1);
+        // Two spellings of one id.
+        let twins = BTreeMap::from([
+            ("item/x".to_owned(), model("{}")),
+            ("minecraft:item/x".to_owned(), model("{}")),
+        ]);
+        assert!(base.overlaid(twins).is_err());
     }
     #[test]
     fn absent_parents_fall_back_but_cycles_invalidate_descendants() {
