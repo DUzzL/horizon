@@ -723,6 +723,10 @@ impl Game<'_> {
         let mut round = self.native_tick_round();
         // A server player's boat is driven by its client (lan_vehicles.rs).
         let driven = self.guest_vehicles();
+        // EntityTickEvent.Post comes once AbstractBoat.tick is over, after the
+        // passes below (lava, ejection, bubbles, contacts): the ticked boats,
+        // in order.
+        let mut ticked = Vec::new();
         for i in 0..self.boats.len() {
             // A mod's hook may have removed boats.
             if i >= self.boats.len() {
@@ -759,7 +763,7 @@ impl Game<'_> {
             };
             let b = self.boats[i].clone();
             self.boats[i] = self.tick_boat(b, false);
-            self.native_tick_post_one(&round, id, &kind);
+            ticked.push((id, kind));
         }
         // AbstractBoat.tick's applyEffectsFromBlocks, on the server for every
         // boat, the client-driven ones too.
@@ -792,6 +796,9 @@ impl Game<'_> {
             }
             self.boat_bubble_tick(i);
             self.boat_contacts(i);
+        }
+        for (id, kind) in ticked {
+            self.native_tick_post_one(&round, id, &kind);
         }
     }
     /// `Entity.canSimulateMovement`: for a boat (`AUTHORITATIVE_SIDE`) a
