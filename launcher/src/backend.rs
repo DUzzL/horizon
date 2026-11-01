@@ -1463,7 +1463,9 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        log(format!("Horizon: the accounts are not saved: {e}"));
+    }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
 }
 
