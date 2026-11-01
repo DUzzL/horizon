@@ -1273,10 +1273,14 @@ impl Mesher<'_> {
                                 }
                             {
                                 let p = &face.quad.positions;
+                                // Only on the block's top or bottom plane: a pack's own pane
+                                // model may have ledges between.
+                                let plane = if dy > 0 { 1.0 } else { 0.0 };
+                                let on_edge = p.iter().all(|v| (v[1] - plane).abs() < 1e-4);
                                 let centre =
                                     [0, 2].map(|k| p.iter().map(|v| v[k]).sum::<f32>() / 4.0);
                                 let other = pad.blocks[pi(x, y + dy, z)];
-                                if connected.stacked_pane_hides(id, other, centre) {
+                                if on_edge && connected.stacked_pane_hides(id, other, centre) {
                                     continue;
                                 }
                             }
