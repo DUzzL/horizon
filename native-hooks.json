@@ -1086,16 +1086,6 @@
       "neoforge": "none (NeoForge has no flight toggle event; Bukkit's PlayerToggleFlightEvent)",
       "side": "server",
       "cancellable": true
-    },
-    {
-      "name": "experience_orb_pickup",
-      "target": "horizon_client::game::native_hooks::Game<'_>::native_experience_orb_pickup",
-      "version": 1
-    },
-    {
-      "name": "mending_repair",
-      "target": "horizon_client::game::native_hooks::Game<'_>::native_mending_repair",
-      "version": 1
     }
   ]
 }
