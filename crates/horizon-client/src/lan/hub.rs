@@ -1922,7 +1922,7 @@ impl Hub {
     }
 
     fn broadcast_block_changes(&mut self, world: &mut World) {
-        // Chunks changed in bulk (a mod's block edit) go whole to those who see them: one packet each, where a
+        // Chunks changed in bulk (`World::edit_runs`) go whole to those who see them: one packet each, where a
         // change of each block would be thousands (the client lights and meshes them once, on its workers).
         let bulk: Vec<(i32, i32)> = if world.bulk_log.is_empty() {
             Vec::new()

@@ -918,38 +918,28 @@ impl Streaming {
         if !self.lit.contains(&key) {
             return self.insert_remote(world, chunk);
         }
-        let (mut a, mut b) = (Box::new([0u32; 4096]), Box::new([0u32; 4096]));
         // The cells whose blocks changed, by section: they remesh with the neighbours within a block of them (as
         // vanilla's `setBlocksDirty`), not every section round each section changed (which, for the few blocks a
         // section often changes in a bulk edit, is mostly sections that did not).
         let mut cells = crate::light::LightChanges::default();
         cells.keyed(world.layout());
-        let mut changed = false;
-        for s in 0..chunk.sections.len().min(old.sections.len()) {
-            // (sections stored alike hold the same blocks: most of a column sent again, found without unpacking)
-            if old.sections[s]
-                .blocks
-                .same_storage(&chunk.sections[s].blocks)
-            {
-                chunk.sections[s] = old.sections[s].clone();
-                continue;
-            }
-            old.sections[s].unpack(&mut a);
-            chunk.sections[s].unpack(&mut b);
-            let classes = crate::light::LightChanges::classes_differing(&a, &b);
-            if classes == 0 {
-                chunk.sections[s] = old.sections[s].clone();
-            } else {
-                changed = true;
-                cells.add((key.0, s as i32, key.1), classes);
-                Arc::make_mut(&mut chunk.sections[s]).light = old.sections[s].light.clone();
-            }
-        }
+        let kept = keep_unchanged_sections(&old, &mut chunk, &mut cells);
         chunk.light_loaded = old.light_loaded;
         chunk.lit = true;
         world.chunks.insert(key, Arc::new(chunk));
         world.revision = world.revision.wrapping_add(1);
-        if !changed {
+        // A section with new biomes and the same blocks remeshes now (its tint), with its neighbours, whose tint
+        // blends across the border.
+        for &s in &kept.biomes {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    world
+                        .dirty_sections
+                        .insert((key.0 + dx, s as i32, key.1 + dz));
+                }
+            }
+        }
+        if !kept.blocks {
             return;
         }
         for dz in -1..=1 {
@@ -2420,9 +2410,102 @@ fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
     }
     candidates.sort_unstable();
 }
+/// What `keep_unchanged_sections` found changed.
+#[derive(Debug, Default, PartialEq)]
+struct Resent {
+    /// Any section's blocks changed (in a way light or the mesher sees).
+    blocks: bool,
+    /// The sections whose blocks did not change but whose biomes did.
+    biomes: Vec<usize>,
+}
+/// `new`, a resident column `old` sent again, takes `old`'s sections whose
+/// blocks it holds unchanged, with `new`'s biomes; the sections whose blocks
+/// changed keep `old`'s light (until lit again) and their cells' classes go in
+/// `cells`.
+fn keep_unchanged_sections(
+    old: &Chunk,
+    new: &mut Chunk,
+    cells: &mut crate::light::LightChanges,
+) -> Resent {
+    let (mut a, mut b) = (Box::new([0u32; 4096]), Box::new([0u32; 4096]));
+    let mut out = Resent::default();
+    let (x, z) = (new.x, new.z);
+    for s in 0..new.sections.len().min(old.sections.len()) {
+        // (sections stored alike hold the same blocks: most of a column sent again, found without unpacking)
+        let same = old.sections[s].blocks.same_storage(&new.sections[s].blocks) || {
+            old.sections[s].unpack(&mut a);
+            new.sections[s].unpack(&mut b);
+            let classes = crate::light::LightChanges::classes_differing(&a, &b);
+            if classes != 0 {
+                cells.add((x, s as i32, z), classes);
+            }
+            classes == 0
+        };
+        if !same {
+            out.blocks = true;
+            Arc::make_mut(&mut new.sections[s]).light = old.sections[s].light.clone();
+            continue;
+        }
+        let biomes = new.sections[s].biomes.clone();
+        let changed = !same_values(&old.sections[s].biomes, &biomes);
+        new.sections[s] = old.sections[s].clone();
+        if changed {
+            Arc::make_mut(&mut new.sections[s]).biomes = biomes;
+            out.biomes.push(s);
+        }
+    }
+    out
+}
+/// Whether two biome containers (64 cells) hold the same values.
+fn same_values(
+    a: &horizon_core::paletted::PalettedContainer,
+    b: &horizon_core::paletted::PalettedContainer,
+) -> bool {
+    if a.same_storage(b) {
+        return true;
+    }
+    let (mut x, mut y) = ([0u32; 64], [0u32; 64]);
+    a.unpack(&mut x);
+    b.unpack(&mut y);
+    x == y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resent_column_keeps_its_sections_but_takes_new_biomes() {
+        let mut old = Chunk::empty(2, -3);
+        old.set(1, 10, 1, 1);
+        old.set(1, 40, 1, 1);
+        old.set_biome_cell(0, 0, 0, 1);
+        let mut new = old.clone();
+        // a new biome under the same blocks (section 0), and a block changed (section 6)
+        new.set_biome_cell(0, 0, 0, 3);
+        new.set(1, 40, 1, 2);
+        let mut cells = crate::light::LightChanges::default();
+        cells.keyed(crate::chunk::ColumnLayout::VANILLA);
+        let kept = keep_unchanged_sections(&old, &mut new, &mut cells);
+        assert_eq!(
+            kept,
+            Resent {
+                blocks: true,
+                biomes: vec![0],
+            }
+        );
+        assert_eq!(new.biome(0, -64, 0), 3);
+        assert_eq!(new.block(1, -54, 1).0, 0);
+        assert_eq!(new.block(1, 40, 1).0, 2);
+        // the sections alike are shared with the old column
+        assert!(Arc::ptr_eq(&new.sections[1], &old.sections[1]));
+        assert!(!Arc::ptr_eq(&new.sections[0], &old.sections[0]));
+        // nothing changed: nothing to do
+        let mut same = old.clone();
+        let kept = keep_unchanged_sections(&old, &mut same, &mut cells);
+        assert_eq!(kept, Resent::default());
+        assert!(Arc::ptr_eq(&same.sections[0], &old.sections[0]));
+    }
 
     #[test]
     fn mesh_pool_reuses_capacity_with_clean_geometry_state() {
