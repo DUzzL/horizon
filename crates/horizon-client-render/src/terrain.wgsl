@@ -26,7 +26,7 @@ struct Globals {
     dynamic_lights: array<vec4<f32>, 16>,
     colored_lights: array<vec4<f32>, 32>,
     colored_count: vec4<u32>,
-    emissive_layers: array<vec4<u32>, 32>,
+    emissive_layers: array<vec4<u32>, 128>,
     emissive_count: vec4<u32>,
     // The sunrise fan's 16 triangles (gfx/sunrise_fan.rs): xyz the apex weight's normal, w the
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
@@ -311,10 +311,10 @@ fn fade_code(w: f32) -> u32 {
     return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w);
 }
-// Solid terrain draws in two passes from the same draws: first the quads with no
-// cutout that are not fading, through `fs_opaque`, which never discards, so a tiled
-// GPU (Apple's) keeps hiding the pixels behind them; then the rest through
-// `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
+// Solid terrain draws in two passes, each over its own part of every mesh's quads
+// (`mesher::Part`): first the quads with no cutout that are not fading, through
+// `fs_opaque`, which never discards, so a tiled GPU (Apple's) keeps hiding the pixels
+// behind them; then the rest through `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
 // all the terrain it drew. A quad the pass leaves out is decided before any of the
 // vertex's work and lies outside the clip volume: it makes no pixel.
 fn opaque_quad(layer: u32, w: f32) -> bool {
@@ -370,9 +370,15 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     out.uv = uv;
     out.layer = layer;
     out.emissive_layer = 0xffffffffu;
-    for (var i = 0u; i < min(globals.emissive_count.x, 32u); i++) {
-        if globals.emissive_layers[i].x == (layer & 0x7fffu) {
-            out.emissive_layer = globals.emissive_layers[i].y;
+    // The pairs are sorted by base layer: stop at the first past this one.
+    let sprite_layer = layer & 0x7fffu;
+    for (var i = 0u; i < min(globals.emissive_count.x, 128u); i++) {
+        let pair = globals.emissive_layers[i];
+        if pair.x == sprite_layer {
+            out.emissive_layer = pair.y;
+            break;
+        }
+        if pair.x > sprite_layer {
             break;
         }
     }
@@ -462,7 +468,11 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
         }
     }
     if in.emissive_layer != 0xffffffffu {
-        let mask = sprite(in.uv, in.emissive_layer);
+        // The high bit: an OptiFine overlay, drawn cutout (opaque where alpha >= 0.1).
+        var mask = sprite(in.uv, in.emissive_layer & 0x7fffffffu);
+        if (in.emissive_layer & 0x80000000u) != 0u {
+            mask.a = select(0.0, 1.0, mask.a >= 0.1);
+        }
         return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, hdr_mark(3u, 1.0), mask.a)), in.spherical, in.cylindrical);
     }
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);

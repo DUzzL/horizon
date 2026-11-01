@@ -78,6 +78,32 @@ impl Rocket {
             item,
         }
     }
+    /// `FireworkRocketEntity.addAdditionalSaveData`; the owner only when it is `player`.
+    pub(super) fn to_nbt(
+        &self,
+        uuid: [i32; 4],
+        player: Option<[i32; 4]>,
+        raw: Option<&horizon_world::nbt::Tag>,
+    ) -> horizon_world::nbt::Tag {
+        horizon_client::entity_nbt::firework_rocket_to_nbt(
+            &horizon_client::entity_nbt::RocketSave {
+                position: self.position,
+                motion: self.velocity,
+                life: self.life,
+                lifetime: self.lifetime,
+                item: &self.item,
+                angled: self.angled,
+                owner: if matches!(self.owner, Some(Who::Player)) {
+                    player
+                } else {
+                    None
+                },
+                left_owner: self.left_owner,
+            },
+            uuid,
+            raw,
+        )
+    }
     /// A rocket loaded from its NBT (`/summon`, a saved chunk).
     pub(super) fn from_nbt(r: RocketNbt) -> Self {
         let item = r

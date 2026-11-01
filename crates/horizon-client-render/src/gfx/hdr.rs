@@ -320,7 +320,10 @@ impl Hdr {
                 "Horizon HDR frame",
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
-            let world = texture("Horizon HDR world", wgpu::TextureUsages::COPY_DST);
+            let world = texture(
+                "Horizon HDR world",
+                wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
             let view = |t: &wgpu::Texture| t.create_view(&Default::default());
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Horizon HDR bindings"),
@@ -436,6 +439,13 @@ impl Hdr {
             a,
         });
         pass.draw(0..3, 0..1);
+    }
+
+    /// The world as `keep_world` kept it: where the hand's marks go (its alpha, which HDR output
+    /// reads for it too), and what tints the world rather than covering it.
+    pub fn hand_light_view(&self) -> Option<wgpu::TextureView> {
+        let t = self.targets.as_ref()?;
+        Some(t.world.create_view(&Default::default()))
     }
 
     /// Writes the finished frame to the swapchain image `target`.

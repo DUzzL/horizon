@@ -1326,6 +1326,16 @@ impl LevelAccess for GameLevel<'_> {
             self.native_perform_bonemeal(ticks, self.dimension, pos, state);
         }
     }
+    fn before_fire_odds(&self, state: BlockStateId, odds: &mut Option<(i32, i32)>) {
+        if self.native_authoritative {
+            self.native_fire_odds(self.dimension, state, odds);
+        }
+    }
+    fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
+        if self.native_authoritative {
+            self.native_smoke_source(self.dimension, state, smoke);
+        }
+    }
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.world.world_surface(x, z, |s| self.facts.is_air(s))
     }
@@ -1911,7 +1921,7 @@ impl UiResources {
     pub fn load(root: &std::path::Path, defaults: &std::path::Path) -> Result<Self> {
         Ok(Self {
             atlas: HudAtlas::build_over(root, defaults)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root, defaults)),
         })
     }
     /// What a server's game holds, since it draws nothing: the font, which books
@@ -1919,10 +1929,7 @@ impl UiResources {
     pub fn server(root: &std::path::Path) -> Result<Self> {
         Ok(Self {
             atlas: HudAtlas::fonts(root)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces {
-                size: 1,
-                pixels: [0u8; 4].repeat(6),
-            }),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
         })
     }
 }
@@ -2243,6 +2250,11 @@ struct Game<'a> {
     /// The cursor icon the window shows (`widgets::take_cursor` each frame).
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
+    /// The window held the pointer when it lost focus: the system lets a
+    /// grabbed pointer go with the focus, and a window that comes back still
+    /// wanting it takes it again (`MouseHandler.grabMouse`, whose grab
+    /// outlives the window's focus).
+    regrab_on_refocus: bool,
     /// Only the local player owning keyboard and mouse changes the native pointer.
     keyboard_mouse: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
@@ -2289,7 +2301,7 @@ struct Game<'a> {
     /// Horizon Extras' dynamic lights this frame (`dynamic_lights.rs`), and how brightly each
     /// item glows (built the first time the extra is on).
     dynamic_lights: Vec<[f32; 4]>,
-    luminance: Option<horizon_client::dynamic_light::Luminance>,
+    luminance: std::cell::OnceCell<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
     /// The first-person player's model, which only a native pack's shadow pass draws.
@@ -2851,6 +2863,9 @@ struct Game<'a> {
     lan_acting_uuid: Option<u128>,
     /// Their permission level: an op's above 0 (`PlayerList.isOp`).
     lan_acting_permission: Option<u8>,
+    /// Their entity id, which the hub (often taken out of `lan` while they
+    /// act) would otherwise have to be asked for.
+    lan_acting_entity: Option<u32>,
     /// Command feedback to forward to a guest.
     chat_capture: Option<Vec<horizon_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
@@ -2877,6 +2892,9 @@ struct Game<'a> {
     /// the operators (`DedicatedServer.shouldInformAdmins`,
     /// `broadcast-console-to-ops`).
     console_broadcast: Option<bool>,
+    /// The command the console is running came over RCON: its source is named `Rcon`
+    /// (`RconConsoleSource.createCommandSourceStack`), not `Server`.
+    rcon_source: bool,
     /// A dedicated server's operator, whitelist and ban lists, for `/op`,
     /// `/ban` and friends (`DedicatedPlayerList`).
     server_lists: Option<std::sync::Arc<std::sync::Mutex<dedicated::Lists>>>,
@@ -3645,6 +3663,7 @@ impl Game<'_> {
         // ItemEntity.bobOffs comes from the entity's own random, not the level's.
         let bob = self.particles.random().next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            no_gravity: false,
             health: 5,
             fire_ticks: 0,
             thrower: None,
@@ -3667,32 +3686,72 @@ impl Game<'_> {
             self.dropped.pop();
         }
     }
+    /// The block entity at `pos` saved with its id and position
+    /// (`saveWithFullMetadata`), or the saved one Horizon keeps as loaded:
+    /// what a broken block's loot sees as `LootContextParams.BLOCK_ENTITY`.
+    fn loot_block_entity(&self, pos: [i32; 3], block: &str) -> Option<horizon_world::nbt::Tag> {
+        let key = (pos[0], pos[1], pos[2]);
+        match self.world.block_entities.get(&key) {
+            Some(entity) => Some(horizon_client::save::encode_block_entity(
+                key, entity, block,
+            )),
+            None => spill::saved_entity(&self.world, pos),
+        }
+    }
+    /// Where a loot roll at `origin` happens, for a mod's own loot kinds:
+    /// the block entity it may copy from, and this level as
+    /// `LootContext.getLevel` gives it (`Level.isRaining`: rain above 0.2;
+    /// `isThundering`: thunder above 0.9).
+    fn loot_place_at(
+        &self,
+        origin: [f64; 3],
+        block_entity: Option<horizon_world::nbt::Tag>,
+    ) -> horizon_world::loot::NativeLootPlace {
+        let (rain, thunder) = self.world.weather.levels(1.0);
+        horizon_world::loot::NativeLootPlace {
+            origin: Some(origin),
+            block_entity,
+            level: Some(horizon_world::loot::NativeLootLevel {
+                dimension: self.dim.id().to_owned(),
+                game_time: self.world.game_time,
+                day_time: self.world.day_time,
+                raining: rain > 0.2,
+                thundering: thunder > 0.9,
+            }),
+        }
+    }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
     /// with the player as `this`, drawing from its server random sequence
-    /// (`LootContext.Builder.create`), else the level random.
+    /// (`LootContext.Builder.create`), else the level random. The roll's
+    /// origin is the block's centre and `block_entity` the entity it had.
     fn block_loot_at(
         &mut self,
         pos: [i32; 3],
         state: BlockStateId,
         held: Option<&ItemStack>,
+        block_entity: Option<horizon_world::nbt::Tag>,
     ) -> Vec<ItemStack> {
         let registry = self.pack.assets.registry;
         let dynamic = self.pending.dynamic(pos);
-        let mut drops = match world_items!(self).block_loot_sequence(registry, state) {
-            Some(sequence) => {
-                let random = self.rand_sequences.get(&sequence, self.level.seed);
-                self.res
-                    .items()
-                    .block_drops_by_player(registry, state, held, &dynamic, random)
-            }
-            None => world_items!(self).block_drops_by_player(
-                registry,
-                state,
-                held,
-                &dynamic,
-                &mut self.world.random,
-            ),
-        };
+        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
+        let mut drops =
+            horizon_world::loot::with_native_loot_place(place, || {
+                match world_items!(self).block_loot_sequence(registry, state) {
+                    Some(sequence) => {
+                        let random = self.rand_sequences.get(&sequence, self.level.seed);
+                        self.res
+                            .items()
+                            .block_drops_by_player(registry, state, held, &dynamic, random)
+                    }
+                    None => world_items!(self).block_drops_by_player(
+                        registry,
+                        state,
+                        held,
+                        &dynamic,
+                        &mut self.world.random,
+                    ),
+                }
+            });
         let player = self.native_acting_id();
         self.native_block_drops(pos, state, Some(player), held, None, &mut drops);
         drops
@@ -3809,6 +3868,7 @@ impl Game<'_> {
         let merging = self.remote.is_none();
         let obstacles = horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
         let mut nearby = Vec::new();
+        let mut bubble_tops = Vec::new();
         for i in 0..items.len() {
             if removed[i] {
                 // Merged into an earlier item before its own tick: it never ticked.
@@ -3854,6 +3914,17 @@ impl Game<'_> {
                 &nearby,
             );
             cells.moved(i, item.previous, item.position);
+            // Entity.handleOnAboveBubbleColumn: the server sends the particles of
+            // the surface of a bubble column the item is at the top of.
+            if merging {
+                bubble_tops.extend(horizon_client::motion::bubble_column_surfaces(
+                    &self.world,
+                    self.pack.assets.registry,
+                    self.res.facts(),
+                    self.collision,
+                    item.bounds(),
+                ));
+            }
             // ItemEntity.tick: merge every 2 ticks while moving between
             // blocks, every 40 otherwise, before the lifetime check.
             let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
@@ -3900,6 +3971,9 @@ impl Game<'_> {
                 removed[i] = true;
                 cells.remove(i, item.position);
             }
+        }
+        for pos in bubble_tops {
+            self.bubble_column_particles(pos);
         }
         let mut removed = removed.into_iter();
         items.retain(|_| !removed.next().unwrap_or(false));
@@ -5530,6 +5604,11 @@ impl Game<'_> {
         }
         // The block entity as it was, for what the drops copy from it.
         let key = (pos[0], pos[1], pos[2]);
+        let loot_entity = if self.creative {
+            None
+        } else {
+            self.loot_block_entity(pos, &facts.name)
+        };
         if let Some(entity) = self.world.block_entities.get(&key).cloned() {
             let name = self.world.block_names.get(&key).cloned();
             self.pending.record(pos, &entity, &facts.name, name);
@@ -5594,7 +5673,7 @@ impl Game<'_> {
                 if let Some(p) = self.player.as_mut() {
                     p.cause_food_exhaustion(0.005);
                 }
-                let drops = self.block_loot_at(pos, state, held.as_ref());
+                let drops = self.block_loot_at(pos, state, held.as_ref(), loot_entity);
                 let silk = held
                     .as_ref()
                     .is_some_and(|h| h.enchantment_level("minecraft:silk_touch") > 0);
@@ -7491,6 +7570,17 @@ impl Game<'_> {
         Ok(())
     }
     /// Keep the held-key state of toggled sneak and sprint in step with their mapping.
+    /// `KeyMapping.resetToggleKeys`: every toggle mapping up, and the latched sneak and sprint
+    /// keys with it.
+    fn reset_toggle_keys(&mut self) {
+        for key in &mut self.toggles.0 {
+            key.reset();
+        }
+        self.sync_toggle(0);
+        self.sync_toggle(1);
+        self.left = false;
+        self.right = false;
+    }
     fn sync_toggle(&mut self, slot: usize) {
         let key = [KeyCode::ShiftLeft, KeyCode::ControlLeft][slot];
         if self.toggles.is_down(slot) {
@@ -7508,7 +7598,7 @@ impl Game<'_> {
     /// pad latched, keeps its state: `set_down(false, needs_toggle)` leaves
     /// those alone, and a toggle the player asked for is meant to outlive the
     /// key. A mapping rebound away from its modifier is left alone too: the
-    /// modifier says nothing about it.
+    /// modifier says nothing about it, and so is one a controller holds.
     ///
     /// Only `physical_keys` is cleared directly here; the logical `self.keys`
     /// entries for sneak and sprint are left to the toggle loop below, because
@@ -7540,7 +7630,10 @@ impl Game<'_> {
                 Some(KeyCode::ControlLeft | KeyCode::ControlRight) => control,
                 _ => continue,
             };
-            if !held {
+            // A controller's stick click acts as the key without setting the modifier: it is held
+            // while the pad holds it (or its release waits for a tick), not when the keyboard says.
+            let pad = self.pad.holds_action(&self.settings.controller, mapping);
+            if !held && !pad {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
             }
@@ -7830,7 +7923,8 @@ impl Game<'_> {
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .is_ok();
-            #[cfg(not(target_os = "macos"))]
+            // Windows already warped above, inside the clip's own position.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             if self.captured && self.focused {
                 warp(window);
             }
@@ -7898,6 +7992,17 @@ impl Game<'_> {
     fn capture_loaded_world(&mut self) {
         // Loading may finish after focus was lost or another screen opened.
         if self.title.is_none() && self.screen == Screen::Playing {
+            self.capture(true);
+        }
+    }
+    /// The window came back into focus after holding the pointer: the system
+    /// dropped the grab with the focus, and vanilla's grab outlives it
+    /// (`MouseHandler.mouseGrabbed` stays true while GLFW keeps the cursor
+    /// mode), so the game takes the pointer again without waiting for a
+    /// click. A screen that is open keeps it free, as releasing the pointer
+    /// for that screen did: it is the screen, not the focus, that shows it.
+    fn regrab_on_refocus(&mut self) {
+        if std::mem::take(&mut self.regrab_on_refocus) && self.screen == Screen::Playing {
             self.capture(true);
         }
     }
@@ -12177,6 +12282,9 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
+        // `LocalPlayer`'s constructor: `KeyMapping.resetToggleKeys`, so a sneak or sprint toggled
+        // in this world is not still on in the next one.
+        self.reset_toggle_keys();
         self.sleeping = None;
         self.sleep_timer = 0;
         self.player_beds.clear();
@@ -13124,6 +13232,7 @@ impl Game<'_> {
         let p = Vec3::new(at[0], at[1], at[2]);
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
+            no_gravity: false,
             id: self.next_entity,
             position: p,
             previous: p,
@@ -15114,11 +15223,11 @@ impl Game<'_> {
         let emissive_layers = if self.title.is_none() {
             let mut requests = Vec::new();
             self.native_emissive(&mut requests);
-            horizon_client::native_emissive::mappings(
+            // Native mods' overlays first, then the packs' OptiFine emissive blocks.
+            horizon_client::native_emissive::table(
                 &self.pack.render.sprite_layers,
-                requests
-                    .into_iter()
-                    .take(horizon_client::native_emissive::MAX),
+                requests,
+                &self.pack.render.emissive,
             )
         } else {
             Vec::new()
@@ -16787,31 +16896,40 @@ impl Game<'_> {
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
                     self.focus_lost = (!focused).then(Instant::now);
-                    if !focused && self.control.is_none() {
-                        self.keys.clear();
-                        // Latched sneak/sprint live in `toggles`, not in the
-                        // physical keys: put them back so a short alt-tab
-                        // (no pause screen) does not drop them. Only a mapping
-                        // whose toggle option is on is latched; a held one has
-                        // no state to keep, and an unfocused window never gets
-                        // its key release, so leaving it down would keep the
-                        // player sneaking or sprinting until the key is tapped.
-                        for (slot, needs_toggle) in [
-                            self.settings.toggle_crouch,
-                            self.settings.toggle_sprint,
-                            self.settings.toggle_attack,
-                            self.settings.toggle_use,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            self.toggles.0[slot].set_down(false, needs_toggle);
+                    if focused {
+                        self.regrab_on_refocus();
+                    } else {
+                        // A held pointer goes with the focus, wherever the
+                        // system keeps the grab: the window asks for it back
+                        // when the focus returns (`regrab_on_refocus`).
+                        let held = self.captured;
+                        if self.control.is_none() {
+                            self.keys.clear();
+                            // Latched sneak/sprint live in `toggles`, not in the
+                            // physical keys: put them back so a short alt-tab
+                            // (no pause screen) does not drop them. Only a mapping
+                            // whose toggle option is on is latched; a held one has
+                            // no state to keep, and an unfocused window never gets
+                            // its key release, so leaving it down would keep the
+                            // player sneaking or sprinting until the key is tapped.
+                            for (slot, needs_toggle) in [
+                                self.settings.toggle_crouch,
+                                self.settings.toggle_sprint,
+                                self.settings.toggle_attack,
+                                self.settings.toggle_use,
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                self.toggles.0[slot].set_down(false, needs_toggle);
+                            }
+                            self.sync_toggle(0);
+                            self.sync_toggle(1);
+                            self.left = false;
+                            self.right = false;
+                            self.capture(false);
                         }
-                        self.sync_toggle(0);
-                        self.sync_toggle(1);
-                        self.left = false;
-                        self.right = false;
-                        self.capture(false);
+                        self.regrab_on_refocus = held;
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
@@ -17988,6 +18106,7 @@ impl<'a> Game<'a> {
             cursor: (0.0, 0.0),
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
+            regrab_on_refocus: false,
             keyboard_mouse: true,
             view_at: [0, 0],
             split_hud: Default::default(),
@@ -18012,7 +18131,7 @@ impl<'a> Game<'a> {
             last_device_recovery: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
-            luminance: None,
+            luminance: Default::default(),
             see_through_vertices: Vec::new(),
             shadow_only_vertices: Default::default(),
             entity_spans: Default::default(),
@@ -18338,9 +18457,11 @@ impl<'a> Game<'a> {
             lan_acting_name: None,
             lan_acting_uuid: None,
             lan_acting_permission: None,
+            lan_acting_entity: None,
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,
+            rcon_source: false,
             server_lists: None,
             world_tables: None,
             cmds: Default::default(),
@@ -18956,10 +19077,12 @@ fn load_core(
                     assets.reload(root)
                 }
                 .map_err(|e| e.to_string())?;
-                let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
-                    root,
-                    render.model_library.clone(),
-                )
+                let library = render.model_library.clone();
+                let item_renderer = if headless {
+                    horizon_client::item_render::ItemRenderer::load_for_server(root, library)
+                } else {
+                    horizon_client::item_render::ItemRenderer::load_with_library(root, library)
+                }
                 .map_err(|e| e.to_string());
                 Ok((render, item_renderer))
             });
@@ -19465,7 +19588,7 @@ fn build_renderer(
             atlas.glint_armor.2,
         ),
         (&pack.forcefield.2, pack.forcefield.0),
-        &gui.panorama,
+        gui.panorama.clone(),
         prepared,
         previous,
         api,
@@ -19490,18 +19613,16 @@ fn loading_renderer(
     window: Arc<Window>,
     offscreen: bool,
     atlas: Option<&horizon_client::hud::HudAtlas>,
-    panorama: Option<&horizon_client::gfx::panorama::Faces>,
+    panorama: Option<&Arc<horizon_client::gfx::panorama::Faces>>,
     previous: Option<&Renderer>,
     api: horizon_client::graphics::GraphicsApi,
 ) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
     static EMPTY_GLINT: [u8; 4] = [0; 4];
-    let empty_panorama = horizon_client::gfx::panorama::Faces {
-        size: 1,
-        pixels: [0u8; 4].repeat(6),
-    };
-    let panorama = panorama.unwrap_or(&empty_panorama);
+    let panorama = panorama
+        .cloned()
+        .unwrap_or_else(|| Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])));
     let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice(), 1, 1), |a| {
         (a.pixels.as_slice(), a.width, a.height)
     });
@@ -19989,7 +20110,7 @@ impl Loading {
             window,
             offscreen,
             Some(&bundle.atlas),
-            Some(bundle.panorama.as_ref()),
+            Some(&bundle.panorama),
             self.renderer.as_ref(),
             self.settings.horizon.api,
         ) {

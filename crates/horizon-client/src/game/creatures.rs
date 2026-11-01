@@ -1466,7 +1466,11 @@ impl Game<'_> {
             mob_drops: self.ui.rules.bool("mob_drops"),
             world_seed: self.level.seed,
         };
-        let (items, skulls) = drops::die(m, &death, &mut self.rand_sequences);
+        // LootContextParams.ORIGIN of a death: the mob's position.
+        let place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None);
+        let (items, skulls) = horizon_world::loot::with_native_loot_place(place, || {
+            drops::die(m, &death, &mut self.rand_sequences)
+        });
         if skulls && let Some(Who::Mob(id)) = m.last_damage.and_then(|(d, _)| d.attacker) {
             // Creeper.droppedSkulls: one head per charged explosion.
             self.combat.charged_exploders.retain(|c| *c != id);
@@ -1709,9 +1713,38 @@ impl Game<'_> {
         }
         self.creatures.projectiles.push(p);
     }
+    /// `Entity.sendBubbleColumnParticles` at the top of the column block `pos`: two
+    /// splashes and two bubbles over it, which the level random places, shown here
+    /// and to the players within range.
+    pub(super) fn bubble_column_particles(&mut self, pos: BlockPos) {
+        for _ in 0..2 {
+            let r = &mut self.world.random;
+            let splash = [
+                f64::from(pos.x) + r.next_double(),
+                f64::from(pos.y + 1),
+                f64::from(pos.z) + r.next_double(),
+            ];
+            let bubble = [
+                f64::from(pos.x) + r.next_double(),
+                f64::from(pos.y + 1),
+                f64::from(pos.z) + r.next_double(),
+            ];
+            let splash_options = ParticleOptions::simple(ParticleType::Splash);
+            self.particles
+                .send_particles(&splash_options, splash, [0.0; 3], 1.0, 1);
+            self.lan_level_particles(&splash_options, splash, [0.0; 3], 1.0, 1, None);
+            let bubble_options = ParticleOptions::simple(ParticleType::Bubble);
+            self.particles
+                .send_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1);
+            self.lan_level_particles(&bubble_options, bubble, [0.0, 0.01, 0.0], 0.2, 1, None);
+        }
+    }
     pub(super) fn handle_mob_events(&mut self, events: Vec<MobEvent>) -> Result<()> {
         for e in events {
             match e {
+                MobEvent::BubbleColumnParticles { pos } => {
+                    self.bubble_column_particles(BlockPos::new(pos[0], pos[1], pos[2]))
+                }
                 MobEvent::SquidCycle { mob, at } => self.lan_entity_event(mob as i32, 19, at),
                 MobEvent::RabbitHop { mob, at } => self.lan_entity_event(mob as i32, 1, at),
                 MobEvent::Drown { mob, at } => {
@@ -3881,36 +3914,7 @@ impl Game<'_> {
                 self.audio
                     .play(name, Some([at.x, at.y, at.z]), volume, pitch);
             }
-            ArrowEvent::BubbleColumnParticles { pos } => {
-                // Entity.sendBubbleColumnParticles: the level random places them.
-                for _ in 0..2 {
-                    let r = &mut self.world.random;
-                    let splash = [
-                        f64::from(pos.x) + r.next_double(),
-                        f64::from(pos.y + 1),
-                        f64::from(pos.z) + r.next_double(),
-                    ];
-                    let bubble = [
-                        f64::from(pos.x) + r.next_double(),
-                        f64::from(pos.y + 1),
-                        f64::from(pos.z) + r.next_double(),
-                    ];
-                    self.particles.send_particles(
-                        &ParticleOptions::simple(ParticleType::Splash),
-                        splash,
-                        [0.0; 3],
-                        1.0,
-                        1,
-                    );
-                    self.particles.send_particles(
-                        &ParticleOptions::simple(ParticleType::Bubble),
-                        bubble,
-                        [0.0, 0.01, 0.0],
-                        0.2,
-                        1,
-                    );
-                }
-            }
+            ArrowEvent::BubbleColumnParticles { pos } => self.bubble_column_particles(pos),
             ArrowEvent::Block { pos, reaction } => match reaction {
                 BlockReaction::PrimeTnt => {
                     self.spawn_primed_tnt(pos, false, None, None);
@@ -6831,8 +6835,10 @@ fn knock_back(
     source: HurtSource<'_>,
 ) {
     let resistance = p.attribute("minecraft:knockback_resistance").unwrap_or(0.0);
+    // The native hook runs first, on the raw strength (`LivingKnockBackEvent`), then the
+    // resistance scales what it left.
     let mut knock = Knock {
-        strength: power * (1.0 - resistance),
+        strength: power,
         x: xd,
         z: zd,
     };
@@ -6844,6 +6850,7 @@ fn knock_back(
         x: mut xd,
         z: mut zd,
     } = knock;
+    let power = power * (1.0 - resistance);
     if power <= 0.0 {
         return;
     }
@@ -7225,8 +7232,9 @@ mod knockback_tests {
         assert_eq!(seen(9201), [(9201, named, made)]);
         // Twice the strength, direction turned around.
         assert_eq!(push(9202, 0.0), (0.0, 0.4, 0.8));
-        // After the resistance: a 0.5 resistance hands the hook half the strength.
+        // Before the resistance (`LivingKnockBackEvent`): a 0.5 resistance still hands the hook
+        // the raw strength, and the push that follows is halved.
         assert_eq!(push(9203, 0.5), (0.0, 0.2, -0.2));
-        assert_eq!(seen(9203)[0].2.strength, 0.2);
+        assert_eq!(seen(9203)[0].2.strength, 0.4);
     }
 }

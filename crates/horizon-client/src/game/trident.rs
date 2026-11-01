@@ -55,6 +55,42 @@ struct Catcher {
     touches: bool,
 }
 impl ThrownTrident {
+    /// A trident loaded from its NBT (`AbstractArrow.readAdditionalSaveData`).
+    pub(super) fn from_nbt(n: horizon_client::entity_nbt::TridentNbt) -> Self {
+        let mut t = Self::remote(0, n.position, n.yaw, n.pitch);
+        t.loyalty = n.item.enchantment_level("minecraft:loyalty");
+        t.stack = n.item;
+        t.velocity = n.motion;
+        t.in_ground = n.in_ground;
+        t.in_ground_time = n.life.max(0) as u32;
+        t.shake = n.shake;
+        t.dealt_damage = n.dealt_damage;
+        t.creative_only = n.creative_only;
+        t
+    }
+    /// `AbstractArrow.addAdditionalSaveData` + `DealtDamage`.
+    pub(super) fn to_nbt(
+        &self,
+        uuid: [i32; 4],
+        raw: Option<&horizon_world::nbt::Tag>,
+    ) -> horizon_world::nbt::Tag {
+        horizon_client::entity_nbt::trident_to_nbt(
+            &horizon_client::entity_nbt::TridentSave {
+                position: self.position,
+                motion: self.velocity,
+                yaw: self.yaw,
+                pitch: self.pitch,
+                in_ground: self.in_ground,
+                life: self.in_ground_time as i32,
+                shake: self.shake,
+                dealt_damage: self.dealt_damage,
+                creative_only: self.creative_only,
+                item: &self.stack,
+            },
+            uuid,
+            raw,
+        )
+    }
     /// A trident a server sent (`handleAddEntity`): placed and moved by it.
     pub(super) fn remote(id: u32, position: Vec3, yaw: f32, pitch: f32) -> Self {
         Self {
@@ -568,7 +604,14 @@ impl Game<'_> {
                         }
                     }
                 }
-                if let Some((id, _)) = hit_mob {
+                // ProjectileImpactEvent for the mob hit: a canceled one does
+                // nothing, and the trident stays where it would have hit.
+                let canceled_mob = hit_mob.is_some_and(|(id, _)| {
+                    self.native_trident_impact(t.id, t.guest, Some(id), [0; 3], [0; 3], t.position)
+                });
+                if canceled_mob {
+                    // No damage, sound or deflection: it flies on.
+                } else if let Some((id, _)) = hit_mob {
                     // ThrownTrident.getDamage: `EnchantmentHelper.modifyDamage` on 8
                     // (impaling hits `#sensitive_to_impaling`, the aquatic tag).
                     let victim = self
@@ -653,9 +696,29 @@ impl Game<'_> {
                     // `AbstractArrow.onHitBlock` on a hit.
                     let from = t.position;
                     let flight = t.velocity;
-                    if let Some((stop, block)) =
-                        clip_block_stop(&self.world, self.res.facts(), self.collision, from, flight)
-                    {
+                    let clip = clip_block_stop(
+                        &self.world,
+                        self.res.facts(),
+                        self.collision,
+                        from,
+                        flight,
+                    );
+                    // ProjectileImpactEvent for the block hit: a canceled one
+                    // doesn't stick the trident, which stays where it would
+                    // have hit, still flying.
+                    let canceled_block = clip.is_some_and(|(stop, block, face)| {
+                        self.native_trident_impact(
+                            t.id,
+                            t.guest,
+                            None,
+                            [block.x, block.y, block.z],
+                            face,
+                            stop,
+                        )
+                    });
+                    if canceled_block && let Some((stop, _, _)) = clip {
+                        t.position = stop;
+                    } else if let Some((stop, block, _)) = clip {
                         // Projectile.onHit on a block: PROJECTILE_LAND at the
                         // block's centre.
                         self.projectile_event(
@@ -737,6 +800,16 @@ impl Game<'_> {
         else {
             return;
         };
+        // The texture's OptiFine emissive overlay, drawn again full bright.
+        let glow = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .overlay("entity/trident/trident")
+            .and_then(|e| self.gui.atlas.sprites.get(e))
+            .map(|r| [r.u0, r.v0, r.u1, r.v1]);
         // AbstractArrow.shouldRenderAtSqrDistance: ten times the default.
         let range = 10.0
             * super::entity_culling::default_range(
@@ -795,6 +868,19 @@ impl Game<'_> {
                 0,
                 out,
             );
+            if let Some(glow) = glow {
+                let full = horizon_client::mobs::render::FULL_BRIGHT;
+                horizon_client::mobs::render::draw(
+                    model,
+                    base,
+                    &poses,
+                    glow,
+                    0xFFFF_FFFF,
+                    full,
+                    0,
+                    out,
+                );
+            }
         }
     }
 }

@@ -430,6 +430,12 @@ there follows when the stack types converge. In the items engine's context the `
 and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
 fields are `None`.
 
+Both engines' contexts carry `place`, where the roll happens: `origin` (a broken block's centre, a dead mob's
+position), `block_entity` (the broken block's entity as it was before the break, saved with its id, position and
+`Items`) and `level` (the dimension, the game time, the time of day, the rain and the thunder, for conditions like
+vanilla's `time_check` and `weather_check`). The game sets it for a block a player or an explosion breaks and for a
+mob's death loot; on other rolls `place` is `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
@@ -808,12 +814,12 @@ API 123 adds `native_screen_mouse_dragged_pre(screen, button, delta, modifiers, 
 API 124 adds `native_mod_container_viewers(dimension, pos, viewers, previous)` is heard once each time the number of players with the mod container at `pos` open changes (vanilla's `ContainerOpenersCounter`, as a barrel keeps it): `previous` 0 is `onOpen`, `viewers` 0 is `onClose`, so a block can show itself open while `viewers` is not 0. It is counted every tick from the players' open menus, so a player who leaves without closing (a lost connection, death, another dimension, out of reach, the block gone) is heard too. On a server, with no player's state swapped in. Bundles that use it need `"hooks": 124`.
 
 API 125 adds knockback a mod can change or cancel through `native_living_knockback` (NeoForge's
-`LivingKnockBackEvent`): in `LivingEntity.knockback`, after the entity's knockback resistance took its share and before its
-motion changes, with the pushed entity's id and type (`minecraft:player` for a player), the `strength`, the direction
+`LivingKnockBackEvent`): at the start of `LivingEntity.knockback`, on the raw strength, before the entity's knockback resistance takes its
+share and its motion changes, with the pushed entity's id and type (`minecraft:player` for a player), the `strength`, the direction
 (`x`, `z`; vanilla points it at the source of a hit, the attacker's side, and the entity is pushed the other way) and a
 `canceled` flag. A mod may change the three numbers or set `canceled`, and the push follows: canceled, the entity's motion is
 left alone. A `strength` of 0 or less after the hook is no push, and a direction too short to tell draws a random one
-after it, as in vanilla; a full knockback resistance hands the hook a strength of 0, which a mod may raise. A value a mod
+after it, as in vanilla; the resistance scales the strength the hook leaves, so a full knockback resistance still stops the push. A value a mod
 leaves that is not a finite number is put back as it was. `damage_type` (`minecraft:player_attack`), `causing`
 (`DamageSource.getEntity`) and `direct` (`getDirectEntity`) are the push's damage source, named as
 `native_living_incoming_damage` names a hit's, with the same entity ids left at 0 (a goat's ram pushes with
@@ -1120,7 +1126,55 @@ each was built or last used): switching a mod off and on again plays the kept bu
 - **Single player and LAN host:** the mods run in the host's game and its integrated server, so a server-side
   hook applies to every player of the world.
 - **Joining a server:** only client-side hooks do anything; the protocol is unchanged.
-- **Dedicated servers:** native mods are not built yet. Lifecycle hook call sites are ready for when the pipeline builds them (`--no-default-features`).
+- **Dedicated server:** native mods run in a standalone engine export built with `--server-output`, not in an
+  instance build (`--server-output` conflicts with `--instance` and needs an explicit mod `FOLDER`). See
+  [Standalone server export](#standalone-server-export).
+
+### Standalone server export
+
+`horizon-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code [--profile fast|release] [--allow-version-mismatch]`
+
+Builds a standalone dedicated-server engine into `DIR`, which must not exist yet. `FOLDER` (a mod folder or a
+folder of them) is required; no instance is read, selected, edited or played, and no launcher config is written.
+It reuses the pinned toolchain, source and horizon-mixins and compiles `--no-default-features` (no audio or
+controllers), keeping the mods feature when the revision has it. `--version` pins the Horizon release/Nightly the
+export reuses (explicit for reproducibility). The export holds the built `horizon-engine` executable, prepared resources,
+`native-data/` and `native-mods.json`, and prints its absolute path. It runs on the same OS/architecture as the
+host only (no cross compilation), needs a prepared installed launcher base release, and survives cache pruning
+because it is copied outside the managed folders. On Windows use the printed `horizon-engine.exe` path.
+
+Point a server at it:
+
+    horizon-server --dir SERVER config set engine.path=/absolute/export/horizon-engine
+    horizon-server --dir SERVER restart
+
+Updates do not rebuild a pinned `engine.path`: build a new export folder, set `engine.path` to it, restart, and keep
+the old folder for manual rollback. The supervisor does not auto-update or rebuild a pinned engine path, and there
+is no compatibility handshake yet (shared server build crate / native config / updates / handshake are follow-up
+#6304, not implemented). Native mods run unsandboxed: only build code you have read and trust.
+`--trust-native-code` records the operator's decision; an agent must not supply that consent.
+
+### Developer acceptance workflow
+
+Use a disposable server folder and fresh homes when developing:
+
+```sh
+SCRATCH=$(mktemp -d)
+export HORIZON_HOME="$SCRATCH/game" HORIZON_LAUNCHER_HOME="$SCRATCH/launcher"
+export XDG_DATA_HOME="$SCRATCH/data" XDG_CONFIG_HOME="$SCRATCH/config"
+export HORIZON_NO_AUDIO=1 HORIZON_LAUNCHER_NO_SELF_UPDATE=1
+export HORIZON_LAUNCHER_TRASH="$SCRATCH/trash"
+export HORIZON_LAUNCHER_CLIPBOARD="$SCRATCH/clipboard"
+export HORIZON_LAUNCHER_DESKTOP="$SCRATCH/desktop"
+```
+
+Install and prepare the base release in that scratch launcher home first, then test your own licensed bundle:
+
+1. `horizon-launcher native-build bundle/ --server-output $ENGINE --version TAG --trust-native-code` (scratch homes,
+   `HORIZON_NO_AUDIO=1`, `HORIZON_LAUNCHER_NO_SELF_UPDATE=1`).
+2. `horizon-server --dir SERVER config set engine.path=$ENGINE/horizon-engine`; `horizon-server --dir SERVER run`.
+3. Join with the same mod's client half where the hook needs one; test lifecycle, tick, command and net hooks.
+4. Headless compatibility: the mod's server code must not require an audio device; run the server audio-free (`HORIZON_NO_AUDIO=1`).
 
 ## Left to do
 
@@ -1161,6 +1215,20 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_player_game_mode_changed(player, name, from, to, cancel)`**: a server player's game mode is about to change
+  (0 survival, 1 creative, 2 adventure, 3 spectator, as `NativeServerPlayer.game_mode`): the `/gamemode` command, the
+  F3+F4 switcher's packet and a hardcore world's respawn into spectator, once per change to a different mode. The mode a
+  player joins with (`defaultgamemode`) is not heard. Set `cancel` and the player keeps their mode. Inside the command and
+  the switcher the player's state is swapped in; for the hardcore respawn it is not (use the UUID with the helpers that
+  take one).
+- **`native_player_changed_dimension(player, name, from, to)`**: a player changed dimension, once per move
+  (`from` and `to` are ids such as `minecraft:overworld` and `minecraft:the_nether`), heard when the move has ended:
+  the portal's exit is found and the player stands there, a command's teleport has landed, or a respawn in another
+  level than the death's is placed for good. `to` is the level in place and the player's state is swapped in (as in
+  `native_perform_command`), so `native_acting_player` and `native_tell` reach them. Heard for Nether and End portals
+  (also riding, and leaving the End as its winner), `/execute in ... run tp` and any command teleporting into another
+  level, and the death respawn. Not heard: a move within a level (`/tp`, an End gateway), a player who leaves before
+  the move ends, a respawn in the dimension of the death, and anything outside a dedicated server.
 - **`native_player_toggle_flight(player, name, flying, cancel)`**: a player's client started (`flying`) or stopped
   flying, once per change, for a player who may fly (creative or spectator), on a server. The player's state is swapped
   in, so `native_tell` and the other helpers reach them. Set `cancel` to refuse it: the player keeps the state they

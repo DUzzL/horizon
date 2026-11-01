@@ -24,7 +24,7 @@ struct Globals {
     dynamic_lights: array<vec4<f32>, 16>,
     colored_lights: array<vec4<f32>, 32>,
     colored_count: vec4<u32>,
-    emissive_layers: array<vec4<u32>, 32>,
+    emissive_layers: array<vec4<u32>, 128>,
     emissive_count: vec4<u32>,
     sunrise_fan: array<vec4<f32>, 32>,
     filtering: vec4<f32>,
@@ -342,6 +342,13 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     let t = clamp(tier, 1u, 4u) - 1u;
     let lift = smoothstep(globals.hdr_windows[0][t], globals.hdr_windows[1][t], y);
     return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
+}
+
+// The hand in HDR output (gfx.rs "HDR hand marks"): where it drew, what the world kept there
+// no longer shines; fs_hdr_mark then marks the light sources it holds.
+@fragment fn fs_hdr_hand_unmark(in: Out) -> @location(0) vec4<f32> {
+    if textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, 1.0);
 }
 
 fn celestial_color(in: Out) -> vec4<f32> {

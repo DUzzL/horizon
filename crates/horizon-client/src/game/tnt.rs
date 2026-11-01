@@ -23,6 +23,8 @@ pub(super) struct PrimedTnt {
     pub on_ground: bool,
     pub owner: Option<Who>,
     pub guest: Option<u32>,
+    /// `Entity.noGravity` (`NoGravity` in its save).
+    pub no_gravity: bool,
 }
 impl PrimedTnt {
     const SIZE: f64 = 0.98;
@@ -45,7 +47,9 @@ impl PrimedTnt {
         facts: &horizon_client::blocks::BlockFacts,
     ) -> Result<()> {
         self.previous = self.position;
-        self.velocity.y -= 0.04;
+        if !self.no_gravity {
+            self.velocity.y -= 0.04;
+        }
         let mut scene = SceneCollisions {
             world,
             binding: collision,
@@ -170,6 +174,7 @@ impl Game<'_> {
         // An id from the entity counter at once, so a command can name it.
         self.next_entity += 1;
         self.tnts.push(PrimedTnt {
+            no_gravity: false,
             id: self.next_entity,
             position,
             previous: position,
@@ -584,6 +589,7 @@ mod tests {
         use horizon_core::geometry::Direction;
         use horizon_world::piston_push::bounce_velocity;
         let mut tnt = PrimedTnt {
+            no_gravity: false,
             id: 0,
             position: Vec3::new(0.5, 1.0, 0.5),
             previous: Vec3::new(0.5, 1.0, 0.5),
@@ -626,6 +632,7 @@ mod tests {
         world.set(21, 4, 20, flowing).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         let mut tnt = PrimedTnt {
+            no_gravity: false,
             id: 0,
             position: at,
             previous: at,
@@ -720,6 +727,7 @@ mod tests {
         // (Entity.handleOnInsideBubbleColumn / handleOnAboveBubbleColumn).
         let at = Vec3::new(20.5, 6.0, 20.5);
         let mut tnt = PrimedTnt {
+            no_gravity: false,
             id: 0,
             position: at,
             previous: at,

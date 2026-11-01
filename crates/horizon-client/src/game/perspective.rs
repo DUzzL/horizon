@@ -897,25 +897,54 @@ impl Game<'_> {
             return;
         };
         let base = base * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.125));
+        let pose = |part: &horizon_client::mobs::Part| {
+            let mut p = part.pose;
+            if part.name == "left_wing" || part.name == "right_wing" {
+                let invert = if part.name == "left_wing" { 1.0 } else { -1.0 };
+                p[1] = if crouching { 3.0 } else { 0.0 };
+                p[3] = angles[0];
+                p[4] = invert * angles[1];
+                p[5] = invert * angles[2];
+            }
+            p
+        };
         horizon_client::mobs::render_model(
             model,
             base,
-            &|part| {
-                let mut p = part.pose;
-                if part.name == "left_wing" || part.name == "right_wing" {
-                    let invert = if part.name == "left_wing" { 1.0 } else { -1.0 };
-                    p[1] = if crouching { 3.0 } else { 0.0 };
-                    p[3] = angles[0];
-                    p[4] = invert * angles[1];
-                    p[5] = invert * angles[2];
-                }
-                p
-            },
+            &pose,
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
             overlay,
             out,
         );
+        // The elytra texture's OptiFine emissive overlay (not a cape's), full bright.
+        let glow = cape
+            .and_then(|c| sprites.get(c))
+            .is_none()
+            .then(|| {
+                let emissive = self
+                    .res
+                    .mob_data()
+                    .emissive
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                emissive
+                    .overlay(texture)
+                    .and_then(|e| sprites.get(e))
+                    .copied()
+            })
+            .flatten();
+        if let Some(g) = glow {
+            horizon_client::mobs::render_model(
+                model,
+                base,
+                &pose,
+                [g.u0, g.v0, g.u1, g.v1],
+                horizon_client::mobs::render::FULL_BRIGHT,
+                0,
+                out,
+            );
+        }
     }
     /// `CapeLayer` for a player wearing `chest`: no cape under an elytra's
     /// wings, and moved out over a chestplate.

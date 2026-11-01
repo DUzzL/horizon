@@ -261,9 +261,14 @@ impl Game<'_> {
             self.cart_command_success(cart, message, false);
             return;
         }
-        if self.ui.rules.bool("send_command_feedback") {
+        if self.accepts_success() {
             self.system_message(message);
         }
+    }
+    /// `CommandSource.acceptsSuccess`: a player's source takes success feedback while
+    /// `send_command_feedback` is on; the server console's and an RCON client's always do.
+    fn accepts_success(&self) -> bool {
+        self.console_broadcast.is_some() || self.ui.rules.bool("send_command_feedback")
     }
     /// sendSuccess honouring `send_command_feedback`.
     pub(super) fn feedback(&mut self, message: Text) {
@@ -278,7 +283,7 @@ impl Game<'_> {
             self.cart_command_success(cart, message, true);
             return;
         }
-        if self.ui.rules.bool("send_command_feedback") {
+        if self.accepts_success() {
             self.system_message(message.clone());
         }
         self.broadcast_to_admins(message);
@@ -346,7 +351,9 @@ impl Game<'_> {
         // the server's own source, "Server".
         let who = match self.command_source.and_then(|s| s.entity) {
             Some(entity) => self.target_name(entity),
-            None if self.console_broadcast.is_some() => Text::literal("Server".to_owned()),
+            None if self.console_broadcast.is_some() => {
+                Text::literal(if self.rcon_source { "Rcon" } else { "Server" }.to_owned())
+            }
             None => self.player_display_name(),
         };
         let line = Text::translate("chat.type.admin", &[who, message])
@@ -1175,6 +1182,21 @@ impl Game<'_> {
     pub(super) fn set_game_mode(&mut self, mode: GameMode) -> bool {
         if self.mode == mode {
             return false;
+        }
+        // A server player's change is heard by the mods first, who may keep it.
+        if let Some(uuid) = self.lan_acting_uuid {
+            let name = self.acting_player_name().to_owned();
+            let mut cancel = false;
+            self.native_player_game_mode_changed(
+                uuid,
+                &name,
+                self.mode_id(),
+                super::game_mode::mode_id_of(mode),
+                &mut cancel,
+            );
+            if cancel {
+                return false;
+            }
         }
         self.set_mode(mode);
         if self.screen == Screen::Inventory && (self.creative || self.spectator()) {
@@ -2175,6 +2197,7 @@ impl Game<'_> {
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        no_gravity: false,
                         id: self.next_entity,
                         position: Vec3::new(at[0], at[1], at[2]),
                         previous: Vec3::new(at[0], at[1], at[2]),
@@ -2263,7 +2286,8 @@ impl Game<'_> {
             self.tnts.len()
                 + self.falling.len()
                 + self.creatures.projectiles.len()
-                + self.rockets.len(),
+                + self.rockets.len()
+                + self.tridents.len(),
         )
     }
     /// BlockStateArgument -> registry state.

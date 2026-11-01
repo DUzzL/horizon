@@ -16,6 +16,7 @@ use crate::{
     graphics::LeafCullingMode,
     models::catalog::BakedFace,
 };
+use horizon_assets::model::Direction as ModelDirection;
 use horizon_core::{
     biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
 };
@@ -25,7 +26,7 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     registry::BlockStateId,
 };
-pub use sides::Sides;
+pub use sides::{Part, Sides, group_parts};
 use std::sync::Arc;
 
 /// An entity, item and effect vertex (the entity pipelines), with a face
@@ -474,6 +475,9 @@ struct Info {
     overlay: bool,
     /// `LeavesBlock`: with opaque leaves the faces between two leaf blocks are skipped.
     leaves: bool,
+    /// A glass pane: connected-texture tiles take the cube's UVs on it (OptiFine's pane models
+    /// drop vanilla's mirrored faces).
+    pane: bool,
     /// A full opaque cube: `RenderShape::Model`, `can_occlude`, `solid_render`
     /// and a full collision shape. The only block leaf culling treats as solid.
     opaque_cube: bool,
@@ -654,6 +658,7 @@ impl MeshTables {
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
                 leaves: s.has_class("LeavesBlock"),
+                pane: s.has_class("IronBarsBlock") && name.ends_with("glass_pane"),
                 opaque_cube: leaf_culling::opaque_cube(
                     s.render_shape,
                     s.can_occlude,
@@ -1251,10 +1256,33 @@ impl Mesher<'_> {
                                 )
                                 .unwrap_or(true);
                     }
+                    let connected = &self.render.connected;
                     for model in &models {
                         for face in &model.faces {
                             if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
                                 continue;
+                            }
+                            // A pane's top and bottom strips between stacked panes, with
+                            // connected textures.
+                            if state.pane
+                                && !connected.is_empty()
+                                && let Some(dy) = match face.quad.facing {
+                                    ModelDirection::Up => Some(1),
+                                    ModelDirection::Down => Some(-1),
+                                    _ => None,
+                                }
+                            {
+                                let p = &face.quad.positions;
+                                // Only on the block's top or bottom plane: a pack's own pane
+                                // model may have ledges between.
+                                let plane = if dy > 0 { 1.0 } else { 0.0 };
+                                let on_edge = p.iter().all(|v| (v[1] - plane).abs() < 1e-4);
+                                let centre =
+                                    [0, 2].map(|k| p.iter().map(|v| v[k]).sum::<f32>() / 4.0);
+                                let other = pad.blocks[pi(x, y + dy, z)];
+                                if on_edge && connected.stacked_pane_hides(id, other, centre) {
+                                    continue;
+                                }
                             }
                             self.face(
                                 pad,
@@ -1357,7 +1385,7 @@ impl Mesher<'_> {
                 },
             )
         };
-        let vertices = |tint: Option<u32>| {
+        let vertices = |tint: Option<u32>, uv: [[f32; 2]; 4]| {
             std::array::from_fn::<_, 4, _>(|i| {
                 let g = gray[i] as u32;
                 let rgb = match tint {
@@ -1368,16 +1396,27 @@ impl Mesher<'_> {
                 (
                     TerrainVertex::new(
                         [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
-                        q.uv[i],
+                        uv[i],
                         0,
                         emitting(pack_rgb(rgb), tier),
                         pack_coords(lighting::with_emission(coords[i], q.light_emission)),
                     ),
-                    q.uv[i],
+                    uv[i],
                 )
             })
         };
-        let corners = vertices(tint);
+        // Vanilla's pane models mirror some faces' textures; OptiFine's don't, so a tile's borders
+        // land where the neighbours are: on a pane, tiles take the cube's own UVs.
+        let standard = || q.positions.map(|p| standard_uv(q.facing, p));
+        let tiled = !matches!(pick, Pick::Keep);
+        let corners = vertices(
+            tint,
+            if state.pane && tiled {
+                standard()
+            } else {
+                q.uv
+            },
+        );
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
@@ -1426,6 +1465,14 @@ impl Mesher<'_> {
             Pick::Tile(t) => self.translucent(tile(t)),
             Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
         };
+        // Overlay tiles face the standard way too (Continuity: "overlay textures always have the
+        // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
+        // rotations).
+        // Over a `ctm_compact` face, the same pieces: the same depths and sort centres.
+        let cuts = match pick {
+            Pick::Quarters(_) => cuts(&corners),
+            _ => Cuts([0.0, 1.0, 1.0, 1.0], 2),
+        };
         for overlay in overlays[..count].iter().flatten().copied() {
             let tint = overlay.tint.and_then(|(index, block)| {
                 let info = block
@@ -1438,7 +1485,14 @@ impl Mesher<'_> {
                 translucent: overlay.translucent || face_translucent,
                 opaque: false,
             };
-            self.quad_as(out, false, tile, vertices(tint).map(|c| c.0), false);
+            let whole = vertices(tint, standard());
+            for s in cuts.windows(2) {
+                for t in cuts.windows(2) {
+                    let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
+                        .map(|(s, t)| bilinear(&whole, s, t).0);
+                    self.quad_as(out, false, tile, piece, false);
+                }
+            }
         }
     }
     /// One terrain quad with sprite `tile`, in the pass its alpha needs (`solid_leaves`: no
@@ -1547,6 +1601,19 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
         }
     }
     out
+}
+/// The UV a vanilla cube's face gives the block-local point `p` (`BlockElement`'s default UVs),
+/// in sprite units: up is north on the top face, south on the bottom one, and up on the sides.
+fn standard_uv(facing: horizon_assets::model::Direction, [x, y, z]: [f32; 3]) -> [f32; 2] {
+    use horizon_assets::model::Direction as D;
+    match facing {
+        D::Down => [x, 1.0 - z],
+        D::Up => [x, z],
+        D::North => [1.0 - x, 1.0 - y],
+        D::South => [x, 1.0 - y],
+        D::West => [z, 1.0 - y],
+        D::East => [1.0 - z, 1.0 - y],
+    }
 }
 /// The quarter of the sprite (top-left, top-right, bottom-left, bottom-right) a piece of a
 /// quad lies in, by its UV centre (v grows downward).
@@ -1657,5 +1724,18 @@ mod quarter_tests {
             .map(|p| quarter_of(&p)),
             [0, 1, 2, 3]
         );
+    }
+
+    #[test]
+    fn overlays_take_the_cubes_own_uvs() {
+        use horizon_assets::model::Direction as D;
+        // A top face: the north-west corner is the sprite's top-left, so a tile's top edge is
+        // north whatever the model's turn.
+        assert_eq!(standard_uv(D::Up, [0.0, 1.0, 0.0]), [0.0, 0.0]);
+        assert_eq!(standard_uv(D::Up, [1.0, 1.0, 1.0]), [1.0, 1.0]);
+        // A north face seen from the north: its top-left is the east top corner.
+        assert_eq!(standard_uv(D::North, [1.0, 1.0, 0.0]), [0.0, 0.0]);
+        assert_eq!(standard_uv(D::East, [1.0, 0.0, 1.0]), [0.0, 1.0]);
+        assert_eq!(standard_uv(D::Down, [0.0, 0.0, 1.0]), [0.0, 0.0]);
     }
 }

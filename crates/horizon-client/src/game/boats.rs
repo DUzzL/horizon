@@ -70,6 +70,8 @@ pub(super) struct Boat {
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
+    /// `Entity.noGravity` (`NoGravity` in its save).
+    pub no_gravity: bool,
     pub paddles: [f32; 2],
     pub paddling: [bool; 2],
     /// left, right, up, down
@@ -138,6 +140,7 @@ impl Boat {
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
+            no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
             input: [false; 4],
@@ -578,7 +581,8 @@ impl Game<'_> {
             b.input = [false; 4];
         }
         // floatBoat
-        let mut vspeed = -0.04;
+        // `-getGravity()`: none with NoGravity.
+        let mut vspeed = if b.no_gravity { 0.0 } else { -0.04 };
         let mut buoyancy = 0.0;
         let inv_friction: f32;
         let obstacles = self.boat_move_obstacles(&b);
@@ -723,6 +727,10 @@ impl Game<'_> {
         let mut round = self.native_tick_round();
         // A server player's boat is driven by its client (lan_vehicles.rs).
         let driven = self.guest_vehicles();
+        // EntityTickEvent.Post comes once AbstractBoat.tick is over, after the
+        // passes below (lava, ejection, bubbles, contacts): the ticked boats,
+        // in order, kept only while a mod listens (no list without mods).
+        let mut ticked = Vec::new();
         for i in 0..self.boats.len() {
             // A mod's hook may have removed boats.
             if i >= self.boats.len() {
@@ -759,7 +767,9 @@ impl Game<'_> {
             };
             let b = self.boats[i].clone();
             self.boats[i] = self.tick_boat(b, false);
-            self.native_tick_post_one(&round, id, &kind);
+            if round.listening() {
+                ticked.push((id, kind));
+            }
         }
         // AbstractBoat.tick's applyEffectsFromBlocks, on the server for every
         // boat, the client-driven ones too.
@@ -792,6 +802,9 @@ impl Game<'_> {
             }
             self.boat_bubble_tick(i);
             self.boat_contacts(i);
+        }
+        for (id, kind) in ticked {
+            self.native_tick_post_one(&round, id, &kind);
         }
     }
     /// `Entity.canSimulateMovement`: for a boat (`AUTHORITATIVE_SIDE`) a
