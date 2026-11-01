@@ -1768,14 +1768,33 @@ impl Lod {
             // The queue filled while nothing loaded nearby; the near chunks
             // must not wait behind it. The first tiles stay queued, best first.
             let mut keep = if self.small { 0 } else { SAMPLE_JOBS };
-            if drop_queued_samples(&self.shared, &mut self.pending, |_| {
+            let dropped = drop_queued_samples(&self.shared, &mut self.pending, |_| {
                 let kept = keep > 0;
                 keep = keep.saturating_sub(1);
                 kept
-            }) {
-                // Dropped tiles left `wanted` when they were queued.
-                self.wanted_stale = true;
-            }
+            });
+            // Back in line where `wanted_tiles` put them: the near terrain can
+            // start and stop loading every few frames, and rebuilding the whole
+            // queue each time cost more than the samples it held back.
+            let camera = self.plan.camera;
+            self.wanted.extend(dropped.into_iter().map(|key| {
+                let class = if self.plan.split.contains(&key) {
+                    BACKDROP
+                } else if key.reach(camera) < self.plan.first {
+                    SEAM
+                } else {
+                    REST
+                };
+                std::cmp::Reverse(Wanted {
+                    class,
+                    distance: i64::from(key.distance(camera)),
+                    x: key.x,
+                    z: key.z,
+                    level: key.level,
+                })
+            }));
+            // A sample may still be running: the held pace starts from now.
+            self.held_sample_at = std::time::Instant::now();
         }
         self.near_loading = loading;
         let held = self.held();
@@ -2516,17 +2535,17 @@ fn detail_count(mask: &[u64; 4]) -> usize {
     mask.iter().map(|bits| bits.count_ones() as usize).sum()
 }
 /// Removes the queued sample jobs `keep` rejects (in queue order, best
-/// first) and frees their slots; whether any was removed.
+/// first) and frees their slots; the tiles removed.
 fn drop_queued_samples(
     shared: &Shared,
     pending: &mut FxHashSet<TileKey>,
     mut keep: impl FnMut(&TileKey) -> bool,
-) -> bool {
-    let mut dropped = false;
+) -> Vec<TileKey> {
+    let mut dropped = Vec::new();
     shared.jobs.lock().unwrap().retain(|job| match job {
         Job::Sample(key) if !keep(key) => {
             pending.remove(key);
-            dropped = true;
+            dropped.push(*key);
             false
         }
         _ => true,
@@ -3719,7 +3738,7 @@ mod tests {
         assert!(after.iter().all(|key| lod.plan.nodes.contains(key)));
         assert_eq!(
             pending(&lod),
-            sorted(after),
+            sorted(after.clone()),
             "dropped jobs free their slots"
         );
 
