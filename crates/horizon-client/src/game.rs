@@ -2180,6 +2180,9 @@ struct Game<'a> {
     far_beacons: HashMap<(i32, i32, i32), Vec<(u32, i32)>>,
     /// The detail revision, centre and radius `Lod::update` last had covered for.
     lod_covered_at: Option<(u64, (i32, i32), i32)>,
+    /// Whether the view's columns have all arrived, and how new it is: large
+    /// translucent pages wait for both before they shrink (`set_terrain_loading`).
+    view_arrival: horizon_client::streaming::ViewArrival,
     options: Options,
     player: Option<PlayerMotion>,
     spawn: Option<Vec3>,
@@ -3657,6 +3660,7 @@ impl Game<'_> {
             bob_offset: bob,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         });
         // ServerLevel.addFreshEntity.
         if !self.native_entity_joins(self.next_entity, "minecraft:item", position, false) {
@@ -7410,6 +7414,9 @@ impl Game<'_> {
             });
             let before = self.dropped_ids();
             horizon_client::spans::time("tick_items", || self.tick_items());
+            if self.remote.is_none() {
+                self.hoppers_catch_items();
+            }
             // Merged, burnt, despawned or picked up.
             self.native_items_left_since(&before);
             horizon_client::spans::time("touch_arrows", || self.touch_arrows());
@@ -16124,6 +16131,17 @@ impl Game<'_> {
             log::warn!("Horizon: failed to save unloaded chunks: {e}");
         }
         let (far_distance, far_reduced) = self.far_terrain_choice();
+        // Terrain still on its way from the server (single player's integrated one
+        // too): the view's outermost columns not all in, or its events not all handled.
+        let radius = match &self.remote {
+            // As far as the server fills it: its view distance and one.
+            Some(r) => self.streaming.radius.min(r.view_distance + 1),
+            None => self.streaming.radius,
+        };
+        let view = (self.streaming.center, radius);
+        let has = |column: (i32, i32)| self.world.chunks.contains_key(&column);
+        let now = Instant::now();
+        let arriving = self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0;
         if let Some(renderer) = self.renderer.as_mut() {
             let g = &self.settings.horizon;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
@@ -16194,6 +16212,12 @@ impl Game<'_> {
                 self.streaming.free(spent);
             }
             renderer.remove_columns(unloaded.iter().map(|c| (c.x, c.z)));
+            // Meshes in the works are the view's terrain while it is new, then edits'.
+            let meshing = self.streaming.busy() || !self.pending_uploads.is_empty();
+            let sampling = self.lod.as_ref().is_some_and(|lod| lod.sampling());
+            renderer.set_terrain_loading(
+                arriving || (meshing && self.view_arrival.recent(now)) || sampling,
+            );
             if let (Some(lod), Some(player)) = (&mut self.lod, &self.player) {
                 let lod_distance =
                     horizon_client::graphics::lod_distance_capped(far_distance, &renderer.info);
@@ -17917,6 +17941,7 @@ impl<'a> Game<'a> {
             far_beacons: HashMap::new(),
             lod_observe: Default::default(),
             lod_covered_at: None,
+            view_arrival: Default::default(),
             options,
             player: None,
             spawn: None,
@@ -18931,10 +18956,12 @@ fn load_core(
                     assets.reload(root)
                 }
                 .map_err(|e| e.to_string())?;
-                let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
-                    root,
-                    render.model_library.clone(),
-                )
+                let library = render.model_library.clone();
+                let item_renderer = if headless {
+                    horizon_client::item_render::ItemRenderer::load_for_server(root, library)
+                } else {
+                    horizon_client::item_render::ItemRenderer::load_with_library(root, library)
+                }
                 .map_err(|e| e.to_string());
                 Ok((render, item_renderer))
             });

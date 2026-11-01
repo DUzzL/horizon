@@ -3191,6 +3191,7 @@ impl Game<'_> {
             ]
         });
         let back = self.dim;
+        let left = super::Dim::from_id(&host.hub.guests[i].dimension);
         let away = server && host.hub.guests[i].dimension != level.id();
         if server {
             self.server_trips.retain(|t| !t.is(conn));
@@ -3290,6 +3291,17 @@ impl Game<'_> {
         // helpers reach them (as for native_perform_command).
         let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
         self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
+        // The player left another level for the respawn point's: placed for
+        // good they tell the mods now, else the trip that is still carrying
+        // them (a bed or anchor in another level, the world spawn's free
+        // column) does when it arrives (`arrive_server_trips`).
+        if away {
+            if let Some(trip) = self.server_trips.iter_mut().find(|t| t.is(conn)) {
+                trip.left = Some(left);
+            } else {
+                self.tell_mods_changed_dimension(host, conn, Some(left), level);
+            }
+        }
         if away && let Err(e) = self.enter_level(Some(host), back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
@@ -4489,13 +4501,41 @@ impl Game<'_> {
             .next_int_bound(touching.len() as i32)
             .unwrap_or(0) as usize;
         // A merged orb gives its value once per count and goes at zero.
-        let orb = self.orbs[touching[pick]].clone();
-        if orb.count <= 1 {
-            self.remove_orb(touching[pick]);
-        } else {
-            self.orbs[touching[pick]].count -= 1;
+        let index = touching[pick];
+        let mut orb = self.orbs[index].clone();
+        let mut canceled = false;
+        // Swapping the guest in costs: only when a mod hears the pickup.
+        let mut listened = false;
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            self.native_experience_orb_pickup_listened(&mut listened);
         }
-        play.xp_delay = 2;
+        if listened {
+            let dimension = self.dim.id();
+            let called = self.as_guest(host, conn, |game| {
+                let player = game.native_acting_id();
+                game.native_experience_orb_pickup(
+                    player,
+                    dimension,
+                    orb.id,
+                    &mut orb.value,
+                    &mut orb.count,
+                    &mut canceled,
+                );
+            });
+            if called.is_none() || canceled {
+                return;
+            }
+            orb.value = orb.value.clamp(1, i32::MAX as u32);
+            orb.count = orb.count.max(1);
+            self.orbs[index].value = orb.value;
+            self.orbs[index].count = orb.count;
+        }
+        if orb.count <= 1 {
+            self.remove_orb(index);
+        } else {
+            self.orbs[index].count -= 1;
+        }
+        host.play.entry(conn).or_default().xp_delay = 2;
         host.hub.take_item(orb.id as i32, id, 1, at);
         // ClientPacketListener.handleTakeItemEntity's sound, at the orb.
         let pitch = (self.world.random.next_float() - self.world.random.next_float()) * 0.35 + 0.9;

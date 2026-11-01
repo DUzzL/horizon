@@ -632,7 +632,7 @@
   "No notes for this release.": "Для этой сборки нет списка изменений.",
   "No version": "Нет версии",
   "Signed in as {name}.": "Вы вошли как {name}.",
-  "follows updates": "следует за обновлениями",
+  "auto-update": "автообновление",
   "Search, then Enter": "Поиск, затем Enter",
   "Waiting for account access…": "Ожидание доступа к учётной записи…",
   "Reading keychain…": "Чтение связки ключей…",
