@@ -7,8 +7,9 @@
 //! variant's is beside the variant: `optifine/random/entity/zombie/zombie3_e.png` glows over
 //! `zombie3`, never over `zombie`.
 //!
-//! This covers entity textures (mobs and block entities, under `textures/entity/`). Names are
-//! those of the entity atlas ([`crate::random_textures`]).
+//! This pairs entity textures, those under `textures/entity/` (mobs' and block entities'), by
+//! the entity atlas's names ([`crate::random_textures`]); blocks and items have their own
+//! atlas.
 //!
 //! Written from OptiFine's `emissive.properties` and ETF's `EMISSIVE_GUIDE.md` and
 //! `emissive.properties`; no mod's source was read.
@@ -19,7 +20,7 @@ use std::path::Path;
 
 use crate::paths::files_under;
 use crate::properties::Properties;
-use crate::random_textures::{RandomTextures, atlas_name};
+use crate::random_textures::{MAX_PROPERTIES, RandomTextures, atlas_name, decode};
 
 /// The pack's emissive overlays, by the atlas name of the texture they glow over.
 #[derive(Debug, Default)]
@@ -39,15 +40,21 @@ const PROPERTIES: [&str; 3] = [
 
 impl Emissive {
     pub fn scan(root: &Path, random: &RandomTextures) -> Self {
+        // The first file that sets it (read as Java reads properties: Latin-1 when not UTF-8).
+        // A suffix is a name's end: no path separators or `..`, so it can't leave the folder.
         let suffix = PROPERTIES
             .iter()
-            .find_map(|p| fs::read_to_string(root.join(p)).ok())
-            .and_then(|text| {
+            .find_map(|p| {
+                let path = root.join(p);
+                if fs::metadata(&path).ok()?.len() > MAX_PROPERTIES {
+                    return None;
+                }
+                let text = decode(fs::read(path).ok()?);
                 Properties::parse(&text)
                     .get("suffix.emissive")
                     .map(str::to_owned)
             })
-            .filter(|s| !s.is_empty() && !s.contains('/'))
+            .filter(|s| !s.is_empty() && !s.contains(['/', '\\']) && !s.contains(".."))
             .unwrap_or_else(|| "_e".to_owned());
         let mut out = Self {
             suffix,
@@ -193,6 +200,60 @@ mod tests {
             Some("entity/zombie/zombie_glow")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn where_the_suffix_is_read() {
+        let suffix = |files: &[(&str, &[u8])]| {
+            let root = std::env::temp_dir().join(format!(
+                "horizon-emissive-where-{}-{}",
+                std::process::id(),
+                files.len()
+            ));
+            let _ = fs::remove_dir_all(&root);
+            for (path, bytes) in files {
+                let path = root.join(path);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, bytes).unwrap();
+            }
+            let e = Emissive::scan(&root, &RandomTextures::default());
+            let _ = fs::remove_dir_all(root);
+            e.suffix
+        };
+        // ETF's folder, when OptiFine's file is missing or doesn't set it.
+        assert_eq!(suffix(&[(PROPERTIES[1], b"suffix.emissive=_lit")]), "_lit");
+        assert_eq!(
+            suffix(&[
+                (PROPERTIES[0], b"# trims only"),
+                (PROPERTIES[2], b"suffix.emissive=_lit")
+            ]),
+            "_lit"
+        );
+        // A Latin-1 comment doesn't hide it.
+        assert_eq!(
+            suffix(&[
+                (PROPERTIES[0], b"# cr\xe9\xe9\nsuffix.emissive=_glow"),
+                (PROPERTIES[1], b"x=1"),
+                (PROPERTIES[2], b"x=1")
+            ]),
+            "_glow"
+        );
+        // Nothing that could leave the texture's folder.
+        for bad in [
+            &b"suffix.emissive=\\\\..\\\\x"[..],
+            b"suffix.emissive=/x",
+            b"suffix.emissive=..",
+        ] {
+            assert_eq!(
+                suffix(&[
+                    (PROPERTIES[0], bad),
+                    (PROPERTIES[1], b""),
+                    (PROPERTIES[2], b""),
+                    (PROPERTIES[2], b"")
+                ]),
+                "_e"
+            );
+        }
     }
 
     #[test]

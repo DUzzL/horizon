@@ -10,6 +10,7 @@ pub mod export;
 #[cfg(unix)]
 pub mod game_app;
 pub mod game_log;
+pub mod github;
 pub mod github_mods;
 pub mod heads;
 pub mod i18n;
