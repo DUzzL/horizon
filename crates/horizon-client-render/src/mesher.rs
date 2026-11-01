@@ -1278,12 +1278,15 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
-        // OptiFine connected textures: another sprite, or one per quarter.
+        // OptiFine connected textures: another sprite, or one per quarter, and the overlays
+        // drawn over it (a few per face at most; more are dropped).
         let connected = &self.render.connected;
+        let mut overlays = [None; 8];
         let pick = if connected.is_empty() {
             Pick::Keep
         } else {
             let tints = &*tints;
+            let mut count = 0;
             connected.pick(
                 id,
                 face.layer as u16,
@@ -1291,27 +1294,35 @@ impl Mesher<'_> {
                 [world.x, world.y, world.z],
                 |[dx, dy, dz]| pad.blocks[pi(pos[0] + dx, pos[1] + dy, pos[2] + dz)],
                 || Some(tints.biome(pos[0], pos[1], pos[2])),
+                |overlay| {
+                    if let Some(slot) = overlays.get_mut(count) {
+                        *slot = Some(overlay);
+                        count += 1;
+                    }
+                },
             )
         };
-        let mut corners = [(TerrainVertex::new([0.0; 3], [0.0; 2], 0, 0, 0), [0.0; 2]); 4];
-        for (i, corner) in corners.iter_mut().enumerate() {
-            let g = gray[i] as u32;
-            let rgb = match tint {
-                Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
-                None => [g; 3],
-            };
-            let p = q.positions[i];
-            *corner = (
-                TerrainVertex::new(
-                    [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+        let corners = |tint: Option<u32>| {
+            std::array::from_fn::<_, 4, _>(|i| {
+                let g = gray[i] as u32;
+                let rgb = match tint {
+                    Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
+                    None => [g; 3],
+                };
+                let p = q.positions[i];
+                (
+                    TerrainVertex::new(
+                        [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+                        q.uv[i],
+                        0,
+                        emitting(pack_rgb(rgb), tier),
+                        pack_coords(lighting::with_emission(coords[i], q.light_emission)),
+                    ),
                     q.uv[i],
-                    0,
-                    emitting(pack_rgb(rgb), tier),
-                    pack_coords(lighting::with_emission(coords[i], q.light_emission)),
-                ),
-                q.uv[i],
-            );
-        }
+                )
+            })
+        };
+        let base = corners(tint);
         let own = TileLayer::Layer {
             layer: face.layer as u16,
             translucent: face.translucent,
@@ -1331,8 +1342,8 @@ impl Mesher<'_> {
             TileLayer::Skip | TileLayer::Default => own,
         };
         match pick {
-            Pick::Keep => self.quad(out, state, own, corners.map(|c| c.0)),
-            Pick::Tile(t) => self.quad(out, state, tile(t), corners.map(|c| c.0)),
+            Pick::Keep => self.quad(out, state.leaves, own, base.map(|c| c.0)),
+            Pick::Tile(t) => self.quad(out, state.leaves, tile(t), base.map(|c| c.0)),
             Pick::Quarters(tiles) => {
                 for (s0, t0) in [(0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)] {
                     let sub = [
@@ -1341,20 +1352,35 @@ impl Mesher<'_> {
                         (s0 + 0.5, t0 + 0.5),
                         (s0, t0 + 0.5),
                     ]
-                    .map(|(s, t)| bilinear(&corners, s, t));
+                    .map(|(s, t)| bilinear(&base, s, t));
                     // The quarter of the sprite the piece covers: its UV centre.
                     let [u, v] = [0, 1].map(|k| sub.iter().map(|c| c.1[k]).sum::<f32>() / 4.0);
                     let quarter = usize::from(v >= 0.5) * 2 + usize::from(u >= 0.5);
-                    self.quad(out, state, tile(tiles[quarter]), sub.map(|c| c.0));
+                    self.quad(out, state.leaves, tile(tiles[quarter]), sub.map(|c| c.0));
                 }
             }
         }
+        // Overlays: the face again, after it (equal depth passes), with an alpha cutout or
+        // translucent, tinted as their rule says.
+        for overlay in overlays.into_iter().flatten() {
+            let tint = overlay.tint.and_then(|(index, block)| {
+                let info = block.map_or(state, |b| &self.tables.info[b as usize]);
+                Self::tint(info, index, tints, pos)
+            });
+            let tile = TileLayer::Layer {
+                layer: overlay.layer,
+                translucent: overlay.translucent,
+                opaque: false,
+            };
+            self.quad(out, false, tile, corners(tint).map(|c| c.0));
+        }
     }
-    /// One terrain quad with sprite `tile`, in the pass its alpha needs.
+    /// One terrain quad with sprite `tile`, in the pass its alpha needs (`leaves` draw opaque
+    /// with opaque leaves).
     fn quad(
         &self,
         out: &mut SectionMesh,
-        state: &Info,
+        leaves: bool,
         tile: TileLayer,
         mut v: [TerrainVertex; 4],
     ) {
@@ -1371,7 +1397,7 @@ impl Mesher<'_> {
         }
         // Opaque leaves (forceOpaque) and quads over opaque texels draw in the solid layer: no
         // alpha cutout (a dirt path's side skips its clear top row).
-        let layer = if opaque && !translucent || !self.cutout_leaves && state.leaves {
+        let layer = if opaque && !translucent || !self.cutout_leaves && leaves {
             layer | OPAQUE_LAYER
         } else {
             layer
