@@ -15,11 +15,22 @@ fn impl_functions(item: syn::ItemImpl) -> impl Iterator<Item = syn::ItemFn> {
     })
 }
 
-fn game_methods(path: &Path, methods: &mut Vec<syn::ItemFn>) -> Result<(), String> {
+/// The inherent `Game` methods of the files under `path`, each with its module (`native_hooks`,
+/// `lan::guest`…) below `module`.
+fn game_methods(
+    path: &Path,
+    module: &str,
+    methods: &mut Vec<(String, syn::ItemFn)>,
+) -> Result<(), String> {
     for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let inner = format!("{module}::{stem}");
         if path.is_dir() {
-            game_methods(&path, methods)?;
+            game_methods(&path, &inner, methods)?;
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let file = syn::parse_file(&source).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -30,7 +41,7 @@ fn game_methods(path: &Path, methods: &mut Vec<syn::ItemFn>) -> Result<(), Strin
                     && ty.path.segments.len() == 1
                     && ty.path.segments[0].ident == "Game"
                 {
-                    methods.extend(impl_functions(item));
+                    methods.extend(impl_functions(item).map(|method| (inner.clone(), method)));
                 }
             }
         }
@@ -591,7 +602,11 @@ pub fn run(check: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let exports = exported_types(&api_source, &code)?;
     let mut game = Vec::new();
-    game_methods(&root.join("crates/horizon-client/src/game"), &mut game)?;
+    game_methods(
+        &root.join("crates/horizon-client/src/game"),
+        "horizon_client::game",
+        &mut game,
+    )?;
     let mut host_traits = String::new();
     let mut host_impl = String::new();
     let mut names = HashSet::new();
@@ -605,13 +620,17 @@ pub fn run(check: bool) -> Result<(), String> {
         }
         let native = format!("native_{name}");
         let target = helper["target"].as_str().ok_or("helper target missing")?;
-        let valid = ["native_hooks", "native_block_entity_draw"]
+        let method = one_function(game.iter().map(|(_, method)| method), &native)?;
+        let (module, _) = game
             .iter()
-            .any(|module| target == format!("horizon_client::game::{module}::Game<'_>::{native}"));
-        if !valid {
-            return Err(format!("wrong target for helper {name}"));
+            .find(|(_, other)| std::ptr::eq(other, method))
+            .expect("the method was found in the list");
+        let expected = format!("{module}::Game<'_>::{native}");
+        if target != expected {
+            return Err(format!(
+                "wrong target for helper {name}: {target}, it is {expected}"
+            ));
         }
-        let method = one_function(game.iter(), &native)?;
         let (declaration, implementation) = host_method(method, name, &exports)?;
         host_traits.push_str(&declaration);
         host_impl.push_str(&implementation);
