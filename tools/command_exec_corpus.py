@@ -1437,6 +1437,30 @@ def creative_shulker_drops():
     return out
 
 
+def experience_orb_stuck():
+    """`ExperienceOrb.tick`'s push out of a block, the one path of the tick that
+    draws a random: a 3x3 block placed over a settled orb leaves it colliding
+    with its only free side the top, and with no player within the 8 block
+    follow radius the server nudges it up, `nextFloat() * 0.2 + 0.1` at a time,
+    gravity skipped while its box is inside blocks. The draw's magnitude only
+    decides how many ticks the escape takes, so the settled orb is the same
+    either way; an orb that is never pushed stays boxed in at y 215 instead of
+    resting on top of the block at 216. 25 blocks from the player, out of the
+    follow radius."""
+    return [
+        *setup('/fill 30 214 20 36 214 26 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 33.5 215 23.5 {Value:1s}'),
+        {'op': 'tick', 'n': 2},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        *setup('/fill 32 215 22 34 215 24 minecraft:stone'),
+        {'op': 'tick', 'n': 60},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 30 214 20 36 215 26 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1469,4 +1493,5 @@ def groups():
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
         ('experience orb fall', experience_orb_fall()),
+        ('experience orb stuck', experience_orb_stuck()),
     ]

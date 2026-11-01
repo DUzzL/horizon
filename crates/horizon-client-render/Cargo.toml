@@ -10,6 +10,7 @@ description = "The client's world data, rendering and screens: chunks, meshing, 
 horizon-assets = { path = "../horizon-assets" }
 horizon-bench = { path = "../horizon-bench" }
 horizon-client-core = { path = "../horizon-client-core" }
+horizon-optifine = { path = "../horizon-optifine" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-command = { path = "../horizon-command" }
 horizon-core = { path = "../horizon-core" }

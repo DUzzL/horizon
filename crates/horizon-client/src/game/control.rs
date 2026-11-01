@@ -1172,7 +1172,7 @@ impl Game<'_> {
             "distance": self.settings.horizon.lod_distance,
             "effective_distance": self.lod_distance(),
             "terrain_distance": self.terrain_distance(),
-            "source": if self.lod.is_none() { "none" } else if self.integrated.is_some() { "integrated" } else { "local" },
+            "source": if self.lod.is_none() { "none" } else if self.integrated.is_some() { "integrated" } else if self.server_far_terrain().is_some() { "server" } else { "local" },
             "source_attempted": self.lod_source_attempted,
             "active_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().0),
             "cached_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().1),
