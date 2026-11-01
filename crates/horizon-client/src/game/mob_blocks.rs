@@ -631,7 +631,13 @@ impl Game<'_> {
                     horizon_assets::item_model::SpecialKind::Head {
                         kind: kind.to_owned(),
                         texture: None,
-                        animation: 0.0,
+                        animation: worn_head_animation(
+                            horizon_client::mobs::anim::state(mob, alpha as f32).pos,
+                            mob.extra
+                                .mount
+                                .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+                                .map(|v| v.limb_position - v.limb_speed * (1.0 - alpha as f32)),
+                        ),
                     }
                 },
             };
@@ -685,10 +691,22 @@ impl Game<'_> {
     }
 }
 
+/// `LivingEntityRenderer.extractRenderState`'s `wornHeadAnimationPos`: the
+/// living vehicle's walk position when riding one, else the wearer's own.
+fn worn_head_animation(own: f32, vehicle: Option<f32>) -> f32 {
+    vehicle.unwrap_or(own)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
+
+    #[test]
+    fn worn_head_animation_prefers_the_living_vehicle() {
+        assert_eq!(worn_head_animation(1.5, None), 1.5);
+        assert_eq!(worn_head_animation(0.0, Some(2.25)), 2.25);
+    }
 
     #[test]
     fn carried_block_vertices_match_vanilla_block_coordinates() {
