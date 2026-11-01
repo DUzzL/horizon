@@ -1310,6 +1310,19 @@ fn stage_mixins(mods: &[Bundle], to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The `data/` of the bundles horizon-mixins doesn't apply, staged in `stage` where it stages the
+/// others' (`native-data/<mod id>/`), for `native_data!` and the mods' build steps.
+fn stage_trait_data(mods: &[Bundle], stage: &Path) -> Result<(), String> {
+    for bundle in mods.iter().filter(|b| !b.mixins_content) {
+        let data = bundle.dir.join("data");
+        if data.is_dir() {
+            let to = stage.join("native-data").join(&bundle.id);
+            backend::copy_dir(&data, &to).map_err(|e| format!("{}: {e}", to.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Builds `folder`'s mods on the Horizon revision they pin (else `base`'s, the installed version
 /// whose game files the build reuses: a native build's own revision when it is one, [`base_for`])
 /// and points `instance` at the build, the default one included. Returns the build's version; a
@@ -1475,6 +1488,7 @@ pub fn build(
         } else {
             sync(&source, &fresh)?;
         }
+        stage_trait_data(&mods, &fresh)?;
         if mods.iter().any(|m| m.api.is_some()) {
             // Offline metadata resolves all targets, including packages not fetched for this host.
             let mut fetch = cargo(&rust, &source, "fetch");
@@ -1823,6 +1837,17 @@ mod tests {
         let manifest = fs::read_to_string(input.join("trait_injection").join(MANIFEST)).unwrap();
         assert!(manifest.contains("horizon-trait-injection-0.rs"));
         assert!(!manifest.contains("trait_method"));
+
+        for id in ["plain", "ordinary"] {
+            fs::create_dir_all(incoming.join(id).join("data")).unwrap();
+            fs::write(incoming.join(id).join("data/table.txt"), id).unwrap();
+        }
+        let stage = root.join("stage");
+        stage_trait_data(&mods, &stage).unwrap();
+        let read =
+            |id: &str| fs::read_to_string(stage.join("native-data").join(id).join("table.txt"));
+        assert_eq!(read("plain").unwrap(), "plain");
+        assert!(read("ordinary").is_err(), "horizon-mixins stages it");
         fs::remove_dir_all(root).unwrap();
     }
 
