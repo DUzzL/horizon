@@ -3921,6 +3921,124 @@ impl Launcher {
         }
     }
 
+    /// Use and Remove for an installed version; Remove asks once more before it deletes.
+    fn version_actions(&self, tag: &str, selected: bool, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let confirming = self.confirm_remove.as_deref() == Some(tag);
+        let (t1, t2) = (tag.to_string(), tag.to_string());
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .when(!selected && !confirming, |d| {
+                d.child(
+                    button(format!("use-{tag}"), "Use", Kind::Ghost, &t).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.settings.selected = Some(t1.clone());
+                            this.settings.save();
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .child(
+                button(
+                    format!("remove-{tag}"),
+                    if confirming {
+                        "Remove for good"
+                    } else {
+                        "Remove"
+                    },
+                    if confirming {
+                        Kind::Secondary
+                    } else {
+                        Kind::Ghost
+                    },
+                    &t,
+                )
+                .when(confirming, |b| b.text_color(t.danger))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if this.confirm_remove.as_ref() == Some(&t2) {
+                        this.remove(&t2);
+                    } else {
+                        this.confirm_remove = Some(t2.clone());
+                    }
+                    cx.notify();
+                })),
+            )
+    }
+
+    /// One installed native build on the Versions page: what it was built on, and Use and Remove.
+    fn native_build_row(
+        &self,
+        tag: &str,
+        on_disk: &dyn Fn(&String) -> Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = self.theme;
+        let selected = self.selected().map(String::as_str) == Some(tag);
+        let mut meta = Vec::new();
+        if let Some(about) = native_mods::about(tag) {
+            meta.push(trf("Built on {base}", &[("base", &about.base)]));
+        }
+        if let Some(n) = on_disk(&tag.to_string()) {
+            meta.push(trf("{size} on disk", &[("size", &megabytes(n))]));
+        }
+        let right = if self.removing.iter().any(|r| r == tag) {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .w(px(180.))
+                .child(progress_bar(None, &t))
+                .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
+        } else {
+            self.version_actions(tag, selected, cx)
+        };
+        let error = self
+            .install_error
+            .as_ref()
+            .filter(|(e, _)| e == tag)
+            .map(|(_, e)| e.clone());
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(14.))
+            .px(px(16.))
+            .bg(t.panel)
+            .border_2()
+            .border_color(t.outline)
+            .children(blocks::edges(t.bevel, t.lip, theme::BEVEL))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(4.))
+                            .child(version_tag(tag).text_color(t.ink))
+                            .child(caps(meta.join("  ·  ")).text_color(t.muted)),
+                    )
+                    .children(selected.then(|| caps(tr("In use")).text_color(t.accent)))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .w(px(190.))
+                            .flex_none()
+                            .child(right),
+                    ),
+            )
+            .children(error.map(|e| notice(e, &t)))
+    }
+
     fn versions_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let header = page_header(
@@ -3958,6 +4076,28 @@ impl Launcher {
                     &[("size", &megabytes(used))],
                 ))
             }));
+        // Native-mods builds are made here, not downloaded: they are listed apart from the releases.
+        let native: Vec<String> = self
+            .installed
+            .iter()
+            .chain(&self.removing)
+            .filter(|v| native_mods::is_native(v))
+            .cloned()
+            .collect();
+        let page = page.when(!native.is_empty(), |page| {
+            page.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(caps(tr("Native mod builds")).text_color(t.muted))
+                    .children(
+                        native
+                            .iter()
+                            .map(|tag| self.native_build_row(tag, &on_disk, cx)),
+                    ),
+            )
+        });
         let releases = match &self.releases {
             Load::Loading => return page.child(centered(tr("Loading releases…"), &t)),
             Load::Failed(e) => {
@@ -4033,51 +4173,7 @@ impl Launcher {
                         .child(text(theme::MICRO).text_color(t.muted).child("Removing…"))
                         .into_any_element()
                 } else if installed {
-                    let confirming = self.confirm_remove.as_ref() == Some(&tag);
-                    let (t1, t2) = (tag.clone(), tag.clone());
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .when(!selected && !confirming, |d| {
-                            d.child(
-                                button(format!("use-{tag}"), "Use", Kind::Ghost, &t).on_click(
-                                    cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                        this.settings.selected = Some(t1.clone());
-                                        this.settings.save();
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                        })
-                        .child(
-                            button(
-                                format!("remove-{tag}"),
-                                if confirming {
-                                    "Remove for good"
-                                } else {
-                                    "Remove"
-                                },
-                                if confirming {
-                                    Kind::Secondary
-                                } else {
-                                    Kind::Ghost
-                                },
-                                &t,
-                            )
-                            .when(confirming, |b| b.text_color(t.danger))
-                            .on_click(cx.listener(
-                                move |this, _: &ClickEvent, _, cx| {
-                                    if this.confirm_remove.as_ref() == Some(&t2) {
-                                        this.remove(&t2);
-                                    } else {
-                                        this.confirm_remove = Some(t2.clone());
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                        .into_any_element()
+                    self.version_actions(&tag, selected, cx).into_any_element()
                 } else if release.asset.is_none() {
                     text(theme::CAPTION)
                         .text_color(t.muted)

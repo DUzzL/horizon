@@ -494,8 +494,10 @@ def green_main_head(parity=False):
     releases), the newest commit parity-main passed on, if its checks passed too: parity-main runs on batches of
     merges, so the commits a run skipped are covered by the next one, and a superseded run counts for nothing."""
     workflow = "parity-main" if parity else "checks"
+    # 50, not 10: every merge cancels the parity-main run before it, so a busy hour of merges pushes the last
+    # finished run out of a short window and no release goes out (2026-11-01: 14 h without a Nightly).
     runs = gh_json("run", "list", "--repo", REPO, "--workflow", workflow, "--branch", "main", "--event", "push",
-                   "--limit", "10", "--json", "headSha,status,conclusion")
+                   "--limit", "50", "--json", "headSha,status,conclusion")
     for entry in runs:
         if entry["status"] == "completed" and entry["conclusion"] != "cancelled":
             if entry["conclusion"] != "success":

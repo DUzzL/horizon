@@ -46,8 +46,8 @@ impl Game<'_> {
         if self.blocks_attacks(stack).is_none() {
             return false;
         }
-        if self.shield_cooldown == 0 && self.using.is_none() {
-            self.using = Some((slot, 0));
+        if self.shield_cooldown == 0 {
+            self.start_using_item();
         }
         true
     }

@@ -331,6 +331,8 @@ impl Game<'_> {
             .set_resource_root(self.options.resources.clone());
         self.maps.slots.forget();
         self.map_patches.clear();
+        // Kept mod block entities name the old atlas's sprites.
+        self.kept_block_entities.get_mut().clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles
@@ -370,6 +372,7 @@ impl Game<'_> {
         self.ui.chat.rescale(&self.gui.atlas);
         // The creative screen survives the reload; item names may not.
         self.creative_screen.forget_items();
+        self.native_client_resources_reloaded();
         Ok(())
     }
 }

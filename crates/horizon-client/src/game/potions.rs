@@ -425,9 +425,7 @@ impl Game<'_> {
     pub(super) fn use_potion_item(&mut self, stack: &ItemStack) -> horizon_client::Result<bool> {
         match &*stack.item {
             "minecraft:potion" | "minecraft:ominous_bottle" => {
-                if self.using.is_none() {
-                    self.using = Some((self.held_slot(), 0));
-                }
+                self.start_using_item();
                 Ok(true)
             }
             "minecraft:splash_potion"

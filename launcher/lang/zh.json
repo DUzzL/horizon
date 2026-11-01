@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "无法读取已保存的登录信息。",
   "Could not save the renewed sign-in.": "无法保存续期后的登录信息。",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "无法将续期后的登录信息保存到钥匙串。请解锁后重试。",
-  "Another account operation is running. Try again in a moment.": "另一个账户操作正在进行。请稍后重试。"
+  "Another account operation is running. Try again in a moment.": "另一个账户操作正在进行。请稍后重试。",
+  "Built on {base}": "基于 {base} 构建",
+  "Native mod builds": "原生模组构建"
 }
