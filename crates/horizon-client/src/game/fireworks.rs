@@ -29,7 +29,8 @@ enum RocketHit {
 }
 
 pub(super) struct Rocket {
-    /// The entity id a server tracks it by (0 until it is tracked).
+    /// Its entity id: from the entity counter on the server, the server's on
+    /// a client.
     pub id: u32,
     pub(super) position: Vec3,
     pub(super) previous: Vec3,
@@ -98,6 +99,19 @@ impl Rocket {
             attached_to: None,
             angled: r.angled,
             item,
+        }
+    }
+    /// What `FireworkRocketEntity.addAdditionalSaveData` writes.
+    pub(super) fn saved_fields(&self) -> RocketNbt {
+        RocketNbt {
+            position: self.position,
+            motion: self.velocity,
+            life: self.life,
+            lifetime: self.lifetime,
+            item: Some(self.item.clone()),
+            angled: self.angled,
+            owner: self.owner,
+            left_owner: self.left_owner,
         }
     }
     /// One tick of a server's client: the rocket flies on by itself between
@@ -197,8 +211,10 @@ impl Game<'_> {
         let lifetime = 10 * (1 + i32::from(flight))
             + r.next_int_bound(6).unwrap_or(0)
             + r.next_int_bound(7).unwrap_or(0);
+        // An id from the entity counter at once, so a command can name it.
+        self.next_entity += 1;
         Rocket {
-            id: 0,
+            id: self.next_entity,
             position: at,
             previous: at,
             velocity,

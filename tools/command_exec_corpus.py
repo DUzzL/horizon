@@ -363,6 +363,16 @@ def entities():
         cmd('/tp @e[type=minecraft:falling_block] 4.5 215 8.5'),
         cmd('/kill @e[type=minecraft:falling_block]'),
         cmd('/execute if entity @e[type=minecraft:falling_block]'),
+        # A firework rocket, with what `addAdditionalSaveData` writes.
+        cmd('/summon minecraft:firework_rocket 4.5 210 8.5 {LifeTime:2000,NoGravity:1b,Tags:["r"]}'),
+        cmd('/execute if entity @e[type=minecraft:firework_rocket,tag=r]'),
+        cmd('/tag @e[type=minecraft:firework_rocket,limit=1] list'),
+        cmd('/data get entity @e[type=minecraft:firework_rocket,limit=1] LifeTime'),
+        cmd('/data get entity @e[type=minecraft:firework_rocket,limit=1] FireworksItem.id'),
+        cmd('/data get entity @e[type=minecraft:firework_rocket,limit=1] ShotAtAngle'),
+        cmd('/tp @e[type=minecraft:firework_rocket] 4.5 215 8.5'),
+        cmd('/kill @e[type=minecraft:firework_rocket]'),
+        cmd('/execute if entity @e[type=minecraft:firework_rocket]'),
         # And the thrown items.
         *[c for kind in ('snowball', 'egg', 'ender_pearl') for c in (
             cmd(f'/summon minecraft:{kind} 4.5 210 8.5 {{NoGravity:1b}}'),

@@ -207,6 +207,21 @@ impl Game<'_> {
                 );
                 crate::game::persist::with_raw(tag, raw)
             }
+            Target::Rocket(id) => {
+                let uuid = self.uuid_for(id);
+                let r = self.rockets.iter().find(|r| r.id == id)?;
+                let owner = if r.owner == Some(horizon_client::mobs::Who::Player) {
+                    player_uuid
+                } else {
+                    None
+                };
+                entity_nbt::firework_rocket_to_nbt(
+                    &r.saved_fields(),
+                    uuid,
+                    owner,
+                    self.persist.raw.get(&id),
+                )
+            }
         })
     }
     /// `Entity.load` of new data (`EntityDataAccessor.setData`): the entity is
@@ -811,6 +826,8 @@ impl Game<'_> {
             Some(Target::Tnt(id))
         } else if self.falling.iter().any(|f| f.id == id) {
             Some(Target::Falling(id))
+        } else if self.rockets.iter().any(|r| r.id == id) {
+            Some(Target::Rocket(id))
         } else {
             None
         }

@@ -181,6 +181,7 @@ impl Game<'_> {
             | Target::Dragon(id)
             | Target::Tnt(id)
             | Target::Falling(id)
+            | Target::Rocket(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
             // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
@@ -214,6 +215,7 @@ impl Game<'_> {
             | Target::Boat(id)
             | Target::Cart(id)
             | Target::Tnt(id)
+            | Target::Rocket(id)
             | Target::Other(id) => self.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
             Target::Falling(id) => self

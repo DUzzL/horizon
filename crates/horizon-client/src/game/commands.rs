@@ -67,6 +67,8 @@ pub(super) enum Target {
     Tnt(u32),
     /// A falling block, by its entity id (`minecraft:falling_block`).
     Falling(u32),
+    /// A firework rocket, by its entity id (`minecraft:firework_rocket`).
+    Rocket(u32),
 }
 /// An entity of a type Horizon does not simulate: its compound lives in the
 /// entity memory (`persist.raw`), its position and rotation here.
@@ -141,7 +143,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Crystal(id)
     | Target::Dragon(id)
     | Target::Tnt(id)
-    | Target::Falling(id)) = t
+    | Target::Falling(id)
+    | Target::Rocket(id)) = t
     else {
         return None;
     };
@@ -525,6 +528,11 @@ impl Game<'_> {
                 .iter()
                 .find(|f| f.id == id)
                 .map(|f| [f.position.x, f.position.y, f.position.z]),
+            Target::Rocket(id) => self
+                .rockets
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| [r.position.x, r.position.y, r.position.z]),
         }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
@@ -573,6 +581,7 @@ impl Game<'_> {
             Target::Dragon(_) => "minecraft:ender_dragon".into(),
             Target::Tnt(_) => "minecraft:tnt".into(),
             Target::Falling(_) => "minecraft:falling_block".into(),
+            Target::Rocket(_) => "minecraft:firework_rocket".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -864,6 +873,7 @@ impl Game<'_> {
         }
         candidates.extend(self.tnts.iter().map(|t| Target::Tnt(t.id)));
         candidates.extend(self.falling.iter().map(|f| Target::Falling(f.id)));
+        candidates.extend(self.rockets.iter().map(|r| Target::Rocket(r.id)));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -897,6 +907,7 @@ impl Game<'_> {
             Target::Dragon(id),
             Target::Tnt(id),
             Target::Falling(id),
+            Target::Rocket(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -920,6 +931,7 @@ impl Game<'_> {
             Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
             Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
             Target::Falling(id) => self.falling.iter().any(|f| f.id == id),
+            Target::Rocket(id) => self.rockets.iter().any(|r| r.id == id),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1542,6 +1554,12 @@ impl Game<'_> {
                     f.previous = v;
                 }
             }
+            Target::Rocket(id) => {
+                if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
+                    r.position = v;
+                    r.previous = v;
+                }
+            }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
         }
@@ -2041,6 +2059,7 @@ impl Game<'_> {
             Target::Dragon(id) => self.kill_dragon(id),
             Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
             Target::Falling(id) => self.falling.retain(|f| f.id != id),
+            Target::Rocket(id) => self.rockets.retain(|r| r.id != id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         let before = self.orb_ids();
@@ -3714,6 +3733,7 @@ mod look_at_tests {
             Target::Dragon(7),
             Target::Tnt(7),
             Target::Falling(7),
+            Target::Rocket(7),
         ] {
             assert_eq!(non_player_entity_id(t), Some(7), "{t:?}");
         }
