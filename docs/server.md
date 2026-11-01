@@ -480,6 +480,14 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   named in `rcon.rs`: the packets are read from the stream, the password is compared in constant time, a
   connection that hasn't logged in within 30 seconds is closed and at most 16 are open. Not yet: the sender
   `Rcon` and `broadcast-rcon-to-ops` (a command shows as the console's).
+- **GS4 query.** `enable-query` and `query.port` turn on vanilla's UDP query, which server lists, status pages and
+  monitoring tools read the MOTD, the version and the players from. The supervisor serves it (`query.rs`, std
+  only), reads its settings as `QueryThreadGs4.create` does (a port outside 1 to 65535 leaves it off with
+  vanilla's warning) and speaks `QueryThreadGs4`'s protocol: the handshake (type 9, a token below 2^24 as text),
+  the basic stat and the full stat (a request of 15 bytes), each only with the token. The players come from the
+  game's `server-status`, read at most once a second, and a full stat is kept 5 seconds, as in vanilla. Differences,
+  each one named in `query.rs`: nothing answers while the game isn't running, and a session id outside ASCII is
+  echoed as lossy UTF-8.
 - **Vanilla's own management protocol.** Vanilla 26.3 has a server management protocol: JSON-RPC over a
   WebSocket, set up by the `management-server-*` keys in server.properties, so tools written for vanilla can
   manage a Horizon server too. The supervisor serves it (`management.rs`, the WebSocket in `websocket.rs`, std
