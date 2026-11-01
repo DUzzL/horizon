@@ -1073,6 +1073,10 @@ pub struct Extra {
     /// What a piglin's or hoglin's brain remembers: its avoid target, the
     /// adults its sensor sees and the activity it is in.
     pub piglin: piglin::Memories,
+    /// What the native mods last heard it hold and wear
+    /// (`LivingEntity.lastEquipmentItems`, empty at first), by
+    /// `EquipmentSlot` ordinal: see `Mob::equipment_stacks`.
+    pub equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 8]>>,
 }
 impl Extra {
     pub fn set_main_hand(&mut self, item: Option<Arc<str>>) {
@@ -1991,6 +1995,62 @@ impl Seen {
     }
 }
 impl Mob {
+    /// What the mob holds and wears, by `EquipmentSlot` ordinal: main hand,
+    /// off hand, feet, legs, chest, head, body and saddle
+    /// (`ClientboundSetEquipmentPacket`'s slots).
+    pub fn equipment_stacks(&self) -> [Option<crate::items::ItemStack>; 8] {
+        use crate::items::ItemStack;
+        let e = &self.extra;
+        // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
+        // slot's item (6) in `head`.
+        let body = drops::head_is_body(self.species());
+        let wolf = self.species() == Species::Wolf;
+        let slots = [
+            (0usize, &e.main_hand, e.main_hand_stack()),
+            (1, &e.off_hand, None),
+            (2, &e.feet, e.armor[3].as_ref()),
+            (3, &e.legs, e.armor[2].as_ref()),
+            (4, &e.chest, e.armor[1].as_ref()),
+            // The body slot's item is no worn armour.
+            (
+                if body { 6 } else { 5 },
+                &e.head,
+                e.armor[0].as_ref().filter(|_| !body),
+            ),
+        ];
+        let mut out: [Option<ItemStack>; 8] = Default::default();
+        for (slot, item, worn) in slots {
+            let Some(item) = item else {
+                continue;
+            };
+            // The worn armour keeps its stack: a dyed leather piece keeps
+            // its colour.
+            out[slot] = Some(worn.cloned().unwrap_or_else(|| ItemStack {
+                item: item.clone(),
+                count: 1,
+                // A wolf's armor shows its cracks.
+                damage: if slot == 6 && wolf {
+                    e.body_damage.max(0) as u32
+                } else {
+                    0
+                },
+                extra: if slot == 6 && wolf {
+                    e.body_extra.clone()
+                } else {
+                    None
+                },
+            }));
+        }
+        if e.saddled {
+            out[7] = Some(e.saddle_stack.clone().unwrap_or(ItemStack {
+                item: Arc::from("minecraft:saddle"),
+                count: 1,
+                damage: 0,
+                extra: None,
+            }));
+        }
+        out
+    }
     pub fn burning_time(&self) -> f64 {
         let base = finalize::value(self, finalize::Attr::BurningTime);
         let protection: u32 = gear::ARMOR

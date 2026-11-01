@@ -2914,6 +2914,49 @@ mod same_vehicle_push_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
 
+    /// What a mob holds and wears, by `EquipmentSlot`: the hand's item, the
+    /// worn armour's stack (a dyed piece keeps its colour), a horse's
+    /// armour in the body slot and its saddle, and nothing else.
+    #[test]
+    fn a_mobs_equipment_is_listed_by_slot() {
+        with_test_world(&[], |_, types| {
+            let mob = |name: &str| {
+                Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types[name].clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                )
+            };
+            let mut zombie = mob("minecraft:zombie");
+            assert!(zombie.equipment_stacks().iter().all(Option::is_none));
+            zombie
+                .extra
+                .set_main_hand(Some(std::sync::Arc::from("minecraft:iron_sword")));
+            zombie.extra.feet = Some(std::sync::Arc::from("minecraft:iron_boots"));
+            let worn = zombie.equipment_stacks();
+            assert_eq!(
+                worn[0].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_sword"
+            );
+            assert_eq!(
+                worn[2].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_boots"
+            );
+            assert_eq!(worn.iter().flatten().count(), 2);
+            let mut horse = mob("minecraft:horse");
+            horse.extra.head = Some(std::sync::Arc::from("minecraft:iron_horse_armor"));
+            horse.set_saddle(Some(crate::items::ItemStack::new("minecraft:saddle", 1)));
+            let gear = horse.equipment_stacks();
+            assert_eq!(
+                gear[6].as_ref().unwrap().item.as_ref(),
+                "minecraft:iron_horse_armor"
+            );
+            assert_eq!(gear[7].as_ref().unwrap().item.as_ref(), "minecraft:saddle");
+            assert!(gear[5].is_none());
+        });
+    }
+
     /// `Entity.push(Entity)` returns at once for `isPassengerOfSameVehicle`
     /// (the same `getRootVehicle`): a camel and the husk on its back, seated
     /// half a block toward its front and so inside its box, never push each
