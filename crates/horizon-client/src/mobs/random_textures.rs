@@ -2,8 +2,8 @@
 //! (`horizon_optifine::random_textures` finds them in the packs).
 //!
 //! [`choose`] runs when the client first sees a mob, about once a second after that, and on the
-//! next tick when the mob draws a texture with rules it hasn't chosen for (a wolf just tamed),
-//! never per frame. The spawn-time facts (biome, height, blocks, moon, time, weather) are fixed
+//! next tick when the mob draws a texture with rules it hasn't chosen for (a wolf just tamed;
+//! at most once between those checks), never per frame. The spawn-time facts (biome, height, blocks, moon, time, weather) are fixed
 //! when the mob is first seen; the others (name, profession, colour, baby, health, size) are
 //! read fresh each time. Drawing only looks the choice up ([`texture`]). It walks the textures
 //! drawing does ([`super::render::drawn_textures`]): a custom model's own texture and the
@@ -47,10 +47,12 @@ pub struct Choice {
     primary: Option<u32>,
     /// Ticks until the next check of the facts that change.
     countdown: u8,
-    /// Drawing found a texture with rules and no pick: choose on the next tick.
+    /// Drawing found a texture with rules and no pick: choose on the next tick, unless a miss
+    /// was answered since the last regular check.
     missed: AtomicBool,
-    /// A miss was answered since the last regular check: one per check, so a texture drawing
-    /// keeps missing (never listed by `drawn_textures`) can't make the mob choose every tick.
+    /// A miss was answered since the last regular check: one per check, so a texture that
+    /// drawing keeps missing (one `drawn_textures` doesn't list) can't make the mob choose
+    /// every tick.
     answered: bool,
 }
 
@@ -79,15 +81,17 @@ impl Choice {
     }
 
     /// Called once a tick: whether [`choose`] should run now. It does on first sight, after the
-    /// packs changed, when drawing missed a pick, and every [`RECHECK`] ticks (the first
-    /// spread by `stagger`, the entity id, so a crowd seen at once doesn't check at once).
+    /// packs changed, every [`RECHECK`] ticks (the first spread by `stagger`, the entity id, so
+    /// a crowd seen at once doesn't check at once), and when drawing missed a pick, once
+    /// between those checks.
     pub fn due(&mut self, textures: &RandomTextures, stagger: u32) -> bool {
-        if !self.has_seen() || self.generation != textures.generation() {
-            self.countdown = (stagger % u32::from(RECHECK)) as u8;
-            return true;
-        }
-        if self.countdown == 0 {
-            self.countdown = RECHECK - 1;
+        let fresh = !self.has_seen() || self.generation != textures.generation();
+        if fresh || self.countdown == 0 {
+            self.countdown = if fresh {
+                (stagger % u32::from(RECHECK)) as u8
+            } else {
+                RECHECK - 1
+            };
             self.answered = false;
             self.missed.store(false, Ordering::Relaxed);
             return true;
@@ -469,6 +473,13 @@ mod tests {
         // Still missing (never listed): no second choice until the regular check.
         assert_eq!(texture(&m, &t, "entity/cow/cow"), None);
         assert!(!m.random_textures.due(&t, 1));
+        // 15 more quiet ticks, the regular check, then a miss is answered at once again.
+        for _ in 0..15 {
+            assert!(!m.random_textures.due(&t, 1));
+        }
+        assert!(m.random_textures.due(&t, 1));
+        assert_eq!(texture(&m, &t, "entity/cow/cow"), None);
+        assert!(m.random_textures.due(&t, 1));
     }
 
     #[test]

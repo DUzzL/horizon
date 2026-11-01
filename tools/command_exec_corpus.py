@@ -1513,24 +1513,28 @@ def piglin_pickups():
 
 def experience_orb_stuck():
     """`ExperienceOrb.tick`'s push out of a block, the one path of the tick that
-    draws a random: a 3x3 block placed over a settled orb leaves it colliding
-    with its only free side the top, and with no player within the 8 block
-    follow radius the server nudges it up, `nextFloat() * 0.2 + 0.1` at a time,
-    gravity skipped while its box is inside blocks. The draw's magnitude only
-    decides how many ticks the escape takes, so the settled orb is the same
-    either way; an orb that is never pushed stays boxed in at y 215 instead of
-    resting on top of the block at 216. 25 blocks from the player, out of the
-    follow radius."""
+    draws a random: a 3x3 block placed over a settled orb leaves it colliding,
+    and with no player within the 8 block follow radius the server nudges it
+    towards the nearest free side (`Entity.moveTowardsClosestSpace`),
+    `nextFloat() * 0.2 + 0.1` at a time, gravity skipped while its box is inside
+    blocks. The orb's random is unseeded in vanilla (`RandomSource.create()`),
+    so the outcome must not depend on the draws: a ring of stone one block
+    higher keeps the top the only free side all the way out. Without it, once
+    the orb's middle rose past y 216 with its box still in the block, north
+    tied with south, west and east, won as the first, and some draws slid the
+    orb off the block (at z 23.25, 22.x or down to y 215 on the floor).
+    An orb that is never pushed stays boxed in at y 215 instead of resting in
+    the ring at 216. 25 blocks from the player, out of the follow radius."""
     return [
         *setup('/fill 30 214 20 36 214 26 minecraft:stone'),
         cmd('/summon minecraft:experience_orb 33.5 215 23.5 {Value:1s}'),
         {'op': 'tick', 'n': 2},
         cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
-        *setup('/fill 32 215 22 34 215 24 minecraft:stone'),
+        *setup('/fill 32 215 22 34 216 24 minecraft:stone', '/setblock 33 216 23 minecraft:air'),
         {'op': 'tick', 'n': 60},
         cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
         cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
-        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 30 214 20 36 215 26 minecraft:air'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 30 214 20 36 216 26 minecraft:air'),
         {'op': 'tick', 'n': 5},
     ]
 
