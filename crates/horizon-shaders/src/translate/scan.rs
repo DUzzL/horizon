@@ -311,13 +311,14 @@ impl<'p> Stage<'p> {
                 }
                 "gl_TexCoord" => {
                     if let Some((n, _)) = s.index_after(i) {
-                        s.builtin_varying(format!("hz_TexCoord{n}"));
+                        s.builtin_varying(format!("hz_TexCoord{n}"), "vec4");
                     }
                 }
-                "gl_FrontColor" => s.builtin_varying("hz_FrontColor".into()),
+                "gl_FrontColor" => s.builtin_varying("hz_FrontColor".into(), "vec4"),
                 "gl_Color" if kind == ShaderStage::Fragment => {
-                    s.builtin_varying("hz_FrontColor".into())
+                    s.builtin_varying("hz_FrontColor".into(), "vec4")
                 }
+                "gl_FogFragCoord" => s.builtin_varying("hz_FogFragCoord".into(), "float"),
                 _ => {}
             }
         }
@@ -343,7 +344,9 @@ impl<'p> Stage<'p> {
         }
     }
 
-    pub(super) fn builtin_varying(&mut self, name: String) {
+    /// A built-in varying (`gl_TexCoord[n]`, `gl_FrontColor`, `gl_FogFragCoord`) of type `ty`: an
+    /// output of a vertex stage, an input of a fragment stage.
+    pub(super) fn builtin_varying(&mut self, name: String, ty: &str) {
         let list = if self.kind == ShaderStage::Vertex {
             &mut self.outs
         } else {
@@ -352,7 +355,7 @@ impl<'p> Stage<'p> {
         if !list.iter().any(|v| v.name == name) {
             list.push(Var {
                 name,
-                decl: "vec4 @;".into(),
+                decl: format!("{ty} @;"),
                 structure: false,
             });
         }

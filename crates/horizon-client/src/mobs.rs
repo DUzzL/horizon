@@ -20,6 +20,7 @@ pub mod brain;
 pub mod breeze;
 pub mod camel;
 pub mod caravan;
+pub mod cem;
 pub mod combat;
 pub mod control;
 pub mod conversion;
@@ -1632,6 +1633,12 @@ pub enum MobEvent {
         kind: &'static str,
         at: [f64; 3],
         velocity: [f64; 3],
+    },
+    /// One `minecraft:entity_effect` particle at `at` in the colour `color`
+    /// (`ColorParticleOption.create(ENTITY_EFFECT, r, g, b)`), standing still.
+    ParticleColored {
+        at: [f64; 3],
+        color: [f32; 3],
     },
     Experience {
         at: [f64; 3],

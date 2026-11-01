@@ -140,7 +140,26 @@ impl Game<'_> {
         if !self.settings.horizon.fog {
             horizon_client::fog::clear_distance_fog(&mut fog, &input);
         }
+        if self.title.is_none() {
+            fog.color =
+                self.native_fog_color_now(self.clock.fraction() as f32, at, fog_type, fog.color);
+        }
         fog
+    }
+    fn native_fog_color_now(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        fog_type: FogType,
+        color: [f32; 4],
+    ) -> [f32; 4] {
+        let mut rgb = [color[0], color[1], color[2]];
+        self.native_compute_fog_color(partial, camera, fog_type, &mut rgb);
+        if rgb.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+            [rgb[0], rgb[1], rgb[2], color[3]]
+        } else {
+            color
+        }
     }
     /// `FogRenderer.computeFogColor`'s night vision brightenFactor:
     /// `GameRenderer.nightVisionScale`, but not while Darkness is on.

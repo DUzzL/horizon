@@ -736,8 +736,9 @@ impl RecipeIndex {
                 Err(e) => log::warn!("Horizon: pack recipe {id} not shown in the book: {e}"),
             }
         }
-        for (id, v) in sources {
-            if conditions_hold(&v) {
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        for (id, mut v) in sources {
+            if conditions_hold(&v) && filters.apply(&id, &mut v) {
                 insert(id, &v);
             }
         }
