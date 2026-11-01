@@ -39,7 +39,7 @@ fn scroll_u(u: f32, scroll: f32) -> f32 {
     if scroll == 0.0 { u } else { (u + scroll) % 1.0 }
 }
 /// Full sky and block light in a vertex's `light`.
-const FULL_BRIGHT: u32 = 240 | 240 << 8;
+pub const FULL_BRIGHT: u32 = 240 | 240 << 8;
 /// How brightly the eyes render type's layers (spiders', endermen's and
 /// phantoms' eyes, the breeze's, the creaking's, the copper golem's) shine in
 /// HDR output, as `mesher::hdr_tier`.
@@ -3136,8 +3136,9 @@ mod emissive_tests {
             std::fs::write(path, text).unwrap();
         }
         let random = RandomTextures::scan(&root);
-        let emissive = Emissive::scan(&root, &random);
         let blinks = Blinks::scan(&root, &random);
+        let mut emissive = Emissive::scan(&root, &random);
+        emissive.pair_beside(&root, blinks.files());
         let _ = std::fs::remove_dir_all(&root);
         MobData {
             states: Vec::new(),
@@ -3218,6 +3219,43 @@ mod emissive_tests {
         assert!(shut(&uvs(93)));
         assert!(open(&uvs(94)));
         assert!(shut(&uvs(89 + 150)));
+    }
+
+    #[test]
+    fn a_blink_shows_its_own_glow_or_none() {
+        let atlas = |name: &str| {
+            let u = match name {
+                "entity/silverfish" => 0.0,
+                "entity/silverfish_e" => 0.25,
+                "entity/silverfish_blink" => 0.5,
+                "entity/silverfish_blink_e" => 0.75,
+                _ => return None,
+            };
+            Some([u, 0.0, u + 0.25, 1.0])
+        };
+        let base = [
+            "assets/minecraft/textures/entity/silverfish.png",
+            "assets/minecraft/textures/entity/silverfish_e.png",
+            "assets/minecraft/textures/entity/silverfish_blink.png",
+        ];
+        let at = |data: &MobData, age: u32| {
+            let mut m = silverfish();
+            m.age = age;
+            drawn(&m, data, &atlas)
+        };
+        // Age 89 is shut (see above), 0 open.
+        let plain = data(&base);
+        let open = at(&plain, 0);
+        assert_eq!(open.len(), 8);
+        assert!(inside(&open[4..], 0.25), "the texture's glow");
+        let shut = at(&plain, 89);
+        assert_eq!(shut.len(), 4, "no glowing open eyes over the shut ones");
+        assert!(inside(&shut, 0.5));
+        let mut own = base.to_vec();
+        own.push("assets/minecraft/textures/entity/silverfish_blink_e.png");
+        let shut = at(&data(&own), 89);
+        assert_eq!(shut.len(), 8);
+        assert!(inside(&shut[4..], 0.75), "the frame's own glow");
     }
 
     /// Draws `m` and returns each vertex's (uv, light).
@@ -3306,9 +3344,35 @@ mod emissive_tests {
                 assert_eq!(v.len(), 8);
                 assert!(inside(&v[4..], 0.75), "its own overlay, not silverfish_e");
             } else {
-                assert_eq!(v.len(), 4, "zombie_e.png doesn't glow over zombie3.png");
+                assert_eq!(v.len(), 4, "silverfish_e doesn't glow over silverfish2");
             }
         }
+    }
+
+    #[test]
+    fn worn_armour_glows_when_its_extra_layer_says_so() {
+        let m = silverfish();
+        let data = data(&[]);
+        let atlas = |_: &str| Some([0.0, 0.0, 0.5, 0.5]);
+        let part = m.kind.model.clone();
+        let extra = [
+            (part.as_ref(), [0.5, 0.0, 1.0, 0.5], 0xFFFF_FFFF, 0, false),
+            (part.as_ref(), [0.5, 0.5, 1.0, 1.0], 0xFFFF_FFFF, 0, true),
+        ];
+        let mut out = Vec::new();
+        render_with(
+            &m,
+            0.0,
+            glam::DVec3::ZERO,
+            &atlas,
+            7,
+            &data,
+            &extra,
+            &mut out,
+        );
+        assert_eq!(out.len(), 12, "body, armour, armour's glow");
+        assert!(out[..8].iter().all(|v| v.light == 7));
+        assert!(out[8..].iter().all(|v| v.light == FULL_BRIGHT));
     }
 }
 

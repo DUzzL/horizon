@@ -144,6 +144,18 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
 /// The most texels of OptiFine random entity variants the entity atlas packs: 2048 rows of
 /// its 4096, which keeps the default atlas (4096x5120) under the 8192 rows many GPUs take.
 const RANDOM_TEXELS: u64 = 4096 * 2048;
+/// The variant images (and `overlays`) the atlas packs: every variant before any overlay, by
+/// name, while their sizes add up to at most `budget` texels. A full budget drops glows before
+/// looks.
+fn budgeted<'a>(
+    files: impl Iterator<Item = &'a PathBuf>,
+    overlays: &HashSet<PathBuf>,
+    budget: u64,
+) -> HashSet<PathBuf> {
+    let mut files: Vec<&PathBuf> = files.collect();
+    files.sort_by_key(|p| (overlays.contains(*p), *p));
+    within_budget(&files, budget)
+}
 /// The `files` (in order) whose sizes add up to at most `budget` texels.
 fn within_budget(files: &[&PathBuf], budget: u64) -> HashSet<PathBuf> {
     let mut texels = 0u64;
@@ -739,16 +751,18 @@ impl HudAtlas {
         } else {
             Default::default()
         };
-        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
-            horizon_optifine::emissive::Emissive::scan(root, &random_textures)
-        } else {
-            Default::default()
-        });
         let blinks = if folders.contains(&"entity") {
             horizon_optifine::blink::Blinks::scan(root, &random_textures)
         } else {
             Default::default()
         };
+        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
+            let mut e = horizon_optifine::emissive::Emissive::scan(root, &random_textures);
+            e.pair_beside(root, blinks.files());
+            e
+        } else {
+            Default::default()
+        });
         let mut named: HashMap<PathBuf, String> = HashMap::new();
         let extra = random_textures
             .files()
@@ -761,18 +775,38 @@ impl HudAtlas {
             // A pack's variants can't grow the shared atlas past what a GPU takes: every variant
             // (those beside their texture too) counts, in name order, and those past the budget
             // stay out (their mobs wear the texture itself), not the whole pack.
-            // Overlays only after every variant: a full budget drops glows, not looks.
-            let overlays: HashSet<PathBuf> = emissive.files().map(|(f, _)| root.join(f)).collect();
-            let mut variants: Vec<&PathBuf> = named.keys().collect();
-            variants.sort_by_key(|p| (overlays.contains(*p), *p));
-            let kept = within_budget(&variants, RANDOM_TEXELS);
-            if kept.len() < variants.len() {
+            // Overlays and blink frames only after every variant.
+            let overlays: HashSet<PathBuf> = emissive
+                .files()
+                .chain(blinks.files())
+                .map(|(f, _)| root.join(f))
+                .collect();
+            let kept = budgeted(named.keys(), &overlays, RANDOM_TEXELS);
+            if kept.len() < named.len() {
                 log::warn!(
                     "{} random entity textures left out of the atlas: past its budget",
-                    variants.len() - kept.len()
+                    named.len() - kept.len()
                 );
             }
-            files.retain(|p| !named.contains_key(p) || kept.contains(p));
+            // A dropped variant beside its texture takes its walked overlay and blink frames
+            // (and theirs) with it: nothing would draw them.
+            let png = format!("{}.png", emissive.suffix);
+            let png = png.as_str();
+            let orphans: HashSet<PathBuf> = named
+                .keys()
+                .filter(|p| !kept.contains(*p))
+                .filter_map(|p| p.to_str()?.strip_suffix(".png").map(str::to_owned))
+                .flat_map(|stem| {
+                    ["", "_blink", "_blink2"]
+                        .into_iter()
+                        .flat_map(move |frame| {
+                            [format!("{stem}{frame}.png"), format!("{stem}{frame}{png}")]
+                        })
+                })
+                .map(PathBuf::from)
+                .filter(|p| !named.contains_key(p))
+                .collect();
+            files.retain(|p| (!named.contains_key(p) || kept.contains(p)) && !orphans.contains(p));
             // Those beside their texture are walked already.
             let walked: HashSet<&PathBuf> = files.iter().collect();
             let mut extra: Vec<PathBuf> = kept
@@ -2567,7 +2601,24 @@ mod tests {
             &[[200, 0, 0, 255]],
             None,
         );
+        // A variant's blink frame, with its own overlay.
+        write_strip(
+            &random.join("zombie3_blink.png"),
+            64,
+            64,
+            &[[0, 0, 200, 255]],
+            None,
+        );
+        write_strip(
+            &random.join("zombie3_blink_e.png"),
+            64,
+            64,
+            &[[9, 9, 9, 255]],
+            None,
+        );
         let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["minecraft:optifine/random/entity/zombie/zombie3_blink_e"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [9, 9, 9, 255]);
         let rect = atlas.sprites["minecraft:optifine/random/entity/zombie/zombie3_e"];
         assert_eq!(texel_at(&atlas, rect, 0, 0), [200, 0, 0, 255]);
         assert_eq!(
@@ -2596,6 +2647,13 @@ mod tests {
         let kept = within_budget(&refs, 600);
         assert_eq!(kept, files[..2].iter().cloned().collect());
         assert_eq!(within_budget(&refs, 768).len(), 3);
+        // a2's overlay sorts before a3 by name, but every variant comes first.
+        let overlay = dir.join("a2_e.png");
+        write_strip(&overlay, 16, 16, &[[1, 2, 3, 255]], None);
+        let overlays: HashSet<PathBuf> = [overlay.clone()].into();
+        let all = [&files[0], &overlay, &files[1]];
+        let kept = budgeted(all.into_iter(), &overlays, 600);
+        assert_eq!(kept, [files[0].clone(), files[1].clone()].into());
         fs::remove_dir_all(&dir).unwrap();
     }
     #[test]

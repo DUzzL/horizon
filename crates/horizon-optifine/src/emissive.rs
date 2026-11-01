@@ -8,8 +8,10 @@
 //! `zombie3`, never over `zombie`.
 //!
 //! This pairs entity textures, those under `textures/entity/` (mobs' and block entities'), by
-//! the entity atlas's names ([`crate::random_textures`]); blocks and items have their own
-//! atlas.
+//! the entity atlas's names ([`crate::random_textures`]), and through [`Emissive::pair_beside`]
+//! random variants and their blink frames wherever they are. A blink frame glows with its own
+//! overlay only: the texture's would paint its open eyes over the shut ones. Blocks and items
+//! have their own atlas.
 //!
 //! Written from OptiFine's `emissive.properties` and ETF's `EMISSIVE_GUIDE.md` and
 //! `emissive.properties`; no mod's source was read.
@@ -76,21 +78,32 @@ impl Emissive {
                 }
             }
         }
-        for (file, name) in random.files() {
+        out.pair_beside(root, random.files());
+        out
+    }
+
+    /// Pairs each of `files` (file from the root, atlas name: random variants, blink frames)
+    /// with an overlay beside it, and lists those outside `textures/` for the atlas.
+    pub fn pair_beside<'a>(
+        &mut self,
+        root: &Path,
+        files: impl Iterator<Item = (&'a str, &'a str)>,
+    ) {
+        let png = format!("{}.png", self.suffix);
+        for (file, name) in files {
             let Some(stem) = file.strip_suffix(".png") else {
                 continue;
             };
             let overlay = format!("{stem}{png}");
             if root.join(&overlay).is_file() {
-                let overlay_name = format!("{name}{}", out.suffix);
-                out.overlays.insert(name.to_owned(), overlay_name.clone());
+                let overlay_name = format!("{name}{}", self.suffix);
+                self.overlays.insert(name.to_owned(), overlay_name.clone());
                 // Those under `textures/` are the atlas's already.
                 if !overlay.contains("/textures/") {
-                    out.files.push((overlay, overlay_name));
+                    self.files.push((overlay, overlay_name));
                 }
             }
         }
-        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -240,20 +253,37 @@ mod tests {
         );
         // Nothing that could leave the texture's folder.
         for bad in [
-            &b"suffix.emissive=\\\\..\\\\x"[..],
+            &b"suffix.emissive=_a\\\\b"[..],
             b"suffix.emissive=/x",
             b"suffix.emissive=..",
         ] {
-            assert_eq!(
-                suffix(&[
-                    (PROPERTIES[0], bad),
-                    (PROPERTIES[1], b""),
-                    (PROPERTIES[2], b""),
-                    (PROPERTIES[2], b"")
-                ]),
-                "_e"
-            );
+            assert_eq!(suffix(&[(PROPERTIES[0], bad)]), "_e");
         }
+    }
+
+    #[test]
+    fn blink_frames_glow_with_their_own_overlay_only() {
+        let (root, mut e) = pack(
+            "blink",
+            &[
+                &format!("{RANDOM}/zombie/zombie3.png"),
+                &format!("{RANDOM}/zombie/zombie3_e.png"),
+                &format!("{RANDOM}/zombie/zombie3_blink.png"),
+                &format!("{RANDOM}/zombie/zombie3_blink_e.png"),
+                &format!("{ENTITY}/pig/pig.png"),
+                &format!("{ENTITY}/pig/pig_e.png"),
+                &format!("{ENTITY}/pig/pig_blink.png"),
+            ],
+            None,
+        );
+        let blinks = crate::blink::Blinks::scan(&root, &RandomTextures::scan(&root));
+        e.pair_beside(&root, blinks.files());
+        let frame = "minecraft:optifine/random/entity/zombie/zombie3_blink";
+        assert_eq!(e.overlay(frame), Some(format!("{frame}_e").as_str()));
+        assert!(e.files().any(|(_, name)| name == format!("{frame}_e")));
+        // No pig_blink_e: the shut eye doesn't take the pig's glow (its open eyes, mostly).
+        assert_eq!(e.overlay("entity/pig/pig_blink"), None);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
