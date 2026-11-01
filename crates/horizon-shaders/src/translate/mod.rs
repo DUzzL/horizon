@@ -2227,9 +2227,17 @@ mod tests {
         assert_eq!(arg("h").as_deref(), Some("hideGUI"));
         assert!(p.interface.uniforms.iter().any(|u| u.name == "hideGUI"));
         // `main` still reads the uniform, as an int compared with zero.
-        let entry = &p.fragment.entry_points[0].function;
-        let reads_uniform = entry.expressions.iter().any(|(_, e)| {
-            matches!(e, naga::Expression::Binary { op: naga::BinaryOperator::NotEqual, .. })
+        let (_, main) = (p.fragment.functions.iter())
+            .find(|(_, f)| f.name.as_deref() == Some("hz_main"))
+            .unwrap();
+        let reads_uniform = main.expressions.iter().any(|(_, e)| {
+            matches!(
+                e,
+                naga::Expression::Binary {
+                    op: naga::BinaryOperator::NotEqual,
+                    ..
+                }
+            )
         });
         assert!(reads_uniform);
     }
