@@ -2833,9 +2833,10 @@ struct Game<'a> {
     /// own client plays it.
     guest_player_sounds: Vec<(String, [f64; 3], f32, f32)>,
     /// `broadcastToAdmins` lines a guest's command queued, sent once it
-    /// returns: the line, whether operators get it and whether the console
-    /// logs it.
-    admin_feedback: Vec<(horizon_client::text::Text, bool, bool)>,
+    /// returns: the line, whether operators get it, whether the console
+    /// logs it and whether the world's own host is told too (a command
+    /// block's or minecart's line has no player it came from).
+    admin_feedback: Vec<(horizon_client::text::Text, bool, bool, bool)>,
     /// The server console is running a command: whether its feedback goes to
     /// the operators (`DedicatedServer.shouldInformAdmins`,
     /// `broadcast-console-to-ops`).

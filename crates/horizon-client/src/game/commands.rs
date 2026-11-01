@@ -242,11 +242,11 @@ impl Game<'_> {
             return;
         }
         if let Some(block) = self.command_source.and_then(|s| s.block) {
-            self.command_block_success(block, message);
+            self.command_block_success(block, message, false);
             return;
         }
         if let Some(cart) = self.command_source.and_then(|s| s.cart) {
-            self.cart_command_success(cart, message);
+            self.cart_command_success(cart, message, false);
             return;
         }
         if self.ui.rules.bool("send_command_feedback") {
@@ -259,17 +259,47 @@ impl Game<'_> {
             return;
         }
         if let Some(block) = self.command_source.and_then(|s| s.block) {
-            self.command_block_success(block, message);
+            self.command_block_success(block, message, true);
             return;
         }
         if let Some(cart) = self.command_source.and_then(|s| s.cart) {
-            self.cart_command_success(cart, message);
+            self.cart_command_success(cart, message, true);
             return;
         }
         if self.ui.rules.bool("send_command_feedback") {
             self.system_message(message.clone());
         }
         self.broadcast_to_admins(message);
+    }
+    /// `CommandSourceStack.broadcastToAdmins` for a command block or a command
+    /// minecart called `name`: `[name: message]`, gray and italic, for every
+    /// operator when `send_command_feedback` (the world's host too: no player
+    /// ran the command) and for a dedicated server's console when
+    /// `log_admin_commands`. Queued: `send_admin_feedback` sends it.
+    pub(super) fn broadcast_source_to_admins(&mut self, name: Text, message: Text) {
+        if message
+            .translation_key()
+            .is_some_and(|k| admin::QUIET.contains(&k))
+        {
+            return;
+        }
+        let line = Text::translate("chat.type.admin", &[name, message])
+            .with_color(text::GRAY)
+            .italic();
+        // Nobody else is in this game: its player is the only operator there is.
+        if self.lan.is_none()
+            && self.lan_acting.is_none()
+            && self.serving.is_none()
+            && self.options.dedicated.is_none()
+        {
+            self.system_message(line);
+            return;
+        }
+        let ops = self.ui.rules.bool("send_command_feedback");
+        let console = self.options.dedicated.is_some() && self.ui.rules.bool("log_admin_commands");
+        if ops || console {
+            self.admin_feedback.push((line, ops, console, true));
+        }
     }
     /// CommandSourceStack.broadcastToAdmins (`sendSuccess` with `broadcast`)
     /// for a guest's command, the host's in a world open to LAN and the
@@ -310,7 +340,7 @@ impl Game<'_> {
         let line = Text::translate("chat.type.admin", &[who, message])
             .with_color(text::GRAY)
             .italic();
-        self.admin_feedback.push((line, ops, console));
+        self.admin_feedback.push((line, ops, console, false));
     }
     /// Player.getDisplayName: the name (team-formatted), suggesting a
     /// `/tell`, showing the player on hover, inserting the name.
