@@ -435,7 +435,8 @@ pub fn scroll_offset(max_position: i32, now_ms: i64) -> i32 {
 /// that `acceptScrolling` passes: a message that fits is centred on
 /// `center_x`, kept inside `[left, right]`; a wider one is left-aligned,
 /// clipped to the box and slides back and forth with the clock (`now_ms`).
-#[allow(clippy::too_many_arguments)]
+/// Vanilla intersects that clip with the enclosing scissor; `paint` does not
+/// stack scissors, so this must not be drawn inside another `Draw::Scissor`.
 pub fn scrolling_text(
     out: &mut Vec<Draw>,
     m: &Measure,
@@ -467,6 +468,40 @@ pub fn scrolling_text(
         let at = center_left(text_x, line_width);
         text(out, message.clone(), at, text_top, WHITE, true);
     }
+}
+
+/// `ActiveTextCollector.acceptScrollingWithDefaultCenter`: `scrolling_text`
+/// centred between `left` and `right`.
+pub fn scrolling_with_default_center(
+    out: &mut Vec<Draw>,
+    m: &Measure,
+    message: &Text,
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+    now_ms: i64,
+) {
+    let center = (left + right) / 2;
+    scrolling_text(out, m, message, center, left, right, top, bottom, now_ms);
+}
+
+/// `AbstractWidget.extractScrollingStringOverContents`: `message` over the
+/// widget's box less `margin` on each side (centred, or scrolling when too
+/// wide).
+pub fn scrolling_string_over_contents(
+    out: &mut Vec<Draw>,
+    m: &Measure,
+    message: &Text,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    margin: i32,
+    now_ms: i64,
+) {
+    let (left, right) = (x + margin, x + w - margin);
+    scrolling_with_default_center(out, m, message, left, right, y, y + h, now_ms);
 }
 
 /// `Button` (`extractDefaultSprite`, then `AbstractButton.extractDefaultLabel`:
@@ -501,10 +536,7 @@ pub fn button(
         "widget/button"
     };
     sprite(out, sprite_id, x, y, w, h);
-    // `acceptScrollingWithDefaultCenter`.
-    let (left, right) = (x + 2, x + w - 2);
-    let center = (left + right) / 2;
-    scrolling_text(out, m, label, center, left, right, y, y + h, now_ms);
+    scrolling_string_over_contents(out, m, label, x, y, w, h, 2, now_ms);
 }
 /// `Tooltip.splitTooltip` of a widget's tooltip, shown under the mouse.
 pub fn tooltip(out: &mut Vec<Draw>, m: &Measure, message: &Text, mouse: (i32, i32)) {
@@ -1066,8 +1098,8 @@ mod button_label_tests {
     /// and back, with `maxPosition / 2` a quarter of the way.
     #[test]
     fn the_offset_follows_the_vanilla_period_and_easing() {
-        // 8 px over: a 4 s period. The `(int)` cast truncates 3.9999999999999996
-        // at 3 s, as Java does (these rows are from running vanilla's formula).
+        // 8 px over: a 4 s period. At 3 s the cosine is a hair below 0, so
+        // `pos` is a hair below 4 and the `(int)` cast truncates it to 3.
         let at = |ms| scroll_offset(8, ms);
         assert_eq!(
             [at(0), at(1000), at(2000), at(3000), at(4000)],
@@ -1094,17 +1126,8 @@ mod button_label_tests {
             }
         }
         assert_eq!(scroll_offset(2, 1500), 0);
-        // Vanilla's formula in Java, over 199 overflows and a minute in 37 ms
-        // steps, folded as `h = h * 31 + pos` in a long.
-        let mut h = 0i64;
-        for max in 1..200 {
-            for ms in (0..60_000).step_by(37) {
-                h = h
-                    .wrapping_mul(31)
-                    .wrapping_add(i64::from(scroll_offset(max, ms)));
-            }
-        }
-        assert_eq!(h, -4592957692560967986);
+        // tools/test_pack_screen_parity.py runs vanilla's own
+        // `defaultScrollingHelper` at fixed clocks for the scrolling labels.
     }
 
     /// The bug: a label wider than the button panicked in `i32::clamp`. Now it
