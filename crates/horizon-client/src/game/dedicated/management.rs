@@ -65,6 +65,8 @@ impl Game<'_> {
                     ));
                     lan.hub.lan.shared.set_motd(value.to_owned());
                 }
+                // DedicatedServer.setMotd: server.properties keeps it too.
+                self.store_property("motd", value.to_owned());
                 return json!({ "value": value });
             }
             "allowlist/add" => {
