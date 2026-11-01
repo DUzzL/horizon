@@ -330,8 +330,9 @@ when it is called, what it does): `{"name": "hud", "version": 1, "target": "hori
 An injection names `hook` and `hook_version` instead of `target`, and horizon-mixins resolves it from the catalog
 of the source it applies to, so a hook point can move in the source without breaking the mods that use it. A name
 the catalog lacks is `E_HOOK_UNKNOWN` (the error lists the names it has), a version it lacks `E_HOOK_VERSION`. A
-contract is never changed: an incompatible change adds a version. Helpers (`native_text`, `native_player`…) are not
-in the catalog; they are kept stable as the hook points are. A test (`catalog_matches_hook_points`) keeps the
+contract is never changed, its `mod_api` entry (the trait method's contract) included: an incompatible change adds
+a version. Helpers (`native_text`, `native_player`…) have no hook entry; the catalog's `helpers` list names the ones
+the generated `Host` offers, and they are kept stable as the hook points are. A test (`catalog_matches_hook_points`) keeps the
 catalog and the hook points' sources (`native_hooks.rs`, `gfx/native_render.rs`, `horizon-world`'s `loot.rs`) in step.
 
 ### The mod's crate
@@ -1378,7 +1379,8 @@ path = "engine"
 The package may use only crates and versions in Horizon's `Cargo.lock`, like mixin crates.
 The folder contains a Rust package with a `horizon-client` dependency. Its library exports
 `pub fn hooks() -> Box<dyn horizon_client::mod_api::Hooks>`. The launcher links this package
-into a generated game executable and calls `hooks()` in bundle order. The package is not a
+into a generated game executable and calls `hooks()` in dependency order (a mod after the mods it
+depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
 
