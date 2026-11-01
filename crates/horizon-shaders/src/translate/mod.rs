@@ -2226,11 +2226,46 @@ mod tests {
         assert_eq!(arg("f").as_deref(), Some("hideGUI"));
         assert_eq!(arg("h").as_deref(), Some("hideGUI"));
         assert!(p.interface.uniforms.iter().any(|u| u.name == "hideGUI"));
-        // `main` still reads the uniform, as an int compared with zero.
+        // `main` reads the uniform as an int compared with zero; `f`, `g` and `h` do not.
+        assert!(reads_bool_uniform(&p));
+        for name in ["f", "g", "h"] {
+            let (_, func) = (p.fragment.functions.iter())
+                .find(|(_, f)| f.name.as_deref() == Some(name))
+                .unwrap();
+            let uses = func.expressions.iter().any(|(_, e)| {
+                matches!(
+                    e,
+                    naga::Expression::Binary {
+                        op: naga::BinaryOperator::NotEqual,
+                        ..
+                    }
+                )
+            });
+            assert!(!uses, "{name} read the uniform instead of its own hideGUI");
+        }
+    }
+
+    /// A struct member and a member access named like a bool uniform stay plain.
+    #[test]
+    fn members_named_like_bool_uniforms_stay_plain() {
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   struct S { bool hideGUI; float x; };\n\
+                   float f(S v) { return v.hideGUI ? 1.0 : 0.0; }\n\
+                   void main() { S s = S(true, 1.0); c = vec4(f(s), hideGUI ? 1.0 : 0.0, 0.0, 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(reads_bool_uniform(&p));
+    }
+
+    /// Whether `hz_main` compares an int uniform with zero (a bool uniform read).
+    fn reads_bool_uniform(p: &Program) -> bool {
         let (_, main) = (p.fragment.functions.iter())
             .find(|(_, f)| f.name.as_deref() == Some("hz_main"))
             .unwrap();
-        let reads_uniform = main.expressions.iter().any(|(_, e)| {
+        main.expressions.iter().any(|(_, e)| {
             matches!(
                 e,
                 naga::Expression::Binary {
@@ -2238,19 +2273,45 @@ mod tests {
                     ..
                 }
             )
-        });
-        assert!(reads_uniform);
+        })
     }
 
-    /// A loop variable, a struct member and a member access named like a bool uniform.
+    /// A `for` header's variable (and a second declarator) hide the uniform to the loop's end.
     #[test]
-    fn loop_variables_and_members_named_like_bool_uniforms_translate() {
+    fn for_header_and_second_declarators_hide_bool_uniforms() {
         let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
-                   struct S { bool hideGUI; float x; };\n\
-                   float f(S v) {\n    float t = 0.0;\n    \
-                   for (int i = 0; i < 2; i++) { bool hideGUI = i > 0; t += hideGUI ? 1.0 : 0.0; }\n    \
-                   return t + (v.hideGUI ? 1.0 : 0.0);\n}\n\
-                   void main() { S s = S(true, 1.0); c = vec4(f(s), hideGUI ? 1.0 : 0.0, 0.0, 1.0); }\n";
+                   void main() {\n    float t = 0.0;\n    \
+                   for (bool hideGUI = false; t < 2.0; t += 1.0) { t += hideGUI ? 1.0 : 0.0; }\n    \
+                   for (int i = 0, hideGUI = 3; i < 2; i++) { t += float(hideGUI); }\n    \
+                   bool a = true, hideGUI = false, b = a;\n    t += hideGUI ? 1.0 : 0.0;\n    \
+                   c = vec4(t, b ? 1.0 : 0.0, 0.0, 1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(!reads_bool_uniform(&p), "the local hides the uniform");
+        let fsh = "#version 330\nuniform bool hideGUI;\nout vec4 c;\n\
+                   void main() {\n    float t = 0.0;\n    \
+                   for (bool hideGUI = false; t < 2.0; t += 1.0) { t += hideGUI ? 1.0 : 0.0; }\n    \
+                   for (int i = 0, k = 3; i < 2; i++) { t += float(k); }\n    \
+                   c = vec4(t, hideGUI ? 1.0 : 0.0, 0.0, 1.0);\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(reads_bool_uniform(&p), "the uniform is back after the loop");
+    }
+
+    /// A sampler parameter's name reused as a local of an inner block, then read again.
+    #[test]
+    fn sampler_parameter_is_back_after_the_block_of_a_local() {
+        let fsh = "#version 330\nuniform sampler2D colortex1;\nin vec2 uv;\nout vec4 color;\n\
+                   vec4 f(sampler2D tex, vec2 c) {\n    vec4 r = vec4(0.0);\n    \
+                   if (c.x > 0.5) { float tex = 2.0; r += vec4(tex); }\n    \
+                   return r + texture(tex, c);\n}\n\
+                   void main() { color = f(colortex1, uv); }\n";
         let p = program(
             &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
             Target::Buffers,

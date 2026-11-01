@@ -304,8 +304,19 @@ impl Stage<'_> {
                     out.push_str(t);
                     continue;
                 }
-                if before.is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else")) {
-                    hidden.push((t, self.scope_start(i), depth.max(1)));
+                let declares = before
+                    .is_some_and(|b| is_ident(b) && !matches!(b, "return" | "case" | "else"))
+                    || (before == Some(",")
+                        && (calls.is_empty() || calls.last().is_some_and(|c| c.0 == "for"))
+                        && self.is_next_declarator(i));
+                if declares {
+                    // A `for` header's variable ends with the loop's block.
+                    let ends = if calls.last().is_some_and(|c| c.0 == "for") {
+                        depth + 1
+                    } else {
+                        depth.max(1)
+                    };
+                    hidden.push((t, self.scope_start(i), ends));
                     out.push_str(t);
                     continue;
                 }
@@ -530,6 +541,38 @@ impl Stage<'_> {
             }
         }
         (groups.len() > 1).then_some(groups)
+    }
+
+    /// Whether the name at `i`, after a `,`, is another declarator of the statement's type
+    /// (`bool a = 1, x = 0;`): the statement starts with a type and a name.
+    fn is_next_declarator(&self, i: usize) -> bool {
+        let follows = (i + 1..self.tokens.len())
+            .find(|&j| significant(self.tokens[j]))
+            .map(|j| self.tokens[j]);
+        if !matches!(follows, Some("=" | "," | ";" | "[")) {
+            return false;
+        }
+        let mut level = 0i32;
+        let mut start = i;
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            let t = self.tokens[j];
+            if !significant(t) {
+                continue;
+            }
+            match t {
+                ")" | "]" => level += 1,
+                "(" | "[" if level > 0 => level -= 1,
+                "(" | "[" | "{" | "}" | ";" if level == 0 => break,
+                _ => {}
+            }
+            start = j;
+        }
+        is_ident(self.tokens[start])
+            && (start + 1..i)
+                .find(|&j| significant(self.tokens[j]))
+                .is_some_and(|j| is_ident(self.tokens[j]))
     }
 
     /// Where the scope of the name declared at token `i` begins: after its initializer (GLSL 4.60
