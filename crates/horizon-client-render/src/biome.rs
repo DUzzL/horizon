@@ -172,6 +172,7 @@ fn color(v: &Value) -> Option<u32> {
 fn colormap(root: &Path, name: &str) -> Result<Vec<u32>> {
     let path = root.join(format!("assets/minecraft/textures/colormap/{name}.png"));
     let mut decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(path)?));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
