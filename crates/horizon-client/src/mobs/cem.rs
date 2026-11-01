@@ -839,16 +839,19 @@ mod tests {
         assert_eq!(custom(&models.layer("zombie#main").unwrap().model), 1);
     }
 
-    /// A mob type `id` of `species` whose body and `layers` are all `tree`.
+    /// A mob type `id` of `species` whose body and `layers` are all `tree`, with the vanilla
+    /// `texture`.
     fn mob_kind(
         id: &str,
         species: super::super::Species,
         anim: super::super::Anim,
+        texture: &str,
         layers: &[&str],
         tree: &Part,
     ) -> Arc<MobType> {
         let mut kind = (*super::super::sensor_scan_tests::kind()).clone();
         kind.id = id.into();
+        kind.texture = texture.into();
         kind.species = species;
         kind.anim = anim;
         kind.model = Arc::new(tree.clone());
@@ -942,6 +945,7 @@ mod tests {
                 "minecraft:spider",
                 Species::Spider,
                 Anim::Spider,
+                "entity/spider/spider",
                 &["spider#main"],
                 &tree("body1"),
             ),
@@ -971,6 +975,7 @@ mod tests {
                 "minecraft:sheep",
                 Species::Sheep,
                 Anim::Sheep,
+                "entity/sheep/sheep",
                 &["sheep#main", "sheep#wool"],
                 &tree("body"),
             ),
@@ -1011,7 +1016,14 @@ mod tests {
         ));
         let mut mob = Mob::new(
             1,
-            mob_kind("minecraft:wolf", Species::Wolf, Anim::Wolf, &layers, &tree),
+            mob_kind(
+                "minecraft:wolf",
+                Species::Wolf,
+                Anim::Wolf,
+                "entity/wolf/wolf",
+                &layers,
+                &tree,
+            ),
             horizon_core::geometry::Vec3::ZERO,
             0.0,
         );
