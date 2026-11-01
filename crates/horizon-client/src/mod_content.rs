@@ -513,6 +513,73 @@ fn component_types(map: &J) -> BTreeSet<String> {
     }
 }
 
+/// Blocks and items native mods declare in code (`native_blocks`,
+/// `native_items`), joined to the content mods: each namespace's go into
+/// the content mod of that id when one is on (a native mod's own `.hmod`,
+/// with its models and textures), else into a content mod with no files of
+/// its own. Checked as files are ([`horizon_mods::Content::declare`],
+/// [`accept_mod`]); a namespace whose declarations are refused is left out
+/// whole, and its error returned.
+pub fn accept_declared(
+    mods: &mut Vec<ContentMod>,
+    blocks: &[horizon_mods::content::Block],
+    items: &[horizon_mods::content::Item],
+    known: &BTreeSet<String>,
+) -> Vec<String> {
+    let namespace = |id: &str| id.split_once(':').map_or("", |(ns, _)| ns).to_owned();
+    let mut by_namespace: std::collections::BTreeMap<String, (Vec<_>, Vec<_>)> = Default::default();
+    for block in blocks {
+        by_namespace
+            .entry(namespace(&block.id))
+            .or_default()
+            .0
+            .push(block.clone());
+    }
+    for item in items {
+        by_namespace
+            .entry(namespace(&item.id))
+            .or_default()
+            .1
+            .push(item.clone());
+    }
+    let mut errors = Vec::new();
+    for (ns, (blocks, items)) in by_namespace {
+        let result = match mods.iter().position(|m| m.id == ns) {
+            Some(i) => {
+                let mut content = horizon_mods::Content::declared(&ns);
+                content.blocks.clone_from(&mods[i].content.blocks);
+                content.items.clone_from(&mods[i].content.items);
+                content
+                    .declare(&blocks, &items)
+                    .and_then(|()| {
+                        let mut added = horizon_mods::Content::declared(&ns);
+                        added.blocks.clone_from(&blocks);
+                        added.items.clone_from(&items);
+                        validate_components(&added, known).map_err(|e| e.to_string())
+                    })
+                    .map(|()| {
+                        mods[i].content.blocks.extend(blocks);
+                        mods[i].content.items.extend(items);
+                    })
+            }
+            None => {
+                let mut content = horizon_mods::Content::declared(&ns);
+                content.declare(&blocks, &items).and_then(|()| {
+                    let candidate = ContentMod {
+                        id: ns.clone(),
+                        content,
+                    };
+                    accept_mod(mods, candidate, known).map_err(|e| e.to_string())
+                })
+            }
+        };
+        if let Err(e) = result {
+            errors.push(format!("native blocks and items of {ns}: {e}"));
+        }
+    }
+    errors
+}
+
 /// Check and accept one mod without disturbing previously accepted mods.
 pub fn accept_mod(
     mods: &mut Vec<ContentMod>,
@@ -2262,7 +2329,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 /// and mod files reuse it. With ATM10's carried mods a build takes about
 /// 25 s and peaks above 3 GB, more than everything the game keeps.
 pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<PathBuf> {
-    if mods.iter().all(|m| m.content.is_empty()) {
+    if mods
+        .iter()
+        .all(|m| m.content.is_empty() && m.content.blocks.is_empty() && m.content.items.is_empty())
+    {
         return Ok(base.to_owned());
     }
     let out = cache.join("mod-content");
@@ -2317,8 +2387,12 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
     }
     for m in mods {
         parts.push(m.id.clone());
+        // What it declares, so blocks and items from code count too.
+        parts.push(format!("{:?} {:?}", m.content.blocks, m.content.items));
         let source = m.content.source();
-        if source.is_dir() {
+        if m.content.files.is_empty() {
+            // Declared in code only: nothing to read.
+        } else if source.is_dir() {
             for file in &m.content.files {
                 parts.push(meta(&source.join(file))?);
             }
