@@ -3,7 +3,8 @@
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
 use super::{
-    Dim, Game, InteractTarget, dispenser, native_mob_draw::NativePlayerRender, view_vector,
+    Dim, Game, InteractTarget, dispenser, native_mob_draw::NativePlayerRender,
+    native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -149,7 +150,7 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
 const WIND_CHARGE_IDS: u32 = super::dragon::SPECIAL - 0x10000;
 
 /// The index of the wind charge a `wind_charge_hitboxes` id stands for.
-fn wind_charge_hit(id: u32) -> Option<usize> {
+pub(super) fn wind_charge_hit(id: u32) -> Option<usize> {
     (WIND_CHARGE_IDS..super::dragon::SPECIAL)
         .contains(&id)
         .then(|| (id - WIND_CHARGE_IDS) as usize)
@@ -3413,24 +3414,12 @@ impl Game<'_> {
         let mut deflections: Vec<[f64; 3]> = Vec::new();
         let mut arrow_events = Vec::new();
         let mut trails = Vec::new();
+        let mut keep_flags = vec![true; projectiles.len()];
+        // The impacts the mods may cancel (`native_projectile_impact`), on a server.
+        let hear = self.native_hears_impacts();
+        let mut impacts: Vec<Impact> = Vec::new();
         {
-            let mut targets: Vec<(Who, Aabb)> = self
-                .mobs
-                .iter()
-                .filter(|m| m.alive())
-                .map(|m| (Who::Mob(m.id), m.bounds()))
-                .collect();
-            if let Some(p) = self.player_view()
-                && p.alive
-            {
-                targets.push((Who::Player, p.bounds));
-            }
-            // Dragon parts and end crystals under reserved ids (game/dragon.rs).
-            targets.extend(
-                self.special_targets()
-                    .into_iter()
-                    .map(|(id, b)| (Who::Mob(id), b)),
-            );
+            let targets = self.projectile_targets();
             let breezes: Vec<u32> = self
                 .mobs
                 .iter()
@@ -3474,7 +3463,6 @@ impl Game<'_> {
                     .map(|g| g.conn)
                     .collect()
             });
-            let mut keep_flags = vec![true; projectiles.len()];
             for i in 0..projectiles.len() {
                 // A wind charge is pickable, so a pearl, an arrow or a trident can
                 // strike it (`Projectile.isPickable`, `Projectile.onHit`).
@@ -3494,6 +3482,8 @@ impl Game<'_> {
                     keep_flags[i] = false;
                     continue;
                 }
+                // The projectile as it was, to fly on if a mod cancels its impact.
+                let before = (hear && !p.stuck).then(|| p.clone());
                 let mob_shot = !matches!(p.owner, Some(Who::Player));
                 // A player's arrows, snowballs and eggs meet every player; a
                 // guest's flies from that guest (Projectile.getOwner), not
@@ -3558,6 +3548,7 @@ impl Game<'_> {
                         &mut p.velocity,
                     );
                 }
+                let events_from = arrow_events.len();
                 if let Some(a) = p.arrow.as_mut() {
                     arrow_events.extend(a.events.drain(..).map(|e| (p.position, e)));
                 }
@@ -3596,6 +3587,15 @@ impl Game<'_> {
                     continue;
                 }
                 if hit != Hit::None {
+                    if let Some(before) = before {
+                        impacts.push(Impact {
+                            index: i,
+                            before,
+                            hit,
+                            hit_slot: hits.len(),
+                            events: events_from..arrow_events.len(),
+                        });
+                    }
                     hits.push((p.clone(), hit));
                 }
                 keep_flags[i] = keep;
@@ -3611,12 +3611,22 @@ impl Game<'_> {
                     super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                 }
             }
-            let mut idx = 0;
-            projectiles.retain(|_| {
-                let k = keep_flags[idx];
-                idx += 1;
-                k
-            });
+        }
+        let listed = keep_flags.clone();
+        let mut idx = 0;
+        projectiles.retain(|_| {
+            let k = keep_flags[idx];
+            idx += 1;
+            k
+        });
+        if !impacts.is_empty() {
+            self.native_settle_impacts(
+                &mut projectiles,
+                &listed,
+                impacts,
+                &mut hits,
+                &mut arrow_events,
+            );
         }
         self.smoke_trails(trails);
         for at in deflections {
@@ -3887,11 +3897,32 @@ impl Game<'_> {
         }
     }
     /// `Level.isRainingAt` for arrows.
-    fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
+    /// What a projectile can hit: the mobs, the player, the dragon's parts and
+    /// the End crystals (under reserved ids, game/dragon.rs).
+    pub(super) fn projectile_targets(&self) -> Vec<(Who, Aabb)> {
+        let mut targets: Vec<(Who, Aabb)> = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive())
+            .map(|m| (Who::Mob(m.id), m.bounds()))
+            .collect();
+        if let Some(p) = self.player_view()
+            && p.alive
+        {
+            targets.push((Who::Player, p.bounds));
+        }
+        targets.extend(
+            self.special_targets()
+                .into_iter()
+                .map(|(id, b)| (Who::Mob(id), b)),
+        );
+        targets
+    }
+    pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
         move |p: BlockPos| self.raining_at(p)
     }
     /// The level as arrows see it.
-    fn arrow_scene<'s>(
+    pub(super) fn arrow_scene<'s>(
         &'s self,
         rain: &'s dyn Fn(BlockPos) -> bool,
     ) -> horizon_client::arrows::ArrowScene<'s, 's> {
@@ -5910,7 +5941,9 @@ impl Game<'_> {
             }
             return Ok(true);
         }
-        let p = if fluid {
+        // useOn: a clicked block without a collision shape (vines, grass)
+        // takes the mob itself, any other the one on the clicked face.
+        let p = if fluid || self.collision_empty(hit.pos) {
             hit.pos
         } else {
             [

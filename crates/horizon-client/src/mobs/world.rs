@@ -404,6 +404,16 @@ pub(crate) fn with_built_test_world(
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
+    with_built_test_world_rules(others, true, build, f)
+}
+/// `with_built_test_world` with the `mob_griefing` game rule the world reports.
+#[cfg(test)]
+pub(crate) fn with_built_test_world_rules(
+    others: &[Seen],
+    mob_griefing: bool,
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
@@ -454,7 +464,7 @@ pub(crate) fn with_built_test_world(
         block_tags: &items.block_tags,
         landing: &motion.landing,
         biomes: &biomes,
-        mob_griefing: true,
+        mob_griefing,
         universal_anger: false,
         mob_drops: true,
         max_entity_cramming: 24,
