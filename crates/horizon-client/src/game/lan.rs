@@ -250,10 +250,12 @@ pub(super) fn baby_index(species: Species) -> Option<u8> {
     use Species as S;
     match species {
         S::Piglin => Some(17),
-        S::Zombie | S::Husk | S::Drowned | S::ZombieVillager | S::ZombifiedPiglin | S::Zoglin => {
+        s if horizon_client::mobs::finalize::ageable(s)
+            || horizon_client::mobs::doors::is_zombie(s)
+            || s == S::Zoglin =>
+        {
             Some(16)
         }
-        s if horizon_client::mobs::finalize::ageable(s) => Some(16),
         _ => None,
     }
 }
@@ -473,7 +475,7 @@ fn mob_meta(
         meta.push((15, serializer::BYTE, Value::Byte(flags)));
     }
     defaults.push((15, serializer::BYTE, Value::Byte(0)));
-    // AgeableMob.DATA_BABY_ID (and Zombie's, Piglin's).
+    // AgeableMob.DATA_BABY_ID (and Zombie's, Zoglin's, Piglin's).
     if let Some(index) = baby_index(m.species()) {
         if m.is_baby() {
             meta.push((index, serializer::BOOLEAN, Value::Bool(true)));

@@ -5,8 +5,8 @@
 use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
-    Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner, panda,
-    phantom, sniffer, sync, tame, zombie_villager,
+    Mob, Species, Who, armadillo, bat, bee, camel, creaking, drops, equine, finalize, illusioner,
+    panda, phantom, sniffer, sync, tame, zombie_villager,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -82,7 +82,15 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
                 m.extra.left_handed = flags & 2 != 0;
                 m.ai.aggressive = flags & 4 != 0;
             }
-            (i, Value::Bool(b)) if Some(i) == baby => m.extra.age = if *b { -1 } else { 0 },
+            // AgeableMob.isBaby: `canBeABaby` too, so a parrot or a slime
+            // sent as one is still drawn grown.
+            (i, Value::Bool(b)) if Some(i) == baby => {
+                m.extra.age = if *b && drops::can_be_baby(species) {
+                    -1
+                } else {
+                    0
+                };
+            }
             // AgeableMob.AGE_LOCKED, the entry after DATA_BABY_ID (not
             // Zombie's or Piglin's).
             (17, Value::Bool(locked)) if baby == Some(16) && finalize::ageable(species) => {
@@ -630,20 +638,26 @@ mod tests {
     }
 
     /// #6133: a server's baby happy ghast (a hatched dried ghast) and baby
-    /// nautilus come with AgeableMob.DATA_BABY_ID (16) like any other animal.
+    /// nautilus come with AgeableMob.DATA_BABY_ID (16) like any other animal;
+    /// a parrot never is one (`Parrot.canBeABaby`).
     #[test]
     fn a_happy_ghast_and_a_nautilus_take_their_babyhood() {
         use horizon_client::mobs::MobTypes;
         use std::{fs, sync::Arc};
 
         let root = std::env::temp_dir().join(format!("horizon-baby-flag-{}", std::process::id()));
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("entity-types.json"),
-            r#"{"minecraft:happy_ghast": {}, "minecraft:nautilus": {}}"#,
+            r#"{"minecraft:happy_ghast": {}, "minecraft:nautilus": {}, "minecraft:parrot": {}}"#,
         )
         .unwrap();
-        fs::write(root.join("entity-models.json"), "{}").unwrap();
+        fs::write(
+            root.join("entity-models.json"),
+            r#"{"minecraft:happy_ghast#main": {}, "minecraft:nautilus#main": {},
+                "minecraft:parrot#main": {}}"#,
+        )
+        .unwrap();
         let mut types = MobTypes::load(&root).unwrap();
         fs::remove_dir_all(root).unwrap();
         for kind in ["minecraft:happy_ghast", "minecraft:nautilus"] {
@@ -656,6 +670,11 @@ mod tests {
             apply(&mut m, &[(16, s::BOOLEAN, Value::Bool(false))]);
             assert!(!m.is_baby(), "{kind}");
         }
+        let t = Arc::new(types.types.remove("minecraft:parrot").unwrap());
+        let mut parrot = Mob::new(1, t, horizon_core::geometry::Vec3::ZERO, 0.0);
+        client_defaults(&mut parrot);
+        apply(&mut parrot, &[(16, s::BOOLEAN, Value::Bool(true))]);
+        assert!(!parrot.is_baby());
     }
 
     #[test]
