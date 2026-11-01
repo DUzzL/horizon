@@ -32,36 +32,7 @@ use horizon_protocol::{
     text::literal,
 };
 use horizon_world::entity_move::EntityMoveWorld;
-use std::collections::HashMap;
 use winit::keyboard::KeyCode;
-
-/// Sets the viewer counts `known` holds for `dim` to `now` and returns the
-/// changes as `(pos, previous, viewers)`, in position order. A container that
-/// is no longer counted goes to 0 and leaves `known`.
-pub(super) fn viewer_changes(
-    known: &mut HashMap<(&'static str, (i32, i32, i32)), u32>,
-    dim: &'static str,
-    mut now: HashMap<(i32, i32, i32), u32>,
-) -> Vec<((i32, i32, i32), u32, u32)> {
-    let mut changes = Vec::new();
-    known.retain(|&(d, pos), previous| {
-        if d != dim {
-            return true;
-        }
-        let viewers = now.remove(&pos).unwrap_or(0);
-        if viewers != *previous {
-            changes.push((pos, *previous, viewers));
-            *previous = viewers;
-        }
-        viewers > 0
-    });
-    for (pos, viewers) in now {
-        known.insert((dim, pos), viewers);
-        changes.push((pos, 0, viewers));
-    }
-    changes.sort_unstable();
-    changes
-}
 
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
@@ -1392,27 +1363,6 @@ impl Game<'_> {
             if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
                 self.guest_carried_back(host, gi);
             }
-        }
-    }
-
-    /// `ContainerOpenersCounter` for the mod containers of the level in place:
-    /// the players with each one open, recounted from their menus, so a
-    /// change is heard whichever way a player left (`native_mod_container_viewers`).
-    fn tick_mod_container_viewers(&mut self, host: &LanHost) {
-        let mut now: HashMap<(i32, i32, i32), u32> = HashMap::new();
-        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
-            // `BarrelBlockEntity.startOpen`: a spectator does not open it.
-            if !g.spectator()
-                && let Some(m) = &g.menu
-                && let Slots::Block(pos) = m.slots
-                && self.mod_menu_at(pos).is_some()
-            {
-                *now.entry(pos).or_default() += 1;
-            }
-        }
-        let dim = self.dim.id();
-        for (pos, previous, viewers) in viewer_changes(&mut self.mod_container_viewers, dim, now) {
-            self.native_mod_container_viewers(dim, [pos.0, pos.1, pos.2], viewers, previous);
         }
     }
 
@@ -3305,7 +3255,6 @@ impl Game<'_> {
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
         self.lan_containers_tick(host);
-        self.tick_mod_container_viewers(host);
         self.tick_lan_mount_menus(host);
         self.announce_guest_advancements(host);
         let conns: Vec<u32> = host
