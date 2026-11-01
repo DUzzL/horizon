@@ -8,7 +8,7 @@ use horizon_client::{
     block_edit::Run,
     command::{Reader, args::BlockInput, block},
     containers::BlockEntity,
-    fast_hash::FxHashMap,
+    fast_hash::{FxHashMap, FxHashSet},
     world::World,
 };
 use horizon_world::{
@@ -83,8 +83,8 @@ impl Game<'_> {
             },
         );
         self.world.watched = watched;
-        // The block entities the new blocks bring, made once a block, as `native_set_block` makes them (a mod
-        // block's own, API 15, included).
+        // The block entities the new blocks bring, as `native_set_block` makes them (a mod block's own, API 15,
+        // included), in the order `replace_block_entities` takes them: the positions whose block changed.
         let name = |s: u32| self.res.facts().get(BlockStateId(s)).name.clone();
         let wanted: Vec<Arc<str>> = out
             .tracked
@@ -92,18 +92,13 @@ impl Game<'_> {
             .filter(|&&(_, old, new)| name(old) != name(new))
             .map(|&(_, _, new)| name(new))
             .collect();
-        let mut made: FxHashMap<Arc<str>, Option<BlockEntity>> = FxHashMap::default();
-        for n in wanted {
-            if let std::collections::hash_map::Entry::Vacant(slot) = made.entry(n.clone()) {
-                slot.insert(self.new_block_entity(&n));
-            }
-        }
+        let mut made = make_block_entities(&wanted, |n| self.new_block_entity(n)).into_iter();
         let facts = self.res.facts();
         let removed = replace_block_entities(
             &mut self.world,
             &out.tracked,
             |s| facts.get(BlockStateId(s)).name.clone(),
-            |n| made.get(n).cloned().flatten(),
+            |_| made.next().flatten(),
         );
         for pos in removed {
             self.jukebox_removed(pos);
@@ -203,11 +198,34 @@ fn resolve_runs(
 /// its block entity removed (as `place_state` does) and `new_entity(name)`'s,
 /// if any, put in its place. Returns the positions whose block was replaced
 /// (a jukebox there stops).
+/// A block entity for each new block, in order: made for each position, as vanilla calls
+/// `EntityBlock.newBlockEntity` for each (a mod's may number its instances). A block that makes none (stone) is
+/// asked once.
+fn make_block_entities(
+    names: &[Arc<str>],
+    mut make: impl FnMut(&str) -> Option<BlockEntity>,
+) -> Vec<Option<BlockEntity>> {
+    let mut none: FxHashSet<&str> = FxHashSet::default();
+    names
+        .iter()
+        .map(|n| {
+            if none.contains(&**n) {
+                return None;
+            }
+            let entity = make(n);
+            if entity.is_none() {
+                none.insert(n);
+            }
+            entity
+        })
+        .collect()
+}
+
 fn replace_block_entities(
     world: &mut World,
     tracked: &[Tracked],
     name: impl Fn(u32) -> Arc<str>,
-    new_entity: impl Fn(&str) -> Option<BlockEntity>,
+    mut new_entity: impl FnMut(&str) -> Option<BlockEntity>,
 ) -> Vec<[i32; 3]> {
     let mut replaced = Vec::new();
     for &((x, y, z), old, new) in tracked {
@@ -377,5 +395,49 @@ mod tests {
             w.block_entities.get(&(3, 10, 3)),
             Some(BlockEntity::Mod(e)) if e.id == "machines:press"
         ));
+    }
+
+    #[test]
+    fn each_new_block_gets_its_own_block_entity() {
+        // a mod's constructor numbering its instances; stone makes none
+        let mut calls = Vec::new();
+        let made = make_block_entities(
+            &[
+                "machines:press",
+                "minecraft:stone",
+                "machines:press",
+                "minecraft:stone",
+            ]
+            .map(Arc::<str>::from),
+            |n| {
+                calls.push(n.to_string());
+                (n == "machines:press").then(|| {
+                    BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity {
+                        id: format!("press-{}", calls.len()),
+                        ..Default::default()
+                    }))
+                })
+            },
+        );
+        let ids: Vec<Option<String>> = made
+            .iter()
+            .map(|e| match e {
+                Some(BlockEntity::Mod(e)) => Some(e.id.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                Some("press-1".to_string()),
+                None,
+                Some("press-3".to_string()),
+                None
+            ]
+        );
+        assert_eq!(
+            calls,
+            ["machines:press", "minecraft:stone", "machines:press"]
+        );
     }
 }
