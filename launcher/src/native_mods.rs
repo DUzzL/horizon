@@ -147,11 +147,12 @@ pub enum Plan {
 impl Plan {
     pub fn label(&self) -> String {
         match self {
-            Self::UpToDate => "Up to date (no build needed)".into(),
-            Self::Incremental(changes) => {
-                format!("Incremental rebuild: {}", changes.join("; "))
-            }
-            Self::First => "First build: the whole game (several minutes)".into(),
+            Self::UpToDate => tr("Up to date (no build needed)").into(),
+            Self::Incremental(changes) => trf(
+                "Incremental rebuild: {changes}",
+                &[("changes", &changes.join("; "))],
+            ),
+            Self::First => tr("First build: the whole game (several minutes)").into(),
         }
     }
 
@@ -982,13 +983,22 @@ impl Step {
                 name,
                 profile,
             } => match total {
-                Some(total) => format!(
-                    "Compiling the game ({}): {done} of {total} crates, now {name}",
-                    profile.name()
+                Some(total) => trf(
+                    "Compiling the game ({profile}): {done} of {total} crates, now {name}",
+                    &[
+                        ("profile", profile.name()),
+                        ("done", &done.to_string()),
+                        ("total", &total.to_string()),
+                        ("name", name),
+                    ],
                 ),
-                None => format!(
-                    "Compiling the game ({}): {done} crates, now {name}",
-                    profile.name()
+                None => trf(
+                    "Compiling the game ({profile}): {done} crates, now {name}",
+                    &[
+                        ("profile", profile.name()),
+                        ("done", &done.to_string()),
+                        ("name", name),
+                    ],
                 ),
             },
             Self::PostBuildCompile(id) => trf("Building {name}'s post-build step", &[("name", id)]),
@@ -998,11 +1008,13 @@ impl Step {
                 secs,
                 profile,
                 plan,
-            } => format!(
-                "Built in {} ({}, {})",
-                duration_label(*secs),
-                profile.name(),
-                plan.kind()
+            } => trf(
+                "Built in {duration} ({profile}, {plan})",
+                &[
+                    ("duration", &duration_label(*secs)),
+                    ("profile", profile.name()),
+                    ("plan", tr(plan.kind())),
+                ],
             ),
         }
     }

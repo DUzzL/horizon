@@ -1821,3 +1821,47 @@ fn a_finished_optimization_stamps_the_level_data() {
     let version = root.get("Data").and_then(|d| d.get("DataVersion"));
     assert!(matches!(version, Some(Tag::Int(v)) if *v == horizon_world::DATA_VERSION));
 }
+
+/// `AbstractButton.extractDefaultLabel`: a label too wide for its button is
+/// slid inside it, not drawn centred over the buttons beside it (`so_so`'s
+/// 590 px World Type label on Create World, `hi_in`'s Join Server).
+#[test]
+fn a_button_label_wider_than_its_button_stays_inside_it() {
+    let atlas = HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    let mut b = Button {
+        x: 100.0,
+        y: 40.0,
+        w: 100.0,
+        label: "Create Backup and Load the World Anyway".into(),
+        enabled: true,
+        id: 40,
+        icon: None,
+        trailing: None,
+    };
+    assert!(HudBatch::text_width(&atlas, &b.label) > b.w - 4.0);
+    let mut batch = HudBatch::new([640, 480]);
+    b.draw_label(&mut batch, &atlas, u32::MAX);
+    assert!(!batch.vertices.is_empty());
+    for v in &batch.vertices {
+        assert!(
+            (b.x + 2.0..=b.x + b.w - 2.0).contains(&v.pos[0])
+                && (b.y..=b.y + 20.0).contains(&v.pos[1]),
+            "label vertex {:?} outside the button",
+            v.pos
+        );
+    }
+    // A label that fits is centred in the button, as `centered_left` does.
+    b.label = "Done".into();
+    let width = HudBatch::text_width(&atlas, &b.label);
+    let mut batch = HudBatch::new([640, 480]);
+    b.draw_label(&mut batch, &atlas, u32::MAX);
+    let lo = batch
+        .vertices
+        .iter()
+        .map(|v| v.pos[0])
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        (lo - (b.x + 2.0 + (b.w - 4.0) / 2.0 - (width / 2.0).floor())).abs() < 0.001,
+        "a fitting label starts at {lo}"
+    );
+}

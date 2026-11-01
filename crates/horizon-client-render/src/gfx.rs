@@ -37,6 +37,8 @@ fn entity_shader() -> String {
 mod crumbling_tests;
 mod entity_batch;
 mod entity_outline;
+#[cfg(test)]
+pub(crate) mod test_gpu;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
@@ -404,28 +406,65 @@ impl SectionGpu {
         )
     }
 }
-/// `Renderer::compact_arena`'s moves: the meshes' ranges on `page` of `arena`
-/// go to its other pages in video memory, `budget` bytes of them at most, the
-/// copies into `encoder` and the ranges' flat draw ids (`flat`) along. A mesh
-/// moves what it holds in `arena`: split (`SectionGpu::vertex_ranges`), its
-/// solid quads alone. False when the other pages have no room left.
+/// Which of a mesh's ranges `move_off_page` moves: what it holds in the section
+/// arena (`split`: its solid quads alone, `SectionGpu::vertex_ranges`), its
+/// translucent quads in `translucent_arena`, or its sorted indices.
+#[derive(Clone, Copy)]
+enum Part {
+    Section { split: bool },
+    Translucent,
+    Indices,
+}
+impl Part {
+    /// (page, first vertex or index, count), as the release paths free it.
+    fn of(self, s: &SectionGpu) -> Option<(u32, u64, u64)> {
+        match self {
+            Self::Section { split } => s.vertex_ranges(split).0,
+            Self::Translucent => s.vertex_ranges(true).1,
+            Self::Indices => s
+                .sorted_indices
+                .map(|(page, at)| (page, at, u64::from(s.translucent) * 6)),
+        }
+    }
+    /// Points the mesh where its range moved.
+    fn set(self, s: &mut SectionGpu, to: (u32, u64)) {
+        match self {
+            Self::Section { split } => {
+                (s.page, s.start) = to;
+                if !split {
+                    // Its translucent quads came along, after the solid ones.
+                    s.translucent_at = (to.0, to.1 + u64::from(s.solid) * 4);
+                }
+            }
+            Self::Translucent => s.translucent_at = to,
+            Self::Indices => s.sorted_indices = Some(to),
+        }
+    }
+}
+/// `Renderer::compact_arena`'s and `shrink_translucent`'s moves: what the meshes
+/// hold on `page` of `arena` (`part`) goes to its other pages in video memory,
+/// until the next range would pass `budget` bytes (it keeps what is left; the
+/// first range moves whatever its size, so none keeps the page closed), the
+/// copies into `encoder` and, in the section arena, the ranges' flat draw ids
+/// (`flat`) along. False when the other pages have no room left.
 fn move_off_page<'a>(
     arena: &mut arena::Arena,
     encoder: &mut wgpu::CommandEncoder,
     mut flat: Option<(&mut flat::Flat, &wgpu::Device, &mut upload::Uploads)>,
     meshes: impl Iterator<Item = &'a mut SectionGpu>,
     page: u32,
-    split: bool,
-    mut budget: u64,
+    part: Part,
+    budget: &mut u64,
 ) -> bool {
-    let stride = std::mem::size_of::<TerrainVertex>() as u64;
+    let mut moved = false;
     for s in meshes {
-        // Split, a mesh without solid quads has nothing here: its (0, 0) is no
-        // range of page 0.
-        let Some((_, start, vertices)) = s.vertex_ranges(split).0.filter(|r| r.0 == page) else {
+        // Nothing of a mesh here: split, one without solid quads (its (0, 0) is no
+        // range of page 0); in the other arenas, one without translucent quads.
+        let Some((_, start, vertices)) = part.of(s).filter(|r| r.0 == page) else {
             continue;
         };
-        if vertices * stride > budget {
+        let bytes = vertices * arena.stride();
+        if moved && bytes > *budget {
             break;
         }
         let Some(to) = arena.alloc_moved(vertices) else {
@@ -437,14 +476,35 @@ fn move_off_page<'a>(
             flat.remove(id);
             s.flat_id = Some(flat.add(device, encoder, uploads, to.0, to.1, vertices));
         }
-        (s.page, s.start) = to;
-        if !split {
-            // Its translucent quads came along, after the solid ones.
-            s.translucent_at = (to.0, to.1 + u64::from(s.solid) * 4);
-        }
-        budget -= vertices * stride;
+        part.set(s, to);
+        *budget = budget.saturating_sub(bytes);
+        moved = true;
     }
     true
+}
+/// Starts moving a page of a large arena far larger than its ranges in use
+/// (`Arena::oversized`) into a new page of the size they get (`Arena::open_page`),
+/// for `Renderer::shrink_translucent`: the page closes and `move_off_page` empties
+/// it. None: no page to shrink. False, and nothing changes: no video memory for
+/// the new page, or a range there without its mesh in `meshes`, which would keep
+/// the page from ever emptying.
+fn begin_shrink<'a>(
+    arena: &mut arena::Arena,
+    device: &wgpu::Device,
+    meshes: impl Iterator<Item = &'a mut SectionGpu>,
+    part: Part,
+) -> Option<bool> {
+    let (page, capacity) = arena.oversized()?;
+    let held: u64 = meshes
+        .filter_map(|s| part.of(s).filter(|r| r.0 == page))
+        .map(|(.., n)| arena::Arena::span(n))
+        .sum();
+    debug_assert_eq!(held, arena.used(page), "a range in use without its mesh");
+    if held != arena.used(page) || !arena.open_page(device, capacity) {
+        return Some(false);
+    }
+    arena.close(page);
+    Some(true)
 }
 /// Line segments the hit outline can hold.
 const MAX_OUTLINE_EDGES: u64 = 256;
@@ -454,6 +514,30 @@ const SECTION_UPLOAD_CHUNK: u64 = 4 << 20;
 /// Section copies are submitted early past this many staged bytes, which
 /// bounds the staging memory frames that are not drawn can hold.
 const SECTION_COPY_LIMIT: u64 = 64 << 20;
+/// What compaction copies in a frame, `compact_arena` first and
+/// `shrink_translucent` with what it left, and a range more where a call's
+/// first is larger (`move_off_page`): a page empties over a few frames, with
+/// no hitch.
+const COMPACT_BUDGET: u64 = 32 << 20;
+/// A large translucent page starts to shrink (`Renderer::shrink_translucent`)
+/// this long after terrain last arrived, and `SHRINK_RETRY` after a try found
+/// no room.
+const SHRINK_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+const SHRINK_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+/// Not before then may a large translucent page start to shrink.
+#[derive(Default)]
+struct ShrinkGate(Option<Instant>);
+impl ShrinkGate {
+    /// Not before `wait` from `now`, nor before an earlier wait is over.
+    fn wait(&mut self, now: Instant, wait: std::time::Duration) {
+        self.0 = self.0.max(Some(now + wait));
+    }
+    /// Whether one may start now: the waits are over, and `compact_arena` copied
+    /// nothing this frame (it `left` the whole budget).
+    fn may_start(&self, now: Instant, left: u64) -> bool {
+        left == COMPACT_BUDGET && self.0.is_none_or(|at| now >= at)
+    }
+}
 pub struct Frame<'a> {
     pub camera: DVec3,
     pub yaw: f32,
@@ -718,6 +802,7 @@ pub struct Renderer {
     mirror: Option<MirrorTarget>,
     entity_pipeline: wgpu::RenderPipeline,
     hdr_mark_pipeline: wgpu::RenderPipeline,
+    hdr_hand_unmark_pipeline: wgpu::RenderPipeline,
     hdr_mark_lightning_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
     crumbling_pipeline: wgpu::RenderPipeline,
@@ -800,6 +885,8 @@ pub struct Renderer {
     section_copies: Option<wgpu::CommandEncoder>,
     /// Bytes staged in `section_copies`.
     section_copy_bytes: u64,
+    /// When a large translucent page may start to shrink (`shrink_translucent`).
+    shrink_gate: ShrinkGate,
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
     sprite_minimum_size: u32,
@@ -1595,6 +1682,10 @@ async fn open_backend(
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
+        // Video memory in blocks of 8-64 MiB instead of 128-256 MiB (Vulkan and DirectX 12):
+        // with the larger blocks a few small buffers kept whole blocks the arena's pages had
+        // left, and over half the video memory reserved was unused (1,344 MiB for 500).
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]
@@ -2905,6 +2996,17 @@ impl Renderer {
             "fs_hdr_mark",
             wgpu::ColorWrites::ALPHA,
         );
+        let hdr_hand_unmark_pipeline = entity_pipeline_with(
+            "HDR hand unmark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            Default::default(),
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_hand_unmark",
+            wgpu::ColorWrites::ALPHA,
+        );
         // Attribute 7: 6 is the entity vertex buffer's glint UV.
         let lightning_attributes = wgpu::vertex_attr_array![7=>Float32x3];
         let lightning_vertex = [
@@ -3490,6 +3592,7 @@ impl Renderer {
             mirror: None,
             entity_pipeline,
             hdr_mark_pipeline,
+            hdr_hand_unmark_pipeline,
             hdr_mark_lightning_pipeline,
             weather,
             crumbling_pipeline,
@@ -3551,6 +3654,7 @@ impl Renderer {
             section_uploads,
             section_copies: None,
             section_copy_bytes: 0,
+            shrink_gate: ShrinkGate::default(),
             lightmap_uploaded: false,
             sprite_minimum_size,
             indices,
@@ -3644,6 +3748,11 @@ impl Renderer {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
         pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+        if self.hdr.is_some() {
+            // Drawn into the world: the light sources it holds are marked as the world's are.
+            pass.set_pipeline(&self.hdr_mark_pipeline);
+            pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+        }
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
@@ -3907,6 +4016,10 @@ impl Renderer {
         if !self.lod_retiring.is_empty() {
             self.lod_retiring.remove(&key);
         }
+        if !mesh.translucent.is_empty() && !self.sections.contains(key) {
+            // New translucent terrain, not an edit's remesh: large pages wait for it.
+            self.shrink_gate.wait(Instant::now(), SHRINK_SETTLE);
+        }
         let fading = match self.sections.find(key) {
             Some(old) => old.fading,
             None => (!self.lods.is_empty()).then(std::time::Instant::now),
@@ -4141,19 +4254,18 @@ impl Renderer {
     /// replaced): moves the meshes off the sparsest page, a few MiB a frame,
     /// and `Arena::trim` returns the page once it is empty. Frames with the
     /// arena in system memory (video memory full) are slow, so this is what
-    /// keeps the terrain in video memory. The section arena's alone: the
-    /// translucent arena and the sorted indices keep their pages
-    /// (`Arena::translucent`).
-    fn compact_arena(&mut self) {
-        // Copied per frame: a page empties over a few frames, with no hitch.
-        const BUDGET: u64 = 32 << 20;
+    /// keeps the terrain in video memory. The section arena's: the large pages
+    /// of the translucent arena and the sorted indices are `shrink_translucent`'s.
+    /// Returns what is left of the frame's `COMPACT_BUDGET`.
+    fn compact_arena(&mut self) -> u64 {
+        let mut budget = COMPACT_BUDGET;
         if self.arena.closing().is_none()
             && let Some(page) = self.arena.sparsest()
         {
             self.arena.close(page);
         }
         let Some(page) = self.arena.closing() else {
-            return;
+            return budget;
         };
         let encoder = self.section_copies.get_or_insert_with(|| {
             self.device
@@ -4170,12 +4282,77 @@ impl Renderer {
             .as_mut()
             .map(|f| (f, &self.device, &mut self.section_uploads));
         let split = self.translucent_arena.is_some();
-        if !move_off_page(&mut self.arena, encoder, flat, meshes, page, split, BUDGET) {
+        let (arena, part) = (&mut self.arena, Part::Section { split });
+        if !move_off_page(arena, encoder, flat, meshes, page, part, &mut budget) {
             // The other pages have no room after all.
-            self.arena.reopen();
+            arena.reopen();
         }
         // With every mesh moved off, the page stays closed so this frame's
         // uploads can't refill it: `trim` returns it and clears `closing`.
+        budget
+    }
+    /// Shrinks the large pages of the translucent arena and the sorted indices
+    /// once terrain has settled (`set_terrain_loading`): one far larger than what
+    /// it holds moves into a new page of their size (`begin_shrink`), through
+    /// `move_off_page` with what `compact_arena` left of the frame's budget
+    /// (`left`), and `trim` returns it once empty. One page at a time, vertices
+    /// first; only starts wait, a move under way finishes even if terrain comes
+    /// again (stopped, the page would stay closed while the new one fills).
+    fn shrink_translucent(&mut self, left: u64) {
+        let Some(vertices) = self.translucent_arena.as_mut() else {
+            return; // split off: nothing to shrink
+        };
+        let now = Instant::now();
+        let mut arenas = [
+            (vertices, Part::Translucent),
+            (&mut self.sorted_indices, Part::Indices),
+        ];
+        if arenas.iter().all(|(arena, _)| arena.closing().is_none()) {
+            if !self.shrink_gate.may_start(now, left) {
+                return;
+            }
+            // The next start in a second, or `SHRINK_RETRY` after a try found no room.
+            let mut wait = SHRINK_SETTLE;
+            for (arena, part) in &mut arenas {
+                let meshes = self
+                    .sections
+                    .values_mut()
+                    .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+                match begin_shrink(arena, &self.device, meshes, *part) {
+                    Some(true) => break,
+                    Some(false) => wait = SHRINK_RETRY, // the other arena may still go
+                    None => {}
+                }
+            }
+            self.shrink_gate.wait(now, wait);
+        }
+        let Some((arena, part, page)) = arenas.into_iter().find_map(|(arena, part)| {
+            let page = arena.closing()?;
+            Some((arena, part, page))
+        }) else {
+            return;
+        };
+        let encoder = self.section_copies.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Section uploads"),
+                })
+        });
+        let meshes = self
+            .sections
+            .values_mut()
+            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
+        // As many quads a frame either way: a quad's indices are a quarter of its bytes.
+        let cap = match part {
+            Part::Indices => COMPACT_BUDGET / 4,
+            _ => COMPACT_BUDGET,
+        };
+        let mut budget = left.min(cap);
+        if !move_off_page(arena, encoder, None, meshes, page, part, &mut budget) {
+            // New ranges took the room: both pages stay, drawn, until a later try.
+            arena.reopen();
+            self.shrink_gate.wait(now, SHRINK_RETRY);
+        }
     }
     /// Block-entity blocks of every meshed section (see `SectionMesh::block_entities`).
     pub fn block_entities(&self) -> impl Iterator<Item = &([i32; 3], u32)> {
@@ -4269,6 +4446,17 @@ impl Renderer {
     /// as for a new renderer.
     pub fn take_dropped_sections(&mut self) -> bool {
         std::mem::take(&mut self.sections_dropped)
+    }
+    /// Whether terrain is on its way (the view not all in, events, chunks or
+    /// uploads still waiting, far tiles sampled): a large translucent page shrinks
+    /// once that, new translucent sections (`upload`) and far tiles to upload
+    /// (`upload_lods`) have been over for `SHRINK_SETTLE`, not at the low point
+    /// between a view's columns leaving and the next one's arriving, after which
+    /// it would grow back by whole copies.
+    pub fn set_terrain_loading(&mut self, loading: bool) {
+        if loading {
+            self.shrink_gate.wait(Instant::now(), SHRINK_SETTLE);
+        }
     }
     /// A column whose every section has its mesh (`lod_detail_columns`).
     fn complete_column(&self) -> SectionMask {
@@ -4482,6 +4670,10 @@ impl Renderer {
     }
     /// The F3 screen's HDR line while the setting is on: the swapchain HDR presents to with
     /// its paper white and peak, or that the surface offers none.
+    /// Whether HDR output is on: the setting, where the display offers it.
+    pub fn hdr_on(&self) -> bool {
+        self.hdr.is_some()
+    }
     pub fn hdr_line(&self) -> String {
         match &self.hdr {
             Some(hdr) => format!(
@@ -5104,11 +5296,12 @@ impl Renderer {
             self.follow_translucent_layout();
         }
         self.arena.trim();
-        self.compact_arena();
+        let left = self.compact_arena();
         if let Some(arena) = &mut self.translucent_arena {
             arena.trim();
         }
         self.sorted_indices.trim();
+        self.shrink_translucent(left);
         if let Some(flat) = &mut self.flat {
             flat.trim(|page| self.arena.has_page(page));
         }
@@ -7040,6 +7233,15 @@ impl Renderer {
                     ((base_quads - translucent_item_quads) * 4) as i32,
                     0..1,
                 );
+                if self.hdr.is_some() {
+                    // A glowing item in the world (Item sheet quads), as entities are.
+                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.draw_indexed(
+                        0..translucent_item_quads * 6,
+                        ((base_quads - translucent_item_quads) * 4) as i32,
+                        0..1,
+                    );
+                }
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if crumbling_quads > 0 && !oit_on {
@@ -7354,6 +7556,7 @@ impl Renderer {
                         for (quads, first) in [
                             (oit_entity_quads, base_quads),
                             (additive_quads, world_quads),
+                            (translucent_item_quads, base_quads - translucent_item_quads),
                             (
                                 translucent_particle_quads,
                                 base_quads - translucent_item_quads - translucent_particle_quads,
@@ -7911,7 +8114,12 @@ impl Renderer {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
+                        // HDR output's hand marks test against it (below).
+                        store: if self.hdr.is_some() {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: None,
                 }),
@@ -7925,6 +8133,41 @@ impl Renderer {
             drop(pass);
             if let Some(hdr) = &self.hdr {
                 hdr.mark_hand(encoder, timing.as_mut());
+                if let Some(view) = hdr.hand_light_view() {
+                    // The light sources in the hand may shine, the rest of it stays at the
+                    // world's brightness: nothing the world kept here shows through it.
+                    let attachments = [Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })];
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("HDR hand marks"),
+                        timestamp_writes: timing.as_mut().and_then(|t| t.writes("HDR hand marks")),
+                        color_attachments: &attachments,
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        ..Default::default()
+                    });
+                    pass.set_bind_group(0, &self.hand_group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                    let quads = 0..overlay.hand_quads * 6;
+                    pass.set_pipeline(&self.hdr_hand_unmark_pipeline);
+                    pass.draw_indexed(quads.clone(), overlay.first_hand_vertex, 0..1);
+                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
+                }
             }
         }
         // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
@@ -8053,6 +8296,8 @@ impl Renderer {
                     radius,
                     timing.as_mut(),
                 );
+        } else if let Some(blur) = &mut self.menu_blur {
+            blur.release();
         }
         self.hud.draw_range(
             encoder,
@@ -8567,6 +8812,28 @@ mod tests {
         assert!(!split(false, false, false, false));
     }
 
+    /// No large translucent page starts to shrink until `SHRINK_SETTLE` after terrain
+    /// last arrived, nor in a frame `compact_arena` copied in; terrain arriving after
+    /// a try that found no room does not cut its `SHRINK_RETRY` short. Only starts
+    /// wait: a move under way finishes, or its page would stay closed while the new
+    /// one fills.
+    #[test]
+    fn shrinking_starts_once_terrain_has_settled() {
+        use super::{COMPACT_BUDGET, SHRINK_RETRY, SHRINK_SETTLE, ShrinkGate};
+        use std::time::{Duration, Instant};
+        let (now, ms) = (Instant::now(), Duration::from_millis(1));
+        let mut gate = ShrinkGate::default();
+        assert!(gate.may_start(now, COMPACT_BUDGET));
+        assert!(!gate.may_start(now, COMPACT_BUDGET - 1));
+        gate.wait(now, SHRINK_SETTLE);
+        assert!(!gate.may_start(now + SHRINK_SETTLE - ms, COMPACT_BUDGET));
+        assert!(gate.may_start(now + SHRINK_SETTLE, COMPACT_BUDGET));
+        gate.wait(now, SHRINK_RETRY);
+        gate.wait(now + ms, SHRINK_SETTLE);
+        assert!(!gate.may_start(now + SHRINK_RETRY - ms, COMPACT_BUDGET));
+        assert!(gate.may_start(now + SHRINK_RETRY, COMPACT_BUDGET));
+    }
+
     #[test]
     fn the_mirror_sees_each_point_where_its_reflection_is() {
         use glam::{Mat4, Vec3, Vec4};
@@ -8816,7 +9083,7 @@ mod tests {
     /// Every WGSL shader file translates to HLSL as wgpu's DirectX 12 backend
     /// writes it for FXC (shader model 5.1), entry point by entry point.
     #[test]
-    fn shaders_translate_to_hlsl_for_directx_12() {
+    fn shaders_translate_to_hlsl_for_directx_12_and_glsl_for_opengl() {
         fn wgsl_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -8857,6 +9124,7 @@ mod tests {
                 sources.push((path, text));
             }
         }
+        let mut glsl_checked = 0;
         for (path, text) in sources {
             // entity.wgsl comes after the overlay's constants (entity_shader).
             let module = naga::front::wgsl::parse_str(&text)
@@ -8889,8 +9157,48 @@ mod tests {
                 .write(&module, &info, None)
                 .unwrap_or_else(|e| panic!("{} {}: {e}", path.display(), entry.name));
                 assert!(!hlsl.is_empty());
+                // OpenGL below 4.3 lacks ARB_arrays_of_arrays (#6267): no nested array may reach it.
+                // Compute and storage-buffer shaders (culling, frame generation) never run on GL.
+                if entry.stage == naga::ShaderStage::Compute
+                    || text.contains("var<storage")
+                    || text.contains("var<workgroup>")
+                {
+                    continue;
+                }
+                for version in [330, 400] {
+                    let mut glsl = String::new();
+                    let glsl_result = naga::back::glsl::Writer::new(
+                        &mut glsl,
+                        &module,
+                        &info,
+                        &naga::back::glsl::Options {
+                            version: naga::back::glsl::Version::Desktop(version),
+                            ..Default::default()
+                        },
+                        &naga::back::glsl::PipelineOptions {
+                            shader_stage: entry.stage,
+                            entry_point: entry.name.clone(),
+                            multiview: None,
+                        },
+                        Default::default(),
+                    )
+                    .and_then(|mut w| w.write());
+                    // Some shaders use features GLSL cannot express (depth textureLoad): GL does
+                    // not run them. The ones it does run must translate, checked below.
+                    if glsl_result.is_err() {
+                        continue;
+                    }
+                    glsl_checked += 1;
+                    assert!(
+                        !glsl.contains("ARB_arrays_of_arrays"),
+                        "{} {} needs ARB_arrays_of_arrays on GLSL {version}",
+                        path.display(),
+                        entry.name
+                    );
+                }
             }
         }
+        assert!(glsl_checked >= 10, "{glsl_checked} GLSL translations");
     }
     #[test]
     fn gl_sprite_arrays_are_neither_2d_textures_nor_cube_maps() {

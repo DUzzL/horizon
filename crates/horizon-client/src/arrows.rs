@@ -395,14 +395,15 @@ impl ArrowScene<'_, '_> {
 /// `level().clip(new ClipContext(position(), position().add(movement),
 /// ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this))`, then
 /// `AbstractArrow.onHitBlock`'s `position().subtract(signum * 0.05)`. Returns
-/// the position to stop at (pull-back included) and the block that was hit.
+/// the position to stop at (pull-back included), the block that was hit and
+/// the normal of the face it was hit on.
 pub fn clip_block_stop(
     world: &World,
     facts: &BlockFacts,
     collision: &BlockCollisionRegistry<'_>,
     from: Vec3,
     movement: Vec3,
-) -> Option<(Vec3, BlockPos)> {
+) -> Option<(Vec3, BlockPos, [i32; 3])> {
     let to = Vec3::new(
         from.x + movement.x,
         from.y + movement.y,
@@ -425,7 +426,11 @@ pub fn clip_block_stop(
     })
     .ok()
     .flatten()?;
-    Some((back_off(hit.location, movement), hit.block))
+    Some((
+        back_off(hit.location, movement),
+        hit.block,
+        hit.direction.normal(),
+    ))
 }
 /// `AbstractArrow.onHitBlock`'s back-off: vanilla scales `(double) 0.05f` by
 /// `Math.signum` per axis, whose value at zero is zero (not Rust's -1.0).
@@ -528,7 +533,7 @@ fn tick_with(
     };
     // Entity.setOldPosAndRot: the renderer interpolates from here, in flight
     // and stuck alike; ServerLevel.tickNonPassenger counts the tick.
-    p.previous = p.position;
+    p.set_old_pos_and_rot();
     p.age += 1;
     let hit = Ticker {
         p,

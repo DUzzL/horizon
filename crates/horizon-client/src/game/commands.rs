@@ -2244,7 +2244,8 @@ impl Game<'_> {
             self.tnts.len()
                 + self.falling.len()
                 + self.creatures.projectiles.len()
-                + self.rockets.len(),
+                + self.rockets.len()
+                + self.tridents.len(),
         )
     }
     /// BlockStateArgument -> registry state.

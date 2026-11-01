@@ -3358,7 +3358,7 @@ impl OptionsUi {
             let m = crate::screen_draw::Measure(&atlas.font);
             let mouse = (cursor.0.floor() as i32, cursor.1.floor() as i32);
             let packs = self.packs(atlas, (w, h));
-            let mut draws = packs.draw(&m, mouse, blink);
+            let mut draws = packs.draw(&m, mouse, blink, crate::hud_overlays::now_ms());
             packs.bind_icons(&mut draws, atlas, &mut batch.patches);
             crate::screen_draw::paint(batch, atlas, &draws);
             return;

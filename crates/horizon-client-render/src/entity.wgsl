@@ -22,7 +22,7 @@ struct Globals {
     outline_params: vec4<f32>,
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
-    colored_lights: array<array<vec4<f32>, 2>, 16>,
+    colored_lights: array<vec4<f32>, 32>,
     colored_count: vec4<u32>,
     emissive_layers: array<vec4<u32>, 32>,
     emissive_count: vec4<u32>,
@@ -101,8 +101,8 @@ fn dynamic_block_light(pos: vec3<f32>) -> f32 {
 fn native_colored_light(pos: vec3<f32>) -> vec3<f32> {
     var rgb = vec3(0.0);
     for (var i = 0u; i < min(globals.colored_count.x, 16u); i++) {
-        let at = globals.colored_lights[i][0];
-        let color = globals.colored_lights[i][1];
+        let at = globals.colored_lights[i * 2u];
+        let color = globals.colored_lights[i * 2u + 1u];
         rgb += color.rgb * max(0.0, 1.0 - distance(pos, at.xyz) / at.w) * color.a;
     }
     return min(rgb, vec3(1.0));
@@ -342,6 +342,13 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     let t = clamp(tier, 1u, 4u) - 1u;
     let lift = smoothstep(globals.hdr_windows[0][t], globals.hdr_windows[1][t], y);
     return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
+}
+
+// The hand in HDR output (gfx.rs "HDR hand marks"): where it drew, what the world kept there
+// no longer shines; fs_hdr_mark then marks the light sources it holds.
+@fragment fn fs_hdr_hand_unmark(in: Out) -> @location(0) vec4<f32> {
+    if textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, 1.0);
 }
 
 fn celestial_color(in: Out) -> vec4<f32> {
