@@ -72,6 +72,8 @@ pub(super) fn folder(dir: &Path, table: &toml::Value) -> Result<String, String> 
 }
 
 pub(super) const PACKAGE: &str = "horizon-native-game";
+/// Where the generated executable's package is staged, in the workspace.
+const GAME: &str = "crates/native-game";
 
 fn path_dep(path: &str) -> toml::Value {
     toml::Value::Table(toml::Table::from_iter([("path".into(), path.into())]))
@@ -187,7 +189,7 @@ pub(super) fn stage(
             .map_err(|e| e.to_string())?;
         write(&path, &manifest)?;
         let mut dep = toml::Table::new();
-        dep.insert("path".into(), format!("../{relative}").into());
+        dep.insert("path".into(), format!("../../{relative}").into());
         dep.insert("package".into(), package.into());
         if !enabled.is_empty() {
             dep.insert(
@@ -198,7 +200,9 @@ pub(super) fn stage(
         deps.insert(format!("mod_{i}"), toml::Value::Table(dep));
         members.push(relative);
     }
-    let game = stage.join("native-game");
+    // Beside horizon-client, so its build script (the Windows stack size and icon, for the
+    // `horizon-client` binary this package owns now) finds `packaging/` where it looks.
+    let game = stage.join(GAME);
     fs::create_dir_all(game.join("src")).map_err(|e| e.to_string())?;
     let mut manifest = toml::Table::new();
     manifest.insert(
@@ -208,7 +212,22 @@ pub(super) fn stage(
             ("version".into(), "0.1.0".into()),
             ("edition".into(), "2024".into()),
             ("publish".into(), false.into()),
+            ("build".into(), "../horizon-client/build.rs".into()),
         ])),
+    );
+    let windows = toml::Table::from_iter([(
+        "build-dependencies".into(),
+        toml::Value::Table(toml::Table::from_iter([(
+            "winresource".into(),
+            "0.1".into(),
+        )])),
+    )]);
+    manifest.insert(
+        "target".into(),
+        toml::Value::Table(toml::Table::from_iter([(
+            "cfg(windows)".into(),
+            toml::Value::Table(windows),
+        )])),
     );
     manifest.insert(
         "bin".into(),
@@ -227,7 +246,7 @@ pub(super) fn stage(
         .and_then(|w| w.get_mut("members"))
         .and_then(toml::Value::as_array_mut)
         .ok_or("workspace has no members")?;
-    members.push("native-game".into());
+    members.push(GAME.into());
     list.extend(members.into_iter().map(toml::Value::String));
     write(&root, &workspace)?;
     Ok(true)
@@ -317,16 +336,24 @@ mod tests {
         assert!(members
             .iter()
             .any(|v| v.as_str() == Some("native-api/example")));
-        assert!(members.iter().any(|v| v.as_str() == Some("native-game")));
+        assert!(members.iter().any(|v| v.as_str() == Some(GAME)));
         let engine = read(&stage_dir.join("native-api/example/Cargo.toml")).unwrap();
         assert_eq!(
             engine["dependencies"]["horizon-client"]["path"].as_str(),
             Some("../../crates/horizon-client")
         );
-        let game = read(&stage_dir.join("native-game/Cargo.toml")).unwrap();
+        let game = read(&stage_dir.join(GAME).join("Cargo.toml")).unwrap();
         assert_eq!(
             game["dependencies"]["mod_0"]["package"].as_str(),
             Some("example-mod")
+        );
+        assert_eq!(
+            game["dependencies"]["mod_0"]["path"].as_str(),
+            Some("../../native-api/example")
+        );
+        assert_eq!(
+            game["package"]["build"].as_str(),
+            Some("../horizon-client/build.rs")
         );
         fs::remove_dir_all(dir).unwrap();
     }
