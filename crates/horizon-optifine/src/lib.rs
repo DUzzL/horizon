@@ -8,7 +8,7 @@
 //! overlays; `blink`: ETF's blinking textures).
 //!
 //! Written from OptiFine's public documentation of the file formats (and ETF's, for its additions
-//! to random entities); `cit` also from CIT Resewn's wiki and the conditions of its MIT-licensed
+//! to random entities and emissive textures); `cit` also from CIT Resewn's wiki and the conditions of its MIT-licensed
 //! source (THIRD_PARTY_NOTICES.md). No OptiFine code was read.
 
 pub mod blink;

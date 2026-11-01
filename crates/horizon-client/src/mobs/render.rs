@@ -1347,7 +1347,7 @@ pub fn render_with(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32, u32)],
+    extra: &[(&Part, [f32; 4], u32, u32, bool)],
     out: &mut Vec<Vertex>,
 ) {
     // The invisibility effect hides the model (a drinking wandering trader);
@@ -1628,7 +1628,7 @@ pub fn render_layers(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32, u32)],
+    extra: &[(&Part, [f32; 4], u32, u32, bool)],
     out: &mut Vec<Vertex>,
 ) {
     let base = base_transform(m, alpha, camera);
@@ -1648,7 +1648,16 @@ pub fn render_posed(
     let base = base_transform_at(m, alpha, origin);
     render_visible(m, alpha, base, atlas, light, data, &[], true, out);
 }
-/// Every texture [`render_visible`] may look up for `m` now: the body's and each layer's, a
+/// The custom model's key of a body model: `main` is the wide player model, `kind.model`.
+fn cem_key(model_key: &str) -> &str {
+    if model_key == "main" {
+        "player#main"
+    } else {
+        model_key
+    }
+}
+/// Every texture [`render_visible`] may look up for `m` now (keep the two in step: a texture
+/// drawn but not listed here never gets a random pick): the body's and each layer's, a
 /// custom model's own texture in their place, and the warden's glowing layers (whether they
 /// glow this frame or not). Random textures choose a variant for each.
 pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
@@ -1662,12 +1671,7 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
             .unwrap_or(texture)
     };
     let (model_key, texture) = body(m);
-    let body_key = if model_key == "main" {
-        "player#main"
-    } else {
-        model_key.as_str()
-    };
-    let mut names = vec![custom(body_key, texture)];
+    let mut names = vec![custom(cem_key(&model_key), texture)];
     for layer in layers(m, m.age as f32) {
         names.push(custom(&layer.model, layer.texture));
     }
@@ -1686,7 +1690,7 @@ fn render_visible(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32, u32)],
+    extra: &[(&Part, [f32; 4], u32, u32, bool)],
     body_visible: bool,
     out: &mut Vec<Vertex>,
 ) {
@@ -1699,12 +1703,7 @@ fn render_visible(
         .cem
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // `main` is the wide player model, `kind.model`.
-    let cem_key = if model_key == "main" {
-        "player#main"
-    } else {
-        model_key.as_str()
-    };
+    let cem_key = cem_key(&model_key);
     let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
     let (model, texture) = match cem.layer(cem_key) {
         Some(custom) => (
@@ -1811,7 +1810,9 @@ fn render_visible(
     if !shell_last {
         draw_body(out);
     }
-    for (part, uv, color, layer_overlay) in extra {
+    // The worn armour's layers (and their emissive overlays, full bright).
+    for (part, uv, color, layer_overlay, glows) in extra {
+        let light = if *glows { FULL_BRIGHT } else { light };
         draw(part, base, &poses, *uv, *color, light, *layer_overlay, out);
     }
     let mut all_layers = layers(m, s.age);
@@ -2830,7 +2831,7 @@ mod tests {
                 &atlas,
                 0xf0f0,
                 &data,
-                &[(part, [0.5, 0.5, 0.75, 0.75], 0xFFFF_FFFF, overlay)],
+                &[(part, [0.5, 0.5, 0.75, 0.75], 0xFFFF_FFFF, overlay, false)],
                 &mut vertices,
             );
             let (armour, body): (Vec<&Vertex>, Vec<&Vertex>) =
@@ -3090,7 +3091,13 @@ mod emissive_tests {
         for file in files {
             let path = root.join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, "").unwrap();
+            // Rules files pick variant 2; images are only their names.
+            let text = if file.ends_with(".properties") {
+                "textures.1=2"
+            } else {
+                ""
+            };
+            std::fs::write(path, text).unwrap();
         }
         let random = RandomTextures::scan(&root);
         let emissive = Emissive::scan(&root, &random);
@@ -3175,6 +3182,97 @@ mod emissive_tests {
         assert!(shut(&uvs(93)));
         assert!(open(&uvs(94)));
         assert!(shut(&uvs(89 + 150)));
+    }
+
+    /// Draws `m` and returns each vertex's (uv, light).
+    fn drawn(m: &Mob, data: &MobData, atlas: Atlas) -> Vec<([f32; 2], u32)> {
+        let mut out = Vec::new();
+        render_with(m, 0.0, glam::DVec3::ZERO, atlas, 7, data, &[], &mut out);
+        out.iter().map(|v| (v.uv, v.light)).collect()
+    }
+
+    /// Whether every vertex samples inside the rect starting at `at` (each rect is 0.25 wide).
+    fn inside(vertices: &[([f32; 2], u32)], at: f32) -> bool {
+        vertices
+            .iter()
+            .all(|(uv, _)| (at..=at + 0.25).contains(&uv[0]))
+    }
+
+    #[test]
+    fn a_layer_glows_with_its_own_overlay() {
+        let mut m = silverfish();
+        let k = Arc::make_mut(&mut m.kind);
+        k.species = Species::Sheep;
+        k.layers.insert("sheep#wool".into(), k.model.clone());
+        let data = data(&[
+            "assets/minecraft/textures/entity/sheep/sheep.png",
+            "assets/minecraft/textures/entity/sheep/sheep_wool.png",
+            "assets/minecraft/textures/entity/sheep/sheep_wool_e.png",
+        ]);
+        let atlas = |name: &str| {
+            let u = match name {
+                "entity/sheep/sheep" => 0.0,
+                "entity/sheep/sheep_wool" => 0.25,
+                "entity/sheep/sheep_wool_e" => 0.5,
+                _ => return None,
+            };
+            Some([u, 0.0, u + 0.25, 1.0])
+        };
+        let v = drawn(&m, &data, &atlas);
+        assert_eq!(v.len(), 12, "body, wool, wool's glow");
+        assert!(inside(&v[..4], 0.0) && inside(&v[4..8], 0.25) && inside(&v[8..], 0.5));
+        assert!(v[..8].iter().all(|(_, light)| *light == 7));
+        assert!(v[8..].iter().all(|(_, light)| *light == FULL_BRIGHT));
+    }
+
+    #[test]
+    fn a_random_variant_glows_with_its_own_overlay_only() {
+        const RANDOM: &str = "assets/minecraft/optifine/random/entity";
+        let atlas = |name: &str| {
+            let u = match name {
+                "entity/silverfish" => 0.0,
+                "entity/silverfish_e" => 0.25,
+                "minecraft:optifine/random/entity/silverfish2" => 0.5,
+                "minecraft:optifine/random/entity/silverfish2_e" => 0.75,
+                _ => return None,
+            };
+            Some([u, 0.0, u + 0.25, 1.0])
+        };
+        let seen = || crate::mobs::random_textures::Seen {
+            biome: None,
+            y: 64,
+            blocks: Vec::new(),
+            moon_phase: 0,
+            day_time: 0,
+            weather: horizon_optifine::random::Weather::Clear,
+        };
+        let props = format!("{RANDOM}/silverfish.properties");
+        let variant = format!("{RANDOM}/silverfish2.png");
+        let variant_e = format!("{RANDOM}/silverfish2_e.png");
+        let base = [
+            "assets/minecraft/textures/entity/silverfish.png",
+            "assets/minecraft/textures/entity/silverfish_e.png",
+        ];
+        for own_overlay in [true, false] {
+            let mut files = vec![base[0], base[1], props.as_str(), variant.as_str()];
+            if own_overlay {
+                files.push(variant_e.as_str());
+            }
+            let data = data(&files);
+            let mut m = silverfish();
+            {
+                let textures = data.random_textures.read().unwrap();
+                crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen()), 0);
+            }
+            let v = drawn(&m, &data, &atlas);
+            assert!(inside(&v[..4], 0.5), "the variant");
+            if own_overlay {
+                assert_eq!(v.len(), 8);
+                assert!(inside(&v[4..], 0.75), "its own overlay, not silverfish_e");
+            } else {
+                assert_eq!(v.len(), 4, "zombie_e.png doesn't glow over zombie3.png");
+            }
+        }
     }
 }
 
@@ -3263,11 +3361,9 @@ mod random_texture_tests {
             "minecraft:optifine/random/entity/silverfish2" => Some([0.5, 0.5, 1.0, 1.0]),
             _ => None,
         };
-        assert!(
-            uvs(&m, &data, &both)
-                .iter()
-                .all(|uv| uv[0] >= 0.5 && uv[1] >= 0.5)
-        );
+        let drawn = uvs(&m, &data, &both);
+        assert_eq!(drawn.len(), 4);
+        assert!(drawn.iter().all(|uv| uv[0] >= 0.5 && uv[1] >= 0.5));
         let vanilla_only =
             |name: &str| (name == "entity/silverfish").then_some([0.0, 0.0, 0.5, 0.5]);
         let drawn = uvs(&m, &data, &vanilla_only);
