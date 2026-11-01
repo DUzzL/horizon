@@ -26,6 +26,11 @@ const MAX_SAVED: usize = 1024;
 /// (`Lod::observing`).
 pub const OBSERVE_AHEAD: usize = 8;
 const SAMPLE_JOBS: usize = 4;
+/// Sample jobs queued per sampling thread once the near terrain is in.
+/// Results are taken and jobs started once a frame: with four in flight, a
+/// tile taking milliseconds left the threads idle for most of a slow frame
+/// (2-3 fps on a CPU renderer, with far terrain a few tiles a frame).
+const QUEUED_PER_SAMPLER: usize = 32;
 /// Threads that sample far tiles beside the mesher. Sampling is the cold-load
 /// bottleneck (each task evaluates a shared density lattice for 256 columns),
 /// so medium machines use half their cores, not a quarter.
@@ -1255,7 +1260,7 @@ impl Lod {
             detail_request_pending: false,
             detail_request_at: std::time::Instant::now(),
             small: cores <= 4,
-            sample_jobs: SAMPLE_JOBS.max(sampling_threads(cores) + 1),
+            sample_jobs: (sampling_threads(cores) * QUEUED_PER_SAMPLER).max(SAMPLE_JOBS),
             near_loading: false,
             held_sample_at: std::time::Instant::now(),
             ready: FxHashMap::default(),
@@ -1861,6 +1866,15 @@ impl Lod {
             self.reduced_detail,
         );
         self.ready.retain(|key, _| self.plan.nodes.contains(key));
+        // Queued tiles the view left are not sampled (a running one is
+        // dropped when it finishes, `finish_sample`).
+        self.shared.jobs.lock().unwrap().retain(|job| match job {
+            Job::Sample(key) if !self.plan.nodes.contains(key) => {
+                self.pending.remove(key);
+                false
+            }
+            _ => true,
+        });
         self.detail_masks
             .retain(|key, _| self.plan.nodes.contains(key));
         // Complete resident columns need no duplicate noise work.
@@ -3558,6 +3572,32 @@ mod tests {
         lod.set_near_loading(false);
         lod.dispatch_meshes([0, 0]);
         assert_eq!(lod.shared.mesh_jobs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn queued_samples_follow_the_view_when_it_moves() {
+        let mut lod = Lod::scheduler_for_test();
+        lod.small = true;
+        lod.sample_jobs = 16;
+        let queued = |lod: &Lod| -> FxHashSet<TileKey> {
+            let jobs = lod.shared.jobs.lock().unwrap();
+            jobs.iter()
+                .filter_map(|job| match job {
+                    Job::Sample(key) => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        };
+        lod.update([8., 64., 8.], 2, 64, Some(FxHashSet::default()));
+        let before = queued(&lod);
+        assert_eq!(before.len(), 16, "a full queue once the near terrain is in");
+        // A teleport: none of the old view's tiles is sampled any more.
+        lod.update([100_000., 64., 100_000.], 2, 64, Some(FxHashSet::default()));
+        let after = queued(&lod);
+        assert_eq!(after.len(), 16);
+        assert!(after.is_disjoint(&before));
+        assert!(after.iter().all(|key| lod.plan.nodes.contains(key)));
+        assert_eq!(lod.pending, after, "dropped jobs free their slots");
     }
 
     /// Drives the scheduler by hand: every sample the new incremental path
