@@ -879,7 +879,8 @@ impl LightChanges {
     pub fn classes_differing<T: PartialEq>(a: &[T; 4096], b: &[T; 4096]) -> u32 {
         let mut classes = 0;
         // (a row of 16 along x at a time: the rows alike, most of them, cost one comparison)
-        for (row, (ra, rb)) in a.chunks_exact(16).zip(b.chunks_exact(16)).enumerate() {
+        let (rows_a, rows_b) = (a.as_chunks::<16>().0, b.as_chunks::<16>().0);
+        for (row, (ra, rb)) in rows_a.iter().zip(rows_b).enumerate() {
             if ra == rb {
                 continue;
             }
