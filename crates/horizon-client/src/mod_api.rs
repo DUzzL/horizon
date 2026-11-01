@@ -3,10 +3,10 @@
 //! Trait mods are process-wide, like mixin module statics.
 //! Hooks use `&self + Send + Sync` for shared and reentrant calls; see `docs/native-mods.md`.
 //! Generate the trait and dispatch with `cargo run -p xtask -- mod-api`.
-//! `Host` is hand-written for this slice; a later change will generate it from native helpers.
 use std::sync::{Arc, OnceLock};
 
 pub use crate::containers::{ModBlockEntity, ModContainer, ModFluidTanks};
+pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::hud::HudBatch;
@@ -371,28 +371,8 @@ pub enum Flow {
     Cancel,
 }
 
-/// Services supplied by the game to trait mods.
-pub trait Host {
-    /// Read the block with `native_block`.
-    fn block(&self, pos: [i32; 3]) -> String;
-    /// Set the block with `native_set_block`.
-    fn set_block(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-        state: BlockStateId,
-        flags: i32,
-    ) -> bool;
-    /// Add a line to a command answer inside `perform_command` with `native_feedback`.
-    fn feedback(&mut self, text: Text);
-    /// The player whose action or command the current hook hears, if any.
-    fn acting_player(&self) -> Option<NativeServerPlayer>;
-    /// A system line in that player's chat, also inside a player's hook for
-    /// the acting player; false when they aren't on.
-    fn tell(&mut self, uuid: u128, line: Text) -> bool;
-    /// Send an action bar line to a player, including the acting player inside their hook.
-    fn action_bar(&mut self, uuid: u128, line: Text) -> bool;
-}
+mod generated_host;
+pub use generated_host::Host;
 
 /// Read-only level services, like vanilla's `LevelReader`.
 pub trait LevelHost {

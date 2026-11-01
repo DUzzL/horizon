@@ -1346,6 +1346,20 @@ mod draws come in vanilla's order. `LevelTicksHost` adds scheduling through
 `LevelWriteHost` adds random access and `native_set_block_property`. Whole-block writes wait for a
 later slice that creates block entities, as vanilla's `setBlock` does. The game owns
 the tick queue; mods do not pass it back to these helpers.
+`Host` exposes the documented `Game` helpers listed under `helpers` in
+`native-hooks.json`, without their `native_` prefix. Each keeps the helper's
+receiver and documentation. Level services stay on the level hosts above.
+The following documented `Game` helpers are not in the trait yet:
+
+- `spawn_mob`, `mob`, `mobs`, `block_in_tag`, `item_in_tag`,
+  `server_block_in_tag`, `server_item_in_tag`, `server_block`,
+  `set_display`, `sidebar`, `experience_orbs`,
+  `item_entities`, `player`, `panel_recipes`, `recipes`, `component`,
+  `set_component`, `remove_component`, `spawn_falling_block`, `explode`,
+  `fluid_tanks` and `container_slots` use gameplay-private types.
+- `with_mod_block_entity` and `trigger_criterion` are generic or take
+  `impl Trait`, so their signatures cannot be called through `dyn Host`.
+
 The following catalog hooks are not in the trait yet:
 
 - `world_drawn` and `render_needs` need a renderer trait.
