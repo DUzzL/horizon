@@ -3719,8 +3719,9 @@ impl Level {
             rain_level: if raining { (1.0, 1.0) } else { (0.0, 0.0) },
             thunder_level: if thundering { (1.0, 1.0) } else { (0.0, 0.0) },
         };
-        // The player: players/data/<singleplayer_uuid>.dat, the newest player
-        // file of a server world, or the legacy Data.Player.
+        // The player: players/data/<singleplayer_uuid>.dat, or the legacy Data.Player. With no
+        // `singleplayer_uuid` (a world from a server, a Realms download) the owner loads their
+        // own file, not another player's (`PlayerList.loadPlayerData`): `load_owner` does.
         let uuid = uuid_from_tag(data.get("singleplayer_uuid"));
         let player_dir = dir.join("players").join("data");
         // PlayerDataStorage.load: the player's file, else its .dat_old.
@@ -3730,18 +3731,7 @@ impl Level {
                 .or_else(|| read_dat(&player_dir.join(format!("{name}.dat_old"))))
         });
         level.singleplayer_file = owner.is_some();
-        let player = owner
-            .or_else(|| {
-                fs::read_dir(&player_dir)
-                    .ok()
-                    .and_then(|d| {
-                        d.flatten()
-                            .filter(|e| e.path().extension().is_some_and(|x| x == "dat"))
-                            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-                    })
-                    .and_then(|e| read_dat(&e.path()))
-            })
-            .or_else(|| data.get("Player").cloned());
+        let player = owner.or_else(|| data.get("Player").cloned());
         level.player_uuid = uuid_from_tag(player.as_ref().and_then(|p| p.get("UUID"))).or(uuid);
         let spawn = level
             .world_spawn

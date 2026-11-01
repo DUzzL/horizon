@@ -699,7 +699,7 @@ impl Game<'_> {
             push(
                 [orb.position.x, orb.position.y, orb.position.z],
                 "minecraft:experience_orb",
-                json!({ "kind": "orb", "value": orb.value }),
+                json!({ "kind": "orb", "value": orb.value, "velocity": [orb.velocity.x, orb.velocity.y, orb.velocity.z] }),
             );
         }
         list.sort_by(|a, b| a.0.total_cmp(&b.0));

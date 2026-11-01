@@ -79,6 +79,47 @@ impl Preset {
     }
 }
 
+/// Entity occlusion strategy. The synchronous mode preserves the original
+/// same-frame CPU test; asynchronous results only hide a mesh when their
+/// camera, bounds and occluder evidence still match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EntityCullingMode {
+    #[default]
+    Off,
+    Synchronous,
+    Asynchronous,
+}
+impl EntityCullingMode {
+    pub const ALL: [EntityCullingMode; 3] = [
+        EntityCullingMode::Off,
+        EntityCullingMode::Synchronous,
+        EntityCullingMode::Asynchronous,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Synchronous => "sync",
+            Self::Asynchronous => "async",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Synchronous => "Synchronous",
+            Self::Asynchronous => "Asynchronous",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            // Keep graphics files written before the mode selector readable.
+            "true" | "synchronous" | "sync" => Self::Synchronous,
+            "false" | "off" => Self::Off,
+            "asynchronous" | "async" => Self::Asynchronous,
+            _ => Self::default(),
+        }
+    }
+}
+
 /// How the swapchain presents frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PresentMode {
@@ -243,6 +284,36 @@ impl FarDetail {
         } else {
             FarDetail::Full
         }
+    }
+}
+
+/// Frame generation: a frame made between each two real ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrameGeneration {
+    #[default]
+    Off,
+    /// AMD FidelityFX Super Resolution 3.1's frame interpolation, ported to WGSL.
+    Fsr31,
+}
+impl FrameGeneration {
+    pub const ALL: [FrameGeneration; 2] = [FrameGeneration::Off, FrameGeneration::Fsr31];
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "off",
+            FrameGeneration::Fsr31 => "fsr3.1",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "Off",
+            FrameGeneration::Fsr31 => "FSR 3.1",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|f| f.name() == s)
+            .unwrap_or_default()
     }
 }
 
@@ -466,8 +537,8 @@ pub struct Graphics {
     pub far_detail: FarDetail,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
-    /// Skip drawing entities hidden behind opaque terrain.
-    pub entity_culling: bool,
+    /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
+    pub entity_culling: EntityCullingMode,
     /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
     /// vanilla's fancy leaves. Ignored with a resource pack that may replace
     /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
@@ -501,6 +572,8 @@ pub struct Graphics {
     pub upscaling: Upscaling,
     /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
     pub screenshot_quality: u32,
+    /// Frame generation (Horizon setting), off by default.
+    pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
     pub hdr: bool,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
@@ -544,7 +617,7 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
-            entity_culling: false,
+            entity_culling: EntityCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
             chunk_updates: 0,
             upload_budget_kib: 0,
@@ -563,6 +636,7 @@ impl Default for Graphics {
             taa: false,
             upscaling: Upscaling::Native,
             screenshot_quality: 1,
+            frame_generation: FrameGeneration::Off,
             hdr: false,
             hdr_paper_white: 0,
             hdr_peak: 0,
@@ -614,7 +688,7 @@ impl Graphics {
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
-                "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
@@ -644,6 +718,7 @@ impl Graphics {
                         .filter(|q| SCREENSHOT_QUALITIES.contains(q))
                         .unwrap_or(1)
                 }
+                "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
@@ -681,12 +756,12 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
-            bool_text(self.entity_culling),
+            self.entity_culling.name(),
             self.leaf_culling.name(),
             self.chunk_updates,
             self.upload_budget_kib,
@@ -712,6 +787,7 @@ impl Graphics {
             bool_text(self.taa),
             self.upscaling.name(),
             self.screenshot_quality,
+            self.frame_generation.name(),
             bool_text(self.hdr),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -843,7 +919,7 @@ mod tests {
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             cave_culling: false,
-            entity_culling: true,
+            entity_culling: EntityCullingMode::Synchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
             chunk_updates: 12,
             upload_budget_kib: 4096,
@@ -862,6 +938,7 @@ mod tests {
             taa: true,
             upscaling: Upscaling::Balanced,
             screenshot_quality: 4,
+            frame_generation: FrameGeneration::Fsr31,
             hdr: true,
             hdr_paper_white: 240,
             hdr_peak: 1400,
@@ -875,6 +952,21 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        for mode in EntityCullingMode::ALL {
+            let graphics = Graphics {
+                entity_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert_eq!(
+            Graphics::parse("entityCulling:true\n").entity_culling,
+            EntityCullingMode::Synchronous
+        );
+        assert_eq!(
+            Graphics::parse("entityCulling:false\n").entity_culling,
+            EntityCullingMode::Off
+        );
         assert_eq!(Graphics::parse(""), Graphics::default());
         // Translucent Batching is opt-in for now: only the file turns it on.
         assert!(!Graphics::default().translucent_batching);

@@ -361,6 +361,105 @@ impl Game<'_> {
             push(t.position, &mut t.velocity, self);
         }
         self.tnts = tnts;
+        // The rest of the entities in reach take `Entity.pushFromExplosion`
+        // alike: their distance is from their feet, their direction from their
+        // eyes (0.85 of the box height unless a type says otherwise).
+        let push_box =
+            |game: &Game<'_>, feet: Vec3, lo: [f64; 3], hi: [f64; 3], eye: f64, v: &mut Vec3| {
+                let feet = [feet.x, feet.y, feet.z];
+                let dist = distance(feet) / diameter;
+                if dist > 1.0 {
+                    return;
+                }
+                let exposure = game.seen_percent(center, lo, hi);
+                let power = (1.0 - dist) * f64::from(exposure) * multiplier;
+                let dir = direction([feet[0], feet[1] + eye, feet[2]]);
+                *v = Vec3::new(
+                    v.x + dir[0] * power,
+                    v.y + dir[1] * power,
+                    v.z + dir[2] * power,
+                );
+            };
+        // ItemEntity.ignoreExplosion: items feel only a burst that affects
+        // block-like entities (a mace's, never a wind charge's).
+        if blocklike {
+            let mut items = std::mem::take(&mut self.dropped);
+            for item in &mut items {
+                let p = item.position;
+                let half = 0.125;
+                push_box(
+                    self,
+                    p,
+                    [p.x - half, p.y, p.z - half],
+                    [p.x + half, p.y + 0.25, p.z + half],
+                    0.2125,
+                    &mut item.velocity,
+                );
+            }
+            self.dropped = items;
+        }
+        let mut orbs = std::mem::take(&mut self.orbs);
+        for o in &mut orbs {
+            let p = o.position;
+            push_box(
+                self,
+                p,
+                [p.x - 0.25, p.y, p.z - 0.25],
+                [p.x + 0.25, p.y + 0.5, p.z + 0.25],
+                f64::from(0.5f32 * 0.85f32),
+                &mut o.velocity,
+            );
+        }
+        self.orbs = orbs;
+        let mut falling = std::mem::take(&mut self.falling);
+        for f in &mut falling {
+            let b = horizon_client::falling_block::bounds(f.position);
+            let (lo, hi) = (b.min_position(), b.max_position());
+            let eye = f64::from((hi.y - lo.y) as f32 * 0.85f32);
+            push_box(
+                self,
+                f.position,
+                [lo.x, lo.y, lo.z],
+                [hi.x, hi.y, hi.z],
+                eye,
+                &mut f.velocity,
+            );
+        }
+        self.falling = falling;
+        // VehicleEntity.ignoreExplosion: a mob's burst (a breeze's) leaves
+        // boats and minecarts alone with mob griefing off.
+        if !(breeze && !self.ui.rules.bool("mob_griefing")) {
+            let mut boats = std::mem::take(&mut self.boats);
+            for b in &mut boats {
+                let bounds = b.bounds();
+                let (lo, hi) = (bounds.min_position(), bounds.max_position());
+                // EntityType.OAK_BOAT & co: eyeHeight is the full 0.5625.
+                push_box(
+                    self,
+                    b.position,
+                    [lo.x, lo.y, lo.z],
+                    [hi.x, hi.y, hi.z],
+                    0.5625,
+                    &mut b.velocity,
+                );
+            }
+            self.boats = boats;
+            let mut carts = std::mem::take(&mut self.carts);
+            for c in &mut carts {
+                let bounds = c.bounds();
+                let (lo, hi) = (bounds.min_position(), bounds.max_position());
+                let eye = f64::from((hi.y - lo.y) as f32 * 0.85f32);
+                push_box(
+                    self,
+                    c.position,
+                    [lo.x, lo.y, lo.z],
+                    [hi.x, hi.y, hi.z],
+                    eye,
+                    &mut c.velocity,
+                );
+            }
+            self.carts = carts;
+        }
         pushed
     }
     /// `ServerExplosion.hurtEntities` for the player (not a spectator, nor a

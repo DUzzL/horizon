@@ -617,6 +617,9 @@ impl Game<'_> {
                 magic.then_some(id as i32),
             );
         });
+        // Player.onAttack: the hit starts the attack strength again, hurt or
+        // not (skipAttackInteraction only asks mayInteract).
+        self.attack_ticks = 0;
         if hurt {
             self.swing_arm();
         }

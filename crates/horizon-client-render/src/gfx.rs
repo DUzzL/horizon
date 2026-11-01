@@ -629,8 +629,9 @@ pub struct ScreenshotRequest {
 pub struct Renderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
-    /// The window's swapchain; `None` when rendering offscreen (`--offscreen`).
-    surface: Option<wgpu::Surface<'static>>,
+    /// The window's swapchain; `None` when rendering offscreen (`--offscreen`). Shared
+    /// with frame generation's present thread while it runs.
+    surface: Option<Arc<wgpu::Surface<'static>>>,
     /// The surface `release_surface` set aside for the renderer that replaces
     /// this one on the same device: reused, not created again, as a new
     /// surface for the window can come back lost (Wayland on Mesa).
@@ -878,6 +879,10 @@ pub struct Renderer {
     layout: crate::chunk::ColumnLayout,
     /// Resolution scale, FXAA and TAA (Horizon settings).
     world_post: world_post::Post,
+    /// Frame generation (Horizon setting).
+    frame_gen: frame_gen::FrameGen,
+    /// The entities' texture atlas (`entity_group`'s), for frame generation's motion.
+    entity_atlas: wgpu::TextureView,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
     /// Which pixels of each block sprite may shine in HDR output (terrain.wgsl's
@@ -1773,9 +1778,13 @@ impl Renderer {
             let caps = surface.get_capabilities(&adapter);
             config.format = surface_format(&caps.formats, config.format);
             config.view_formats = vec![config.format.remove_srgb_suffix()];
-            // Screenshots copy the presented frame back from the swapchain.
+            // Screenshots copy the presented frame back from the swapchain, frame
+            // generation's present thread copies its frames in.
             if caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
                 config.usage |= wgpu::TextureUsages::COPY_SRC;
+            }
+            if caps.usages.contains(wgpu::TextureUsages::COPY_DST) {
+                config.usage |= wgpu::TextureUsages::COPY_DST;
             }
             config.present_mode = previous
                 .map(|renderer| renderer.config.present_mode)
@@ -1806,7 +1815,9 @@ impl Renderer {
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 format,
                 width: size.width.clamp(1, max_side),
                 height: size.height.clamp(1, max_side),
@@ -3427,7 +3438,7 @@ impl Renderer {
             display_fresh: false,
             instance,
             adapter,
-            surface,
+            surface: surface.map(Arc::new),
             spare_surface: std::sync::Mutex::new(None),
             offscreen,
             in_flight: std::collections::VecDeque::new(),
@@ -3581,6 +3592,8 @@ impl Renderer {
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
+            frame_gen: frame_gen::FrameGen::new(),
+            entity_atlas: atlas_view.clone(),
             hdr: None,
             emission_stats,
             hdr_output,
@@ -3674,11 +3687,13 @@ impl Renderer {
     /// Hand the window surface over to the renderer that replaces this one on
     /// the same device (it takes `spare_surface`).
     pub fn release_surface(&mut self) {
+        self.frame_gen.stop();
         self.queue.wait();
         *self
             .spare_surface
             .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.surface.take();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            self.surface.take().and_then(|s| Arc::try_unwrap(s).ok());
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
@@ -3694,6 +3709,7 @@ impl Renderer {
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        self.frame_gen.stop();
         self.surface = None;
         let surface = match spare {
             Some(surface) => surface,
@@ -3712,7 +3728,7 @@ impl Renderer {
             );
         }
         self.surface_unconfigured = configured.is_err();
-        self.surface = Some(surface);
+        self.surface = Some(Arc::new(surface));
         Ok(())
     }
     /// The world's depth, which occlusion culling's test and post effects may read.
@@ -4402,7 +4418,8 @@ impl Renderer {
     }
     /// Configures the window surface again. One that fails is still the one
     /// wgpu configured before, which acquisition reports as a validation error.
-    fn configure_surface(&self) {
+    fn configure_surface(&mut self) {
+        self.frame_gen.stop();
         // The submit thread may still present to the old swapchain.
         self.queue.wait();
         if let Some(surface) = &self.surface
@@ -4492,7 +4509,7 @@ impl Renderer {
             // game never waits on the compositor for it.
             self.display = if output.is_some() {
                 let (watch, now) =
-                    DisplayWatch::new(&self.window, self.surface.as_ref(), &self.adapter);
+                    DisplayWatch::new(&self.window, self.surface.as_deref(), &self.adapter);
                 crate::graphics::report(now);
                 self.display_fresh = true;
                 watch
@@ -4542,11 +4559,23 @@ impl Renderer {
         if std::mem::take(&mut self.display_fresh) {
             return true;
         }
-        let Some(now) = self.display.changed(self.surface.as_ref(), &self.adapter) else {
+        let Some(now) = self.display.changed(self.surface.as_deref(), &self.adapter) else {
             return false;
         };
         crate::graphics::report(now);
         true
+    }
+    /// The share of real frames frame generation shows a made frame before (1 while it
+    /// keeps up), `None` while it isn't running.
+    pub fn frame_generation_share(&self) -> Option<f32> {
+        self.frame_gen.made_share
+    }
+    /// Frame generation on or off (FSR 3.1's frame interpolation).
+    pub fn set_frame_generation(&mut self, on: bool) {
+        if !on {
+            self.frame_gen.stop();
+        }
+        self.frame_gen.on = on;
     }
     /// `upscale`: output pixels per rendered pixel, for TAA to rebuild (1: native).
     pub fn set_world_post(&mut self, scale: f32, antialias: bool, taa: bool, upscale: f32) {
@@ -4949,6 +4978,11 @@ impl Renderer {
         }
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
+        // A lost device cannot accept uploads either. Leave recovery to the
+        // owner instead of submitting atlas patches to the invalid device.
+        if self.device_lost() {
+            return Err("the graphics device was lost".into());
+        }
         let scaled = self.screenshot_size();
         let rendered = match scaled {
             Some(size) => self.draw_scaled_frame(frame, size),
@@ -4956,6 +4990,9 @@ impl Renderer {
         };
         // A frame that was not drawn still submits the section copies and
         // atlas patches (glyphs, skins, maps), which the caller already took.
+        if self.device_lost() {
+            return Err("the graphics device was lost".into());
+        }
         if !matches!(rendered, Ok(true)) && !frame.hud.patches.is_empty() {
             let section_copies = self.section_copies.take();
             let has_section_copies = section_copies.is_some();
@@ -4978,6 +5015,11 @@ impl Renderer {
         }
         // A scaled screenshot's frame never reached the window.
         rendered.map(|drawn| drawn && scaled.is_none())
+    }
+    /// Whether the device's loss callback has fired. A surface reconfigure
+    /// alone cannot restore resources belonging to a lost device.
+    pub fn device_lost(&self) -> bool {
+        self.device_lost.load(std::sync::atomic::Ordering::Relaxed)
     }
     /// The frame size of the pending `scaled` screenshot when it is larger than the
     /// window: the window's times the Resolution Scale (when above 100%) and
@@ -5078,6 +5120,7 @@ impl Renderer {
             if self.device_lost.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err("the graphics device was lost".into());
             }
+            self.frame_gen.stop();
             if Self::configure(
                 &self.device,
                 surface,
@@ -5091,8 +5134,42 @@ impl Renderer {
             }
             self.surface_unconfigured = false;
         }
+        // Frame generation: its present thread acquires and presents, this frame draws
+        // into frames of its own. Not over menus that blur the frame, a shader pack's
+        // own post passes, HDR or the title screen.
+        let fg = self.frame_gen.on
+            && !self.frame_gen.paused
+            && self.hdr.is_none()
+            && !frame.title
+            && frame.menu_blur.is_none()
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && self.native.as_ref().is_none_or(|n| n.post.is_none())
+            && (self.surface.is_none()
+                || self.config.usage.contains(wgpu::TextureUsages::COPY_DST));
+        if !fg {
+            self.frame_gen.stop();
+        }
         let acquire = Instant::now();
-        let acquired = self.surface.as_ref().map(|s| s.get_current_texture());
+        let fg_frames = fg
+            .then(|| {
+                self.frame_gen.frames(
+                    &self.device,
+                    &self.queue,
+                    self.surface.as_ref(),
+                    self.offscreen.as_ref(),
+                    &self.window,
+                    &self.config,
+                )
+            })
+            .flatten();
+        // The present thread failed: this frame acquires as without frame generation.
+        let fg = fg_frames.is_some();
+        let mut fg_made = false;
+        let acquired = if fg {
+            None
+        } else {
+            self.surface.as_ref().map(|s| s.get_current_texture())
+        };
         self.last_wait = acquire.elapsed();
         let (surface_frame, reconfigure) = match acquired {
             None => (None, false),
@@ -5128,9 +5205,11 @@ impl Renderer {
         };
         if surface_frame.is_some() {
             self.acquire_validation_failures = 0;
+            self.frame_gen.paused = false;
         }
         let size = [self.config.width, self.config.height];
         let target_texture = match (&surface_frame, &mut self.hdr) {
+            _ if let Some((real, _)) = &fg_frames => real.clone(),
             (Some(_), Some(hdr)) => hdr.frame(&self.device, size),
             // A screenshot of a swapchain without COPY_SRC (OpenGL) draws
             // into a texture that has it, then onto the swapchain.
@@ -5197,6 +5276,8 @@ impl Renderer {
             );
         }
         let view = views.primary().view;
+        // The hand's bob and view (`hand_globals`).
+        let hand_view = frame.bob * view;
         let sun_angle = frame.sky.sun_angle.to_radians();
         // Celestial bodies rotate around the X axis; angle 0 = noon.
         let sun = Vec3::new(0.0, sun_angle.cos(), -sun_angle.sin());
@@ -6020,6 +6101,19 @@ impl Renderer {
             &frame.lightning,
             camera,
         );
+        // Frame generation's made frame draws its own hand, halfway, after the others.
+        let made_hand_vertex = self.entity_batch.combined.len() as i32;
+        if fg {
+            self.frame_gen
+                .halfway_hand(frame.hand, hand_view, &mut self.entity_batch.combined);
+            self.frame_gen.track_entities(
+                &self.device,
+                &self.entity_atlas,
+                frame.entities,
+                frame.entity_motion,
+                frame.camera,
+            );
+        }
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
@@ -6239,7 +6333,8 @@ impl Renderer {
         let keep_depth = pack_reads_world
             || (taa && self.world_post.taa)
             || oit_on
-            || native_render::render_needs().world_depth;
+            || native_render::render_needs().world_depth
+            || fg;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -6283,7 +6378,7 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world,
+            pack_reads_world || fg,
         );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
@@ -6299,6 +6394,8 @@ impl Renderer {
             && !pack_draws_hand
             && scaled.is_none()
             && self.hdr.is_none()
+            // Frame generation draws the hand over the real and the made frame after the world.
+            && fg_frames.is_none()
             && !native_render::world_drawn_hooked();
         if oit_on {
             let size = self
@@ -7500,6 +7597,47 @@ impl Renderer {
                 history_reset,
                 native.timing.as_mut(),
             );
+        } else if let (Some((_, generated)), Some((_, depth))) = (&fg_frames, &scaled) {
+            let world = self
+                .frame_gen
+                .world(&self.device, &self.world_post, &self.config);
+            self.world_post
+                .finish(&self.queue, &mut encoder, &world, self.own_timing.as_mut());
+            let camera = frame_gen::Camera {
+                jittered,
+                view_proj,
+                depth: depth.clone(),
+                render_size: self.world_post.size().unwrap_or(size),
+                jitter: self.world_post.jitter_pixels(),
+                reproject: self.frame_gen.camera_motion(view_proj, frame.camera),
+                near: NEAR_PLANE,
+                far: frame.depth_far,
+                fov_y: frame.fov_degrees.to_radians(),
+            };
+            let generated_view = generated.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(self.config.format.remove_srgb_suffix()),
+                ..Default::default()
+            });
+            fg_made = self.frame_gen.generate(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &self.world_post,
+                &view_target,
+                &generated_view,
+                &camera,
+            );
+            if fg_made {
+                let overlay = Overlay {
+                    hand_quads: hand_quads * u32::from(!pack_draws_hand),
+                    first_hand_vertex: made_hand_vertex,
+                    crosshair,
+                    first_crosshair: debug_depth + debug_top,
+                    world_depth: false,
+                    real: false,
+                };
+                self.draw_overlay(&mut encoder, frame, &generated_view, generated, &overlay);
+            }
         } else if scaled.is_some() {
             self.world_post.finish(
                 &self.queue,
@@ -7532,178 +7670,16 @@ impl Renderer {
                 quad_indices: &self.indices,
             });
         }
-        if let Some(hdr) = &self.hdr {
-            hdr.keep_world(&mut encoder, self.own_timing.as_mut());
-        }
-        if hand_quads > 0 && !pack_draws_hand && !hand_in_world {
-            let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: &view_target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })];
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("First-person hand"),
-                timestamp_writes: self.own_timing.as_mut().and_then(|t| t.writes("Hand")),
-                color_attachments: &attachments,
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-            self.draw_hand(&mut pass, hand_quads, world_quads + additive_quads);
-            drop(pass);
-            if let Some(hdr) = &self.hdr {
-                hdr.mark_hand(&mut encoder, self.own_timing.as_mut());
-            }
-        }
-        // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
-        self.entity_outline.draw(
-            &mut encoder,
-            &view_target,
-            &self.entity_group,
-            &self.indices,
-            self.own_timing.as_mut(),
-        );
-        // The world icon grabs here: after the level and the hand, before
-        // the effects and the HUD draw over them (`tryTakeScreenshotIfNeeded`
-        // runs right after `renderLevel`).
-        let readback = self
-            .screenshot
-            .take_if(|request| request.size.is_some())
-            .and_then(|request| self.take_readback(request, &mut encoder, &target_texture));
-        // GameRenderer.render: applyPostEffects, after the level and before the GUI.
-        if !frame.title
-            && !frame.post_effects.effects.is_empty()
-            && target_texture
-                .usage()
-                .contains(wgpu::TextureUsages::COPY_SRC)
-        {
-            let device = &self.device;
-            self.post_effects
-                .get_or_insert_with(|| crate::post_chain::PostEffects::new(device))
-                .apply(
-                    &self.device,
-                    &self.queue,
-                    &mut encoder,
-                    &target_texture,
-                    &view_target,
-                    [self.config.width, self.config.height],
-                    // The scaled world pass drew its own depth buffer.
-                    scaled.is_none().then_some(&self.depth),
-                    &frame.post_effects,
-                    self.own_timing.as_mut(),
-                );
-        }
-        if !frame.screen.is_empty() {
-            let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: &view_target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })];
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Screen effects"),
-                timestamp_writes: self
-                    .own_timing
-                    .as_mut()
-                    .and_then(|t| t.writes("Screen effects")),
-                color_attachments: &attachments,
-                ..Default::default()
-            });
-            pass.set_bind_group(0, &self.entity_group, &[]);
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
-            for (i, quad) in frame.screen.iter().enumerate() {
-                let blend = match quad.blend {
-                    crate::screen_effects::Blend::Alpha => 0,
-                    crate::screen_effects::Blend::Vignette => 4,
-                };
-                pass.set_pipeline(&self.screen_pipelines[blend + (quad.sampling & 3) as usize]);
-                pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
-            }
-        }
-        // GameRenderer.render3dHud: the debug crosshair after the hand and
-        // the screen effects.
-        if crosshair > 0 {
-            let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: &view_target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })];
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("3d crosshair"),
-                timestamp_writes: self.own_timing.as_mut().and_then(|t| t.writes("Crosshair")),
-                color_attachments: &attachments,
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.debug_lines_on_top);
-            pass.set_bind_group(0, &self.crosshair_group, &[]);
-            pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
-            let first = debug_depth + debug_top;
-            pass.draw(0..4, first..first + crosshair);
-        }
-        let menu_blur = frame
-            .menu_blur
-            .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
-        let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
-        self.hud.draw_range(
-            &mut encoder,
-            &view_target,
-            &self.depth,
-            frame.hud,
-            [self.config.width, self.config.height],
-            0..blur_at,
-            self.own_timing.as_mut(),
-        );
-        if let Some(radius) = menu_blur {
-            let format = self.config.format;
-            let device = &self.device;
-            self.menu_blur
-                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format))
-                .apply(
-                    &self.device,
-                    &self.queue,
-                    &mut encoder,
-                    &target_texture,
-                    &view_target,
-                    [self.config.width, self.config.height],
-                    radius,
-                    self.own_timing.as_mut(),
-                );
-        }
-        self.hud.draw_range(
-            &mut encoder,
-            &view_target,
-            &self.depth,
-            frame.hud,
-            [self.config.width, self.config.height],
-            blur_at..frame.hud.vertices.len() as u32,
-            self.own_timing.as_mut(),
-        );
+        let overlay = Overlay {
+            hand_quads: hand_quads * u32::from(!pack_draws_hand && !hand_in_world),
+            first_hand_vertex: ((world_quads + additive_quads) * 4) as i32,
+            crosshair,
+            first_crosshair: debug_depth + debug_top,
+            world_depth: scaled.is_none(),
+            real: true,
+        };
+        let readback =
+            self.draw_overlay(&mut encoder, frame, &view_target, &target_texture, &overlay);
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
@@ -7714,10 +7690,15 @@ impl Renderer {
                 (&view_target, self.config.format.remove_srgb_suffix()),
             );
         }
+        // Under `HORIZON_FRAMEGEN_DEBUG=generated` a screenshot is the made frame.
+        let shown_texture = match &fg_frames {
+            Some((_, generated)) if fg_made && frame_gen::generated_only() => generated,
+            _ => &target_texture,
+        };
         let readback = readback.or_else(|| {
             self.screenshot
                 .take()
-                .and_then(|request| self.take_readback(request, &mut encoder, &target_texture))
+                .and_then(|request| self.take_readback(request, &mut encoder, shown_texture))
         });
         self.uploads.finish(&encoder);
         if has_section_copies {
@@ -7751,7 +7732,9 @@ impl Renderer {
         // Finished, submitted and presented on the submit thread when nothing after the
         // submission needs this one: screenshots' readbacks, the error scopes (one per
         // thread), the first frame's startup log, VSync's frame callback, a reconfigure.
+        // Frame generation presents its own frames (`frame_gen.present` below).
         let (encoder, surface_frame, after) = if readback.is_none()
+            && fg_frames.is_none()
             && hdr_readback.is_none()
             && checks.is_none()
             && !first_frame
@@ -7856,7 +7839,11 @@ impl Renderer {
             if reconfigure {
                 self.configure_surface();
             }
-        } else {
+        } else if let Some((real, generated)) = fg_frames {
+            self.frame_gen.present(real, generated, fg_made);
+        }
+        if self.surface.is_none() {
+            // No swapchain paces offscreen frames: keep two on the GPU at most.
             self.in_flight.push_back(submission);
             if !self.paced_elsewhere {
                 self.wait_in_flight();
@@ -7869,6 +7856,204 @@ impl Renderer {
         self.visible_lods = visible_lods;
         self.shadow_visible = shadow_visible;
         Ok(true)
+    }
+}
+impl Renderer {
+    /// What draws over the world, on the real frame and frame generation's made one:
+    /// the hand, entity outlines, post effects, screen effects, the debug crosshair and
+    /// the HUD. Returns the world icon's readback, taken on the real frame.
+    fn draw_overlay(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        view_target: &wgpu::TextureView,
+        target_texture: &wgpu::Texture,
+        overlay: &Overlay,
+    ) -> Option<(ScreenshotRequest, wgpu::Buffer)> {
+        // Horizon's own pass timings (#5887) time the real frame's overlay only: a made frame's
+        // would count the same passes twice.
+        let mut timing = if overlay.real {
+            self.own_timing.take()
+        } else {
+            None
+        };
+        if let Some(hdr) = &self.hdr {
+            hdr.keep_world(encoder, timing.as_mut());
+        }
+        if overlay.hand_quads > 0 {
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: view_target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("First-person hand"),
+                timestamp_writes: timing.as_mut().and_then(|t| t.writes("Hand")),
+                color_attachments: &attachments,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.entity_pipeline);
+            pass.set_bind_group(0, &self.hand_group, &[]);
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+            pass.draw_indexed(0..overlay.hand_quads * 6, overlay.first_hand_vertex, 0..1);
+            drop(pass);
+            if let Some(hdr) = &self.hdr {
+                hdr.mark_hand(encoder, timing.as_mut());
+            }
+        }
+        // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
+        self.entity_outline.draw(
+            encoder,
+            view_target,
+            &self.entity_group,
+            &self.indices,
+            timing.as_mut(),
+        );
+        // The world icon grabs here: after the level and the hand, before
+        // the effects and the HUD draw over them (`tryTakeScreenshotIfNeeded`
+        // runs right after `renderLevel`).
+        let readback = self
+            .screenshot
+            .take_if(|request| overlay.real && request.size.is_some())
+            .and_then(|request| self.take_readback(request, encoder, target_texture));
+        // GameRenderer.render: applyPostEffects, after the level and before the GUI.
+        if !frame.title
+            && !frame.post_effects.effects.is_empty()
+            && target_texture
+                .usage()
+                .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            let device = &self.device;
+            self.post_effects
+                .get_or_insert_with(|| crate::post_chain::PostEffects::new(device))
+                .apply(
+                    &self.device,
+                    &self.queue,
+                    encoder,
+                    target_texture,
+                    view_target,
+                    [self.config.width, self.config.height],
+                    // The scaled world pass drew its own depth buffer.
+                    overlay.world_depth.then_some(&self.depth),
+                    &frame.post_effects,
+                    timing.as_mut(),
+                );
+        }
+        if !frame.screen.is_empty() {
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: view_target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Screen effects"),
+                timestamp_writes: timing.as_mut().and_then(|t| t.writes("Screen effects")),
+                color_attachments: &attachments,
+                ..Default::default()
+            });
+            pass.set_bind_group(0, &self.entity_group, &[]);
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
+            for (i, quad) in frame.screen.iter().enumerate() {
+                let blend = match quad.blend {
+                    crate::screen_effects::Blend::Alpha => 0,
+                    crate::screen_effects::Blend::Vignette => 4,
+                };
+                pass.set_pipeline(&self.screen_pipelines[blend + (quad.sampling & 3) as usize]);
+                pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+            }
+        }
+        // GameRenderer.render3dHud: the debug crosshair after the hand and
+        // the screen effects.
+        if overlay.crosshair > 0 {
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: view_target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("3d crosshair"),
+                timestamp_writes: timing.as_mut().and_then(|t| t.writes("Crosshair")),
+                color_attachments: &attachments,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.debug_lines_on_top);
+            pass.set_bind_group(0, &self.crosshair_group, &[]);
+            pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
+            let first = overlay.first_crosshair;
+            pass.draw(0..4, first..first + overlay.crosshair);
+        }
+        let menu_blur = frame
+            .menu_blur
+            .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
+        let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
+        self.hud.draw_range(
+            encoder,
+            view_target,
+            &self.depth,
+            frame.hud,
+            [self.config.width, self.config.height],
+            0..blur_at,
+            timing.as_mut(),
+        );
+        if let Some(radius) = menu_blur {
+            let format = self.config.format;
+            let device = &self.device;
+            self.menu_blur
+                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format))
+                .apply(
+                    &self.device,
+                    &self.queue,
+                    encoder,
+                    target_texture,
+                    view_target,
+                    [self.config.width, self.config.height],
+                    radius,
+                    timing.as_mut(),
+                );
+        }
+        self.hud.draw_range(
+            encoder,
+            view_target,
+            &self.depth,
+            frame.hud,
+            [self.config.width, self.config.height],
+            blur_at..frame.hud.vertices.len() as u32,
+            timing.as_mut(),
+        );
+        if overlay.real {
+            self.own_timing = timing;
+        }
+        readback
     }
 }
 /// Out-of-memory and validation error scopes, popped together: the first error either caught.
@@ -8210,8 +8395,24 @@ fn camera_section(camera: DVec3, min_y: i32) -> SectionKey {
     )
 }
 
+/// The near plane of the world's projection, in blocks.
+const NEAR_PLANE: f32 = 0.05;
+
+/// Counts and offsets `Renderer::draw_overlay` draws from this frame's buffers.
+struct Overlay {
+    /// Zero when a shader pack draws the hand.
+    hand_quads: u32,
+    first_hand_vertex: i32,
+    crosshair: u32,
+    first_crosshair: u32,
+    /// The world drew into `depth` (post effects may read it), not a scaled target's.
+    world_depth: bool,
+    /// The real frame, not frame generation's made one: the world icon grabs it.
+    real: bool,
+}
+
 fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
-    Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, 0.05)
+    Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, NEAR_PLANE)
 }
 
 /// `view_proj` mirrored about the horizontal plane at the camera-relative height `plane`:

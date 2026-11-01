@@ -104,6 +104,7 @@ import net.minecraft.world.phys.Vec3;
  * {@code paddle NAME LEFT RIGHT} sends the two boolean paddle states.
  */
 public final class LocatorBarClient {
+    private static volatile boolean tickSteps;
     private static volatile String step = "start";
     private static volatile boolean players;
     private static volatile boolean chat;
@@ -140,6 +141,7 @@ public final class LocatorBarClient {
                         abilities.flying = w[2].equals("on");
                         players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPlayerAbilitiesPacket(abilities));
                     }
+                    case "ticksteps" -> tickSteps = w[1].equals("on");
                     case "still" -> players.get(w[1]).still();
                     case "respawn" -> players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
                         net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.PERFORM_RESPAWN));
@@ -448,6 +450,11 @@ public final class LocatorBarClient {
                     if (p instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket l) {
                         id = l.playerId();
                     }
+                    if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundTickingStepPacket t)
+                        record("tick-step " + t.tickSteps());
+                    if (tickSteps && p instanceof net.minecraft.network.protocol.game.ClientboundBlockEventPacket e
+                        && e.getPos().equals(new net.minecraft.core.BlockPos(0, 80, 0)))
+                        record("piston-event " + e.getB0() + " " + e.getB1());
                     if (state) recordState(p);
                     if (boats && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
                         && isBoat(a.getType())) {

@@ -2,8 +2,9 @@
 //! flags byte (sleeping, sitting, crouching, interested, pouncing,
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries and the food held in the mouth.
-//! Picking up items, strolling through villages and trusting players (with
-//! defending them) are not ported yet.
+//! Strolling through villages and defending trusted players are not ported yet.
+//! The goal that walks to a dropped item is here; the game side takes the
+//! items (`Fox.pickUpItem`, `game/foxes.rs`).
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
     goals::{
@@ -182,6 +183,7 @@ pub fn register(m: &mut Mob) {
     g.add(10, EatBerries::new());
     g.add(10, LeapAtTarget::new(0.4));
     g.add(11, Stroll::avoiding_water(1.0));
+    g.add(11, SearchForItems);
     // FoxLookAtPlayerGoal: not with the nose in the snow or while stalking.
     g.add(
         12,
@@ -1000,5 +1002,100 @@ mod trust_breed_tests {
         let mut none = fox();
         trust_breeders(&mut none, None, None);
         assert_eq!(trusted_entities(&none).count(), 0);
+    }
+}
+
+/// Where the first item a fox may pick up lies within 8 blocks (`Fox.ALLOWED_ITEMS`:
+/// no pickup delay, alive), found by the game each tick for `FoxSearchForItemsGoal`.
+pub fn set_item_at(m: &mut Mob, at: Option<[f64; 3]>) {
+    m.extra.point = at;
+}
+/// `Fox.canHoldItem`: an empty mouth, or food to swap for what is not food once it has
+/// eaten at all. `food` says whether `item` and the held item are consumable food.
+pub fn can_hold_item(m: &Mob, item_is_food: bool, held_is_food: bool) -> bool {
+    m.extra.main_hand.is_none()
+        || (m.extra.ints[TICKS_SINCE_EATEN] > 0 && item_is_food && !held_is_food)
+}
+/// `Fox.pickUpItem` after the swap: it has taken the item (`ticksSinceEaten = 0`).
+pub fn took_item(m: &mut Mob) {
+    m.extra.ints[TICKS_SINCE_EATEN] = 0;
+}
+/// `Fox.FoxSearchForItemsGoal`: walk to a dropped item while the mouth is empty.
+#[derive(Clone, Debug)]
+struct SearchForItems;
+impl Goal for SearchForItems {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
+        if m.extra.main_hand.is_some() {
+            return false;
+        }
+        if m.ai.target.is_some() || m.ai.last_hurt_by.is_some() {
+            return false;
+        }
+        if !can_move(m) {
+            return false;
+        }
+        if m.random.next_int_bound(reduced(10)).unwrap_or(0) != 0 {
+            return false;
+        }
+        m.extra.point.is_some() && m.extra.main_hand.is_none()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = m.extra.point {
+            m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
+        }
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if m.extra.main_hand.is_none()
+            && let Some(at) = m.extra.point
+        {
+            m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
+        }
+    }
+}
+
+#[cfg(test)]
+mod pickup_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn fox() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:fox".into();
+        k.species = Species::Fox;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Fox.canHoldItem`: an empty mouth takes anything; a full one only swaps its non-food
+    /// for food, and only once the fox has had ticks since it last ate.
+    #[test]
+    fn a_fox_holds_what_its_mouth_has_room_for() {
+        let mut f = fox();
+        assert!(
+            can_hold_item(&f, false, false),
+            "an empty mouth takes any item"
+        );
+        f.extra.set_main_hand(Some("minecraft:stick".into()));
+        f.extra.ints[TICKS_SINCE_EATEN] = 0;
+        assert!(
+            !can_hold_item(&f, true, false),
+            "no food swap at 0 ticks since eating"
+        );
+        f.extra.ints[TICKS_SINCE_EATEN] = 1;
+        assert!(can_hold_item(&f, true, false), "food replaces a stick");
+        assert!(
+            !can_hold_item(&f, false, false),
+            "a stick does not replace a stick"
+        );
+        assert!(!can_hold_item(&f, true, true), "food does not replace food");
+        took_item(&mut f);
+        assert_eq!(
+            f.extra.ints[TICKS_SINCE_EATEN], 0,
+            "taking an item restarts the clock"
+        );
     }
 }

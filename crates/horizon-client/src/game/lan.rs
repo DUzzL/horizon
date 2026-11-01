@@ -2219,6 +2219,13 @@ impl Game<'_> {
             for d in &mut self.dropped {
                 d.needs_sync = false;
             }
+            // The step command reaches clients before the events its tick
+            // generated, as ServerTickRateManager.updateStepTicks does.
+            host.hub.sync_ticking(
+                self.clock.rate(),
+                self.clock.frozen(),
+                self.clock.step_state(),
+            );
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
             // guest re-runs a piston's `triggerEvent` while its level still
@@ -2717,6 +2724,22 @@ impl Game<'_> {
                 host.hub.swing(m.id as i32, 0, at, None);
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
+        }
+        if let Some(d) = self.dragon.as_ref().filter(|d| d.id != 0) {
+            let id = d.id;
+            let dead = !d.alive();
+            let old = host
+                .mob_state
+                .get(&self.dim)
+                .and_then(|s| s.get(&id))
+                .copied();
+            let at = [d.position.x, d.position.y, d.position.z];
+            if d.hurt_time > old.map_or(0, |o| o.0) && !dead {
+                let (kind, cause, direct) =
+                    d.last_source.unwrap_or(("minecraft:generic", None, None));
+                host.hub.damage_event(id as i32, kind, cause, direct, at);
+            }
+            seen.insert(id, (d.hurt_time, dead, None));
         }
         // LivingEntity.hurtServer for the in-frame LAN host's player (guests
         // broadcast directly from HealthEvent::DamageBroadcast): a hit that

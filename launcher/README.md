@@ -266,6 +266,15 @@ minimize, maximize/restore and close; macOS and Linux keep their system title ba
 The launcher looks for a newer Nightly when it starts and every 30 minutes while it is open, and
 shows a small "available, Install" line on Play.
 
+Release lists and commits come from GitHub's API, which allows 60 anonymous calls an hour per
+address: players behind a shared one (a school, a dorm, a carrier's NAT) spend them together.
+So each answer is kept in `cache/github/` in the data folder and used again for 5 minutes without
+asking, then revalidated with its ETag. When GitHub answers with its rate limit, or not at all,
+Horizon's own releases are read through Kira's read-only mirror
+(`https://mcp.playhorizon.dev/github/public`; `HORIZON_GITHUB_MIRROR` replaces it, empty turns it
+off); when both fail the last saved answer is used, else the error names both. The release files
+themselves come from their download links, which that limit doesn't cover.
+
 It also updates itself from GitHub releases tagged `launcher@X.Y.Z` (the game's are `nightly`, and
 `vX.Y.Z` before 2026-10-28; neither is ever taken for the other). Before 0.2 they were `launcher-vX.Y.Z` and `vYYYY.MM.DD`:
 every 0.2 tag counts as newer than all of those (docs/versioning.md). It downloads the new build, replaces its
@@ -490,7 +499,9 @@ On Windows, `cargo test --bin horizon-launcher desktop_list_renders_the_viewport
     cargo build --release
 
 On NixOS, `nix-shell` in this folder provides the libraries GPUI links to (Wayland, X11,
-xkbcommon, Vulkan, fontconfig). macOS needs Xcode's command line tools. The `launcher`
+xkbcommon, Vulkan, fontconfig) and the ALSA and libudev files a native mod build looks up, so
+start the launcher from that shell to build native mods as well (#5248). macOS needs Xcode's
+command line tools. The `launcher`
 workflow builds all three platforms on every push to the `launcher` branch (or a
 `launcher-*` one), then installs the latest Horizon into a temporary folder and checks that the
 client starts (`--help`) and that the binaries import only system libraries (Windows).
