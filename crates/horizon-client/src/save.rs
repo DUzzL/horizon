@@ -2385,27 +2385,57 @@ struct LodRegion {
 /// it was read show in the far view this long after.
 const LOD_REGION_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 impl SaveDir {
-    /// Load this dimension's server-owned mod attachments.
-    pub fn load_attachments(&self) -> Result<horizon_world::attachments::Attachments> {
-        match read_saved_data(&self.root, "horizon_attachments") {
-            Some(Tag::Compound(data)) => {
-                Ok(horizon_world::attachments::Attachments::from_nbt(data))
-            }
-            Some(_) => Err("invalid level attachment data".into()),
-            None => Ok(Default::default()),
-        }
+    /// This dimension's server-owned mod attachments: `data/horizon/attachments.dat`, Horizon's
+    /// own namespace. A file that doesn't read is moved aside to `attachments.dat.corrupt`, with
+    /// a warning, and the level opens without them (as vanilla's `SavedDataStorage` starts a
+    /// saved data over when its file is broken), so the next save can't overwrite it.
+    pub fn load_attachments(&self) -> horizon_world::attachments::Attachments {
+        let path = self.attachments_path();
+        let data = match try_read_dat(&path) {
+            Err(DatIssue::Missing) => return Default::default(),
+            Ok(root) => match root.get("data") {
+                Some(Tag::Compound(data)) => Ok(data.clone()),
+                _ => Err("no data compound".to_owned()),
+            },
+            Err(DatIssue::Unreadable(why)) => Err(why),
+        };
+        data.map(horizon_world::attachments::Attachments::from_nbt)
+            .unwrap_or_else(|why| {
+                let aside = path.with_extension("dat.corrupt");
+                log::warn!(
+                    "{}: {why}; mod attachments start over, the file is kept as {}",
+                    path.display(),
+                    aside.display()
+                );
+                let _ = fs::rename(&path, &aside);
+                Default::default()
+            })
     }
 
-    /// Save this dimension's server-owned mod attachments.
+    /// Save this dimension's server-owned mod attachments; nothing while it has none and never had.
     pub fn save_attachments(
         &self,
         attachments: &horizon_world::attachments::Attachments,
     ) -> Result<()> {
-        write_saved_data(
-            &self.root,
-            "horizon_attachments",
-            Tag::Compound(attachments.to_nbt()),
+        let path = self.attachments_path();
+        let data = attachments.to_nbt();
+        if data.is_empty() && !path.exists() {
+            return Ok(());
+        }
+        write_dat(
+            &path,
+            Tag::compound([
+                ("data", Tag::Compound(data)),
+                ("DataVersion", Tag::Int(DATA_VERSION)),
+            ]),
         )
+    }
+
+    fn attachments_path(&self) -> PathBuf {
+        self.root
+            .join("data")
+            .join("horizon")
+            .join("attachments.dat")
     }
 
     /// The saves of a level of `shape` at `root` (its dimension folder).
@@ -5155,7 +5185,7 @@ mod tests {
         let mut map = Attachments::default();
         map.set(&key, 7).unwrap();
         save.save_attachments(&map).unwrap();
-        assert_eq!(save.load_attachments().unwrap().get(&key), Ok(7));
+        assert_eq!(save.load_attachments().get(&key), Ok(7));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -7062,6 +7092,33 @@ mod tests {
             estimate_disk_space(&dir.join("horizon-no-such-folder/x")),
             u64::MAX
         );
+    }
+
+    #[test]
+    fn mod_attachments_save_in_horizons_namespace_only_when_some() {
+        use horizon_world::attachments::Attachments;
+        let root = std::env::temp_dir().join(format!("horizon-attach-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let save = SaveDir::new(root.clone(), LevelShape::OVERWORLD);
+        let file = root.join("data/horizon/attachments.dat");
+        save.save_attachments(&Attachments::default()).unwrap();
+        assert!(
+            !root.join("data").exists(),
+            "a level without mod data writes nothing"
+        );
+        let data = Compound::from_iter([("example:count".into(), Tag::Int(3))]);
+        save.save_attachments(&Attachments::from_nbt(data.clone()))
+            .unwrap();
+        assert!(file.is_file());
+        assert_eq!(save.load_attachments().to_nbt(), data);
+        fs::write(&file, b"not nbt").unwrap();
+        assert!(save.load_attachments().to_nbt().is_empty());
+        assert_eq!(
+            fs::read(root.join("data/horizon/attachments.dat.corrupt")).unwrap(),
+            b"not nbt"
+        );
+        assert!(!file.exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
