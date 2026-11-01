@@ -568,7 +568,14 @@ impl Game<'_> {
                         }
                     }
                 }
-                if let Some((id, _)) = hit_mob {
+                // ProjectileImpactEvent for the mob hit: a canceled one does
+                // nothing, and the trident stays where it would have hit.
+                let canceled_mob = hit_mob.is_some_and(|(id, _)| {
+                    self.native_trident_impact(t.id, t.guest, Some(id), [0; 3], [0; 3], t.position)
+                });
+                if canceled_mob {
+                    // No damage, sound or deflection: it flies on.
+                } else if let Some((id, _)) = hit_mob {
                     // ThrownTrident.getDamage: `EnchantmentHelper.modifyDamage` on 8
                     // (impaling hits `#sensitive_to_impaling`, the aquatic tag).
                     let victim = self
@@ -653,9 +660,29 @@ impl Game<'_> {
                     // `AbstractArrow.onHitBlock` on a hit.
                     let from = t.position;
                     let flight = t.velocity;
-                    if let Some((stop, block)) =
-                        clip_block_stop(&self.world, self.res.facts(), self.collision, from, flight)
-                    {
+                    let clip = clip_block_stop(
+                        &self.world,
+                        self.res.facts(),
+                        self.collision,
+                        from,
+                        flight,
+                    );
+                    // ProjectileImpactEvent for the block hit: a canceled one
+                    // doesn't stick the trident, which stays where it would
+                    // have hit, still flying.
+                    let canceled_block = clip.is_some_and(|(stop, block, face)| {
+                        self.native_trident_impact(
+                            t.id,
+                            t.guest,
+                            None,
+                            [block.x, block.y, block.z],
+                            face,
+                            stop,
+                        )
+                    });
+                    if canceled_block && let Some((stop, _, _)) = clip {
+                        t.position = stop;
+                    } else if let Some((stop, block, _)) = clip {
                         // Projectile.onHit on a block: PROJECTILE_LAND at the
                         // block's centre.
                         self.projectile_event(
