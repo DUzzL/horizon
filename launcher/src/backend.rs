@@ -141,7 +141,7 @@ pub(crate) const CLIENT: &str = if cfg!(windows) {
 
 /// The agent `url` is fetched with: the launcher's own user agent, through the player's proxy when
 /// one is set (`proxy`).
-fn agent(url: &str) -> ureq::Agent {
+pub(crate) fn agent(url: &str) -> ureq::Agent {
     crate::proxy::agent(
         ureq::AgentBuilder::new()
             .user_agent(&format!("horizon-launcher/{VERSION}"))
@@ -175,7 +175,10 @@ pub(crate) fn get(url: &str) -> Result<ureq::Response, String> {
         }
     }
     request.call().map_err(|e| match e {
-        ureq::Error::Status(403, _) => {
+        ureq::Error::Status(code, r)
+            if url.starts_with("https://api.github.com/")
+                && crate::github::rate_limited(code, |h| r.header(h).map(str::to_owned)) =>
+        {
             "GitHub's rate limit was reached. Try again in a few minutes.".into()
         }
         ureq::Error::Status(code, _) => format!("{url} answered {code}"),
@@ -311,10 +314,12 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     release_order(a).cmp(&release_order(b))
 }
 
-/// Every published release of the repository, both kinds, as GitHub's JSON.
+/// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
+/// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=100");
-    get(&url)?.into_json().map_err(|e| e.to_string())
+    crate::github::json(&format!(
+        "https://api.github.com/repos/{REPO}/releases?per_page=100"
+    ))
 }
 
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.
@@ -391,9 +396,7 @@ pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
 /// `launcher@` and `launcher-v` tags are looked up one by one (a draft's tag is skipped: it has no
 /// public release).
 fn launcher_releases_in(list: &serde_json::Value) -> Vec<Release> {
-    launcher_releases_in_with(list, |url| {
-        get(&url)?.into_json().map_err(|e| e.to_string())
-    })
+    launcher_releases_in_with(list, |url| crate::github::json(&url))
 }
 
 fn launcher_releases_in_with(
@@ -572,17 +575,30 @@ pub fn build_dir() -> PathBuf {
     real
 }
 
-/// [`build_dir`] when `real` isn't [`ascii`]: the folder's own short (8.3) name where the
-/// volume keeps one — the same files, spelled in ASCII — else a folder of ProgramData's,
-/// named for the path so each user's is its own and can be created there.
+/// [`build_dir`] when `real` isn't [`ascii`]: [`ascii_build_dir`], a real folder of
+/// ProgramData's. Only when it can't be created, the data folder's short (8.3) name.
+///
+/// The short name came first until #6009, and wasn't enough: it is only another spelling of the
+/// same folder, and rustc canonicalizes its own path to find its sysroot, which spells the long,
+/// Cyrillic name again and hands it to the linker (`x86_64-w64-mingw32-gcc`: "No such file or
+/// directory" on `C:/Users/\xca\xe8…`). A folder whose real name is ASCII stays ASCII however a
+/// tool resolves it.
 #[cfg(windows)]
 fn windows_build_dir(real: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-    if let Some(short) = short_path(real).filter(|p| ascii(p)) {
-        return short;
+    let dir = ascii_build_dir(real, std::env::var_os("ProgramData").map(PathBuf::from));
+    if fs::create_dir_all(&dir).is_ok() {
+        return dir;
     }
-    let public = std::env::var_os("ProgramData")
-        .map(PathBuf::from)
+    short_path(real).filter(|p| ascii(p)).unwrap_or(dir)
+}
+
+/// The build folder for a data folder `real` whose path isn't [`ascii`]: in `program_data`
+/// (`%ProgramData%`, `C:\ProgramData` when unset, relative or not ASCII), which every user may
+/// create folders in, named for `real` so each user's is their own.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ascii_build_dir(real: &Path, program_data: Option<PathBuf>) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let public = program_data
         .filter(|p| p.is_absolute() && ascii(p))
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
     let key = Sha256::digest(real.as_os_str().as_encoded_bytes());
@@ -3426,6 +3442,33 @@ mod tests {
                     .map(plain)
                     .unwrap_or_else(|_| built.clone())
             );
+        }
+    }
+
+    /// [#6009](https://github.com/horizon-rust/horizon/issues/6009): with a Cyrillic user name the
+    /// build folder is a real ASCII folder of ProgramData's (not a short name of the data folder,
+    /// which rustc resolves back to the Cyrillic one), its own for each data folder.
+    #[test]
+    fn a_cyrillic_data_folder_builds_in_an_ascii_folder_of_its_own() {
+        let pavlo = Path::new(r"C:\Users\Кириченко Павло\AppData\Roaming\horizon-launcher");
+        let other = Path::new(r"C:\Users\Олена\AppData\Roaming\horizon-launcher");
+        let public = PathBuf::from(if cfg!(windows) { r"D:\Data" } else { "/data" });
+        let dir = ascii_build_dir(pavlo, Some(public.clone()));
+        assert!(ascii(&dir), "{}", dir.display());
+        assert_eq!(dir.parent(), Some(public.as_path()));
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("horizon-launcher-") && name.len() == 25,
+            "{name}"
+        );
+        assert_eq!(dir, ascii_build_dir(pavlo, Some(public.clone())), "stable");
+        assert_ne!(dir, ascii_build_dir(other, Some(public)), "one per user");
+        // %ProgramData% unset, relative or itself not ASCII: C:\ProgramData.
+        let default = PathBuf::from(r"C:\ProgramData");
+        for pd in [None, Some("ProgramData".into()), Some(r"C:\Дані".into())] {
+            let dir = ascii_build_dir(pavlo, pd);
+            assert_eq!(dir.parent(), Some(default.as_path()));
+            assert!(ascii(&dir));
         }
     }
 

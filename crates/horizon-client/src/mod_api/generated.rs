@@ -476,7 +476,9 @@ pub trait Hooks: Send + Sync {
     /// without its slash, for a command a mod registered and the player's
     /// level allows: set `ran` when it is yours. The player's state is
     /// swapped in for the call, so `native_player` and the other helpers
-    /// read that player; `native_feedback` answers them. API 8.
+    /// read that player; `native_feedback` answers them. A single player's
+    /// owner console (`horizon-ctl command`) reaches it too, as the owner at
+    /// level 4. API 8.
     ///
     /// Return `Flow::Cancel` to take it: this sets `ran`, and later mods are skipped.
     fn perform_command(

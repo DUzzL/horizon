@@ -443,8 +443,11 @@ impl Game<'_> {
                             && let Some(state) = self.state_from_nbt(&state)
                         {
                             let (no_gravity, drop_item) = entity_nbt::falling_block_flags(&tag);
+                            self.next_entity += 1;
+                            // A summoned one has no UUID yet: `Entity` makes a random one.
+                            let uuid = uuid.unwrap_or_else(|| self.uuid_for(self.next_entity));
                             self.falling.push(FallingBlock {
-                                id: 0,
+                                id: self.next_entity,
                                 state,
                                 // DATA_START_POS is not persisted by vanilla.
                                 start_pos: horizon_core::position::BlockPos::default(),
@@ -468,7 +471,7 @@ impl Game<'_> {
                                     &tag,
                                     self.res.facts().get(state).name.ends_with("anvil"),
                                 ),
-                                saved: uuid.map(|u| Box::new((u, tag.clone()))),
+                                saved: Some(Box::new((uuid, tag.clone()))),
                             });
                         }
                     }

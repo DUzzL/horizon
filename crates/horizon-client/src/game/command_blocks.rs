@@ -803,8 +803,8 @@ impl Game<'_> {
         shortcut: Option<horizon_client::clipboard::EditShortcut>,
         text: Option<&str>,
     ) {
-        let ctrl = self.keys.contains(&KeyCode::ControlLeft);
-        let shift = self.keys.contains(&KeyCode::ShiftLeft);
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
         // Windows' AltGr is Ctrl+Alt, and its characters still type.
         let types_text = self.types_text();
         let Some(mut s) = self.command_block_screen.take() else {

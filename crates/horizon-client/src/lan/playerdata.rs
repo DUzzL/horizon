@@ -92,7 +92,9 @@ pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
     // never another player's file the world happened to hold.
     level.player_uuid.get_or_insert(uuid_ints(guest.uuid));
     store(guest, level, None);
-    let _ = level.write_player(world);
+    if let Err(e) = level.write_player(world) {
+        log::warn!("Horizon: the owner's playerdata is not saved: {e}");
+    }
     save(guest, world);
 }
 
@@ -193,7 +195,9 @@ pub fn save(guest: &Guest, world: &Path) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = write_dat(&file, level.player_tag());
+    if let Err(e) = write_dat(&file, level.player_tag()) {
+        log::warn!("Horizon: {} is not saved: {e}", file.display());
+    }
 }
 
 /// Put a guest's state in `level`'s player fields; `vehicle` is the

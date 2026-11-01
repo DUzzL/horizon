@@ -416,6 +416,21 @@ dropped it silently — reaches `native_consume_effect(kind, data)` when the ite
 thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
 sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
 
+### A mod's own loot functions and conditions
+
+A loot table's function or condition that names a `type` in a namespace outside `minecraft:` — where the
+loot roll used to silently skip it — reaches `native_loot_function(kind, data, ctx, stack)` or
+`native_loot_condition(kind, data, ctx, holds)` when the table rolls. The function changes the stack; the
+condition says whether it holds. The context brings the entity, the damage, the player who killed it, the
+tool, the block, the luck, the biome and a seed from the roll's random. An unclaimed function leaves the
+stack, an unclaimed condition fails, as unknown kinds do; a bare type name is minecraft's own.
+
+The tables the items engine rolls (block drops, entity drops, `loot_table`, `interact_loot` and the
+built-in tables) answer the condition hook, with the tool and the block in the context; the function hook
+there follows when the stack types converge. In the items engine's context the `entity`, `damage`, `player`
+and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
+fields are `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
@@ -776,9 +791,11 @@ Every path the build's tools see — the toolchain, the Cargo home, `native/` an
 TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
 `backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
 refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
-MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
-folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
-a drive with an ASCII path resolves to that and needs neither.
+MinGW-w64's tools can't open — it is a real folder under `ProgramData` named for it (`horizon-launcher-<id>`),
+and only when that can't be created the data folder's short (8.3) name. A short name alone is not enough
+(#6009): rustc canonicalizes its own path to find its sysroot, which spells the long name again for the
+linker. A data folder that is itself a junction to a drive with an ASCII path resolves to that and needs
+neither.
 
 ## Install from GitHub
 
@@ -967,7 +984,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_perform_console_command(command, ran)`**: a registered command typed on the dedicated server's console
   (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
   helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
-  registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+  registered goes to vanilla's dispatcher as before. The single player owner's console (`horizon-ctl command`, the MCP
+  command tool) is a player's: it reaches `native_perform_command` with the owner, at level 4.
 - **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
   `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
   (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
