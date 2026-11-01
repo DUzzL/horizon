@@ -414,12 +414,67 @@ impl Game<'_> {
         }
         self.rail_pos(x, y, z)
     }
+    /// `AbstractMinecart.canCollideWith`, for `Entity.collide`'s `getEntityCollisions`:
+    /// `AbstractBoat.canVehicleCollide` takes any other cart, boat, shulker or pushable mob and
+    /// player, except one riding this cart. A cart that runs into one has a horizontal
+    /// collision, which sets a TNT minecart off.
+    fn cart_entity_collisions(&self, c: &Minecart) -> Vec<Aabb> {
+        let near = c.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
+        let mut boxes: Vec<Aabb> = self
+            .carts
+            .iter()
+            .filter(|o| o.id != c.id)
+            .map(Minecart::bounds)
+            .chain(self.boats.iter().map(super::boats::Boat::bounds))
+            .chain(
+                self.mobs
+                    .iter()
+                    .filter(|m| {
+                        !m.removed
+                            && m.extra.mount != Some(c.id)
+                            && (m.pushable()
+                                || m.species() == horizon_client::mobs::Species::Shulker
+                                    && m.alive())
+                    })
+                    .map(|m| m.bounds()),
+            )
+            .collect();
+        if self.riding != Some(c.id)
+            && let Some(p) = self.player.as_ref()
+            && !self.spectator()
+        {
+            boxes.push(p.bounds());
+        }
+        if let Some(host) = self.lan.as_ref() {
+            boxes.extend(
+                host.hub
+                    .guests
+                    .iter()
+                    .filter(|g| {
+                        host.hub.here(g)
+                            && g.loaded
+                            && !g.dead
+                            && !g.spectator()
+                            && g.vehicle != Some(c.id)
+                    })
+                    .map(|g| g.bounds()),
+            );
+        }
+        boxes.retain(|b| b.intersects(near));
+        boxes
+    }
     /// Entity.move for a cart: collisions zero the blocked components.
     fn move_cart(&self, c: &mut Minecart, delta: Vec3) {
-        let mut scene = SceneCollisions {
+        let scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
             subject: None,
+        };
+        let entities = self.cart_entity_collisions(c);
+        let mut scene = horizon_client::collisions::EntityCollisions {
+            blocks: scene,
+            entities: &entities,
+            border: None,
         };
         if let Ok(moved) = scene.resolve(c.bounds(), delta, 0.0, c.on_ground) {
             c.position = Vec3::new(
