@@ -85,6 +85,13 @@ A block names its template and what differs from it:
   "item": true }
 ```
 
+`random_ticks` makes a block tick randomly whatever its template does, as vanilla's
+`isRandomlyTicking(state)` does for its own blocks, so a crop, sapling or soil on a template that never
+ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a template that ticks), or
+`{ "property": "grown", "values": ["false"] }` for the states whose own state property (declared in
+`state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
+for a vanilla block that ticks, and its sections count it.
+
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
 connects to, or a machine whether it is running. Its states then become its

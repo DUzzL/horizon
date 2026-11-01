@@ -27,7 +27,7 @@ use horizon_world::nbt::Tag;
 /// Mob ids from here on are dragon parts (`SPECIAL + part`) and crystals
 /// (`SPECIAL + 16 + crystal`), so projectiles can target them.
 pub(super) const SPECIAL: u32 = u32::MAX - 4096;
-const CRYSTAL_IDS: u32 = SPECIAL + 16;
+pub(super) const CRYSTAL_IDS: u32 = SPECIAL + 16;
 const FIGHT_FILE: &str = "data/minecraft/ender_dragon_fight.dat";
 const MAX_HEALTH: f32 = 200.0;
 /// `Mob.getAmbientSoundInterval`.

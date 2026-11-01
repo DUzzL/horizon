@@ -1458,6 +1458,10 @@ impl Game<'_> {
     }
     /// `getDismountLocationForPassenger`: beside the cart (across its facing), else on top.
     pub(super) fn dismount_cart(&mut self, i: usize) {
+        let id = self.carts[i].id;
+        if self.riding == Some(id) && !self.native_may_leave(id) {
+            return;
+        }
         self.riding = None;
         let c = &self.carts[i];
         let (bx, by, bz) = (
@@ -1617,7 +1621,10 @@ impl Game<'_> {
                 if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
-                self.riding = Some(self.carts[i].id);
+                if !self.native_may_board(id) {
+                    return true;
+                }
+                self.riding = Some(id);
             }
             // AbstractMinecartContainer.interact: no sneak check.
             CartKind::Chest | CartKind::Hopper => self.open_cart_container(i),

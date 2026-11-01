@@ -1070,7 +1070,18 @@ impl Game<'_> {
     /// `getDismountLocationForPassenger`: in front of the player if there is
     /// floor there, else on top of the boat.
     pub(super) fn dismount(&mut self, i: usize) {
+        let id = self.boats[i].id;
+        if self.riding == Some(id) && !self.native_may_leave(id) {
+            return;
+        }
         self.riding = None;
+        // `AbstractBoat.tick`'s non-authoritative branch: the copy of a boat
+        // that no player of this side drives drops its cached motion
+        // (`setDeltaMovement(Vec3.ZERO)`, `deltaRotation = 0`) and is not
+        // moved, so a boat is at a standstill when its rider gets out instead
+        // of coasting on the velocity of the ride that just ended.
+        self.boats[i].velocity = Vec3::ZERO;
+        self.boats[i].delta_rotation = 0.0;
         let target = self.boat_dismount_target(i, 0.6, self.yaw);
         if let Some(p) = self.player.as_mut() {
             p.position = target;
@@ -1258,6 +1269,9 @@ impl Game<'_> {
             || !self.boat_has_room(i)
         {
             return false;
+        }
+        if !self.native_may_board(self.boats[i].id) {
+            return true;
         }
         self.riding = Some(self.boats[i].id);
         self.yaw = self.boats[i].yaw;

@@ -86,7 +86,11 @@ impl Game<'_> {
         if !m.extra.saddled || food || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
             return false;
         }
-        self.riding = Some(m.id);
+        let id = m.id;
+        if !self.native_may_board(id) {
+            return true;
+        }
+        self.riding = Some(id);
         self.trigger_player("minecraft:started_riding");
         true
     }
@@ -243,6 +247,10 @@ impl Game<'_> {
             return true;
         }
         // doPlayerRide
+        let id = self.mobs[index].id;
+        if !self.native_may_board(id) {
+            return true;
+        }
         let m = &mut self.mobs[index];
         m.extra.flag = false;
         m.extra.counter = 0;
@@ -480,9 +488,13 @@ impl Game<'_> {
     }
     /// `removePassenger` + `getDismountLocationForPassenger`: beside the mount.
     pub(super) fn dismount_mount(&mut self) {
-        let Some(id) = self.riding.take() else {
+        let Some(id) = self.riding else {
             return;
         };
+        if !self.native_may_leave(id) {
+            return;
+        }
+        self.riding = None;
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
@@ -640,37 +652,36 @@ impl Game<'_> {
     pub(super) fn mount_jumping(&self) -> bool {
         self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
     }
-    /// `Hud.extractVehicleHealth`, and the jump bar when it is the
-    /// contextual bar (`jump_bar`). Returns the mount's heart count
+    /// `Hud.extractVehicleHealth` (a native mod's `minecraft:vehicle_health`
+    /// layer, only while riding a mount). Returns the mount's heart count
     /// (`getVehicleMaxHearts`).
-    pub(super) fn draw_mount_hud(
-        &self,
-        batch: &mut HudBatch,
-        w: i32,
-        h: i32,
-        jump_bar: bool,
-    ) -> i32 {
+    pub(super) fn draw_mount_hud(&mut self, batch: &mut HudBatch, w: i32, h: i32) -> i32 {
         let Some(i) = self.mount_index() else {
             return 0;
         };
         let m = &self.mobs[i];
-        let atlas = &self.gui.atlas;
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
         let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
-        horizon_client::hud_layout::paint(batch, atlas, &draws);
-        if jump_bar {
-            // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
-            // the nautilus' dash have; a horse always shows the progress.
-            let cooldown = i32::from(
-                self.mount.jump_ticks < 0
-                    && (matches!(m.species(), Species::Camel | Species::CamelHusk)
-                        || horizon_client::mobs::nautilus::is_nautilus(m.species())),
-            );
-            let draws =
-                horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
-            horizon_client::hud_layout::paint(batch, atlas, &draws);
-        }
+        self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
+            horizon_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
+        });
         hearts
+    }
+    /// The jump bar when it is the contextual bar.
+    pub(super) fn draw_jump_bar(&self, batch: &mut HudBatch, w: i32, h: i32) {
+        let Some(i) = self.mount_index() else {
+            return;
+        };
+        let m = &self.mobs[i];
+        // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
+        // the nautilus' dash have; a horse always shows the progress.
+        let cooldown = i32::from(
+            self.mount.jump_ticks < 0
+                && (matches!(m.species(), Species::Camel | Species::CamelHusk)
+                    || horizon_client::mobs::nautilus::is_nautilus(m.species())),
+        );
+        let draws = horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
+        horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
 }
 

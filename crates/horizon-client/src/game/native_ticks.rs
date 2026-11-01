@@ -155,7 +155,11 @@ mod tests {
         assert!(r.canceled(3));
         assert!(!r.canceled(1));
         r.not_ticked(2);
-        let left: Vec<_> = r.ticking.iter().map(|(id, kind)| (*id, kind.id())).collect();
+        let left: Vec<_> = r
+            .ticking
+            .iter()
+            .map(|(id, kind)| (*id, kind.id()))
+            .collect();
         assert_eq!(left, [(1, "minecraft:item")]);
         let mut quiet = TickRound::default();
         assert!(!quiet.listening());

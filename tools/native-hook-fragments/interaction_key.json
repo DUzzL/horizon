@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "name": "interaction_key",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_interaction_key",
+      "neoforge": "InputEvent.InteractionKeyMappingTriggered",
+      "side": "client",
+      "cancellable": true
+    }
+  ],
+  "rust_summary": "a cancellable attack, use and pick-block key hook (`native_interaction_key`).",
+  "doc_summary": "`native_interaction_key(button, key_mapping, hand, swing_hand, canceled)` fires while playing when an interaction key is about to act on the crosshair: button 0 the attack key (`key.attack`; when an attack is allowed, and each tick a held key keeps digging a block), 1 the use key (`key.use`; once for each hand tried, main first, before the hand's target and item), 2 pick block (`key.pickItem`; only with a block or entity aimed at). Set `canceled` to skip the action; a cancelled use ends the click, so the other hand gets no turn. A cancelled attack or use still swings `hand` unless the mod clears `swing_hand` (true on entry). A single player's window and a server's player (any window that plays on a server); the deprecated in-frame path is not covered. Bundles need \"hooks\": @API:interaction_key@."
+}
