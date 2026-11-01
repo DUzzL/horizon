@@ -243,51 +243,19 @@ pub(super) fn entity_uuid(id: u32) -> u128 {
 }
 
 /// The SynchedEntityData index of the baby flag: AgeableMob.DATA_BABY_ID and
-/// Zombie.DATA_BABY_ID are both the first entry after Mob's (16); Piglin's
-/// comes after AbstractPiglin's zombification flag (17).
-pub(super) fn baby_index(kind: &str) -> Option<u8> {
-    match kind {
-        "minecraft:piglin" => Some(17),
-        "minecraft:cow"
-        | "minecraft:mooshroom"
-        | "minecraft:pig"
-        | "minecraft:sheep"
-        | "minecraft:chicken"
-        | "minecraft:horse"
-        | "minecraft:donkey"
-        | "minecraft:mule"
-        | "minecraft:skeleton_horse"
-        | "minecraft:zombie_horse"
-        | "minecraft:llama"
-        | "minecraft:trader_llama"
-        | "minecraft:cat"
-        | "minecraft:wolf"
-        | "minecraft:fox"
-        | "minecraft:rabbit"
-        | "minecraft:panda"
-        | "minecraft:polar_bear"
-        | "minecraft:bee"
-        | "minecraft:frog"
-        | "minecraft:sniffer"
-        | "minecraft:armadillo"
-        | "minecraft:villager"
-        | "minecraft:zombie"
-        | "minecraft:husk"
-        | "minecraft:drowned"
-        | "minecraft:zombie_villager"
-        | "minecraft:zombified_piglin"
-        | "minecraft:hoglin"
-        | "minecraft:zoglin"
-        | "minecraft:goat"
-        | "minecraft:ocelot"
-        | "minecraft:turtle"
-        | "minecraft:strider"
-        | "minecraft:camel"
-        | "minecraft:axolotl"
-        | "minecraft:dolphin"
-        | "minecraft:squid"
-        | "minecraft:glow_squid"
-        | "minecraft:sulfur_cube" => Some(16),
+/// Zombie.DATA_BABY_ID (Zoglin's too) are the first entry after Mob's (16);
+/// Piglin's comes after AbstractPiglin's zombification flag (17). Every
+/// AgeableMob has one, the happy ghast and the nautilus included (#6133).
+pub(super) fn baby_index(species: Species) -> Option<u8> {
+    use Species as S;
+    match species {
+        S::Piglin => Some(17),
+        s if horizon_client::mobs::finalize::ageable(s)
+            || horizon_client::mobs::doors::is_zombie(s)
+            || s == S::Zoglin =>
+        {
+            Some(16)
+        }
         _ => None,
     }
 }
@@ -507,8 +475,8 @@ fn mob_meta(
         meta.push((15, serializer::BYTE, Value::Byte(flags)));
     }
     defaults.push((15, serializer::BYTE, Value::Byte(0)));
-    // AgeableMob.DATA_BABY_ID (and Zombie's, Piglin's).
-    if let Some(index) = baby_index(kind) {
+    // AgeableMob.DATA_BABY_ID (and Zombie's, Zoglin's, Piglin's).
+    if let Some(index) = baby_index(m.species()) {
         if m.is_baby() {
             meta.push((index, serializer::BOOLEAN, Value::Bool(true)));
         }
@@ -2021,6 +1989,9 @@ impl Game<'_> {
                         self.native_player_logged_out(guest.uuid, &guest.name);
                         host = self.lan.take()?;
                     }
+                }
+                HostEvent::Flight { conn, flying } => {
+                    self.lan_flight_toggled(&mut host, conn, flying);
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);

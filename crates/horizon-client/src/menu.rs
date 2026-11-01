@@ -394,7 +394,7 @@ fn tidy(slot: &mut Option<ItemStack>) {
 /// and the item's own stack size still caps it. Asked on the server, for each
 /// click, drag and shift-click that puts an item in a slot, several times for
 /// one shift-click: answer from `stack` alone, and fast. API
-/// @API:menu_slot_rules@.
+/// 130.
 #[inline(always)]
 pub fn native_menu_slot_rules(
     menu: &str,

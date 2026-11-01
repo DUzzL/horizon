@@ -57,7 +57,7 @@ pub trait Host {
     /// client's copy of a block entity has no item slots (`entity.items` is
     /// empty there): send the stacks you draw in
     /// `native_block_entity_update_tag` and read them from `entity.nbt`.
-    /// API @API:block_entity_draw_item@.
+    /// API 91.
     fn draw_item(
         &self,
         draw: &mut BlockEntityDraw,
@@ -195,7 +195,7 @@ pub trait Host {
     /// another player's (inside that player's hook, only they are reached).
     /// The player's screen follows as for any change to their inventory.
     /// What an auto-pickup or a machine's output to a player needs, from any
-    /// server hook. API @API:give_stack@.
+    /// server hook. API 98.
     fn give_stack(&mut self, uuid: u128, stack: ItemStack) -> Option<ItemStack>;
     /// Gives `points` of experience to the player `uuid` as an orb they touch
     /// does (`ExperienceOrb.playerTouch`): Mending repairs their damaged items
@@ -275,7 +275,7 @@ pub trait Host {
     /// as vanilla's attenuation does (16 blocks times the volume). False, with
     /// nothing played, on a server or for a value out of range; an event the
     /// resources don't have plays nothing, as vanilla's. API
-    /// @API:native_local_sound@.
+    /// 83.
     fn play_local_sound(
         &mut self,
         sound: &str,
@@ -370,13 +370,13 @@ pub trait Host {
     fn give(&mut self, item: &str, count: u32) -> Result<(), String>;
     /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
     /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
-    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone. API @API:native_motion@.
+    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone. API 105.
     fn push_player(&mut self, kick: [f32; 3]);
     /// For a server mod: `player`'s creative flying speed (vanilla's 0.05 when none, at most `FLYING_MAX`), kept on
     /// the server's player and sent to their client. A respawn or a game mode change keeps it, and it is saved
     /// with the player (`abilities.flySpeed`, as vanilla saves it). False for a player not here or a client of a
     /// server, and inside a player's hook, where the server's player list is busy: call it from a tick hook.
-    /// API @API:native_motion@.
+    /// API 105.
     fn set_flying_speed(&mut self, player: u128, speed: Option<f32>) -> bool;
     /// Sends `data` on `channel` (`mod_id:name`, at most 30 000 bytes, at
     /// most 32 a player a tick) to `player`'s client, at the tick's end, from

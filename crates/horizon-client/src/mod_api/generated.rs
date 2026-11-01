@@ -309,7 +309,7 @@ pub trait Hooks: Send + Sync {
     /// any template: the engine removes the block entity when its block is
     /// broken or replaced, no piston moves it, and a mod that draws it
     /// (`native_block_entity_submit`) is asked for it. API 15; before
-    /// @API:mod_block_entity_any_template@ the block's template had to have a
+    /// 129 the block's template had to have a
     /// block entity of its own (a chest, a furnace...), or the block got none.
     ///
     /// Return `Some` to set `entity`; the first mod returning `Some` wins.
@@ -361,7 +361,7 @@ pub trait Hooks: Send + Sync {
     /// block when the ticking table is built; at most 256 slots, and slot
     /// numbers past the count are left out. Its `menu`, one of
     /// `containers::MOD_MENUS` or a content mod's menu type
-    /// (`data/<id>/horizon/menu/`, API @API:mod_menu_types@) with as many
+    /// (`data/<id>/horizon/menu/`, API 85) with as many
     /// slots, opens when the block is used (its template must open a menu, as
     /// a chest or a furnace does); another is left out. A mod menu type shows
     /// on Horizon clients through the mod's `native_screen` only. API 17.

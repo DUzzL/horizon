@@ -85,6 +85,10 @@ pub struct HudAtlas {
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
+    /// Their emissive overlays (`_e`), packed here too.
+    pub emissive: std::sync::Arc<horizon_optifine::emissive::Emissive>,
+    /// ETF's blinking frames (`_blink`), packed here too.
+    pub blinks: horizon_optifine::blink::Blinks,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -619,6 +623,8 @@ impl HudAtlas {
             white,
             text_shader: None,
             random_textures: Default::default(),
+            emissive: Default::default(),
+            blinks: Default::default(),
         }
     }
     /// `layout`, but when `extras` (Custom Item Textures) make the images more than `max`
@@ -733,16 +739,32 @@ impl HudAtlas {
         } else {
             Default::default()
         };
+        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
+            horizon_optifine::emissive::Emissive::scan(root, &random_textures)
+        } else {
+            Default::default()
+        });
+        let blinks = if folders.contains(&"entity") {
+            horizon_optifine::blink::Blinks::scan(root, &random_textures)
+        } else {
+            Default::default()
+        };
         let mut named: HashMap<PathBuf, String> = HashMap::new();
-        for (file, name) in random_textures.files() {
+        let extra = random_textures
+            .files()
+            .chain(emissive.files())
+            .chain(blinks.files());
+        for (file, name) in extra {
             named.insert(root.join(file), name.to_owned());
         }
         if !named.is_empty() {
             // A pack's variants can't grow the shared atlas past what a GPU takes: every variant
             // (those beside their texture too) counts, in name order, and those past the budget
             // stay out (their mobs wear the texture itself), not the whole pack.
+            // Overlays only after every variant: a full budget drops glows, not looks.
+            let overlays: HashSet<PathBuf> = emissive.files().map(|(f, _)| root.join(f)).collect();
             let mut variants: Vec<&PathBuf> = named.keys().collect();
-            variants.sort();
+            variants.sort_by_key(|p| (overlays.contains(*p), *p));
             let kept = within_budget(&variants, RANDOM_TEXELS);
             if kept.len() < variants.len() {
                 log::warn!(
@@ -988,6 +1010,8 @@ impl HudAtlas {
             glint_armor,
             text_shader: None,
             random_textures,
+            emissive,
+            blinks,
             font,
             white,
         })
@@ -2514,6 +2538,39 @@ mod tests {
         let rect = atlas.sprites["entity/cat/cat2"];
         assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
         assert!(atlas.random_textures.get("entity/pig/pig").is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+    /// A random variant's emissive overlay packs beside the variant, under its name.
+    #[test]
+    fn variant_overlays_pack_under_their_names() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-atlas-overlay-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let random = root.join("assets/minecraft/optifine/random/entity/zombie");
+        fs::create_dir_all(&random).unwrap();
+        write_strip(
+            &random.join("zombie3.png"),
+            64,
+            64,
+            &[[0, 200, 0, 255]],
+            None,
+        );
+        write_strip(
+            &random.join("zombie3_e.png"),
+            64,
+            64,
+            &[[200, 0, 0, 255]],
+            None,
+        );
+        let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["minecraft:optifine/random/entity/zombie/zombie3_e"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [200, 0, 0, 255]);
+        assert_eq!(
+            atlas
+                .emissive
+                .overlay("minecraft:optifine/random/entity/zombie/zombie3"),
+            Some("minecraft:optifine/random/entity/zombie/zombie3_e")
+        );
         fs::remove_dir_all(&root).unwrap();
     }
     /// Variants past the budget, in name order, stay out of the atlas.
