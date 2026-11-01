@@ -23,7 +23,7 @@
 //! Which states tick is a table by state id, built by the game from the block
 //! registry; whether a slot is made is decided when the slot is promoted at
 //! the start of the next tick, from the block state then.
-use crate::chunk::block_entity::{BlockEntity, ModContainer, ModFluidTanks};
+use crate::chunk::block_entity::{BlockEntity, ModContainer, ModEnergyBuffer, ModFluidTanks};
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -77,6 +77,9 @@ pub struct BlockEntities {
     /// The fluid tanks of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_fluids: FxHashMap<u32, Arc<ModFluidTanks>>,
+    /// The energy buffers of mod blocks' block entities, by block state id;
+    /// built with `states`, like the containers.
+    mod_energy: FxHashMap<u32, Arc<ModEnergyBuffer>>,
     /// The positions of the mod block entities (`BlockEntity::Mod`) by chunk,
     /// for the renderer: the mesher lists block entities by their template,
     /// which leaves out a mod block whose template has none. One taken out
@@ -192,6 +195,13 @@ impl BlockEntities {
     /// The fluid tanks of a mod block's block entity in block state `state`.
     pub fn mod_fluids(&self, state: u32) -> Option<&Arc<ModFluidTanks>> {
         self.mod_fluids.get(&state)
+    }
+    pub fn set_mod_energy(&mut self, energy: FxHashMap<u32, Arc<ModEnergyBuffer>>) {
+        self.mod_energy = energy;
+    }
+    /// The energy buffer of a mod block's block entity in block state `state`.
+    pub fn mod_energy(&self, state: u32) -> Option<&Arc<ModEnergyBuffer>> {
+        self.mod_energy.get(&state)
     }
 
     fn next(&mut self) -> u32 {
