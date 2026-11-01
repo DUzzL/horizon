@@ -49,6 +49,12 @@ pub fn register_thrown_types(types: impl IntoIterator<Item = (String, String, f3
 pub fn thrown_types() -> &'static [ThrownType] {
     THROWN_TYPES.get().map_or(&[], Vec::as_slice)
 }
+/// the lib's tests' one mod type, `ruby:bolt` thrown from `ruby:gem`: the
+/// registry is set once per process, so every test registers the same.
+#[cfg(test)]
+pub(crate) fn register_test_types() {
+    let _ = register_thrown_types([("ruby:bolt".into(), "ruby:gem".into(), 2.0)]);
+}
 /// the mod type with entity type `id`; out of line, as vanilla's never are.
 #[cold]
 #[inline(never)]
@@ -1021,11 +1027,10 @@ mod tests {
         ));
     }
 
-    /// the only test that registers: the registry is set once per process.
+    /// the registry is set once per process: every test registers the same.
     #[test]
     fn mod_thrown_types_are_found_by_id_and_item_once_registered() {
-        let bolt = ("ruby:bolt".to_owned(), "ruby:gem".to_owned(), 2.0);
-        assert!(register_thrown_types([bolt]));
+        register_test_types();
         assert!(!register_thrown_types([(
             "ruby:late".into(),
             "ruby:x".into(),

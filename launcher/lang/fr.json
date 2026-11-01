@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "Impossible de lire la connexion enregistrée.",
   "Could not save the renewed sign-in.": "Impossible d'enregistrer la connexion renouvelée.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Impossible d'enregistrer la connexion renouvelée dans le trousseau. Déverrouillez-le et réessayez.",
-  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant."
+  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant.",
+  "Built on {base}": "Compilé sur {base}",
+  "Native mod builds": "Builds avec mods natifs"
 }

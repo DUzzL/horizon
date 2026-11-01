@@ -544,6 +544,17 @@ impl HudAtlas {
             }
         }
         let assets = root.join("assets");
+        // A native mod's particle type names its textures `<ns>:particle/<path>`
+        // and needn't ship content, so every namespace's folder is packed.
+        if folders.contains(&"particle")
+            && let Ok(namespaces) = fs::read_dir(&assets)
+        {
+            for ns in namespaces.flatten() {
+                if ns.file_name() != "minecraft" {
+                    walk(&ns.path().join("textures/particle"), &mut files);
+                }
+            }
+        }
         // Content mods' GUI textures, for their screens: `<namespace>:gui/...`.
         if full && let Ok(namespaces) = fs::read_dir(&assets) {
             for ns in namespaces.flatten() {
@@ -567,6 +578,12 @@ impl HudAtlas {
                     format!("{namespace}:{rest}")
                 }
             };
+            // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
+            if let Some(base) = name.strip_suffix("_n").or_else(|| name.strip_suffix("_s"))
+                && textures.join(format!("{base}.png")).is_file()
+            {
+                return None;
+            }
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
