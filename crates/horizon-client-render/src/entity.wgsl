@@ -58,7 +58,8 @@ struct Out {
     @location(9) light_color: vec4<f32>,
     @location(10) @interpolate(flat) weather_rect: vec4<f32>,
     // The `GLINT_TEXTURING` sample for overlay 7 (item foil), or the model UV
-    // `ARMOR_ENTITY_GLINT_TEXTURING` scrolls for overlay 36 (armour).
+    // `ARMOR_ENTITY_GLINT_TEXTURING` scrolls for overlay 36 (armour), or the
+    // dissolve mask's atlas UV for overlay 38.
     @location(11) glint_uv: vec2<f32>,
     // 1 drops the quad's back-facing pixels (Vertex::normal w = 1), like a culling render type.
     @location(12) @interpolate(flat) cull: u32,
@@ -252,7 +253,15 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
         // Each crack's stage sprite origin comes in its light bytes (breaking::stage_light).
         uv = crumbling_uv(in.uv, in.wrap, globals.crumbling_sprite.zw, textureDimensions(atlas));
     }
-    var color = textureSample(atlas, atlas_sampler, uv) * select(in.back_color, in.color, front);
+    let texel = textureSample(atlas, atlas_sampler, uv);
+    var tint = select(in.back_color, in.color, front);
+    if in.overlay == 38u {
+        // RenderPipelines.ENTITY_CUTOUT_DISSOLVE (entity.fsh's DISSOLVE): gone where the vertex
+        // alpha is below the mask's (its atlas UV in glint_uv), the rest drawn opaque.
+        if tint.a < textureSampleLevel(atlas, atlas_sampler, in.glint_uv, 0.0).a { discard; }
+        tint.a = 1.0;
+    }
+    var color = texel * tint;
     if in.overlay == 9u || in.overlay == 10u {
         // rendertype_end_portal: end_sky and PORTAL_LAYERS (15 for portals, 16
         // for gateways) layers of end_portal.png projected from the screen.
