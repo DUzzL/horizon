@@ -9,7 +9,7 @@ use crate::{
     text::{Text, format_translation},
     ui,
 };
-use horizon_assets::item_model::{DisplayContext, NoEnv};
+use horizon_assets::item_model::{DisplayContext, ItemEnv};
 use horizon_world::nbt::Tag;
 use serde_json::Value;
 use std::{collections::BTreeSet, path::Path};
@@ -892,6 +892,14 @@ fn draw_presets(
 /// The 18x18 slot behind a layer's item icon (`container/slot`), then the item
 /// (`GuiGraphics.renderItem`): its GUI model, so a block shows as the isometric
 /// block. Without item models, or for an id with none, the flat sprite stands in.
+/// The item environment of the layer icons: only the grass colormap is needed
+/// (`minecraft:grass` tint of the grass block), as the inventory draws it.
+struct GrassEnv<'a>(&'a ItemRenderer);
+impl ItemEnv for GrassEnv<'_> {
+    fn grass_color(&self, temperature: f64, downfall: f64) -> i32 {
+        self.0.grass_color(temperature, downfall)
+    }
+}
 fn slot(
     atlas: &HudAtlas,
     items: Option<&ItemRenderer>,
@@ -915,7 +923,7 @@ fn slot(
             None,
             None,
             0,
-            &NoEnv,
+            &GrassEnv(renderer),
         );
         if !state.is_empty() {
             pending.push((state, x + 1.0, y + 1.0));
@@ -1015,7 +1023,39 @@ fn pretty(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::layer_item;
+    use super::{GrassEnv, layer_item};
+    use crate::{
+        item_render::{self, ItemRenderer},
+        items::ItemStack,
+    };
+    use horizon_assets::item_model::{DisplayContext, NoEnv};
+    use std::path::Path;
+
+    /// The grass block icon of a Superflat layer is tinted by the grass
+    /// colormap (`minecraft:grass` tint source), not the missing-tint magenta.
+    #[test]
+    fn the_grass_block_layer_icon_is_tinted_by_the_colormap() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-models.json").exists() {
+            return;
+        }
+        let renderer = ItemRenderer::load(&root).unwrap();
+        let stack = ItemStack::new("minecraft:grass_block", 1);
+        let view = item_render::stack_view(&stack);
+        let tints = |env: &dyn horizon_assets::item_model::ItemEnv| -> Vec<i32> {
+            renderer
+                .resolve(&view, DisplayContext::Gui, None, None, 0, env)
+                .layers
+                .iter()
+                .flat_map(|layer| layer.tints.clone())
+                .collect()
+        };
+        assert!(tints(&NoEnv).contains(&-65281), "no environment is magenta");
+        let tinted = tints(&GrassEnv(&renderer));
+        assert!(!tinted.is_empty() && !tinted.contains(&-65281), "{tinted:?}");
+    }
 
     #[test]
     fn a_layer_shows_the_item_of_its_block() {
