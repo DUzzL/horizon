@@ -2668,6 +2668,8 @@ struct Game<'a> {
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     entity_culler: Option<horizon_client::entity_culling::Culler>,
+    async_entity_culler: Option<entity_culling::AsyncCuller>,
+    async_entity_culling_failed: bool,
     /// `Renderer::pack_shadow_casters` for this frame's entities: (keep what the culler hides,
     /// build the player's model in first person); (false, false) without a shader pack.
     pack_shadow_casters: (bool, bool),
@@ -10503,14 +10505,19 @@ impl Game<'_> {
                         self.res.block_entity_render().renders(*state)
                             && (off_screen(*state) || in_view(p))
                     });
-            if self.entity_culler.is_some() || self.pack_ids.is_some() {
+            if self.entity_culler.is_some()
+                || self.async_entity_culler.is_some()
+                || self.pack_ids.is_some()
+            {
                 for block in visible {
                     let start = out.len();
                     self.mark_block_entity(start, block.1);
                     self.res
                         .block_entity_render()
                         .render(&scene, std::iter::once(block), &mut out);
-                    if !off_screen(block.1) && self.entity_culler.is_some() {
+                    if !off_screen(block.1)
+                        && (self.entity_culler.is_some() || self.async_entity_culler.is_some())
+                    {
                         self.cull_entity_vertices(&mut out, start);
                     }
                 }
@@ -10707,6 +10714,7 @@ impl Game<'_> {
                 }
             }
         }
+        self.finish_async_entity_culling();
         out
     }
 
@@ -17798,6 +17806,8 @@ impl<'a> Game<'a> {
             agent: agent::Agent::default(),
             view_frustum: None,
             entity_culler: None,
+            async_entity_culler: None,
+            async_entity_culling_failed: false,
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),

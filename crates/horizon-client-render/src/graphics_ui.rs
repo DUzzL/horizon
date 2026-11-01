@@ -3,7 +3,8 @@
 //! input. How they look comes from `graphics_style`.
 use crate::{
     graphics::{
-        FarDetail, GraphicsApi, LeafCullingMode, Overlay, Pacing, PresentMode, Preset, Upscaling,
+        EntityCullingMode, FarDetail, GraphicsApi, LeafCullingMode, Overlay, Pacing, PresentMode,
+        Preset, Upscaling,
     },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
@@ -204,7 +205,7 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::EntityCulling,
                 None,
-                "Hides models behind opaque blocks. Entities update. Off with custom packs.",
+                "Hides models behind opaque blocks. Async checks off-thread; entities tick.",
             ),
             h(
                 H::LeafCulling,
@@ -534,7 +535,7 @@ impl H {
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
-            H::EntityCulling => labelled("Entity Culling", on_off(g.entity_culling)),
+            H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
@@ -668,7 +669,9 @@ impl H {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
-            H::EntityCulling => g.entity_culling = !g.entity_culling,
+            H::EntityCulling => {
+                g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }
@@ -759,7 +762,6 @@ impl Item {
         let g = &s.horizon;
         Some(match self {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
-            Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
@@ -1925,16 +1927,16 @@ mod tests {
     }
 
     #[test]
-    fn entity_culling_is_opt_in_and_toggles_from_advanced_graphics() {
+    fn entity_culling_modes_are_opt_in_and_cycle_from_advanced_graphics() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::EntityCulling);
-        assert_eq!(item.switch(&s), Some(false));
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
         assert_eq!(item.label(&s).plain(), "Entity Culling: Off");
-        for enabled in [false, true] {
-            s.horizon.entity_culling = enabled;
+        for mode in EntityCullingMode::ALL {
+            s.horizon.entity_culling = mode;
             for preset in Preset::ALL {
                 crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.entity_culling, enabled);
+                assert_eq!(s.horizon.entity_culling, mode);
             }
         }
 
@@ -1946,7 +1948,11 @@ mod tests {
             .find(|w| matches!(w.target, Target::Item(i) if i == item))
             .unwrap();
         let point = (switch.x + 1.0, switch.y + 1.0);
-        for enabled in [false, true] {
+        for mode in [
+            EntityCullingMode::Off,
+            EntityCullingMode::Synchronous,
+            EntityCullingMode::Asynchronous,
+        ] {
             s.horizon.preset = Preset::Balanced;
             assert_eq!(
                 ui.click(
@@ -1960,10 +1966,10 @@ mod tests {
                 ),
                 vec![Action::ButtonClick, Action::Changed]
             );
-            assert_eq!(item.switch(&s), Some(enabled));
+            assert_eq!(s.horizon.entity_culling, mode);
             assert_eq!(s.horizon.preset, Preset::Custom);
         }
-        assert_eq!(item.label(&s).plain(), "Entity Culling: On");
+        assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
     }
 
     #[test]
