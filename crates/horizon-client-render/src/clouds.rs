@@ -1,7 +1,15 @@
 //! Cloud visibility and flat/fancy cell geometry (`CloudRenderer`).
+/// `EnvironmentAttributes.CLOUD_HEIGHT`'s default, and the overworld's `visual/cloud_height`.
+pub const CLOUD_HEIGHT: f64 = 192.33;
+
+/// Whether the cloud color has any packed alpha (vanilla gates the clouds on it).
+pub fn has_color(alpha: f32) -> bool {
+    (alpha.clamp(0.0, 1.0) * 255.0) as u8 > 0
+}
+
 /// `LevelRenderer`: skip OFF clouds and colors with no packed alpha.
 pub fn visible(mode: &str, alpha: f32) -> bool {
-    mode != "false" && (alpha.clamp(0.0, 1.0) * 255.0) as u8 > 0
+    mode != "false" && has_color(alpha)
 }
 
 /// `buildFlatCell`: bottom plane, in both windings for the culled cloud pipeline.
@@ -110,7 +118,7 @@ impl Input<'_> {
         z -= (z / th).floor() * th;
         let cell_x = (x / 12.0).floor() as i64;
         let cell_z = (z / 12.0).floor() as i64;
-        let bottom = (192.33 - self.camera.y) as f32;
+        let bottom = (CLOUD_HEIGHT - self.camera.y) as f32;
         let key = MeshKey {
             cell_x,
             cell_z,

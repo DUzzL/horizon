@@ -34,11 +34,15 @@ pub struct Menu {
     pub sent: Vec<Option<ItemStack>>,
     /// An unfinished drag: (mode, slots).
     pub drag: Option<(u8, Vec<usize>)>,
-    /// The data slots the client was last sent (ContainerSetData), a furnace's progress.
-    pub sent_data: Vec<i16>,
+    /// The data slots the client was last sent (ContainerSetData), a furnace's
+    /// progress; None until sent, so any first value goes out.
+    pub sent_data: Vec<Option<i16>>,
     /// Container slots the menu does not have: a mod's screen hides them, so
     /// no click or quick move reaches them (`Slot` positions are the screen's).
     pub hidden: Vec<usize>,
+    /// A content mod's menu type: its data slot count. Its clicks run on the
+    /// vanilla menu engine (`menu::Kind::Mod`), not here.
+    pub mod_type: Option<&'static crate::containers::ModMenuType>,
 }
 
 /// What a guest did with a native mod's menu (`Slots::Native`), for the game
@@ -483,6 +487,16 @@ fn pickup(view: &mut View, slot: i32, button: i32, rules: &dyn Rules) {
         }
         (Some(mut s), Some(mut c)) => {
             if !view.may_place(i, &c, rules) {
+                // A slot that takes nothing gives onto the same carried item,
+                // as far as the hand holds (`tryRemove`).
+                if s.same_item_same_components(&c) {
+                    let max = rules.max_stack(&c.item).max(1);
+                    let moved = s.count.min(max.saturating_sub(c.count));
+                    s.count -= moved;
+                    c.count += moved;
+                    view.set(i, (s.count > 0).then_some(s));
+                    view.guest.carried = Some(c);
+                }
                 return;
             }
             if s.same_item_same_components(&c) {

@@ -233,6 +233,9 @@ pub struct SkullSkin {
     /// `ResolvableProfile.nameOrId` when the profile is `Dynamic` (a name or
     /// an id only): the key `skins::Resolver` resolves it by.
     pub dynamic: Option<NameOrId>,
+    /// `PlayerSkin.Patch.body`: the profile's `texture`, a resource pack
+    /// texture drawn instead of any skin.
+    pub texture: Option<String>,
     pub fallback: &'static str,
 }
 /// `Either<String, UUID>`: the key a `Dynamic` `ResolvableProfile` resolves

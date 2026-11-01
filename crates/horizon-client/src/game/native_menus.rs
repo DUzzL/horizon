@@ -31,7 +31,7 @@ pub(crate) fn native_menu_inventory_slot(size: usize, slot: i32) -> Option<usize
 /// Adds every stack of `gets` to the 36 slots of `inventory`, onto matching
 /// stacks first, then into empty slots, hotbar first; false when one doesn't
 /// fit whole. `max` is an item's stack size.
-fn fit(
+pub(super) fn fit(
     inventory: &mut [Option<ItemStack>],
     gets: &[ItemStack],
     max: &impl Fn(&ItemStack) -> u32,

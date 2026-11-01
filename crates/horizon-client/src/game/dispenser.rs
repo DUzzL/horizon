@@ -1261,22 +1261,7 @@ impl Game<'_> {
                 BucketContent::Fluid(FluidKind::Water) | BucketContent::MobWater
             )
         {
-            // The water evaporates in a cloud of smoke.
-            let c = Self::center(target);
-            for _ in 0..8 {
-                let r = self.particles.random();
-                let p = [
-                    f64::from(target.0) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.1) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.2) + (r.next_double() * 2.0 - 1.0),
-                ];
-                let _ = c;
-                self.particles.add(
-                    &ParticleOptions::simple(ParticleType::LargeSmoke),
-                    p,
-                    [0.0; 3],
-                );
-            }
+            self.evaporation_smoke([target.0, target.1, target.2]);
         }
         if let Some(kind) = mob {
             // MobBucketItem.checkExtraContent: the mob (from the bucket, so
@@ -1392,7 +1377,7 @@ impl Game<'_> {
             );
         } else if &*name == "minecraft:tnt" {
             if self.ui.rules.bool("tnt_explodes") {
-                self.spawn_primed_tnt(target_pos, false);
+                self.spawn_primed_tnt(target_pos, false, None, None);
                 self.with_level(|b, level, ticks| b.remove_block(level, ticks, target_pos, false));
                 self.process_level_events()?;
             } else {
@@ -1456,7 +1441,7 @@ impl Game<'_> {
         // new PrimedTnt(level, x + 0.5, y, z + 0.5, null), its sound and ENTITY_PLACE.
         let target = Self::pos_of(front);
         let rot = self.world.random.next_double() * f64::from(std::f32::consts::TAU);
-        self.add_primed_tnt(target, rot, 80);
+        self.add_primed_tnt(target, rot, 80, None, None);
         self.audio.play(
             "minecraft:entity.tnt.primed",
             Some([

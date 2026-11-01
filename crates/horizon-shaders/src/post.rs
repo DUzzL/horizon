@@ -508,6 +508,7 @@ pub fn load_post(
         config: Config::default(),
         notes: Vec::new(),
     };
+    let options = crate::with_options(pack, macros);
     for e in &properties.entries {
         if let Some(n) = e.key.strip_prefix("bufferObject.") {
             match (n.parse(), BufferObject::parse(&e.value)) {
@@ -517,7 +518,7 @@ pub fn load_post(
             continue;
         }
         if let Some(name) = e.key.strip_prefix("image.") {
-            match CustomImage::parse(name, &e.value) {
+            match CustomImage::parse(name, &options.expand(&e.value)) {
                 Some(i) => post.images.push(i),
                 None => post.notes.push(format!("`{}`: not an image", e.key)),
             }
@@ -542,7 +543,7 @@ pub fn load_post(
         properties,
         macros,
         switches: crate::switches_on(pack),
-        options: crate::with_options(pack, macros),
+        options,
         geometry: None,
         post: &mut post,
     };
@@ -1187,6 +1188,54 @@ fn flips(properties: &Properties, program: &str) -> Vec<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_dimensions_expand_default_and_chosen_options() {
+        let bytes =
+            crate::pack::tests::zip(&[("shaders/options.glsl", "#define SIZE 16 // [8 16]\n")]);
+        for (choice, expected) in [(None, [16, 16]), (Some("8"), [8, 8])] {
+            let mut pack = Pack::from_zip_bytes("image.zip", bytes.clone()).unwrap();
+            if let Some(value) = choice {
+                pack = pack.with_chosen(std::collections::BTreeMap::from([(
+                    "SIZE".into(),
+                    value.into(),
+                )]));
+            }
+            let macros = Macros::standard();
+            let properties = Properties::parse(
+                "image.grid = none RGBA RGBA8 BYTE false false SIZE SIZE",
+                &macros,
+            );
+            let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+            assert!(post.notes.is_empty(), "{:?}", post.notes);
+            assert_eq!(post.images.len(), 1);
+            assert_eq!(post.images[0].size, ImageSize::Absolute(expected));
+        }
+    }
+
+    #[test]
+    fn image_dimensions_keep_literals_and_reject_unknown_macros() {
+        let pack = Pack::from_zip_bytes(
+            "image.zip",
+            crate::pack::tests::zip(&[("shaders/placeholder.glsl", "")]),
+        )
+        .unwrap();
+        let macros = Macros::standard();
+        let properties = Properties::parse(
+            "image.grid = none RGBA RGBA8 BYTE false false 8 16",
+            &macros,
+        );
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
+        assert_eq!(post.images[0].size, ImageSize::Absolute([8, 16]));
+        let properties = Properties::parse(
+            "image.grid = none RGBA RGBA8 BYTE false false UNKNOWN UNKNOWN",
+            &macros,
+        );
+        let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
+        assert!(post.images.is_empty());
+        assert!(!post.notes.is_empty());
+    }
     use crate::pack::tests::zip;
 
     const VSH: &str = "#version 120\nvarying vec2 uv;\nvoid main() {\n\

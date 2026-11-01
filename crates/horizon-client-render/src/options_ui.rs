@@ -1236,8 +1236,9 @@ pub enum Page {
     NativeMod(usize),
     /// Horizon's shader packs, either kind (`shader_pack_list`).
     ShaderPacks,
-    /// The options of `s.shader_packs[.0]`, a Horizon pack.
-    NativePackOptions(usize),
+    /// The options of `s.shader_packs[.0]`, a Horizon pack: its `[[pages]]` entry `.1`, the
+    /// first the one the button opens.
+    NativePackOptions(usize, u8),
     /// The picked `shaders/` pack's options (`shader_options`), one of its screens at a time.
     ShaderOptions,
     /// Horizon's graphics settings (`graphics_ui`).
@@ -1263,6 +1264,8 @@ pub enum Page {
     Online,
     /// Splitscreen: the profile another player joins as (`split_profiles`).
     SplitProfiles,
+    /// Splitscreen: enable joining on this computer.
+    SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -1525,6 +1528,8 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// Other local players are joined: leave before turning splitscreen off.
+    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1570,6 +1575,7 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            split_joined: false,
         }
     }
 }
@@ -1633,30 +1639,64 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
         Page::Mods => "horizon.pages.mods.tooltip",
+        Page::SplitSetup => "horizon.pages.split_setup.tooltip",
         _ => return None,
     })
 }
 /// The open screen of the picked pack: its title, then its items two to a row (one when the
 /// pack asks for a single column).
-/// The options of the Horizon pack `s.shader_packs[i]`, two a row.
-fn native_pack_option_rows(s: &Settings, i: usize) -> Vec<Row> {
+/// A list's slot with nothing in it: text takes no clicks.
+fn blank_slot(w: f32) -> Widget {
+    Widget {
+        x: 0.0,
+        y: 0.0,
+        w,
+        h: 20.0,
+        kind: WKind::Text {
+            text: Text::literal(""),
+            color: 0,
+            centered: false,
+        },
+        list: false,
+        row: 0,
+    }
+}
+/// Page `at` of the options of the Horizon pack `s.shader_packs[i]`: the pack's own layout,
+/// else every option two a row.
+fn native_pack_option_rows(s: &Settings, i: usize, at: u8) -> Vec<Row> {
+    use horizon_shader_api::PageItem;
     let Some(pack) = s.shader_packs.get(i) else {
         return Vec::new();
     };
-    let mut widgets = pack
-        .options
-        .iter()
-        .zip(&pack.values)
-        .enumerate()
-        .map(|(o, (option, v))| {
-            let value = crate::shader_pack_list::show_value(&option.kind, *v);
+    let count = pack.options.len().min(pack.values.len());
+    let (columns, items) = match pack.pages.get(usize::from(at)) {
+        Some(page) => (usize::from(page.columns), page.items.clone()),
+        None => (2, (0..count).map(PageItem::Option).collect()),
+    };
+    let width = if columns == 1 { 310.0 } else { 150.0 };
+    let widget = |item: &PageItem| match *item {
+        PageItem::Option(o) if o < count => {
+            let option = &pack.options[o];
+            let value = crate::shader_pack_list::show_value(&option.kind, pack.values[o]);
             let label = Text::literal(format!("{}: {value}", option.name));
-            button(0.0, 0.0, 150.0, label, Act::NativePackOption(i, o))
-        });
-    let mut rows = vec![Row::Note(pack.title.clone())];
-    while let Some(a) = widgets.next() {
-        rows.push(Row::Buttons(a, widgets.next()));
+            button(0.0, 0.0, width, label, Act::NativePackOption(i, o))
+        }
+        PageItem::Page(p) if p < pack.pages.len() => {
+            let label = Text::literal(format!("{}...", pack.pages[p].name));
+            let page = Page::NativePackOptions(i, p as u8);
+            button(0.0, 0.0, width, label, Act::Push(page))
+        }
+        _ => blank_slot(width),
+    };
+    let mut rows = Vec::new();
+    if at == 0 {
+        rows.push(Row::Note(pack.title.clone()));
     }
+    rows.extend(
+        items
+            .chunks(columns)
+            .map(|row| Row::Buttons(widget(&row[0]), row.get(1).map(widget))),
+    );
     rows
 }
 fn shader_option_rows(s: &Settings) -> Vec<Row> {
@@ -1667,19 +1707,7 @@ fn shader_option_rows(s: &Settings) -> Vec<Row> {
         .screens
         .screen(options.screen())
         .map_or(2, |(_, c)| c);
-    let blank = || Widget {
-        x: 0.0,
-        y: 0.0,
-        w: 150.0,
-        h: 20.0,
-        kind: WKind::Text {
-            text: Text::literal(""),
-            color: 0,
-            centered: false,
-        },
-        list: false,
-        row: 0,
-    };
+    let blank = || blank_slot(150.0);
     let width = if columns == 1 { 310.0 } else { 150.0 };
     let widget = |item: &horizon_shaders::ScreenItem| -> Option<Widget> {
         use horizon_shaders::ScreenItem;
@@ -1744,13 +1772,25 @@ enum Row {
 /// A widget's tooltip (`setTooltip`), unwrapped: drawn while hovered, and
 /// its narration's hint.
 fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
-    if let WKind::Button {
-        act: Act::NativePackOption(pack, option),
-        ..
-    } = &wd.kind
-    {
-        let option = s.shader_packs.get(*pack)?.options.get(*option)?;
-        return (!option.description.is_empty()).then(|| Text::literal(&option.description));
+    let pack_text = match &wd.kind {
+        WKind::Button {
+            act: Act::NativePackOption(pack, option),
+            ..
+        } => Some(&s.shader_packs.get(*pack)?.options.get(*option)?.description),
+        WKind::Button {
+            act: Act::Push(Page::NativePackOptions(pack, at)),
+            ..
+        } => Some(
+            &s.shader_packs
+                .get(*pack)?
+                .pages
+                .get(usize::from(*at))?
+                .description,
+        ),
+        _ => None,
+    };
+    if let Some(text) = pack_text {
+        return (!text.is_empty()).then(|| Text::literal(text));
     }
     let WKind::Button { act, .. } = &wd.kind else {
         let WKind::Slider { opt, .. } = &wd.kind else {
@@ -1761,7 +1801,7 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
     };
     let mut tip = None;
     if let Act::Extra(item) = act {
-        tip = Some(Text::literal(item.description()));
+        tip = Some(Text::literal(item.description_text()));
     }
     if let Act::Push(page) = act
         && let Some(text) = horizon_page_tooltip(*page)
@@ -1936,7 +1976,7 @@ fn pairs(opts: &[Opt]) -> Vec<Row> {
 impl OptionsUi {
     /// A switch of `horizon-extras.txt` as the Extras page draws it: "Caption: On".
     fn extra_button(&self, s: &Settings, item: crate::extras::Item) -> Widget {
-        let label = format!("{}: {}", item.caption(), item.value(&s.extras));
+        let label = format!("{}: {}", item.caption_text(), item.value(&s.extras));
         button(0.0, 0.0, 150.0, Text::literal(label), Act::Extra(item))
     }
     fn settings_search_active(&self) -> bool {
@@ -2095,6 +2135,14 @@ impl OptionsUi {
             _ => None,
         }
     }
+    /// The name of a Horizon pack's options page past its first, as the page's title.
+    fn pack_page_title(s: &Settings, page: Page) -> Option<Text> {
+        let Page::NativePackOptions(pack, at @ 1..) = page else {
+            return None;
+        };
+        let page = s.shader_packs.get(pack)?.pages.get(usize::from(at))?;
+        Some(Text::literal(&page.name))
+    }
     fn title(page: Page) -> &'static str {
         match page {
             Page::Main => "options.title",
@@ -2113,7 +2161,7 @@ impl OptionsUi {
             Page::Mods => "horizon.pages.mods",
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
-            Page::ShaderOptions | Page::NativePackOptions(_) => "horizon.pages.shader_options",
+            Page::ShaderOptions | Page::NativePackOptions(..) => "horizon.pages.shader_options",
             Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
                 "options.videoTitle"
             }
@@ -2124,6 +2172,7 @@ impl OptionsUi {
             Page::Horizon => "horizon.pages.settings",
             Page::Agent => "horizon.pages.agent",
             Page::SplitProfiles => "horizon.pages.split_profiles",
+            Page::SplitSetup => "horizon.pages.split_setup",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -2213,11 +2262,19 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
+            Page::SplitSetup => vec![Row::Buttons(
+                if self.split_guest || self.split_joined {
+                    inactive(self.extra_button(s, crate::extras::Item::Splitscreen))
+                } else {
+                    self.extra_button(s, crate::extras::Item::Splitscreen)
+                },
+                None,
+            )],
             Page::Extras => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
                 let extra = |item: crate::extras::Item| {
-                    let value = format!("{}: {}", item.caption(), item.value(&s.extras));
+                    let value = format!("{}: {}", item.caption_text(), item.value(&s.extras));
                     let label = if item.key_name().is_some() && self.selected_key == item.key_name()
                     {
                         Text::literal(format!("> {value} <")).with_color(text::YELLOW)
@@ -2278,6 +2335,17 @@ impl OptionsUi {
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open(
+                            "horizon.pages.open.split_setup",
+                            if self.split_guest {
+                                Page::SplitProfiles
+                            } else {
+                                Page::SplitSetup
+                            },
+                        ),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
@@ -2572,7 +2640,7 @@ impl OptionsUi {
                     .collect()
             }
             Page::ShaderOptions => shader_option_rows(s),
-            Page::NativePackOptions(i) => native_pack_option_rows(s, i),
+            Page::NativePackOptions(i, at) => native_pack_option_rows(s, i, at),
             _ => {
                 let _ = s;
                 Vec::new()
@@ -3024,7 +3092,8 @@ impl OptionsUi {
                     w,
                     h: 9.0,
                     kind: WKind::Text {
-                        text: tr(Self::title(page)),
+                        text: Self::pack_page_title(s, page)
+                            .unwrap_or_else(|| tr(Self::title(page))),
                         color: u32::MAX,
                         centered: true,
                     },
@@ -3109,7 +3178,9 @@ impl OptionsUi {
                     Page::Mods => Some(("horizon.mods.open_folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("pack.openFolder", Act::OpenShaderPackFolder)),
                     Page::ShaderOptions => Some(("controls.reset", Act::ShaderReset)),
-                    Page::NativePackOptions(i) => Some(("controls.reset", Act::NativePackReset(i))),
+                    Page::NativePackOptions(i, _) => {
+                        Some(("controls.reset", Act::NativePackReset(i)))
+                    }
                     _ => None,
                 };
                 if let Some((label, act)) = folder {
@@ -3906,7 +3977,7 @@ impl OptionsUi {
                             }
                         }
                         Act::NativePackOptions(i) => {
-                            self.push(Page::NativePackOptions(i));
+                            self.push(Page::NativePackOptions(i, 0));
                         }
                         Act::NativePackOption(pack, option) => {
                             if let Some(entry) = s.shader_packs.get_mut(pack)
@@ -4829,7 +4900,7 @@ impl OptionsUi {
                             }
                         }
                         Act::NativePackOptions(i) => {
-                            self.push(Page::NativePackOptions(i));
+                            self.push(Page::NativePackOptions(i, 0));
                         }
                         Act::NativePackOption(pack, option) => {
                             if let Some(entry) = s.shader_packs.get_mut(pack)
@@ -4869,6 +4940,24 @@ impl OptionsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window allows the input method only while `typing` says a search
+    /// box has the focus (`Game::text_field_focused`), so a page without one
+    /// must not claim the keys: the movement and menu keys keep working there.
+    #[test]
+    fn only_a_focused_search_box_takes_text() {
+        let mut ui = OptionsUi::default();
+        assert!(!ui.typing(), "the main page has no text box");
+        ui.show(Page::Language);
+        assert!(ui.typing(), "the language list's search takes the keys");
+        ui.show(Page::Video);
+        assert!(!ui.typing(), "the settings search is not focused");
+        ui.settings_search.focused = true;
+        assert!(ui.typing(), "the settings search, once focused, does");
+        ui.settings_search.focused = false;
+        ui.show(Page::Packs);
+        assert!(!ui.typing(), "the pack screen's search is not open yet");
+    }
 
     #[test]
     fn accessibility_sliders_and_toggles_survive_options_round_trip() {
@@ -5153,6 +5242,22 @@ mod tests {
                 },
             }],
             values: vec![1.0],
+            pages: vec![
+                horizon_shader_api::OptionPage {
+                    id: "main".into(),
+                    name: "P".into(),
+                    description: String::new(),
+                    columns: 2,
+                    items: vec![horizon_shader_api::PageItem::Page(1)],
+                },
+                horizon_shader_api::OptionPage {
+                    id: "more".into(),
+                    name: "More".into(),
+                    description: String::new(),
+                    columns: 1,
+                    items: vec![horizon_shader_api::PageItem::Option(0)],
+                },
+            ],
         }];
         let mut ui = OptionsUi::default();
         ui.show(Page::ShaderPacks);
@@ -5166,7 +5271,11 @@ mod tests {
         };
         let (x, y) = find(&mut ui, &s, &Act::NativePackOptions(0));
         ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
-        assert_eq!(ui.page(), Page::NativePackOptions(0));
+        assert_eq!(ui.page(), Page::NativePackOptions(0, 0));
+        // The option is on the pack's second page, behind a button on its first.
+        let (x, y) = find(&mut ui, &s, &Act::Push(Page::NativePackOptions(0, 1)));
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
+        assert_eq!(ui.page(), Page::NativePackOptions(0, 1));
         let (x, y) = find(&mut ui, &s, &Act::NativePackOption(0, 0));
         let events = ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
         assert!(events.contains(&Event::NativePackOptions(0)));
@@ -5174,9 +5283,17 @@ mod tests {
         ui.click(&mut s, &atlas, x, y, size, [854, 480], false, true);
         ui.click(&mut s, &atlas, x, y, size, [854, 480], false, true);
         assert_eq!(s.shader_packs[0].values, [0.5]);
+        // Shift-click: the option's default.
+        ui.shift = true;
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
+        ui.shift = false;
+        assert_eq!(s.shader_packs[0].values, [1.0]);
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
         let (x, y) = find(&mut ui, &s, &Act::NativePackReset(0));
         ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
         assert_eq!(s.shader_packs[0].values, [1.0]);
+        ui.back(&mut s);
+        assert_eq!(ui.page(), Page::NativePackOptions(0, 0));
     }
 
     #[test]
@@ -6715,6 +6832,7 @@ mod tests {
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,
+                Page::SplitSetup,
                 Page::Agent,
             ]
         );

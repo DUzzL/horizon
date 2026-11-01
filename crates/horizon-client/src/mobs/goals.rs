@@ -1903,7 +1903,7 @@ pub struct AvoidEntity {
     pub when: Option<fn(&Mob) -> bool>,
     /// Extra condition on the player or mob avoided (`AvoidEntityGoal`'s
     /// predicate: a sneaking player, a tame wolf).
-    pub player_when: Option<fn(&super::PlayerView) -> bool>,
+    pub player_when: Option<fn(&Mob, &super::PlayerView) -> bool>,
     pub seen_when: Option<fn(&Seen) -> bool>,
     from: Vec3,
     /// The mob being avoided (`toAvoid`), when it is one.
@@ -1927,7 +1927,7 @@ impl AvoidEntity {
         self.when = Some(f);
         self
     }
-    pub fn player_when(mut self, f: fn(&super::PlayerView) -> bool) -> Self {
+    pub fn player_when(mut self, f: fn(&Mob, &super::PlayerView) -> bool) -> Self {
         self.player_when = Some(f);
         self
     }
@@ -1955,7 +1955,7 @@ impl Goal for AvoidEntity {
                     .filter(|p| {
                         p.alive
                             && !p.creative
-                            && self.player_when.is_none_or(|f| f(p))
+                            && self.player_when.is_none_or(|f| f(m, p))
                             && m.distance_sqr(p.position) <= max * max
                             && (p.position.y - m.position.y).abs() <= max + 3.0
                     })
