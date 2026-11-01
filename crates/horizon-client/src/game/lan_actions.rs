@@ -2475,6 +2475,25 @@ impl Game<'_> {
         }
     }
 
+    /// Whether a block outline occludes the straight line from `eye` to `point`.
+    fn block_between(&self, eye: [f64; 3], point: [f64; 3]) -> bool {
+        let d = [point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]];
+        let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if dist < 1e-9 {
+            return false;
+        }
+        let dir = [d[0] / dist, d[1] / dist, d[2] / dist];
+        self.clip_ray(eye, dir, dist).is_some_and(|h| {
+            let hd = [
+                h.point[0] - eye[0],
+                h.point[1] - eye[1],
+                h.point[2] - eye[2],
+            ];
+            let hit_dist = (hd[0] * hd[0] + hd[1] * hd[1] + hd[2] * hd[2]).sqrt();
+            hit_dist < dist - 1e-6
+        })
+    }
+
     /// Aim the swapped-in player at an entity; returns where it aims and the
     /// eye. A boat, minecart, armor stand, item frame or painting is aimed at
     /// the point the client hit (the interact packet's location) when that
@@ -2515,12 +2534,13 @@ impl Game<'_> {
             let on = (0..3).all(|k| (point[k] - inside[k]).abs() < 0.1);
             Some(if on { inside } else { middle })
         };
-        let centre = match self.mobs.iter().find(|m| m.id as i32 == id) {
-            Some(m) => [
-                m.position.x,
-                m.position.y + m.kind.height * 0.5,
-                m.position.z,
-            ],
+        let mob_box = self.mobs.iter().find(|m| m.id as i32 == id).map(|m| {
+            let b = m.bounds();
+            let (mn, mx) = (b.min_position(), b.max_position());
+            ([mn.x, mn.y, mn.z], [mx.x, mx.y, mx.z])
+        });
+        let centre = match mob_box {
+            Some((lo, hi)) => visible_aim_point(eye, lo, hi, |p| self.block_between(eye, p)),
             None if self.object_target(id).is_some() => object()?,
             // A dragon part or an end crystal (game/dragon.rs).
             None => {
@@ -4771,5 +4791,142 @@ mod bundle_slot_tests {
         assert_eq!(bundle_inventory_slot(5, Some(10)), None);
         assert_eq!(bundle_inventory_slot(46, Some(10)), None);
         assert_eq!(bundle_inventory_slot(45, None), Some(45));
+    }
+}
+
+/// Where the server aims a guest's attack or interact on a mob. The packet names only the
+/// entity, so the server picked the mob's centre; a slab, trapdoor, stair or fence between the
+/// eyes and that centre then hid a mob the guest's own crosshair hit through the gap (#5772).
+/// This returns the centre when it is visible, else the visible point of the box nearest to it (the one nearer the eyes when two are equally near)
+/// (`occluded` tells whether a block outline hides a point from the eyes); the centre again
+/// when the whole box is hidden.
+fn visible_aim_point(
+    eye: [f64; 3],
+    lo: [f64; 3],
+    hi: [f64; 3],
+    occluded: impl Fn([f64; 3]) -> bool,
+) -> [f64; 3] {
+    let centre = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
+    if !occluded(centre) {
+        return centre;
+    }
+    let margin = [0, 1, 2].map(|k| ((hi[k] - lo[k]) / 2.0).min(0.02));
+    let across = |k: usize, steps: usize| {
+        (0..=steps)
+            .map(|i| {
+                lo[k] + margin[k] + (hi[k] - lo[k] - 2.0 * margin[k]) * i as f64 / steps as f64
+            })
+            .collect::<Vec<f64>>()
+    };
+    let (xs, ys, zs) = (across(0, 2), across(1, 4), across(2, 2));
+    let mut candidates = Vec::with_capacity(xs.len() * ys.len() * zs.len());
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                candidates.push([x, y, z]);
+            }
+        }
+    }
+    let nearness = |p: &[f64; 3]| (0..3).map(|k| (p[k] - centre[k]).powi(2)).sum::<f64>();
+    let from_eye = |p: &[f64; 3]| (0..3).map(|k| (p[k] - eye[k]).powi(2)).sum::<f64>();
+    candidates.sort_by(|a, b| {
+        nearness(a)
+            .total_cmp(&nearness(b))
+            .then(from_eye(a).total_cmp(&from_eye(b)))
+            .then(a[1].total_cmp(&b[1]))
+            .then(a[0].total_cmp(&b[0]))
+            .then(a[2].total_cmp(&b[2]))
+    });
+    candidates
+        .into_iter()
+        .find(|p| !occluded(*p))
+        .unwrap_or(centre)
+}
+
+#[cfg(test)]
+mod aim_point_tests {
+    use super::visible_aim_point;
+
+    const EYE: [f64; 3] = [-760.7, 70.27, -450.4];
+    // A zombie one block behind a top slab: its centre is above the 0.5 gap under the slab.
+    const LO: [f64; 3] = [-763.0, 70.0, -450.9];
+    const HI: [f64; 3] = [-762.4, 71.95, -450.3];
+
+    /// A top slab filling x in [-762, -761] with its underside at y 70.5: a point is hidden when
+    /// the line from the eyes is above 70.5 anywhere inside that column.
+    fn behind_top_slab(p: [f64; 3]) -> bool {
+        let y_at = |x: f64| EYE[1] + (p[1] - EYE[1]) * (x - EYE[0]) / (p[0] - EYE[0]);
+        p[0] < -762.0 && (y_at(-761.0) > 70.5 || y_at(-762.0) > 70.5)
+    }
+
+    #[test]
+    fn a_visible_centre_is_kept() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        assert_eq!(visible_aim_point(EYE, LO, HI, |_| false), centre);
+    }
+
+    /// A bottom slab hides everything under y 70.9: the aim goes above it, through the gap over the slab.
+    #[test]
+    fn a_mob_behind_a_bottom_slab_is_aimed_at_above_the_slab() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        let p = visible_aim_point(EYE, LO, HI, |pt| pt[1] < 70.9);
+        assert!(p[1] >= 70.9, "{p:?} is still under the slab");
+        assert!(p[1] > centre[1] - 0.5, "{p:?} is far from the centre");
+    }
+
+    /// With only the centre hidden, two equally near candidates go to the one nearer the eyes.
+    #[test]
+    fn an_equally_near_point_on_the_side_of_the_eyes_wins() {
+        let eye = [5.0, 70.5, 0.0];
+        let (lo, hi) = ([-0.3, 70.0, -0.3], [0.3, 71.9, 0.3]);
+        let centre = [
+            (lo[0] + hi[0]) / 2.0,
+            (lo[1] + hi[1]) / 2.0,
+            (lo[2] + hi[2]) / 2.0,
+        ];
+        let p = visible_aim_point(eye, lo, hi, |pt| pt == centre);
+        assert!(p[0] > centre[0], "{p:?} is on the far side from the eyes");
+    }
+
+    #[test]
+    fn a_mob_seen_only_through_a_gap_is_aimed_at_through_the_gap() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        assert!(behind_top_slab(centre), "the slab hides the centre");
+        let p = visible_aim_point(EYE, LO, HI, behind_top_slab);
+        assert!(!behind_top_slab(p), "{p:?} is still hidden");
+        for k in 0..3 {
+            assert!(LO[k] <= p[k] && p[k] <= HI[k], "{p:?} is outside the mob");
+        }
+        assert!(p[1] < centre[1], "{p:?} is not lower than the centre");
+    }
+
+    #[test]
+    fn a_fully_hidden_mob_keeps_the_centre() {
+        let centre = [
+            (LO[0] + HI[0]) / 2.0,
+            (LO[1] + HI[1]) / 2.0,
+            (LO[2] + HI[2]) / 2.0,
+        ];
+        assert_eq!(visible_aim_point(EYE, LO, HI, |_| true), centre);
+    }
+
+    #[test]
+    fn the_choice_is_deterministic() {
+        assert_eq!(
+            visible_aim_point(EYE, LO, HI, behind_top_slab),
+            visible_aim_point(EYE, LO, HI, behind_top_slab)
+        );
     }
 }
