@@ -373,7 +373,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
-          'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
+          'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
           'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
 
@@ -5603,6 +5603,73 @@ def check_boats(host, guest, out):
     return result
 
 
+
+def check_boat_ice_reboard(host, guest, out):
+    """A boat's cached spin belongs to its controlling client only (AbstractBoat.tick)."""
+    hx, _, hz = pos_of(host)
+    x, y, z = int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8
+    tag = 'ice_reboard'
+    seen = {}
+    host('command', command=f'fill {x-30} {y} {z-30} {x+30} {y+5} {z+30} minecraft:air')
+    host('command', command=f'fill {x-30} {y-1} {z-30} {x+30} {y-1} {z+30} minecraft:ice')
+    try:
+        for player in (host, guest):
+            other = guest if player is host else host
+            other('command', command=f'tp @s {x+25.5} {y} {z+25.5}')
+            for kind in ('oak_boat', 'bamboo_raft'):
+                label = f'{player.name}-{kind}'
+                host('command', command=f'kill @e[tag={tag}]')
+                player('command', command='gamemode survival')
+                player('command', command=f'tp @s {x+0.5} {y} {z-0.5}')
+                player('command', command=f'summon minecraft:{kind} {x+0.5} {y} {z+2.5} {{Tags:["{tag}"]}}')
+                player.wait(10)
+                boat = board(player, kind, (x+0.5, y, z+2.5))
+                player.script(['key w down', 'key d down', 'wait 30',
+                               'key shift down', 'wait 2', 'key w up', 'key d up', 'key shift up', 'wait 10'])
+                assert player('status').get('riding') is None, f'{label}: did not dismount while steering'
+                current = next(o for o in player('status')['objects'] if o['id'] == boat['id'])
+                bx, by, bz = current['position']
+                player('command', command=f'tp @s {bx-2} {by} {bz}')
+                player.wait(5)
+                current = next(o for o in player('status')['objects'] if o['id'] == boat['id'])
+                board(player, kind, current['position'])
+                player.wait(5)
+                replies = player.script(['status', 'state'] + ['wait 2', 'status', 'state'] * 15, every=True)
+                boat_yaws = [next(o for o in r['objects'] if o['id'] == boat['id'])['yaw']
+                             for r in replies if 'objects' in r]
+                camera_yaws = [r['player']['yaw'] for r in replies if r.get('player') and 'yaw' in r['player']]
+                assert len(boat_yaws) == len(camera_yaws) == 16, f'{label}: missing rotation samples'
+                turn = lambda angles: sum(abs((b-a+180) % 360-180) for a, b in zip(angles, angles[1:]))
+                seen[label] = dict(boat_turn=turn(boat_yaws), camera_turn=turn(camera_yaws),
+                                   boat_yaws=boat_yaws, camera_yaws=camera_yaws,
+                                   ticks=[r['ticks'] for r in replies if 'objects' in r])
+                lab.write_json(out / 'boat-ice-reboard.json', seen)
+                player.shot(out, 'boat-ice-reboard-' + label)
+                # One previously latched steering input can still add one
+                # degree of turn momentum; ice then damps it by 0.98 per tick.
+                limit = sum(0.98 ** tick for tick in range(30)) + 2
+                assert seen[label]['boat_turn'] < limit, f'{label}: reboarded boat keeps spinning: {seen[label]}'
+                assert seen[label]['camera_turn'] < limit, f'{label}: camera keeps spinning: {seen[label]}'
+                player.wait(50)
+                late = player.script(['status', 'state'] + ['wait 2', 'status', 'state'] * 15, every=True)
+                boat_late = [next(o for o in r['objects'] if o['id'] == boat['id'])['yaw']
+                             for r in late if 'objects' in r]
+                camera_late = [r['player']['yaw'] for r in late if r.get('player') and 'yaw' in r['player']]
+                assert len(boat_late) == len(camera_late) == 16, f'{label}: missing settled rotation samples'
+                seen[label].update(settled_boat_turn=turn(boat_late), settled_camera_turn=turn(camera_late),
+                                   settled_boat_yaws=boat_late, settled_camera_yaws=camera_late,
+                                   settled_ticks=[r['ticks'] for r in late if 'objects' in r])
+                lab.write_json(out / 'boat-ice-reboard.json', seen)
+                assert seen[label]['settled_boat_turn'] < 5, f'{label}: boat never settles: {seen[label]}'
+                assert seen[label]['settled_camera_turn'] < 5, f'{label}: camera never settles: {seen[label]}'
+                leave_vehicle(player, 'boat')
+        return seen
+    finally:
+        for player in (host, guest):
+            player.raw('release')
+        host('command', command=f'kill @e[tag={tag}]')
+
+
 def check_boat_shoved(host, guest, out):
     """A piston shoves the boat its rider drives, then `/tp` moves it. The server moved it, so its
     last good position is where it is now (`ServerGamePacketListenerImpl.tick` resets it every
@@ -6555,7 +6622,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'barter': check_barter, 'piglin_offspring': check_piglin_offspring,
              'worn': check_worn, 'kills': check_kills, 'looting': check_looting, 'leave': check_leave,
              'arrows': check_arrows, 'predict': check_predict, 'ladder': check_ladder,
-             'boats': check_boats, 'boat_shoved': check_boat_shoved, 'minecarts': check_minecarts, 'frames': check_frames, 'hands': check_hands,
+             'boats': check_boats, 'boat_ice_reboard': check_boat_ice_reboard, 'boat_shoved': check_boat_shoved, 'minecarts': check_minecarts, 'frames': check_frames, 'hands': check_hands,
              'lightning': check_lightning, 'riding': check_riding, 'occupied_horse': check_occupied_horse, 'mounts': check_mounts,
              'worldspawn': check_world_spawn, 'beds': check_beds, 'shield': check_shield, 'deathmining': check_death_mining,
              'contacts': check_contacts, 'absorption': check_absorption, 'breath': check_breath,
