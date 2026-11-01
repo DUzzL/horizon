@@ -456,7 +456,7 @@ static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
 /// Whether the device can batch translucent quads (`Graphics::translucent_batching`): set when
 /// the renderer starts; not without indirect multi-draw or on OpenGL, which loops over a
 /// multi-draw's entries on the CPU, nor where vanilla frames draw flat (they read the section
-/// arena's translucent quads).
+/// arena's translucent quads). Where it can't, the settings grey its switch out.
 pub fn offer_translucent_batching(on: bool) {
     TRANSLUCENT_BATCHING_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -601,9 +601,11 @@ pub struct Graphics {
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
     /// Translucent quads in vertex buffers of their own (`gfx`'s translucent arena), so their
-    /// back-to-front draws go out in a few calls, for a little more video memory. Off by
-    /// default for now; read when a renderer is made (start, resource-pack reload), where it is
-    /// offered (`translucent_batching_offered`).
+    /// back-to-front draws go out in a few calls, for a little more video memory. On by
+    /// default (Translucent Batching, Advanced graphics); read when a renderer is made (start,
+    /// resource-pack reload), where it is offered (`translucent_batching_offered`). Its key is
+    /// `batchTranslucent`: `translucentBatching`, which every save wrote as false while it was
+    /// off by default and had no switch, stays ignored.
     pub translucent_batching: bool,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
@@ -646,7 +648,7 @@ impl Default for Graphics {
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
-            translucent_batching: false,
+            translucent_batching: true,
             shader_pack: String::new(),
         }
     }
@@ -739,7 +741,7 @@ impl Graphics {
                 "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
-                "translucentBatching" => g.translucent_batching = flag(g.translucent_batching),
+                "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
@@ -756,7 +758,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -948,7 +950,7 @@ mod tests {
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
-            translucent_batching: true,
+            translucent_batching: false,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
@@ -968,8 +970,12 @@ mod tests {
             EntityCullingMode::Off
         );
         assert_eq!(Graphics::parse(""), Graphics::default());
-        // Translucent Batching is opt-in for now: only the file turns it on.
-        assert!(!Graphics::default().translucent_batching);
+        // Translucent Batching is on, in files from before it too; only false turns it off,
+        // and only under its key: the old one held the false every save wrote while it was
+        // off by default, not a choice.
+        assert!(Graphics::default().translucent_batching);
+        assert!(!Graphics::parse("batchTranslucent:false\n").translucent_batching);
+        assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
         assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);
