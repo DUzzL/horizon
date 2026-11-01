@@ -3,6 +3,7 @@
 
     python3 tools/build_times.py run                          # cold + incremental, dev and fast profiles
     python3 tools/build_times.py run --profiles dev --only incremental --crates horizon-items
+    python3 tools/build_times.py compare before.json after.json
 
 `run` builds the game (`cargo build --locked -p horizon-client --profile P --timings`) and writes a JSON
 report and a Markdown table under .local/build-times/reports/:
@@ -21,6 +22,8 @@ run that is killed outright leaves a note in .local/build-times/ and the next ru
 A file that something else wrote in the meantime is never put back: that would undo someone's work.
 `run` refuses a checkout with uncommitted changes (--allow-dirty), and warns when other builds run,
 because they skew every number.
+
+`compare` puts two reports side by side: seconds before, after, the difference.
 """
 import argparse
 import base64
@@ -796,6 +799,99 @@ def render_markdown(report):
     return "\n".join(lines)
 
 
+# Compare ----------------------------------------------------------------------------------------------------
+
+def delta(before, after):
+    if before is None or after is None:
+        return "-", "-"
+    diff = after - before
+    percent = f"{100 * diff / before:+.0f}%" if before else "-"
+    return f"{diff:+.1f}", percent
+
+
+def row(name, before, after):
+    return [*name, seconds(before), seconds(after), *delta(before, after)]
+
+
+# Recorded, but no difference to the seconds: the jobs are compared on their own, the target folder is the tool's.
+UNTIMED_ENVIRONMENT = {"CARGO_BUILD_JOBS", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"}
+
+
+def comparable_differences(a, b):
+    """What differs between two reports that makes their seconds a poor comparison."""
+    notes = []
+    for label, get in [("CPU", lambda r: r["machine"].get("cpu")), ("OS", lambda r: r["machine"].get("os")),
+                       ("RAM (MB)", lambda r: r["machine"].get("ram_mb")),
+                       ("jobs", lambda r: str(r["jobs"]["jobs"])), ("rustc", lambda r: r["toolchain"]["rustc"]),
+                       ("edit mode", lambda r: r["options"]["edit"]),
+                       ("edited files", lambda r: json.dumps(r["options"].get("files"), sort_keys=True)),
+                       ("environment", lambda r: json.dumps({k: v for k, v in r.get("environment", {}).items()
+                                                             if k not in UNTIMED_ENVIRONMENT}, sort_keys=True))]:
+        if get(a) != get(b):
+            notes.append(f"{label} differs: {get(a)} / {get(b)}")
+    return notes
+
+
+def compare(a, b):
+    """A Markdown comparison of report a (before) with report b (after)."""
+    for r in (a, b):
+        if r.get("format") != REPORT_FORMAT:
+            raise BuildTimesError("not a build_times report (format field)")
+    lines = ["# Build times compared", ""]
+    lines += table(["", "Before", "After"], [
+        ["Commit", f"`{a['commit']['short']}` {a['commit']['subject']}", f"`{b['commit']['short']}` {b['commit']['subject']}"],
+        ["Date", a["created"], b["created"]],
+        ["Machine", machine_line(a["machine"]), machine_line(b["machine"])],
+        ["Rust", a["toolchain"]["rustc"], b["toolchain"]["rustc"]],
+        ["Jobs", a["jobs"]["jobs"], b["jobs"]["jobs"]]])
+    notes = comparable_differences(a, b)
+    warnings = [f"before: {w}" for w in a["warnings"]] + [f"after: {w}" for w in b["warnings"]]
+    if notes or warnings:
+        lines += ["", "Read with care:", ""] + [f"- {n}" for n in notes + warnings]
+    head = ["", "Before (s)", "After (s)", "Change (s)", "Change"]
+    cold = [row([p], a["cold"].get(p, {}).get("seconds") if a["cold"].get(p, {}).get("ok") else None,
+                b["cold"].get(p, {}).get("seconds") if b["cold"].get(p, {}).get("ok") else None)
+            for p in _union(a["cold"], b["cold"])]
+    if cold:
+        lines += ["", "## Cold builds", ""] + table(["Profile", *head[1:]], cold)
+    noop = [row([p], _sec(a["noop"].get(p)), _sec(b["noop"].get(p))) for p in _union(a["noop"], b["noop"])]
+    if noop:
+        lines += ["", "## Nothing changed", ""] + table(["Profile", *head[1:]], noop)
+    inc = []
+    for profile in _union(a["incremental"], b["incremental"]):
+        # A profile whose first build failed holds {"error": text} instead of its crates.
+        ca, cb = ({k: v for k, v in r["incremental"].get(profile, {}).items() if isinstance(v, dict)} for r in (a, b))
+        for crate in _union(ca, cb):
+            inc.append(row([profile, crate], _sec(ca.get(crate)), _sec(cb.get(crate))))
+    if inc:
+        lines += ["", "## Incremental builds", ""] + table(["Profile", "Crate", *head[1:]], inc)
+    for profile in _union(a["cold"], b["cold"]):
+        ta = {x["crate"]: x["seconds"] for x in ((a["cold"].get(profile) or {}).get("timings") or {}).get("top", [])}
+        tb = {x["crate"]: x["seconds"] for x in ((b["cold"].get(profile) or {}).get("timings") or {}).get("top", [])}
+        names = sorted(set(ta) | set(tb), key=lambda n: -max(ta.get(n, 0), tb.get(n, 0)))
+        if names:
+            lines += ["", f"## Slowest crates, cold {profile}", "", "A crate missing on one side is below its top list or gone."]
+            lines += [""] + table(["Crate", *head[1:]], [row([n], ta.get(n), tb.get(n)) for n in names])
+        pa = ((a["cold"].get(profile) or {}).get("timings") or {}).get("critical_path") or []
+        pb = ((b["cold"].get(profile) or {}).get("timings") or {}).get("critical_path") or []
+        if pa or pb:
+            lines += ["", f"## Critical path, cold {profile}", "",
+                      "Before: " + (" > ".join(x["unit"] for x in pa) or "-"), "",
+                      "After: " + (" > ".join(x["unit"] for x in pb) or "-")]
+    return "\n".join(lines)
+
+
+def _union(*dicts):
+    names = []
+    for d in dicts:
+        names += [k for k in d if k not in names]
+    return names
+
+
+def _sec(entry):
+    return entry.get("seconds") if entry and entry.get("ok", True) else None
+
+
 # Command line -----------------------------------------------------------------------------------------------
 
 def parser():
@@ -817,6 +913,10 @@ def parser():
     r.add_argument("--output", help="the JSON report's path (the Markdown goes beside it)")
     r.add_argument("--label", help="a name for this run, added to the file name")
     r.add_argument("--cargo", default="cargo", help="the cargo program")
+    c = sub.add_parser("compare", help="compare two reports")
+    c.add_argument("before")
+    c.add_argument("after")
+    c.add_argument("--output", help="write the table here as well")
     return p
 
 
@@ -827,10 +927,21 @@ def main(argv=None, root=None, cargo=None):
             with contextlib.suppress(ValueError):
                 signal.signal(getattr(signal, name), lambda *_: sys.exit(1))  # runs the finally blocks that put files back
     try:
+        if args.command == "compare":
+            text = compare(*(json.loads(Path(p).read_text(encoding="utf-8")) for p in (args.before, args.after)))
+            print(text)
+            if args.output:
+                Path(args.output).write_text(text + "\n", encoding="utf-8")
+            return 0
         return run(args, root=root, cargo=cargo)
     except BuildTimesError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+    except (OSError, ValueError, KeyError) as error:
+        if args.command == "compare":
+            print(f"error: cannot compare: {error}", file=sys.stderr)
+            return 2
+        raise
 
 
 if __name__ == "__main__":

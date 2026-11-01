@@ -71,6 +71,17 @@ Ctrl+Break (Windows). If the process is killed outright, a note in `.local/build
 restore the file first. Either way, a file that something else wrote in the meantime (your editor) is left as it
 is, and the run stops and says so: putting the old bytes back would undo that work.
 
+## Compare
+
+```sh
+python3 tools/build_times.py compare before.json after.json
+```
+
+A table of seconds before, after and the change, for the cold builds, the nothing-changed build, every
+incremental build, every crate of the cold builds' slowest list, and the two critical paths. When the
+CPU, OS, RAM, jobs, rustc, edit mode, edited files or build variables (`RUSTFLAGS`, `RUSTC_WRAPPER`...) differ
+between the reports, it says so first: those seconds are not comparable.
+
 ## First numbers
 
 Measured on 2026-11-01 at `78043f09a` (main) plus the tool, with `rustc 1.99.1` and the default jobs (16, the logical
