@@ -71,7 +71,7 @@ const FOLDERS: [(&str, &str); 5] = [
     ("textures/entity", "textures/entity"),
 ];
 /// The largest `.properties` file read, in bytes.
-const MAX_PROPERTIES: u64 = 64 * 1024;
+pub(crate) const MAX_PROPERTIES: u64 = 64 * 1024;
 
 /// The texture's own folder, last in priority.
 const BESIDE: usize = FOLDERS.len() - 1;
@@ -215,7 +215,7 @@ impl Entry {
 
 /// UTF-8, or else ISO-8859-1 as Java's `Properties.load` reads a stream: a properties file
 /// saved in Latin-1 keeps its rules.
-fn decode(bytes: Vec<u8>) -> String {
+pub(crate) fn decode(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes)
         .unwrap_or_else(|e| e.into_bytes().iter().map(|&b| char::from(b)).collect())
 }

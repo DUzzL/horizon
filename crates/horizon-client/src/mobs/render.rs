@@ -3060,16 +3060,23 @@ mod emissive_tests {
     }
 
     fn data(files: &[&str]) -> MobData {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!(
             "horizon-render-emissive-{}-{}",
             std::process::id(),
-            files.len()
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&root);
         for file in files {
             let path = root.join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, "").unwrap();
+            // Rules files pick variant 2; images are only their names.
+            let text = if file.ends_with(".properties") {
+                "textures.1=2"
+            } else {
+                ""
+            };
+            std::fs::write(path, text).unwrap();
         }
         let random = RandomTextures::scan(&root);
         let emissive = Emissive::scan(&root, &random);
@@ -3127,6 +3134,97 @@ mod emissive_tests {
             glow.iter().map(|v| v.normal).collect::<Vec<_>>(),
             body.iter().map(|v| v.normal).collect::<Vec<_>>()
         );
+    }
+
+    /// Draws `m` and returns each vertex's (uv, light).
+    fn drawn(m: &Mob, data: &MobData, atlas: Atlas) -> Vec<([f32; 2], u32)> {
+        let mut out = Vec::new();
+        render_with(m, 0.0, glam::DVec3::ZERO, atlas, 7, data, &[], &mut out);
+        out.iter().map(|v| (v.uv, v.light)).collect()
+    }
+
+    /// Whether every vertex samples inside the rect starting at `at` (each rect is 0.25 wide).
+    fn inside(vertices: &[([f32; 2], u32)], at: f32) -> bool {
+        vertices
+            .iter()
+            .all(|(uv, _)| (at..=at + 0.25).contains(&uv[0]))
+    }
+
+    #[test]
+    fn a_layer_glows_with_its_own_overlay() {
+        let mut m = silverfish();
+        let k = Arc::make_mut(&mut m.kind);
+        k.species = Species::Sheep;
+        k.layers.insert("sheep#wool".into(), k.model.clone());
+        let data = data(&[
+            "assets/minecraft/textures/entity/sheep/sheep.png",
+            "assets/minecraft/textures/entity/sheep/sheep_wool.png",
+            "assets/minecraft/textures/entity/sheep/sheep_wool_e.png",
+        ]);
+        let atlas = |name: &str| {
+            let u = match name {
+                "entity/sheep/sheep" => 0.0,
+                "entity/sheep/sheep_wool" => 0.25,
+                "entity/sheep/sheep_wool_e" => 0.5,
+                _ => return None,
+            };
+            Some([u, 0.0, u + 0.25, 1.0])
+        };
+        let v = drawn(&m, &data, &atlas);
+        assert_eq!(v.len(), 12, "body, wool, wool's glow");
+        assert!(inside(&v[..4], 0.0) && inside(&v[4..8], 0.25) && inside(&v[8..], 0.5));
+        assert!(v[..8].iter().all(|(_, light)| *light == 7));
+        assert!(v[8..].iter().all(|(_, light)| *light == FULL_BRIGHT));
+    }
+
+    #[test]
+    fn a_random_variant_glows_with_its_own_overlay_only() {
+        const RANDOM: &str = "assets/minecraft/optifine/random/entity";
+        let atlas = |name: &str| {
+            let u = match name {
+                "entity/silverfish" => 0.0,
+                "entity/silverfish_e" => 0.25,
+                "minecraft:optifine/random/entity/silverfish2" => 0.5,
+                "minecraft:optifine/random/entity/silverfish2_e" => 0.75,
+                _ => return None,
+            };
+            Some([u, 0.0, u + 0.25, 1.0])
+        };
+        let seen = || crate::mobs::random_textures::Seen {
+            biome: None,
+            y: 64,
+            blocks: Vec::new(),
+            moon_phase: 0,
+            day_time: 0,
+            weather: horizon_optifine::random::Weather::Clear,
+        };
+        let props = format!("{RANDOM}/silverfish.properties");
+        let variant = format!("{RANDOM}/silverfish2.png");
+        let variant_e = format!("{RANDOM}/silverfish2_e.png");
+        let base = [
+            "assets/minecraft/textures/entity/silverfish.png",
+            "assets/minecraft/textures/entity/silverfish_e.png",
+        ];
+        for own_overlay in [true, false] {
+            let mut files = vec![base[0], base[1], props.as_str(), variant.as_str()];
+            if own_overlay {
+                files.push(variant_e.as_str());
+            }
+            let data = data(&files);
+            let mut m = silverfish();
+            {
+                let textures = data.random_textures.read().unwrap();
+                crate::mobs::random_textures::choose(&mut m, &textures, &data, Some(seen()), 0);
+            }
+            let v = drawn(&m, &data, &atlas);
+            assert!(inside(&v[..4], 0.5), "the variant");
+            if own_overlay {
+                assert_eq!(v.len(), 8);
+                assert!(inside(&v[4..], 0.75), "its own overlay, not silverfish_e");
+            } else {
+                assert_eq!(v.len(), 4, "zombie_e.png doesn't glow over zombie3.png");
+            }
+        }
     }
 }
 
