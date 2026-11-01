@@ -370,24 +370,7 @@ impl HudAtlas {
     /// The atlas of a resource root that layers packs over `defaults` (the
     /// game's own resources), whose textures give the sprites' GUI sizes.
     pub fn build_over(root: &Path, defaults: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(
-            root,
-            defaults,
-            &[
-                "gui",
-                "item",
-                "block",
-                "font",
-                "environment",
-                "misc",
-                "painting",
-                "entity",
-                "particle",
-                "mob_effect",
-                "map",
-            ],
-            true,
-        )?;
+        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true)?;
         atlas.text_shader = pack_text::load(root, defaults);
         Ok(atlas)
     }
