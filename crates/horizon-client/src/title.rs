@@ -3753,8 +3753,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         match &mut self.mode {
             Mode::Select { .. } => {
                 if self.search_focused {
+                    // Tab leaves the search box for the world list, where the
+                    // arrow keys pick a row and Enter or Space joins it.
                     self.search_focused = false;
-                    self.focused_button = enabled.first().copied();
+                    self.focused_button = None;
                 } else if let Some(cur) = self.focused_button {
                     if let Some(pos) = enabled.iter().position(|&id| id == cur) {
                         if !reverse && pos + 1 < enabled.len() {
@@ -3769,6 +3771,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                         self.focused_button = None;
                         self.search_focused = true;
                     }
+                } else if let Some(first) = if reverse {
+                    enabled.last().copied()
+                } else {
+                    enabled.first().copied()
+                } {
+                    // The list had focus: Tab moves on to the buttons.
+                    self.focused_button = Some(first);
                 } else {
                     self.search_focused = true;
                 }
@@ -4317,6 +4326,34 @@ fn caret_field<'a>(
 #[cfg(test)]
 mod classic_tests {
     use super::*;
+
+    /// Tab is how a keyboard player reaches the world list: from the search
+    /// box it hands focus to the list (where the arrow keys pick a row and
+    /// Enter joins it), and from the list it moves on to the buttons.
+    #[test]
+    fn tab_walks_from_the_search_box_to_the_world_list() {
+        let mut title = Title::new(
+            PathBuf::new(),
+            Path::new("/nonexistent/horizon-test-resources"),
+        );
+        title.mode = Mode::Select {
+            worlds: Vec::new(),
+            selected: None,
+        };
+        title.search_focused = true;
+        title.focused_button = None;
+        title.tab_dir(false, (854.0, 480.0));
+        assert!(!title.search_focused, "the search box lets go");
+        assert!(
+            title.focused_button.is_none() && title.list_focused(),
+            "the world list has focus"
+        );
+        title.tab_dir(false, (854.0, 480.0));
+        assert!(
+            title.focused_button.is_some(),
+            "the next Tab reaches the buttons"
+        );
+    }
 
     #[test]
     fn ban_notices_chain_into_the_title_and_gate_multiplayer() {
