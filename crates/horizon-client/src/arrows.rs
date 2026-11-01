@@ -747,8 +747,8 @@ impl Ticker<'_, '_, '_, '_> {
         if !self.st.was_touching_water {
             self.p.velocity = self.p.velocity.scale(f64::from(0.99f32));
         }
-        if physics && !self.st.in_ground {
-            // Entity.applyGravity: AbstractArrow.getDefaultGravity.
+        if physics && !self.st.in_ground && !self.p.no_gravity {
+            // Entity.applyGravity: AbstractArrow.getDefaultGravity, none with NoGravity.
             self.add_velocity(-0.05);
         }
         // Projectile.tick, then Entity.baseTick's fluid and fire phases.

@@ -452,6 +452,7 @@ impl Game<'_> {
                                 _ => 80,
                             };
                             self.tnts.push(super::tnt::PrimedTnt {
+                                no_gravity: entity_nbt::flag(&tag, "NoGravity"),
                                 id,
                                 position,
                                 previous: position,
@@ -484,6 +485,7 @@ impl Game<'_> {
                                 position,
                                 yaw,
                             );
+                            b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
                             if chest {
                                 b = b.with_chest();
                                 b.items = horizon_client::save::decode_items(
