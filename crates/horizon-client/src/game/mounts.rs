@@ -86,7 +86,11 @@ impl Game<'_> {
         if !m.extra.saddled || food || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
             return false;
         }
-        self.riding = Some(m.id);
+        let id = m.id;
+        if !self.native_may_board(id) {
+            return true;
+        }
+        self.riding = Some(id);
         self.trigger_player("minecraft:started_riding");
         true
     }
@@ -243,6 +247,10 @@ impl Game<'_> {
             return true;
         }
         // doPlayerRide
+        let id = self.mobs[index].id;
+        if !self.native_may_board(id) {
+            return true;
+        }
         let m = &mut self.mobs[index];
         m.extra.flag = false;
         m.extra.counter = 0;
@@ -480,9 +488,13 @@ impl Game<'_> {
     }
     /// `removePassenger` + `getDismountLocationForPassenger`: beside the mount.
     pub(super) fn dismount_mount(&mut self) {
-        let Some(id) = self.riding.take() else {
+        let Some(id) = self.riding else {
             return;
         };
+        if !self.native_may_leave(id) {
+            return;
+        }
+        self.riding = None;
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
