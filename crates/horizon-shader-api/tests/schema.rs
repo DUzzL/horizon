@@ -613,6 +613,21 @@ fn post_outputs_are_named_scaled_and_never_the_last_pass() {
 }
 
 #[test]
+fn a_vertex_stage_needs_a_material() {
+    let head = "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n";
+    let e = Manifest::parse(&format!(
+        "{head}[vertex]\nfile = \"v.wgsl\"\n[[post]]\nfile = \"p.wgsl\"\n"
+    ))
+    .unwrap_err();
+    assert!(e.to_string().contains("needs a [material]"), "{e}");
+    let m = Manifest::parse(&format!(
+        "{head}[material]\nfile = \"m.wgsl\"\n[vertex]\nfile = \"v.wgsl\"\n"
+    ))
+    .unwrap();
+    assert_eq!(m.vertex.unwrap().file, "v.wgsl");
+}
+
+#[test]
 fn materials_name_blocks_and_move_sprites_to_the_translucent_pass() {
     let m = Manifest::parse(concat!(
         "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n",

@@ -42,7 +42,7 @@ struct HorizonMaterialOut {
 }
 fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>) -> HorizonMaterialOut {
-    let pos = position + origin;
+    let pos = horizon_material_displace(position + origin, uv, layer, color, light);
     var out: HorizonMaterialOut;
     out.clip = horizon_terrain_globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;
@@ -220,7 +220,7 @@ fn vanilla_terrain() -> String {
 /// The function `name(layer)`, the value of each sprite layer in `table` and 0 for the rest:
 /// `horizon_sprite_tags` (`MaterialInput.tags`) and `horizon_sprite_material`
 /// (`MaterialInput.material`).
-fn layer_table(name: &str, table: &[(u32, u32)]) -> String {
+pub(super) fn layer_table(name: &str, table: &[(u32, u32)]) -> String {
     let mut out = format!("fn {name}(layer: u32) -> u32 {{\n    switch layer {{\n");
     let mut table = table.to_vec();
     table.sort_unstable_by_key(|&(layer, value)| (value, layer));
@@ -235,16 +235,47 @@ fn layer_table(name: &str, table: &[(u32, u32)]) -> String {
     out + "        default: { return 0u; }\n    }\n}\n"
 }
 
-/// The terrain shader for the pack's material stage `source`, with its sprite `tags` and
-/// `materials`.
+/// Where a corner of terrain is drawn without a vertex stage.
+pub(super) const DISPLACE_VANILLA: &str = "
+fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
+    light: vec2<u32>) -> vec3<f32> {
+    return pos;
+}
+";
+
+/// The vertex stage's call, with its inputs from terrain's vertex.
+pub(super) const DISPLACE_PACK: &str = "
+fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
+    light: vec2<u32>) -> vec3<f32> {
+    let flags = u32(round(color.a * 255.0));
+    let high = flags >> 4u;
+    let fluid = high >= 8u && (high & 7u) < 6u;
+    let lit = min(vec2(f32(light.y), f32(light.x)) / 240.0, vec2(1.0));
+    return vertex(VertexInput(pos, uv, horizon_sprite_material(layer & 0x7fffu), lit,
+        vec4(color.rgb, 1.0), select(0u, high & 7u, fluid), u32(fluid)));
+}
+";
+
 /// The surface target (the post stage's `scene_surface`): x the normal (two snorm16 in its
 /// bits), y smoothness, z the pack's data, w the fragment's depth.
 pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
-fn shader_source(source: &str, tags: &[(u32, u32)], materials: &[(u32, u32)]) -> String {
+/// The terrain shader for the pack's material stage `source`, with its sprite `tags` and
+/// `materials`, and the vertex stage in its module when `vertex`.
+fn shader_source(
+    source: &str,
+    tags: &[(u32, u32)],
+    materials: &[(u32, u32)],
+    vertex: bool,
+) -> String {
     format!(
-        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{ENTRIES}",
+        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{ENTRIES}",
         vanilla_terrain(),
+        if vertex {
+            DISPLACE_PACK
+        } else {
+            DISPLACE_VANILLA
+        },
         layer_table("horizon_sprite_tags", tags),
         layer_table("horizon_sprite_material", materials)
     )
@@ -255,8 +286,9 @@ fn module(
     stage: &CheckedStage,
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
+    vertex: bool,
 ) -> Result<naga::Module, String> {
-    let text = shader_source(&stage.source, tags, materials);
+    let text = shader_source(&stage.source, tags, materials, vertex);
     naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))
 }
@@ -270,9 +302,10 @@ impl NativeMaterial {
         stage: &CheckedStage,
         constants: &[(String, f64)],
         fog: bool,
+        vertex: bool,
     ) -> Result<Self, String> {
         let writes_surface = horizon_shader_api::stages::calls_set_surface(&stage.source);
-        let module = module(stage, shape.sprite_tags, shape.sprite_materials)?;
+        let module = module(stage, shape.sprite_tags, shape.sprite_materials, vertex)?;
         let mut constants = present_constants(&module, constants);
         let sprite_names = [
             "horizon_terrain_SPRITE_ARRAYS",
@@ -459,7 +492,7 @@ mod tests {
         let tags = [(7, 1), (3, 1), (9, 2)];
         let materials = [(5, 1000)];
         assert!(layer_table("t", &tags).contains("case 3u, 7u: { return 1u; }"));
-        let module = module(&stage, &tags, &materials).unwrap();
+        let module = module(&stage, &tags, &materials, false).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -468,7 +501,7 @@ mod tests {
         .unwrap_or_else(|e| {
             panic!(
                 "{}",
-                e.emit_to_string(&shader_source(&stage.source, &tags, &materials))
+                e.emit_to_string(&shader_source(&stage.source, &tags, &materials, false))
             )
         });
         let entries: Vec<&str> = module
