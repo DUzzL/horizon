@@ -187,14 +187,21 @@ struct Saved {
 struct Vars {
     /// The frame counter of the last run.
     frame: u32,
-    /// A run outside a preview stored `now` in that frame.
+    /// A run stored `now` in that frame.
     stored: bool,
+    /// The last frame a draw in the world stored: a preview stores only when the world
+    /// didn't draw the entity this frame or the last (the inventory's own player in first
+    /// person, whom the world never draws).
+    world: Option<u32>,
     /// The variables when that frame began: a model drawn again in the same frame (the
     /// illusioner's copies, a preview, the glowing pass) starts from them, not from the
     /// first draw's result.
     start: Box<[f32]>,
     /// The variables the frame's first draw in the world left.
     now: Box<[f32]>,
+    /// The shared variables (`global_var.*`) when that frame began for this entity, read by
+    /// every run of the frame like `start`.
+    globals_start: Box<[f32]>,
 }
 
 /// The variables every entity shares (`global_var.*`): their names, then their values.
@@ -424,31 +431,41 @@ impl Animation {
                 if saved.entities.len() >= SAVED && !saved.entities.contains_key(&id) {
                     saved.make_room(counter);
                 }
+                let globals = |into: &mut [f32]| {
+                    if !self.globals.is_empty() {
+                        let g = lock(&GLOBALS);
+                        for (value, &(_, i)) in into.iter_mut().zip(&self.globals) {
+                            *value = g.values[i as usize];
+                        }
+                    }
+                };
                 let v = saved.entities.entry(id).or_insert_with(|| {
                     // Seen for the first time: its variables began this frame at 0.
                     let zero: Box<[f32]> = vec![0.0; self.vars.len()].into_boxed_slice();
+                    let mut globals_start = vec![0.0; self.globals.len()].into_boxed_slice();
+                    globals(&mut globals_start);
                     Vars {
                         frame: counter,
                         stored: false,
+                        world: None,
                         start: zero.clone(),
                         now: zero,
+                        globals_start,
                     }
                 });
                 if v.frame != counter {
                     v.start.copy_from_slice(&v.now);
+                    globals(&mut v.globals_start);
                     v.frame = counter;
                     v.stored = false;
                 }
                 for (&slot, value) in self.vars.iter().zip(v.start.iter()) {
                     slots[slot as usize] = *value;
                 }
-                vars = Some(v);
-            }
-            if !self.globals.is_empty() {
-                let g = lock(&GLOBALS);
-                for &(slot, i) in &self.globals {
-                    slots[slot as usize] = g.values[i as usize];
+                for (&(slot, _), value) in self.globals.iter().zip(v.globals_start.iter()) {
+                    slots[slot as usize] = *value;
                 }
+                vars = Some(v);
             }
             for step in &self.steps {
                 let v = step.expr.eval(slots);
@@ -458,10 +475,13 @@ impl Animation {
                 }
             }
             if let Some(v) = vars
-                && !preview
                 && !v.stored
+                && (!preview || v.world.is_none_or(|w| counter.wrapping_sub(w) > 1))
             {
                 v.stored = true;
+                if !preview {
+                    v.world = Some(counter);
+                }
                 for (&slot, value) in self.vars.iter().zip(v.now.iter_mut()) {
                     *value = slots[slot as usize];
                 }
@@ -964,6 +984,65 @@ mod tests {
         // Entity 0 was seen recently and keeps counting; entity 1 was forgotten.
         assert_eq!(tx(0, 702), 3.0);
         assert_eq!(tx(1, 702), 1.0);
+    }
+
+    #[test]
+    fn drawing_an_entity_again_reads_and_stores_the_globals_once() {
+        let model = bone("root", vec![]);
+        let animation = animate(
+            &model,
+            &[
+                (
+                    "global_var.cem_anim_test_redraw",
+                    "global_var.cem_anim_test_redraw + 1",
+                ),
+                ("root.tx", "global_var.cem_anim_test_redraw"),
+            ],
+        );
+        let mut poses = Poses::new(&model);
+        let mut tx = |counter: u32| {
+            animation.run_with(7, counter, |_| {}, &mut poses);
+            poses.get("root")[0]
+        };
+        // Two draws in the world and a preview in frame 1 all see 1; frame 2 counts on.
+        assert_eq!(
+            [tx(1), tx(1), in_gui(|| tx(1)), tx(2)],
+            [1.0, 1.0, 1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn an_entity_only_a_preview_draws_still_counts() {
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("var.n", "var.n + 1"), ("root.tx", "var.n")]);
+        let mut poses = Poses::new(&model);
+        let mut tx = |counter: u32| {
+            animation.run_with(5, counter, |_| {}, &mut poses);
+            poses.get("root")[0]
+        };
+        // The inventory's own player in first person: the world never draws it.
+        assert_eq!(
+            [in_gui(|| tx(1)), in_gui(|| tx(2)), in_gui(|| tx(3))],
+            [1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn a_table_of_recent_entities_starts_over_at_twice_its_size() {
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("var.n", "var.n + 1"), ("root.tx", "var.n")]);
+        let mut poses = Poses::new(&model);
+        let mut tx = |id: u32, counter: u32| {
+            animation.run_with(id, counter, |_| {}, &mut poses);
+            poses.get("root")[0]
+        };
+        // Every entity is recent, so none can be forgotten until the table is twice full.
+        for id in 0..2 * SAVED as u32 {
+            tx(id, 1);
+        }
+        assert_eq!(tx(0, 2), 2.0);
+        tx(1_000_000, 2);
+        assert_eq!(tx(0, 3), 1.0);
     }
 
     /// Held by the tests that change `FRAME`.
