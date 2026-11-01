@@ -139,8 +139,8 @@ impl Rules {
         Self { rules }
     }
 
-    /// The variant this entity wears: the first matching rule's pick, or 1 (the default). ETF
-    /// also lets a rule list 0 for the default; the caller treats 0 as 1.
+    /// The first matching rule's pick, or 1 when none matches. [`Rules::matching`] tells a miss
+    /// (the texture itself, as is a rule's 0) from a pick of 1, which `<name>1.png` replaces.
     pub fn select(&self, facts: &Facts, seed: i32) -> u32 {
         self.matching(facts, seed).unwrap_or(1)
     }

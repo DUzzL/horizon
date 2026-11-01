@@ -1646,7 +1646,16 @@ pub fn render_posed(
     let base = base_transform_at(m, alpha, origin);
     render_visible(m, alpha, base, atlas, light, data, &[], true, out);
 }
-/// Every texture [`render_visible`] may look up for `m` now: the body's and each layer's, a
+/// The custom model's key of a body model: `main` is the wide player model, `kind.model`.
+fn cem_key(model_key: &str) -> &str {
+    if model_key == "main" {
+        "player#main"
+    } else {
+        model_key
+    }
+}
+/// Every texture [`render_visible`] may look up for `m` now (keep the two in step: a texture
+/// drawn but not listed here never gets a random pick): the body's and each layer's, a
 /// custom model's own texture in their place, and the warden's glowing layers (whether they
 /// glow this frame or not). Random textures choose a variant for each.
 pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
@@ -1660,12 +1669,7 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
             .unwrap_or(texture)
     };
     let (model_key, texture) = body(m);
-    let body_key = if model_key == "main" {
-        "player#main"
-    } else {
-        model_key.as_str()
-    };
-    let mut names = vec![custom(body_key, texture)];
+    let mut names = vec![custom(cem_key(&model_key), texture)];
     for layer in layers(m, m.age as f32) {
         names.push(custom(&layer.model, layer.texture));
     }
@@ -1697,12 +1701,7 @@ fn render_visible(
         .cem
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // `main` is the wide player model, `kind.model`.
-    let cem_key = if model_key == "main" {
-        "player#main"
-    } else {
-        model_key.as_str()
-    };
+    let cem_key = cem_key(&model_key);
     let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
     let (model, texture) = match cem.layer(cem_key) {
         Some(custom) => (
@@ -3064,11 +3063,9 @@ mod random_texture_tests {
             "minecraft:optifine/random/entity/silverfish2" => Some([0.5, 0.5, 1.0, 1.0]),
             _ => None,
         };
-        assert!(
-            uvs(&m, &data, &both)
-                .iter()
-                .all(|uv| uv[0] >= 0.5 && uv[1] >= 0.5)
-        );
+        let drawn = uvs(&m, &data, &both);
+        assert_eq!(drawn.len(), 4);
+        assert!(drawn.iter().all(|uv| uv[0] >= 0.5 && uv[1] >= 0.5));
         let vanilla_only =
             |name: &str| (name == "entity/silverfish").then_some([0.0, 0.0, 0.5, 0.5]);
         let drawn = uvs(&m, &data, &vanilla_only);

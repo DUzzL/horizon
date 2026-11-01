@@ -137,10 +137,23 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     }
     Ok((info.width, info.height, rgba))
 }
-/// A PNG's width and height, from its header alone.
 /// The most texels of OptiFine random entity variants the entity atlas packs: 2048 rows of
 /// its 4096, which keeps the default atlas (4096x5120) under the 8192 rows many GPUs take.
 const RANDOM_TEXELS: u64 = 4096 * 2048;
+/// The `files` (in order) whose sizes add up to at most `budget` texels.
+fn within_budget(files: &[&PathBuf], budget: u64) -> HashSet<PathBuf> {
+    let mut texels = 0u64;
+    files
+        .iter()
+        .filter(|p| {
+            let (w, h) = png_size(p).unwrap_or((0, 0));
+            texels += u64::from(w) * u64::from(h);
+            texels <= budget
+        })
+        .map(|p| (*p).clone())
+        .collect()
+}
+/// A PNG's width and height, from its header alone.
 fn png_size(path: &Path) -> Option<(u32, u32)> {
     use std::io::Read;
     let mut header = [0u8; 24];
@@ -593,29 +606,27 @@ impl HudAtlas {
             named.insert(root.join(file), name.to_owned());
         }
         if !named.is_empty() {
+            // A pack's variants can't grow the shared atlas past what a GPU takes: every variant
+            // (those beside their texture too) counts, in name order, and those past the budget
+            // stay out (their mobs wear the texture itself), not the whole pack.
+            let mut variants: Vec<&PathBuf> = named.keys().collect();
+            variants.sort();
+            let kept = within_budget(&variants, RANDOM_TEXELS);
+            if kept.len() < variants.len() {
+                log::warn!(
+                    "{} random entity textures left out of the atlas: past its budget",
+                    variants.len() - kept.len()
+                );
+            }
+            files.retain(|p| !named.contains_key(p) || kept.contains(p));
             // Those beside their texture are walked already.
             let walked: HashSet<&PathBuf> = files.iter().collect();
-            let mut extra: Vec<PathBuf> = named
-                .keys()
+            let mut extra: Vec<PathBuf> = kept
+                .iter()
                 .filter(|p| !walked.contains(p))
                 .cloned()
                 .collect();
             extra.sort();
-            // A pack's variants can't grow the shared atlas past what a GPU takes: those past
-            // the budget stay out (their mobs wear the texture itself), not the whole pack.
-            let mut texels = 0u64;
-            let before = extra.len();
-            extra.retain(|p| {
-                let (w, h) = png_size(p).unwrap_or((0, 0));
-                texels += u64::from(w) * u64::from(h);
-                texels <= RANDOM_TEXELS
-            });
-            if extra.len() < before {
-                log::warn!(
-                    "{} random entity textures left out of the atlas: past its budget",
-                    before - extra.len()
-                );
-            }
             files.extend(extra);
         }
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
@@ -2360,6 +2371,26 @@ mod tests {
         assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
         assert!(atlas.random_textures.get("entity/pig/pig").is_some());
         fs::remove_dir_all(&root).unwrap();
+    }
+    /// Variants past the budget, in name order, stay out of the atlas.
+    #[test]
+    fn random_variants_stop_at_their_budget() {
+        let dir = std::env::temp_dir().join(format!("horizon-atlas-budget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = ["a2.png", "a3.png", "a4.png"]
+            .iter()
+            .map(|n| dir.join(n))
+            .collect();
+        for f in &files {
+            write_strip(f, 16, 16, &[[1, 2, 3, 255]], None);
+        }
+        let refs: Vec<&PathBuf> = files.iter().collect();
+        // 256 texels each: 600 holds two.
+        let kept = within_budget(&refs, 600);
+        assert_eq!(kept, files[..2].iter().cloned().collect());
+        assert_eq!(within_budget(&refs, 768).len(), 3);
+        fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn content_mod_effect_icons_pack_under_their_namespace() {
