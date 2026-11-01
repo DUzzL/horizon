@@ -2666,7 +2666,9 @@ impl Mob {
         if self.species() == Species::SulfurCube
             && !sulfur_cube::accepts_damage(self, &source, amount)
         {
-            return false;
+            // `SulfurCube.hurtServer` returns true for the blows it shrugs off and only knocks
+            // about, so `Player.attack` goes on with its extra knockback and its aftermath.
+            return sulfur_cube::immune_to(&source);
         }
         // LivingEntity.isInvulnerableTo: only #bypasses_invulnerability gets past it.
         if !self.alive()
@@ -2967,6 +2969,23 @@ impl Mob {
     /// took its share, before the motion changes and the draws of a random
     /// direction.
     pub fn knockback(&mut self, power: f64, xd: f64, zd: f64, source: &Damage) {
+        self.knockback_by(power, xd, zd, source, None);
+    }
+    /// `LivingEntity.knockback(power, xd, zd, source, damage, comesFromEffect = true)`: an extra
+    /// push of a blow (sprint, the Knockback enchantment). A sulfur cube with a block turns it
+    /// into its own launch (`SulfurCube.knockback`), scaled by `power * 0.25` and `sqrt(damage)`.
+    pub fn knockback_effect(&mut self, power: f64, xd: f64, zd: f64, source: &Damage, damage: f32) {
+        self.knockback_by(power, xd, zd, source, Some(damage));
+    }
+    fn knockback_by(&mut self, power: f64, xd: f64, zd: f64, source: &Damage, effect: Option<f32>) {
+        if let Some(damage) = effect
+            && self.species() == Species::SulfurCube
+            && sulfur_cube::has_body(self)
+            && source.attacker.is_some()
+            && sulfur_cube::knockback(self, (xd, zd), source.from, damage, Some(power))
+        {
+            return;
+        }
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
