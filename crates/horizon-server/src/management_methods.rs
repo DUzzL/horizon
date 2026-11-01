@@ -32,6 +32,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
             Ok(json!(true))
         }
         "server/system_message" => game.system_message(argument),
+        "serversettings/motd" => game.motd(client, None),
+        "serversettings/motd/set" => game.motd(
+            client,
+            Some(
+                argument
+                    .as_str()
+                    .ok_or_else(|| invalid_params("Not a string"))?,
+            ),
+        ),
         "allowlist" => Ok(lists.allowlist()),
         "bans" => Ok(lists.bans()),
         "ip_bans" => Ok(lists.ip_bans()),
@@ -263,6 +272,20 @@ struct Game<'a> {
 }
 
 impl Game<'_> {
+    /// `MinecraftServerSettingsServiceImpl.getMotd` and `setMotd`: the live server-list message.
+    fn motd(&self, client: u32, value: Option<&str>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/motd" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/motd/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        match reply["error"].as_str() {
+            Some(error) => Err((INTERNAL_ERROR, Some(error.to_owned()))),
+            None => Ok(reply["value"].clone()),
+        }
+    }
+
     fn running(&self) -> bool {
         self.shared.state.lock().unwrap().phase == Phase::Running
     }

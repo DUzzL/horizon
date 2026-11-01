@@ -48,6 +48,25 @@ impl Game<'_> {
         let entries = body["entries"].as_array().cloned().unwrap_or_default();
         let lists = state.lists.clone();
         match body["method"].as_str().unwrap_or_default() {
+            "serversettings/motd" => {
+                return json!({
+                    "value": self.lan.as_ref().map(|lan| lan.hub.lan.shared.motd()).unwrap_or_default()
+                });
+            }
+            "serversettings/motd/set" => {
+                let Some(value) = body["value"].as_str() else {
+                    return json!({ "error": "MOTD must be a string" });
+                };
+                if let Some(lan) = &self.lan {
+                    rpc(format!(
+                        "Update MOTD from '{}' to '{}'",
+                        lan.hub.lan.shared.motd(),
+                        value
+                    ));
+                    lan.hub.lan.shared.set_motd(value.to_owned());
+                }
+                return json!({ "value": value });
+            }
             "allowlist/add" => {
                 for user in entries.iter().filter_map(|e| self.management_user(e)) {
                     rpc(format!("Add player '{}' to allowlist", shown(&user)));
