@@ -273,7 +273,7 @@ impl Game<'_> {
             owner.using_this_item = true;
             owner.use_duration = duration;
             // getUseItemRemainingTicks: the duration the use started with,
-            // as LivingEntityUseItemEvent.Start left it (`start_using_item`).
+            // as LivingEntityUseItemEvent.Start and .Tick left it (`game/item_use.rs`).
             owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
             owner.crossbow_charge_duration = Self::charge_ticks(stack).max(1) as i32;
         }

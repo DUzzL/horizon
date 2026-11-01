@@ -96,10 +96,11 @@ impl Game<'_> {
     }
     /// `CrossbowItem.onUseTick` for the charge in progress.
     pub(super) fn tick_crossbow(&mut self, slot: usize, ticks: u32, stack: &ItemStack) {
-        let ticks = ticks + 1;
-        self.using = Some((slot, ticks));
+        // getUseDuration - the ticks left, as a mod's Start or Tick left them.
+        let held = self.ticks_held(stack, ticks);
+        self.using = Some((slot, ticks + 1));
         let charge = Self::charge_ticks(stack).max(1) as f32;
-        let (before, now) = ((ticks - 1) as f32 / charge, ticks as f32 / charge);
+        let (before, now) = (held as f32 / charge, (held + 1) as f32 / charge);
         let sounds = Self::charging_sounds(stack);
         let at = self
             .player
