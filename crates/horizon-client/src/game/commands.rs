@@ -63,6 +63,8 @@ pub(super) enum Target {
     Crystal(u32),
     /// The Ender Dragon, by its entity id (`minecraft:ender_dragon`).
     Dragon(u32),
+    /// A primed TNT, by its entity id (`minecraft:tnt`).
+    Tnt(u32),
 }
 /// An entity of a type Horizon does not simulate: its compound lives in the
 /// entity memory (`persist.raw`), its position and rotation here.
@@ -135,7 +137,8 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Cart(id)
     | Target::Other(id)
     | Target::Crystal(id)
-    | Target::Dragon(id)) = t
+    | Target::Dragon(id)
+    | Target::Tnt(id)) = t
     else {
         return None;
     };
@@ -479,6 +482,11 @@ impl Game<'_> {
                 .as_ref()
                 .filter(|d| d.id == id)
                 .map(|d| [d.position.x, d.position.y, d.position.z]),
+            Target::Tnt(id) => self
+                .tnts
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| [t.position.x, t.position.y, t.position.z]),
         }
     }
     pub(super) fn target_type(&self, t: Target) -> String {
@@ -525,6 +533,7 @@ impl Game<'_> {
                 .map_or_else(String::new, |o| o.kind.clone()),
             Target::Crystal(_) => "minecraft:end_crystal".into(),
             Target::Dragon(_) => "minecraft:ender_dragon".into(),
+            Target::Tnt(_) => "minecraft:tnt".into(),
         }
     }
     /// The name of the player the game acts for: a guest's own while their
@@ -801,6 +810,7 @@ impl Game<'_> {
         if let Some(d) = &self.dragon {
             candidates.push(Target::Dragon(d.id));
         }
+        candidates.extend(self.tnts.iter().map(|t| Target::Tnt(t.id)));
         candidates
     }
     /// The loaded levels, in the order the server holds them: the
@@ -832,6 +842,7 @@ impl Game<'_> {
             Target::Other(id),
             Target::Crystal(id),
             Target::Dragon(id),
+            Target::Tnt(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -853,6 +864,7 @@ impl Game<'_> {
             Target::Other(id) => self.others.iter().any(|o| o.id == id),
             Target::Crystal(id) => self.crystals.iter().any(|c| c.id == id),
             Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
+            Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1463,6 +1475,12 @@ impl Game<'_> {
                     d.previous = v;
                 }
             }
+            Target::Tnt(id) => {
+                if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+                    t.position = v;
+                    t.previous = v;
+                }
+            }
             // Wall-mounted entities do not move.
             Target::Frame(_) | Target::Painting(_) => {}
         }
@@ -1960,6 +1978,7 @@ impl Game<'_> {
             Target::Other(id) => self.others.retain(|o| o.id != id),
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
+            Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
         let before = self.orb_ids();
@@ -3616,6 +3635,7 @@ mod look_at_tests {
             Target::Cart(7),
             Target::Crystal(7),
             Target::Dragon(7),
+            Target::Tnt(7),
         ] {
             assert_eq!(non_player_entity_id(t), Some(7), "{t:?}");
         }
