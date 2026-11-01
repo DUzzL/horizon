@@ -344,6 +344,13 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
 }
 
+// The hand in HDR output (gfx.rs "HDR hand marks"): where it drew, what the world kept there
+// no longer shines; fs_hdr_mark then marks the light sources it holds.
+@fragment fn fs_hdr_hand_unmark(in: Out) -> @location(0) vec4<f32> {
+    if textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, 1.0);
+}
+
 fn celestial_color(in: Out) -> vec4<f32> {
     // RenderPipelines.DRAGON_RAYS / rendertype_lightning.fsh: untextured
     // vertex colour, with fog fading both RGB and alpha before additive blending.

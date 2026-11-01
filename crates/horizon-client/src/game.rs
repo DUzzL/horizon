@@ -1326,6 +1326,16 @@ impl LevelAccess for GameLevel<'_> {
             self.native_perform_bonemeal(ticks, self.dimension, pos, state);
         }
     }
+    fn before_fire_odds(&self, state: BlockStateId, odds: &mut Option<(i32, i32)>) {
+        if self.native_authoritative {
+            self.native_fire_odds(self.dimension, state, odds);
+        }
+    }
+    fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
+        if self.native_authoritative {
+            self.native_smoke_source(self.dimension, state, smoke);
+        }
+    }
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.world.world_surface(x, z, |s| self.facts.is_air(s))
     }
@@ -1911,7 +1921,7 @@ impl UiResources {
     pub fn load(root: &std::path::Path, defaults: &std::path::Path) -> Result<Self> {
         Ok(Self {
             atlas: HudAtlas::build_over(root, defaults)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root, defaults)),
         })
     }
     /// What a server's game holds, since it draws nothing: the font, which books
@@ -2243,6 +2253,11 @@ struct Game<'a> {
     /// The cursor icon the window shows (`widgets::take_cursor` each frame).
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
+    /// The window held the pointer when it lost focus: the system lets a
+    /// grabbed pointer go with the focus, and a window that comes back still
+    /// wanting it takes it again (`MouseHandler.grabMouse`, whose grab
+    /// outlives the window's focus).
+    regrab_on_refocus: bool,
     /// Only the local player owning keyboard and mouse changes the native pointer.
     keyboard_mouse: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
@@ -2289,7 +2304,7 @@ struct Game<'a> {
     /// Horizon Extras' dynamic lights this frame (`dynamic_lights.rs`), and how brightly each
     /// item glows (built the first time the extra is on).
     dynamic_lights: Vec<[f32; 4]>,
-    luminance: Option<horizon_client::dynamic_light::Luminance>,
+    luminance: std::cell::OnceCell<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
     /// The first-person player's model, which only a native pack's shadow pass draws.
@@ -3667,32 +3682,72 @@ impl Game<'_> {
             self.dropped.pop();
         }
     }
+    /// The block entity at `pos` saved with its id and position
+    /// (`saveWithFullMetadata`), or the saved one Horizon keeps as loaded:
+    /// what a broken block's loot sees as `LootContextParams.BLOCK_ENTITY`.
+    fn loot_block_entity(&self, pos: [i32; 3], block: &str) -> Option<horizon_world::nbt::Tag> {
+        let key = (pos[0], pos[1], pos[2]);
+        match self.world.block_entities.get(&key) {
+            Some(entity) => Some(horizon_client::save::encode_block_entity(
+                key, entity, block,
+            )),
+            None => spill::saved_entity(&self.world, pos),
+        }
+    }
+    /// Where a loot roll at `origin` happens, for a mod's own loot kinds:
+    /// the block entity it may copy from, and this level as
+    /// `LootContext.getLevel` gives it (`Level.isRaining`: rain above 0.2;
+    /// `isThundering`: thunder above 0.9).
+    fn loot_place_at(
+        &self,
+        origin: [f64; 3],
+        block_entity: Option<horizon_world::nbt::Tag>,
+    ) -> horizon_world::loot::NativeLootPlace {
+        let (rain, thunder) = self.world.weather.levels(1.0);
+        horizon_world::loot::NativeLootPlace {
+            origin: Some(origin),
+            block_entity,
+            level: Some(horizon_world::loot::NativeLootLevel {
+                dimension: self.dim.id().to_owned(),
+                game_time: self.world.game_time,
+                day_time: self.world.day_time,
+                raining: rain > 0.2,
+                thundering: thunder > 0.9,
+            }),
+        }
+    }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
     /// with the player as `this`, drawing from its server random sequence
-    /// (`LootContext.Builder.create`), else the level random.
+    /// (`LootContext.Builder.create`), else the level random. The roll's
+    /// origin is the block's centre and `block_entity` the entity it had.
     fn block_loot_at(
         &mut self,
         pos: [i32; 3],
         state: BlockStateId,
         held: Option<&ItemStack>,
+        block_entity: Option<horizon_world::nbt::Tag>,
     ) -> Vec<ItemStack> {
         let registry = self.pack.assets.registry;
         let dynamic = self.pending.dynamic(pos);
-        let mut drops = match world_items!(self).block_loot_sequence(registry, state) {
-            Some(sequence) => {
-                let random = self.rand_sequences.get(&sequence, self.level.seed);
-                self.res
-                    .items()
-                    .block_drops_by_player(registry, state, held, &dynamic, random)
-            }
-            None => world_items!(self).block_drops_by_player(
-                registry,
-                state,
-                held,
-                &dynamic,
-                &mut self.world.random,
-            ),
-        };
+        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
+        let mut drops =
+            horizon_world::loot::with_native_loot_place(place, || {
+                match world_items!(self).block_loot_sequence(registry, state) {
+                    Some(sequence) => {
+                        let random = self.rand_sequences.get(&sequence, self.level.seed);
+                        self.res
+                            .items()
+                            .block_drops_by_player(registry, state, held, &dynamic, random)
+                    }
+                    None => world_items!(self).block_drops_by_player(
+                        registry,
+                        state,
+                        held,
+                        &dynamic,
+                        &mut self.world.random,
+                    ),
+                }
+            });
         let player = self.native_acting_id();
         self.native_block_drops(pos, state, Some(player), held, None, &mut drops);
         drops
@@ -5530,6 +5585,11 @@ impl Game<'_> {
         }
         // The block entity as it was, for what the drops copy from it.
         let key = (pos[0], pos[1], pos[2]);
+        let loot_entity = if self.creative {
+            None
+        } else {
+            self.loot_block_entity(pos, &facts.name)
+        };
         if let Some(entity) = self.world.block_entities.get(&key).cloned() {
             let name = self.world.block_names.get(&key).cloned();
             self.pending.record(pos, &entity, &facts.name, name);
@@ -5594,7 +5654,7 @@ impl Game<'_> {
                 if let Some(p) = self.player.as_mut() {
                     p.cause_food_exhaustion(0.005);
                 }
-                let drops = self.block_loot_at(pos, state, held.as_ref());
+                let drops = self.block_loot_at(pos, state, held.as_ref(), loot_entity);
                 let silk = held
                     .as_ref()
                     .is_some_and(|h| h.enchantment_level("minecraft:silk_touch") > 0);
@@ -7898,6 +7958,17 @@ impl Game<'_> {
     fn capture_loaded_world(&mut self) {
         // Loading may finish after focus was lost or another screen opened.
         if self.title.is_none() && self.screen == Screen::Playing {
+            self.capture(true);
+        }
+    }
+    /// The window came back into focus after holding the pointer: the system
+    /// dropped the grab with the focus, and vanilla's grab outlives it
+    /// (`MouseHandler.mouseGrabbed` stays true while GLFW keeps the cursor
+    /// mode), so the game takes the pointer again without waiting for a
+    /// click. A screen that is open keeps it free, as releasing the pointer
+    /// for that screen did: it is the screen, not the focus, that shows it.
+    fn regrab_on_refocus(&mut self) {
+        if std::mem::take(&mut self.regrab_on_refocus) && self.screen == Screen::Playing {
             self.capture(true);
         }
     }
@@ -16787,31 +16858,40 @@ impl Game<'_> {
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
                     self.focus_lost = (!focused).then(Instant::now);
-                    if !focused && self.control.is_none() {
-                        self.keys.clear();
-                        // Latched sneak/sprint live in `toggles`, not in the
-                        // physical keys: put them back so a short alt-tab
-                        // (no pause screen) does not drop them. Only a mapping
-                        // whose toggle option is on is latched; a held one has
-                        // no state to keep, and an unfocused window never gets
-                        // its key release, so leaving it down would keep the
-                        // player sneaking or sprinting until the key is tapped.
-                        for (slot, needs_toggle) in [
-                            self.settings.toggle_crouch,
-                            self.settings.toggle_sprint,
-                            self.settings.toggle_attack,
-                            self.settings.toggle_use,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            self.toggles.0[slot].set_down(false, needs_toggle);
+                    if focused {
+                        self.regrab_on_refocus();
+                    } else {
+                        // A held pointer goes with the focus, wherever the
+                        // system keeps the grab: the window asks for it back
+                        // when the focus returns (`regrab_on_refocus`).
+                        let held = self.captured;
+                        if self.control.is_none() {
+                            self.keys.clear();
+                            // Latched sneak/sprint live in `toggles`, not in the
+                            // physical keys: put them back so a short alt-tab
+                            // (no pause screen) does not drop them. Only a mapping
+                            // whose toggle option is on is latched; a held one has
+                            // no state to keep, and an unfocused window never gets
+                            // its key release, so leaving it down would keep the
+                            // player sneaking or sprinting until the key is tapped.
+                            for (slot, needs_toggle) in [
+                                self.settings.toggle_crouch,
+                                self.settings.toggle_sprint,
+                                self.settings.toggle_attack,
+                                self.settings.toggle_use,
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                self.toggles.0[slot].set_down(false, needs_toggle);
+                            }
+                            self.sync_toggle(0);
+                            self.sync_toggle(1);
+                            self.left = false;
+                            self.right = false;
+                            self.capture(false);
                         }
-                        self.sync_toggle(0);
-                        self.sync_toggle(1);
-                        self.left = false;
-                        self.right = false;
-                        self.capture(false);
+                        self.regrab_on_refocus = held;
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
@@ -17988,6 +18068,7 @@ impl<'a> Game<'a> {
             cursor: (0.0, 0.0),
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
+            regrab_on_refocus: false,
             keyboard_mouse: true,
             view_at: [0, 0],
             split_hud: Default::default(),
@@ -18012,7 +18093,7 @@ impl<'a> Game<'a> {
             last_device_recovery: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
-            luminance: None,
+            luminance: Default::default(),
             see_through_vertices: Vec::new(),
             shadow_only_vertices: Default::default(),
             entity_spans: Default::default(),
@@ -18956,10 +19037,12 @@ fn load_core(
                     assets.reload(root)
                 }
                 .map_err(|e| e.to_string())?;
-                let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
-                    root,
-                    render.model_library.clone(),
-                )
+                let library = render.model_library.clone();
+                let item_renderer = if headless {
+                    horizon_client::item_render::ItemRenderer::load_for_server(root, library)
+                } else {
+                    horizon_client::item_render::ItemRenderer::load_with_library(root, library)
+                }
                 .map_err(|e| e.to_string());
                 Ok((render, item_renderer))
             });

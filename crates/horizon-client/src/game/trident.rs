@@ -55,6 +55,42 @@ struct Catcher {
     touches: bool,
 }
 impl ThrownTrident {
+    /// A trident loaded from its NBT (`AbstractArrow.readAdditionalSaveData`).
+    pub(super) fn from_nbt(n: horizon_client::entity_nbt::TridentNbt) -> Self {
+        let mut t = Self::remote(0, n.position, n.yaw, n.pitch);
+        t.loyalty = n.item.enchantment_level("minecraft:loyalty");
+        t.stack = n.item;
+        t.velocity = n.motion;
+        t.in_ground = n.in_ground;
+        t.in_ground_time = n.life.max(0) as u32;
+        t.shake = n.shake;
+        t.dealt_damage = n.dealt_damage;
+        t.creative_only = n.creative_only;
+        t
+    }
+    /// `AbstractArrow.addAdditionalSaveData` + `DealtDamage`.
+    pub(super) fn to_nbt(
+        &self,
+        uuid: [i32; 4],
+        raw: Option<&horizon_world::nbt::Tag>,
+    ) -> horizon_world::nbt::Tag {
+        horizon_client::entity_nbt::trident_to_nbt(
+            &horizon_client::entity_nbt::TridentSave {
+                position: self.position,
+                motion: self.velocity,
+                yaw: self.yaw,
+                pitch: self.pitch,
+                in_ground: self.in_ground,
+                life: self.in_ground_time as i32,
+                shake: self.shake,
+                dealt_damage: self.dealt_damage,
+                creative_only: self.creative_only,
+                item: &self.stack,
+            },
+            uuid,
+            raw,
+        )
+    }
     /// A trident a server sent (`handleAddEntity`): placed and moved by it.
     pub(super) fn remote(id: u32, position: Vec3, yaw: f32, pitch: f32) -> Self {
         Self {
