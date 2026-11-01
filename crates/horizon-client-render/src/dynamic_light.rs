@@ -13,7 +13,8 @@ use std::collections::HashMap;
 
 /// Lights the shaders read: `Globals.dynamic_lights` in gfx.rs, terrain.wgsl and entity.wgsl.
 pub const MAX: usize = 16;
-/// Camera-relative position and radius; RGB intensity in a second vec4.
+/// Camera-relative position and radius; RGB intensity in a second vec4. The shaders read it as a flat
+/// `array<vec4<f32>, 32>` (nested arrays need ARB_arrays_of_arrays, absent from GL below 4.3).
 pub type Colored = [[f32; 4]; 2];
 
 /// Nearest validated native visual lights; never enters gameplay lighting.

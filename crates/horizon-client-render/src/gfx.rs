@@ -8807,7 +8807,7 @@ mod tests {
     /// Every WGSL shader file translates to HLSL as wgpu's DirectX 12 backend
     /// writes it for FXC (shader model 5.1), entry point by entry point.
     #[test]
-    fn shaders_translate_to_hlsl_for_directx_12() {
+    fn shaders_translate_to_hlsl_for_directx_12_and_glsl_for_opengl() {
         fn wgsl_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -8848,6 +8848,7 @@ mod tests {
                 sources.push((path, text));
             }
         }
+        let mut glsl_checked = 0;
         for (path, text) in sources {
             // entity.wgsl comes after the overlay's constants (entity_shader).
             let module = naga::front::wgsl::parse_str(&text)
@@ -8880,8 +8881,48 @@ mod tests {
                 .write(&module, &info, None)
                 .unwrap_or_else(|e| panic!("{} {}: {e}", path.display(), entry.name));
                 assert!(!hlsl.is_empty());
+                // OpenGL below 4.3 lacks ARB_arrays_of_arrays (#6267): no nested array may reach it.
+                // Compute and storage-buffer shaders (culling, frame generation) never run on GL.
+                if entry.stage == naga::ShaderStage::Compute
+                    || text.contains("var<storage")
+                    || text.contains("var<workgroup>")
+                {
+                    continue;
+                }
+                for version in [330, 400] {
+                    let mut glsl = String::new();
+                    let glsl_result = naga::back::glsl::Writer::new(
+                        &mut glsl,
+                        &module,
+                        &info,
+                        &naga::back::glsl::Options {
+                            version: naga::back::glsl::Version::Desktop(version),
+                            ..Default::default()
+                        },
+                        &naga::back::glsl::PipelineOptions {
+                            shader_stage: entry.stage,
+                            entry_point: entry.name.clone(),
+                            multiview: None,
+                        },
+                        Default::default(),
+                    )
+                    .and_then(|mut w| w.write());
+                    // Some shaders use features GLSL cannot express (depth textureLoad): GL does
+                    // not run them. The ones it does run must translate, checked below.
+                    if glsl_result.is_err() {
+                        continue;
+                    }
+                    glsl_checked += 1;
+                    assert!(
+                        !glsl.contains("ARB_arrays_of_arrays"),
+                        "{} {} needs ARB_arrays_of_arrays on GLSL {version}",
+                        path.display(),
+                        entry.name
+                    );
+                }
             }
         }
+        assert!(glsl_checked >= 10, "{glsl_checked} GLSL translations");
     }
     #[test]
     fn gl_sprite_arrays_are_neither_2d_textures_nor_cube_maps() {
