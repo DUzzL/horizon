@@ -906,10 +906,11 @@ impl Streaming {
     /// its new blocks taken, the sections that did not change kept as they
     /// were, and its light and its neighbours' worked out again here, off
     /// the game thread, as light is for the blocks a server changes one at a
-    /// time; the sections that changed remesh (with theirs) once lit. The
-    /// light `chunk` came with is not used: the sections that changed keep
-    /// their old light until then (so the sender need not read the light
-    /// the packet carries).
+    /// time; the sections that changed remesh (with theirs) once lit. Until
+    /// then the sections that changed show the light the packet carried (a
+    /// Horizon server sends the light from before its relight, then the
+    /// new light; another server's is already right, which matters where
+    /// the neighbours this light needs aren't all here).
     pub fn replace_remote(&mut self, world: &mut World, mut chunk: Chunk) {
         let key = (chunk.x, chunk.z);
         let Some(old) = world.chunks.get(&key).cloned() else {
@@ -939,6 +940,9 @@ impl Streaming {
                 }
             }
         }
+        // A section with the same blocks and new light takes the packet's light (vanilla's
+        // `handleLevelChunkWithLight` always applies it) and remeshes as a light update would.
+        Self::light_updated(world, key.0, key.1, &kept.light);
         if !kept.blocks {
             return;
         }
@@ -2417,9 +2421,11 @@ struct Resent {
     blocks: bool,
     /// The sections whose blocks did not change but whose biomes did.
     biomes: Vec<usize>,
+    /// The sections whose blocks did not change but whose light the packet changes.
+    light: Vec<usize>,
 }
 /// `new`, a resident column `old` sent again, takes `old`'s sections whose
-/// blocks it holds unchanged, with `new`'s biomes; the sections whose blocks
+/// blocks it holds unchanged, with `new`'s biomes and light; the sections whose blocks
 /// changed keep `old`'s light (until lit again) and their cells' classes go in
 /// `cells`.
 fn keep_unchanged_sections(
@@ -2443,18 +2449,34 @@ fn keep_unchanged_sections(
         };
         if !same {
             out.blocks = true;
-            Arc::make_mut(&mut new.sections[s]).light = old.sections[s].light.clone();
             continue;
         }
         let biomes = new.sections[s].biomes.clone();
         let changed = !same_values(&old.sections[s].biomes, &biomes);
+        let light = (!same_light(&old.sections[s].light, &new.sections[s].light))
+            .then(|| new.sections[s].light.clone());
         new.sections[s] = old.sections[s].clone();
         if changed {
             Arc::make_mut(&mut new.sections[s]).biomes = biomes;
             out.biomes.push(s);
         }
+        if let Some(light) = light {
+            Arc::make_mut(&mut new.sections[s]).light = light;
+            out.light.push(s);
+        }
     }
     out
+}
+/// Whether two sections' packed light (4,096 cells) holds the same values.
+fn same_light(a: &crate::chunk::Light, b: &crate::chunk::Light) -> bool {
+    use crate::chunk::Light;
+    match (a, b) {
+        (Light::Uniform(x), Light::Uniform(y)) => x == y,
+        (Light::Full(x), Light::Full(y)) => x == y,
+        (Light::Uniform(v), Light::Full(f)) | (Light::Full(f), Light::Uniform(v)) => {
+            f.iter().all(|c| c == v)
+        }
+    }
 }
 /// Whether two biome containers (64 cells) hold the same values.
 fn same_values(
@@ -2492,6 +2514,7 @@ mod tests {
             Resent {
                 blocks: true,
                 biomes: vec![0],
+                light: vec![],
             }
         );
         assert_eq!(new.biome(0, -64, 0), 3);
@@ -2505,6 +2528,20 @@ mod tests {
         let kept = keep_unchanged_sections(&old, &mut same, &mut cells);
         assert_eq!(kept, Resent::default());
         assert!(Arc::ptr_eq(&same.sections[0], &old.sections[0]));
+        // the same blocks under new light: the packet's light, as vanilla applies it
+        let mut lit = old.clone();
+        Arc::make_mut(&mut lit.sections[2]).light = crate::chunk::Light::Uniform(0xF0);
+        Arc::make_mut(&mut old.sections[2]).light = crate::chunk::Light::Uniform(0x50);
+        let kept = keep_unchanged_sections(&old, &mut lit, &mut cells);
+        assert_eq!(
+            kept,
+            Resent {
+                light: vec![2],
+                ..Resent::default()
+            }
+        );
+        assert_eq!(lit.sections[2].light.get(0), 0xF0);
+        assert!(Arc::ptr_eq(&lit.sections[1], &old.sections[1]));
     }
 
     #[test]
@@ -2513,6 +2550,7 @@ mod tests {
         mesh.solid.resize(64, bytemuck::Zeroable::zeroed());
         mesh.translucent.resize(16, bytemuck::Zeroable::zeroed());
         mesh.block_entities.push(([1, 2, 3], 7));
+        mesh.lights.push(([1, 2, 3], 7));
         mesh.visibility = 0;
         mesh.sides = crate::mesher::Sides::unsorted(16);
         let capacities = mesh.capacity_bytes();
@@ -2529,6 +2567,7 @@ mod tests {
         assert!(reused.solid.is_empty());
         assert!(reused.translucent.is_empty());
         assert!(reused.block_entities.is_empty());
+        assert!(reused.lights.is_empty());
         assert_eq!(reused.visibility, crate::mesher::ALL_VISIBLE);
         assert_eq!(reused.sides, crate::mesher::Sides::default());
         assert_eq!(pool.bytes, 0);

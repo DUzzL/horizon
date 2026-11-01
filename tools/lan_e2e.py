@@ -10830,5 +10830,50 @@ CHECKS += ['cushion_break_seated']
 CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
 
 
+def check_attack_over_slab(host, guest, out):
+    """#5772: a mob whose centre a block hides from the eyes, but whose head shows over it, takes the
+    hit the crosshair aims at its head. The attack packet names only the entity, so the server aims
+    the swapped-in player itself; it aimed at the centre and dropped the hit (#5903). A bottom slab at
+    eye height between the player and a zombie hides the zombie's centre, not its head."""
+    x, y, z = map(math.floor, pos_of(host))
+    tag = 'attack_over_slab'
+    target = [x + 2.5, y, z + 0.5]
+    seen = {}
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 5} {y - 1} {z + 3} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 5} {y + 4} {z + 3} minecraft:air')
+    host('command', command=f'setblock {x + 1} {y + 1} {z} minecraft:stone_slab[type=bottom]')
+    try:
+        for label, player, other in (('host', host, guest), ('guest', guest, host)):
+            player('command', command='gamemode survival')
+            player('command', command='clear @s')
+            player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+            other('command', command=f'tp @s {x + 0.5} {y} {z + 3.5}')
+            host('command', command=f'summon minecraft:zombie {target[0]} {y} {target[2]} '
+                 f'{{NoAI:1b,PersistenceRequired:1b,Tags:["{tag}"]}}')
+            player.wait(20)  # full attack charge and the zombie paired
+            mob = next(m for m in player.raw('mobs', 16)['near']
+                       if m['kind'] == 'minecraft:zombie' and math.dist(m['pos'], target) < 0.1)
+            before = mob_seen(player, mob['id'])['health']
+            # The head, over the slab: the crosshair hits the zombie, not the slab.
+            player.raw('look-at', target[0], y + 1.8, target[2])
+            player.wait(2)
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            after = mob_seen(player, mob['id'])['health']
+            player.shot(out, f'attack-over-slab-{label}')
+            seen[label] = {'health': [before, after]}
+            host('command', command=f'kill @e[tag={tag}]')
+            player.wait(5)
+            assert after < before, f'{label}: the hit over the slab did no damage: {seen}'
+        return seen
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+        host('command', command=f'setblock {x + 1} {y + 1} {z} minecraft:air')
+
+
+CHECKS += ['attack_over_slab']
+CHECK_FNS['attack_over_slab'] = check_attack_over_slab
+
+
 if __name__ == '__main__':
     main()

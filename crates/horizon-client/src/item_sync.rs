@@ -574,6 +574,58 @@ mod tests {
         );
     }
 
+    /// An unbreakable damaged stack must keep both components through inventory
+    /// sync, including the integrated server's window (#5721).
+    #[test]
+    fn unbreakable_survives_inventory_sync() {
+        use horizon_protocol::buf::{Codec, Reader, Writer};
+        use horizon_protocol::item::Slot;
+        let mut components = vec![String::new(); component::UNBREAKABLE as usize + 1];
+        components[component::DAMAGE as usize] = "minecraft:damage".into();
+        components[component::UNBREAKABLE as usize] = "minecraft:unbreakable".into();
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(vec!["minecraft:air".into(), "minecraft:diamond_hoe".into()]),
+                ),
+                (
+                    "minecraft:data_component_type".into(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        for unbreakable in [false, true] {
+            let mut hoe = ItemStack::new("minecraft:diamond_hoe", 1);
+            hoe.damage = 58;
+            let marker = Tag::Compound(Default::default());
+            if unbreakable {
+                hoe.data_mut()
+                    .set_other("minecraft:unbreakable", Some(marker.clone()));
+            }
+            let sent = crate::lan::guest::stack_to_network(|_| 1, |_, _| None, &Some(hoe));
+            let mut w = Writer::new();
+            Slot::write(&sent, &mut w);
+            let mut r = Reader::new(&w.data);
+            let received = Slot::read(&mut r).unwrap().unwrap();
+            assert_eq!(r.remaining(), 0);
+            assert_eq!(
+                received.component(component::UNBREAKABLE),
+                unbreakable.then_some(&Component::Unit)
+            );
+            let back = from_network(&received, &builtin, &Dynamic::default());
+            assert_eq!(
+                (&*back.item, back.count, back.damage),
+                ("minecraft:diamond_hoe", 1, 58)
+            );
+            assert_eq!(
+                back.data().and_then(|d| d.other("minecraft:unbreakable")),
+                unbreakable.then_some(&marker)
+            );
+        }
+    }
+
     /// An ominous bottle's `ominous_bottle_amplifier` reaches the client
     /// through the packet's bytes, so its tooltip names the Bad Omen level.
     #[test]
