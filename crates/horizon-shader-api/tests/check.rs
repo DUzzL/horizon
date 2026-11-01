@@ -194,6 +194,31 @@ fn a_stages_files_are_its_own() {
 }
 
 #[test]
+fn a_vertex_stage_checks_alone_and_joins_the_material() {
+    let mut files = sample().files;
+    let manifest = String::from_utf8(files[MANIFEST].clone()).unwrap();
+    files.insert(
+        MANIFEST.into(),
+        format!("{manifest}\n[vertex]\nfile = \"wave.wgsl\"\n").into_bytes(),
+    );
+    files.insert(
+        "wave.wgsl".into(),
+        b"fn vertex(input: VertexInput) -> vec3<f32> {
+    return input.position + vec3(0.0, sin(frame.time) * f32(input.material), 0.0);
+}
+"
+        .to_vec(),
+    );
+    let report = check(&Pack::from_files(files).unwrap()).unwrap();
+    let source = |kind| {
+        let stage = report.stages.iter().find(|s| s.kind == kind).unwrap();
+        stage.source.contains("fn vertex(input: VertexInput)")
+    };
+    assert!(source(StageKind::Vertex));
+    assert!(source(StageKind::Material));
+}
+
+#[test]
 fn a_material_reads_its_block_texture() {
     let mut files = sample().files;
     let pack = Pack::from_files(files.clone()).unwrap();

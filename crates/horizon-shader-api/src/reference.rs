@@ -45,6 +45,7 @@ pub fn markdown() -> String {
             StageKind::Post => "[[post]]",
             StageKind::Sky => "[sky]",
             StageKind::Material => "[material]",
+            StageKind::Vertex => "[vertex]",
             StageKind::Weather => "[weather]",
         };
         out += &format!("| {} | `{key}` | `{}` |\n", kind.name(), kind.signature());

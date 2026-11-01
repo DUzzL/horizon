@@ -1102,6 +1102,8 @@ pub struct Mesher<'a> {
     pub smooth_lighting: bool,
     /// The `cutoutLeaves` option (fancy graphics); off makes leaves opaque.
     pub cutout_leaves: bool,
+    /// Sprite layers a shader pack moves into the translucent pass, by layer.
+    pub translucent_layers: &'a [bool],
     /// What the worker does with leaf faces inside a canopy.
     pub leaf_culling: LeafCullingMode,
 }
@@ -1310,7 +1312,13 @@ impl Mesher<'_> {
         if self.tables.is_animated(face.layer as u16) {
             out.note_sprite_layer(face.layer as u16);
         }
-        let target = if face.translucent {
+        let translucent = face.translucent
+            || self
+                .translucent_layers
+                .get(face.layer as usize)
+                .copied()
+                .unwrap_or(false);
+        let target = if translucent {
             &mut out.translucent
         } else {
             &mut out.solid
@@ -1318,7 +1326,7 @@ impl Mesher<'_> {
         // Opaque leaves (forceOpaque), quads over opaque texels and leaves a
         // leaf-culling mode proved internal draw in the solid layer: no alpha
         // cutout. All four vertices of the quad share the layer.
-        let layer = if face.opaque && !face.translucent
+        let layer = if face.opaque && !translucent
             || !self.cutout_leaves && state.leaves
             || interior_leaf
         {

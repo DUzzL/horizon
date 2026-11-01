@@ -197,7 +197,7 @@ impl<G: ChunkGenerator> Saves for G {
     }
 }
 /// Per-job mesher inputs that change with the dimension or the options.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MeshSettings {
     nether: bool,
     shader_pack_lighting: bool,
@@ -205,6 +205,7 @@ struct MeshSettings {
     blend_radius: i32,
     smooth_lighting: bool,
     cutout_leaves: bool,
+    translucent_layers: Arc<[bool]>,
     leaf_culling: LeafCullingMode,
 }
 enum Job {
@@ -440,6 +441,9 @@ pub struct Streaming {
     /// The `ao` and `cutoutLeaves` options.
     pub smooth_lighting: bool,
     pub cutout_leaves: bool,
+    /// Sprite layers a shader pack draws in the translucent pass (`[[materials]]
+    /// translucent`), by layer; empty without one.
+    pub translucent_layers: Arc<[bool]>,
     /// What the mesher does with leaf faces inside a canopy (`LeafCullingMode`).
     pub leaf_culling: LeafCullingMode,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
@@ -776,6 +780,7 @@ impl Streaming {
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
+                                        translucent_layers: &settings.translucent_layers,
                                         leaf_culling: settings.leaf_culling,
                                         assets: &context.assets,
                                         render: &context.render,
@@ -858,6 +863,7 @@ impl Streaming {
             biome_blend: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: Arc::from([]),
             leaf_culling: LeafCullingMode::Off,
             light_tables,
             light_log: Vec::new(),
@@ -1718,6 +1724,7 @@ impl Streaming {
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
+                            translucent_layers: self.translucent_layers.clone(),
                             leaf_culling: self.leaf_culling,
                         },
                     ),

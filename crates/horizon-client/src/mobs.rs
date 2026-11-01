@@ -1495,12 +1495,14 @@ pub enum MobEvent {
     StabDismount {
         target: Who,
     },
-    /// `LivingEntity.knockback(power, x, z)`: pushed away from the direction.
+    /// `LivingEntity.knockback(power, x, z, source)`: pushed away from the
+    /// direction.
     Knockback {
         target: Who,
         power: f64,
         x: f64,
         z: f64,
+        source: Damage,
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
@@ -2809,7 +2811,7 @@ impl Mob {
                     (f[0] - self.position.x, f[2] - self.position.z)
                 }),
             };
-            self.knockback(f64::from(0.4f32), dx, dz);
+            self.knockback(f64::from(0.4f32), dx, dz, &source);
         }
         ai::after_hurt(self, &source);
         if self.health <= 0.0 {
@@ -2919,13 +2921,29 @@ impl Mob {
             }
         }
     }
-    /// LivingEntity.knockback(power, xd, zd) towards the negative direction.
-    /// `Creaking.knockback`: a creaking that cannot move is not shoved.
-    pub fn knockback(&mut self, power: f64, mut xd: f64, mut zd: f64) {
+    /// LivingEntity.knockback(power, xd, zd, source) towards the negative
+    /// direction. `Creaking.knockback`: a creaking that cannot move is not
+    /// shoved. The native knockback hook runs once the knockback resistance
+    /// took its share, before the motion changes and the draws of a random
+    /// direction.
+    pub fn knockback(&mut self, power: f64, xd: f64, zd: f64, source: &Damage) {
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
-        let power = power * (1.0 - self.attrs.knockback_resistance);
+        let mut knock = crate::health::Knock {
+            strength: power * (1.0 - self.attrs.knockback_resistance),
+            x: xd,
+            z: zd,
+        };
+        if crate::health::knockback_canceled(crate::health::Hurting::Mob(self, source), &mut knock)
+        {
+            return;
+        }
+        let crate::health::Knock {
+            strength: power,
+            x: mut xd,
+            z: mut zd,
+        } = knock;
         if power <= 0.0 {
             return;
         }

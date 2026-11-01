@@ -43,6 +43,8 @@ pub struct Manifest {
     pub shared: Vec<String>,
     pub sky: Option<Stage>,
     pub material: Option<Stage>,
+    /// Where corners of terrain are drawn: needs `material`, and shares its module.
+    pub vertex: Option<Stage>,
     /// The colour of rain and snow streaks (Minecraft's own when absent).
     pub weather: Option<Stage>,
     /// Full-screen passes, in the order they run.
@@ -161,7 +163,16 @@ pub struct Material {
     pub id: u32,
     /// Sprite names such as `minecraft:block/oak_leaves` (the namespace defaults to
     /// `minecraft`), each with any number of `*` matching any run of characters.
+    #[serde(default)]
     pub sprites: Vec<String>,
+    /// Blocks (`oak_log`, `minecraft:stone`, `grass_block:snowy=true`): the sprites their models
+    /// draw with take the id where no entry's `sprites` names them.
+    #[serde(default)]
+    pub blocks: Vec<String>,
+    /// This id's sprites draw in the translucent pass (sorted, blended, `input.translucent`),
+    /// clear texels and all, rather than cut out with the solid terrain.
+    #[serde(default)]
+    pub translucent: bool,
 }
 
 impl Material {
@@ -315,6 +326,8 @@ struct Raw {
     sky: Option<Stage>,
     material: Option<Stage>,
     #[serde(default)]
+    vertex: Option<Stage>,
+    #[serde(default)]
     weather: Option<Stage>,
     #[serde(default)]
     post: Vec<Stage>,
@@ -465,13 +478,25 @@ impl Manifest {
                 "no stage: give it a [sky], a [material], a [weather] or a [[post]]".into(),
             ));
         }
-        if raw.sky.iter().chain(&raw.post).any(|s| s.fog.is_some()) {
+        if raw.vertex.is_some() && raw.material.is_none() {
+            return Err(err(
+                "[vertex] needs a [material]: they draw terrain together".into(),
+            ));
+        }
+        if raw
+            .sky
+            .iter()
+            .chain(&raw.vertex)
+            .chain(&raw.post)
+            .any(|s| s.fog.is_some())
+        {
             return Err(err("`fog` is a key of [material] only".into()));
         }
         if raw
             .sky
             .iter()
             .chain(&raw.material)
+            .chain(&raw.vertex)
             .any(|s| s.scale.is_some() || s.output.is_some())
         {
             return Err(err("`scale` and `output` are keys of [[post]] only".into()));
@@ -487,6 +512,7 @@ impl Manifest {
             .sky
             .iter()
             .chain(&raw.material)
+            .chain(&raw.vertex)
             .chain(&raw.weather)
             .chain(&raw.post);
         for file in raw
@@ -563,8 +589,15 @@ impl Manifest {
             if !(1..=65535).contains(&m.id) {
                 return Err(err(format!("material id {} is not in 1..=65535", m.id)));
             }
-            if m.sprites.is_empty() || m.sprites.iter().any(String::is_empty) {
-                return Err(err(format!("material {}: needs sprites", m.id)));
+            let listed = m.sprites.iter().chain(&m.blocks);
+            if m.sprites.is_empty() && m.blocks.is_empty() || listed.clone().any(String::is_empty) {
+                return Err(err(format!("material {}: needs sprites or blocks", m.id)));
+            }
+            if let Some(block) = m.blocks.iter().find(|b| b.contains(char::is_whitespace)) {
+                return Err(err(format!(
+                    "material {}: the block {block:?} has a space in it",
+                    m.id
+                )));
             }
         }
         for id in raw.shadow.iter().flat_map(|s| &s.solid_materials) {
@@ -686,6 +719,7 @@ impl Manifest {
             shared: raw.shared,
             sky: raw.sky,
             material: raw.material,
+            vertex: raw.vertex,
             weather: raw.weather,
             post: raw.post,
             options,
@@ -744,6 +778,30 @@ impl Manifest {
             .collect()
     }
 
+    /// The `blocks` lists in `block.properties`' form, for matching them against block states.
+    /// Empty without any.
+    pub fn material_blocks(&self) -> String {
+        self.materials
+            .iter()
+            .filter(|m| !m.blocks.is_empty())
+            .map(|m| format!("block.{}={}\n", m.id, m.blocks.join(" ")))
+            .collect()
+    }
+
+    /// Which of `layers` sprite layers draw in the translucent pass, by `materials` as
+    /// `sprite_materials` gives them: empty when none does.
+    pub fn translucent_layers(&self, materials: &[(u32, u32)], layers: usize) -> Vec<bool> {
+        let mut out = vec![false; layers];
+        for (layer, id) in materials {
+            if self.materials.iter().any(|m| m.translucent && m.id == *id)
+                && let Some(l) = out.get_mut(*layer as usize)
+            {
+                *l = true;
+            }
+        }
+        if out.contains(&true) { out } else { Vec::new() }
+    }
+
     /// The `[[lights]]` colour of the block `name` (`namespace:path`): the first entry with a
     /// matching pattern.
     pub fn light_of(&self, name: &str) -> Option<[f32; 3]> {
@@ -774,6 +832,7 @@ impl Manifest {
             .sky
             .iter()
             .chain(&self.material)
+            .chain(&self.vertex)
             .chain(&self.weather)
             .chain(&self.post);
         for file in self

@@ -292,7 +292,7 @@ use horizon_client::{
     extras_hud::Corners,
     fast_hash::FxHashMap,
     first_person::Hand,
-    health::{HurtSource, Hurting},
+    health::{HurtSource, Hurting, Knock},
     hud::{HudBatch, rgba},
     items::ItemStack,
     keybinds,
@@ -2774,6 +2774,51 @@ impl Game<'_> {
     ) {
         let _ = (entity, kind, damage_type, causing, direct, amount, canceled);
     }
+    /// `LivingEntity.knockback` is about to push entity `entity` of type `kind`
+    /// (`minecraft:zombie`, `minecraft:player`) `strength` away from the direction (`x`, `z`),
+    /// after the entity's knockback resistance took its share and before its motion changes
+    /// (docs/native-mods.md, API @API:living_knockback@). Vanilla's direction points at the
+    /// source of a hit (the attacker's side), and the entity is pushed the other way. Change
+    /// `strength`, `x` or `z`, or set `canceled`, and the push follows them: canceled, the
+    /// entity's motion is left alone. A `strength` of 0 or less after the hook is no push, and a
+    /// direction too short to tell draws a random one after it, as in vanilla. A value a mod
+    /// leaves that is not a finite number is put back as it was. `damage_type`
+    /// (`minecraft:player_attack`), `causing` (`DamageSource.getEntity`) and `direct`
+    /// (`getDirectEntity`) are the push's `DamageSource`, named as `native_living_incoming_damage`
+    /// names a hit's, with the same entity ids left at 0. It fires for the players and mobs the
+    /// game knocks back: a hit's own push, a sprinting or Knockback hit, a sweep, a spear, a
+    /// shield's push on its holder and a goat's ram. It does not fire for a sulfur cube with a
+    /// block that a hit with a causing entity knocks back (`SulfurCube.knockback` does not call
+    /// `super` there), for the pushes vanilla doesn't make with `LivingEntity.knockback` (the
+    /// ender dragon's wings, Punch arrows, explosions, wind charges, a mace smash's area, a
+    /// hoglin's throw), nor yet for the ones Horizon makes another way: a mob's melee push from
+    /// its attack knockback or a Knockback weapon, an armor stand's, the ender dragon's. It runs
+    /// on the thread that ticks the world (the server thread; the window's in-frame): state
+    /// shared with render thread hooks needs synchronising. No `self`: the game is in the middle
+    /// of the hit. API @API:living_knockback@.
+    pub(super) fn native_living_knockback(
+        entity: i32,
+        kind: &str,
+        damage_type: &str,
+        causing: i32,
+        direct: i32,
+        strength: &mut f64,
+        x: &mut f64,
+        z: &mut f64,
+        canceled: &mut bool,
+    ) {
+        let _ = (
+            entity,
+            kind,
+            damage_type,
+            causing,
+            direct,
+            strength,
+            x,
+            z,
+            canceled,
+        );
+    }
 
     /// `Block.stepOn` for a mod block, on its authoritative server level.
     /// No self: the simulation owns the entity during this callback.
@@ -2811,6 +2856,31 @@ impl Game<'_> {
     ) {
         let _ = (dimension, entity, kind, state, position, distance, damage);
     }
+}
+
+/// `native_living_knockback` for the knockback code (`health::KNOCKBACK`): whether it
+/// canceled the push. Its one caller. The pushed entity and the source are named as the
+/// damage hook names them.
+pub(super) fn knockback(pushed: Hurting<'_>, knock: &mut Knock) -> bool {
+    let (entity, kind, source) = hurt_server_args(pushed);
+    let HurtSource {
+        damage_type,
+        causing,
+        direct,
+    } = source;
+    let mut canceled = false;
+    Game::native_living_knockback(
+        entity,
+        kind,
+        damage_type,
+        causing,
+        direct,
+        &mut knock.strength,
+        &mut knock.x,
+        &mut knock.z,
+        &mut canceled,
+    );
+    canceled
 }
 
 pub(super) fn block_contact(
