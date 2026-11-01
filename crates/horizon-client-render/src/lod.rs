@@ -1325,6 +1325,24 @@ impl Lod {
         }
         (desired, sampled)
     }
+    /// Drawn columns that take their chunk's generated detail (trees,
+    /// structures; `request_detail`), and how many of them have it.
+    pub fn detail_progress(&self) -> (usize, usize) {
+        let mut wanted = 0;
+        let mut refined = 0;
+        for key in &self.active {
+            if key.level <= DETAIL_LEVEL
+                && !self.plan.split.contains(key)
+                && !(key.level == 0 && self.covered.contains(&(key.x, key.z)))
+            {
+                wanted += CELLS * CELLS;
+                refined += self.detail_masks.get(key).map_or(0, |mask| {
+                    mask.iter().map(|bits| bits.count_ones() as usize).sum()
+                });
+            }
+        }
+        (wanted, refined)
+    }
     pub fn refined_samples(&self) -> usize {
         self.active
             .iter()
