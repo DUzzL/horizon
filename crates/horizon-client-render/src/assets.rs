@@ -96,6 +96,11 @@ pub struct RenderAssets {
     pub translucent_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
+    /// The resource packs' LabPBR maps (normals, specular), layer by layer at `pbr_size`:
+    /// empty when they ship none.
+    pub pbr_normals: Vec<u8>,
+    pub pbr_specular: Vec<u8>,
+    pub pbr_size: u32,
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -192,9 +197,8 @@ impl Assets {
     pub fn reload(&self, root: &Path) -> Result<RenderAssets> {
         RenderAssets::load(root, self)
     }
-    /// [`Assets::reload`] for a server, which draws nothing: the item models
-    /// and the sprites' layers, without the block models or the textures'
-    /// pixels.
+    /// [`Assets::reload`] for a server, which draws nothing: the sprites'
+    /// layers, without the block or item models or the textures' pixels.
     pub fn reload_for_server(&self, root: &Path) -> Result<RenderAssets> {
         RenderAssets::load_with(root, self, false)
     }
@@ -209,8 +213,13 @@ impl RenderAssets {
         for name in MATERIALS {
             sprites.insert(root, &format!("minecraft:block/{name}"))?;
         }
-        let parsed = crate::model_library::ParsedModels::load(root);
-        // A server draws no block: its models (about 24 MB baked) stay empty.
+        // A server draws no block and no item: its block models (about 24 MB
+        // baked) and item model library (7 MB) stay empty.
+        let parsed = if draws {
+            crate::model_library::ParsedModels::load(root)
+        } else {
+            crate::model_library::ParsedModels::default()
+        };
         let models = if draws {
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
         } else {
@@ -230,6 +239,9 @@ impl RenderAssets {
         }
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
+        }
+        if draws {
+            crate::native_emissive::load(root, &mut sprites);
         }
         sprites.save_disk_cache();
         if draws {
@@ -252,6 +264,9 @@ impl RenderAssets {
             sprite_layers: sprites.layers,
             translucent_layers: sprites.translucent,
             sprite_mips: sprites.mips,
+            pbr_normals: sprites.normals,
+            pbr_specular: sprites.specular,
+            pbr_size: sprites.pbr_size,
         })
     }
 }

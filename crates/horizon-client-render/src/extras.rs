@@ -113,6 +113,8 @@ pub struct Extras {
     pub agent_control: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// Another controller can join P1's world (`splitscreen`, off by default).
+    pub splitscreen: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -146,6 +148,7 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             discord_presence: true,
+            splitscreen: false,
         }
     }
 }
@@ -221,6 +224,7 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
+                "splitscreen" => e.splitscreen = flag(e.splitscreen),
                 _ => {}
             }
         }
@@ -228,7 +232,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -263,6 +267,7 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
+            bool_text(self.splitscreen),
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -393,6 +398,8 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    /// On the Splitscreen settings page.
+    Splitscreen,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -426,6 +433,7 @@ impl Item {
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
+            Item::Splitscreen => "Splitscreen",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -435,7 +443,7 @@ impl Item {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            | AgentControl | DiscordPresence | Splitscreen => {
                 return None;
             }
         })
@@ -471,6 +479,9 @@ impl Item {
             Item::DiscordPresence => {
                 "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
             }
+            Item::Splitscreen => {
+                "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
+            }
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
@@ -482,9 +493,11 @@ impl Item {
         match self {
             Item::Fullbright => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
-            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
-                Some(Cost::None)
-            }
+            Item::OwnNameTag
+            | Item::AutoReconnect
+            | Item::MouseTweaks
+            | Item::Sort
+            | Item::Splitscreen => Some(Cost::None),
             _ => None,
         }
     }
@@ -501,6 +514,7 @@ impl Item {
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::DiscordPresence => e.discord_presence,
+            Item::Splitscreen => e.splitscreen,
             _ => return None,
         })
     }
@@ -528,6 +542,7 @@ impl Item {
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+            Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::SortKey => {}
         }
     }
@@ -580,6 +595,9 @@ mod tests {
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
         e.discord_presence = false;
+        assert!(!e.splitscreen);
+        Item::Splitscreen.cycle(&mut e, false);
+        assert_eq!(Item::Splitscreen.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 
