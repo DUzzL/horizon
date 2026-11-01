@@ -1548,6 +1548,19 @@ impl Game<'_> {
     pub(super) fn native_component_types(types: &mut Vec<String>) {
         let _ = types;
     }
+    /// Models no blockstate names that this client bakes beside the block
+    /// models (NeoForge's `ModelEvent.RegisterStandalone`): push their ids
+    /// (`mymod:block/shaft_half`, the model at
+    /// `assets/mymod/models/block/shaft_half.json`). Parts a block entity or
+    /// a mob draws, with `native_draw_model`, so that no block is registered
+    /// only to bake its model. Asked once at start, before the resources
+    /// load; every resource load, a pack reload included, bakes them again
+    /// from that pack's files. A model that doesn't read is logged and left
+    /// out; an id without a namespace is dropped. Every side asks it, but
+    /// only a window bakes models. API @API:standalone_models@.
+    pub(super) fn native_standalone_models(models: &mut Vec<String>) {
+        let _ = models;
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         let _ = mods;

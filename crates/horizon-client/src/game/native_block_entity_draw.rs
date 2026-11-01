@@ -447,8 +447,8 @@ impl Game<'_> {
     /// the state with `properties` (`[("axis", "x")]`, the rest default)
     /// under `draw`'s pose, as vanilla's `submitBlockModel` draws a block in
     /// an entity's place: a block's baked model, with its default tints. A
-    /// moving part is often a block of the mod's own, never placed. False for
-    /// an unknown block or property. API 71.
+    /// moving part that is no block is a standalone model
+    /// (`native_draw_model`). False for an unknown block or property. API 71.
     pub(super) fn native_draw_block(
         &self,
         draw: &mut BlockEntityDraw,
@@ -474,6 +474,30 @@ impl Game<'_> {
         };
         let pose = draw.pose();
         self.block_model_vertices(id, 42, pose, draw.light, true, &mut draw.vertices);
+        true
+    }
+
+    /// Draws standalone model `model` (`mymod:block/shaft_half`, one a mod
+    /// named in `native_standalone_models`) under `draw`'s pose, as
+    /// `native_draw_block` draws a block's: unturned, from the block's lower
+    /// north-west corner, lit by `draw.light`. Its faces with a tint index
+    /// are multiplied by the 0xRRGGBB `tint` (0xFFFFFF for none), the
+    /// others drawn as they are. False when the model isn't baked: not
+    /// named, missing from the resources, or on a side that draws nothing.
+    /// API @API:standalone_models@.
+    pub(super) fn native_draw_model(
+        &self,
+        draw: &mut BlockEntityDraw,
+        model: &str,
+        tint: u32,
+    ) -> bool {
+        let Some(baked) = self.pack.render.model_catalog.standalone(model) else {
+            return false;
+        };
+        let pose = draw.pose();
+        let light = draw.light;
+        let tint = |index: i32| (index >= 0).then_some(tint & 0xFF_FFFF);
+        self.baked_model_vertices([baked], pose, |_| light, true, tint, &mut draw.vertices);
         true
     }
 
