@@ -198,9 +198,31 @@ It is the entity type `<id>:<name>`, with its network id after vanilla's. Using 
 thrown: same speed, spread, sound and cooldown, and one item used outside creative. It flies as a snowball, breaks on
 what it hits with its item's crumbs, and is drawn as its item's model (`ThrownItemRenderer`). Its name is the translation
 `entity.<id>.<name>`. It works in single player and on LAN with the same mods. Dedicated servers share that code,
-untested so far. Clients join a server only with the same mods' entity types, as with its blocks. Not yet: it is not
-saved (it is gone when the chunk unloads or the world closes), `/summon` doesn't know it, a dispenser doesn't throw it,
-and a vanilla client on a server with it may be disconnected when one spawns.
+untested so far. Clients join a server only with the same mods' entity types, as with its blocks. It is saved with its
+chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`. A world opened without the
+mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
+server with it may be disconnected when one spawns.
+
+#### Menu types
+
+A mod menu type (vanilla's `MenuType`) is declared in `data/<id>/horizon/menu/<name>.json`: its container's slot count
+(1 to 256), the data slots its menu syncs (`ContainerData`, 0 to 256, 0 by default), and the slots players only take
+from (`results`, as a furnace's result slot):
+
+```json
+{ "slots": 9, "data_slots": 2, "results": [7, 8] }
+```
+
+It is the menu type `<id>:<name>`, with its network id after vanilla's. A mod block's container opens it when its
+`menu` names it with as many slots ([native-mods.md](native-mods.md), `native_block_entity_container`). The menu holds
+its slots, then the player's 36. A shift-click from the inventory goes to the first slots with room, never a result
+slot, and one on the container goes to the inventory, as a chest's does. `results` fence players only: hoppers follow the
+container's faces and `inputs`, so leave result slots out of `inputs`. The data slots are the block entity's `data`
+(16-bit on the network, as vanilla's), all sent when it opens, then each change. A Horizon client shows it through the
+mod's own screen (`native_screen`); without one it closes again. Clients join a server only with the same mods' menu
+types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Not
+yet: per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra data, and
+client prediction of its clicks.
 
 `crafting_remainder` names what the item leaves in the crafting grid when a
 recipe uses it, as a milk bucket leaves a bucket (vanilla's

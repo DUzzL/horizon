@@ -289,6 +289,7 @@ use horizon_client::{
     extras::Corner,
     extras_hud::Corners,
     fast_hash::FxHashMap,
+    first_person::Hand,
     health::{HurtSource, Hurting},
     hud::{HudBatch, rgba},
     items::ItemStack,
@@ -304,6 +305,7 @@ use horizon_core::{
     ticks::{ScheduleResult, TickPriority},
 };
 use horizon_world::{
+    consumable::UseAnimation,
     fluid::{FluidKind, FluidState},
     level::{BlockId, LevelAccess, PlacementContext, Ticks},
     nbt::Compound,
@@ -803,9 +805,10 @@ pub struct NativeScreen {
 }
 
 /// The open screen, for the screen hooks (`native_screen_render_post`,
-/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`): what it is,
-/// its menu and title, where its container panel is, how many slots its menu
-/// has, and where the mouse and the frame's partial tick are.
+/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`,
+/// `native_screen_mouse_scrolled_pre`): what it is, its menu and title, where
+/// its container panel is, how many slots its menu has, and where the mouse
+/// and the frame's partial tick are.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativeScreenView<'a> {
@@ -886,6 +889,17 @@ pub(crate) struct NativePlayer {
     pub(crate) pitch: f32,
     /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
     pub(crate) dimension: &'static str,
+}
+
+/// The world's clock as a client mod reads it (`native_clock`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NativeClock {
+    /// Ticks since the world was created (`Level.getGameTime`).
+    pub(crate) game_time: i64,
+    /// The time of day in ticks (`Level.getDayTime`): 0 at sunrise, 24000 a
+    /// day. It keeps counting past 24000 (`/time add`, days going by), so take
+    /// it modulo 24000 for the hour; `/time set` can make it negative.
+    pub(crate) day_time: i64,
 }
 
 /// A native mod as Options > Mods lists it (`native_mods`).
@@ -1080,10 +1094,25 @@ impl Game<'_> {
     pub(super) fn native_frame(&mut self, elapsed: Duration) {
         let _ = elapsed;
     }
+    /// Render-thread notification after a resource-pack reload has applied successfully.
+    /// Atlas, models, renderer and client caches already refer to the new resources.
+    /// Selection/F3+T and server-pack reloads share this point; initial startup does not.
+    pub(super) fn native_client_resources_reloaded(&mut self) {}
     /// Once a tick, in every `Game`: the window's (in single player, on LAN
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {}
+    /// Before an eligible targeted block's selection outline is built.
+    /// Cancel skips only the default block highlight, after normal HUD and game-mode gates.
+    pub(super) fn native_block_highlight(
+        &self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        partial: f32,
+        canceled: &mut bool,
+    ) {
+        let _ = (pos, state, partial, canceled);
+    }
     /// The world frame's local visual sources. Push requests; Horizon validates
     /// and limits them before rendering. Called only while a world is visible.
     pub(super) fn native_visuals(
@@ -1251,6 +1280,21 @@ impl Game<'_> {
     pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
         let _ = (partial, shake);
     }
+    /// Before one first-person hand and its displayed stack are drawn (RenderHandEvent).
+    /// Equip progress is the inverse arm height, including the item's swap animation scale.
+    /// Cancel skips that hand's default geometry, including its map and arm geometry.
+    /// It only hides: the hook has no way to draw a replacement.
+    pub(super) fn native_render_hand(
+        &self,
+        hand: horizon_client::first_person::Hand,
+        stack: Option<&ItemStack>,
+        partial: f32,
+        swing: f32,
+        equip: f32,
+        canceled: &mut bool,
+    ) {
+        let _ = (hand, stack, partial, swing, equip, canceled);
+    }
 
     /// The values native mods hand their shader packs in this frame,
     /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
@@ -1330,9 +1374,11 @@ impl Game<'_> {
     /// set `container` when the block is yours. Asked once for each mod
     /// block when the ticking table is built; at most 256 slots, and slot
     /// numbers past the count are left out. Its `menu`, one of
-    /// `containers::MOD_MENUS` with as many slots, opens when the block is
-    /// used (its template must open a menu, as a chest or a furnace does);
-    /// another is left out. API 17.
+    /// `containers::MOD_MENUS` or a content mod's menu type
+    /// (`data/<id>/horizon/menu/`, API @API:mod_menu_types@) with as many
+    /// slots, opens when the block is used (its template must open a menu, as
+    /// a chest or a furnace does); another is left out. A mod menu type shows
+    /// on Horizon clients through the mod's `native_screen` only. API 17.
     pub(super) fn native_block_entity_container(
         &self,
         block: &str,
@@ -1396,12 +1442,13 @@ impl Game<'_> {
     /// (vanilla's `BlockEntityRenderer.submit`: within 64 blocks, its chunk
     /// faded in, and its bounds, `native_block_entity_render_bounding_box`,
     /// in the frustum), when its `id` is yours. `state` is the block's state
-    /// (`blockEntity.getBlockState()`), `entity` holds what the server sent
+    /// (`blockEntity.getBlockState()`: read its `facing` with
+    /// `native_block_state_property`), `entity` holds what the server sent
     /// (`native_block_entity_update_tag`). Add geometry with
-    /// `native_draw_quad`, `native_draw_cube` and `native_draw_block` under
-    /// `draw`'s pose stack, which starts at the block's lower north-west
-    /// corner, in blocks; `draw` also has the partial tick, the game time and
-    /// the block's light. API 71.
+    /// `native_draw_quad`, `native_draw_cube`, `native_draw_block` and
+    /// `native_draw_item` under `draw`'s pose stack, which starts at the
+    /// block's lower north-west corner, in blocks; `draw` also has the partial
+    /// tick, the game time and the block's light. API 71.
     pub(super) fn native_block_entity_submit(
         &self,
         pos: [i32; 3],
@@ -1523,6 +1570,37 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (screen, button, modifiers, canceled);
+    }
+    /// The wheel turned over the open screen (`ScreenEvent.MouseScrolled.Pre`,
+    /// vanilla's `Screen.mouseScrolled`): `screen` is the screen it is,
+    /// `screen.mouse` where the pointer is (so there is no position of its
+    /// own), `scroll` the wheel's movement in x and y as the game's own scroll
+    /// handler scales it (a notch is ±1 — its sign only — times the wheel
+    /// sensitivity, and a touchpad's pixels are divided by 30), and
+    /// `modifiers` GLFW's bits (shift 1, control 2, alt 4, super 8). Set
+    /// `canceled` and nothing the screen would scroll moves: not the bundle
+    /// under the pointer, nor a list, slider, scrollbar or map. Nothing else
+    /// reads the wheel while a screen of the game's is open, so no hotbar slot
+    /// changes either.
+    ///
+    /// It fires before the screen scrolls anything, on the window only, and
+    /// only while a screen of the game's is open (Options and the pack list
+    /// opened from the title screen count, with no player and no `menu`). It
+    /// does not fire on the title screen itself, the connect and loading
+    /// screens, nor for a server dialog, the server pack, link and
+    /// code-of-conduct prompts, a book or a sign editor drawn over gameplay,
+    /// nor while a world loads or saves: the scroll there stays the game's
+    /// own. A wheel a gamepad or the keyboard's focus sends is not the mouse
+    /// and fires nothing.
+    /// API @API:screen_mouse_scrolled@.
+    pub(super) fn native_screen_mouse_scrolled_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        scroll: [f64; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, scroll, modifiers, canceled);
     }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
@@ -1714,6 +1792,20 @@ impl Game<'_> {
     pub(super) fn native_item_bar(&self, stack: &ItemStack, bar: &mut Option<(i32, u32)>) {
         let _ = (stack, bar);
     }
+    /// Append an item's custom decorations after its default bar, cooldown and count.
+    /// Coordinates are the icon's top-left in GUI units, as the batch takes them;
+    /// no item translation is active.
+    /// Runs wherever the shared item-decoration path is used (hotbar, menus, tooltips,
+    /// and the other screens that draw item icons: advancements, beacon, stats, trading).
+    pub(super) fn native_item_decorations(
+        &self,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        batch: &mut HudBatch,
+    ) {
+        let _ = (stack, x, y, batch);
+    }
     /// A player uses `stack` (right click) with `self.hand` on the block at
     /// `pos`, `face` the face clicked (`[0, 1, 0]` is the top), once the
     /// block itself let the click through (a chest still opens): where
@@ -1756,6 +1848,79 @@ impl Game<'_> {
     /// player of the world; an item on cooldown is never used. API 13.
     pub(super) fn native_use_item(&mut self, stack: &ItemStack, claimed: &mut bool) {
         let _ = (stack, claimed);
+    }
+    /// `Item.getUseDuration` of `stack`, in ticks: `duration` arrives with
+    /// vanilla's (a consumable's time, 72000 for a shield, a spear, a bow,
+    /// 0 for an item with no use over time). A mod's own item (outside
+    /// `minecraft:`) with no `consumable`, `blocks_attacks` or kinetic
+    /// weapon that answers above 0 is used over time on a right click, as an
+    /// `Item.use` that calls `startUsingItem`, until it is let go or the time
+    /// runs out (`native_living_entity_use_item_finish`). A consumable's time
+    /// changes too, potions and the other vanilla items keep their own.
+    /// Asked when a use starts, each tick a mod's item is in use, and each
+    /// frame the hand draws one in use, on both sides. It has no user, as
+    /// it is asked so often: answer from the stack alone. API @API:item_use_over_time@.
+    pub(super) fn native_use_duration(&self, stack: &ItemStack, duration: &mut i32) {
+        let _ = (stack, duration);
+    }
+    /// `Item.getUseAnimation` of `stack` in use, for the first person hand:
+    /// `animation` arrives with its consumable's (`eat`, `drink`), else
+    /// `None`. `Eat` and `Drink` bring the food to the mouth, `Bow` draws,
+    /// `Trident` raises, `Brush` sweeps; the rest hold the item still.
+    /// Asked each frame the hand draws an item in use, for an item with no
+    /// pose of its own (bows, crossbows, tridents, brushes and spears keep
+    /// theirs). Client-side. API @API:item_use_over_time@.
+    pub(super) fn native_use_animation(&self, stack: &ItemStack, animation: &mut UseAnimation) {
+        let _ = (stack, animation);
+    }
+    /// `Player.canEat` for the food `stack`, from `Consumable.canConsume`
+    /// when eating starts: `can_eat` arrives with vanilla's (creative,
+    /// `can_always_eat`, or hungry). Clear it to refuse the food, set it to
+    /// let a full player eat. Both sides (the client starts eating as the
+    /// server does), so answer from the stack and the player alone. API @API:item_use_over_time@.
+    pub(super) fn native_can_eat(&self, stack: &ItemStack, can_eat: &mut bool) {
+        let _ = (stack, can_eat);
+    }
+    /// NeoForge's `LivingEntityUseItemEvent.Start`: `entity` starts using
+    /// `stack` in `hand` (`LivingEntity.startUsingItem`), for `duration`
+    /// ticks (`native_use_duration`'s answer). `entity` is a mob's
+    /// `Entity.getId`, None for a player (`native_acting_player` says who);
+    /// only players fire it so far. Change `duration` (consumables other
+    /// than potions, and mods' items, count to it; 0 or less lasts until let
+    /// go), or set `canceled` and the use doesn't start. Both sides, as
+    /// vanilla's: wherever the world runs (the server, single player
+    /// in-frame, a LAN host) for every player of the world, and on a
+    /// server's client for the uses it predicts. Answer the same on both,
+    /// and change the world only where this `Game` runs the world, not on a
+    /// server's client: no helper tells the two apart yet (`native_window`
+    /// is also true in-frame and on an in-frame LAN host). API @API:item_use_over_time@.
+    pub(super) fn native_living_entity_use_item_start(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: &mut i32,
+        canceled: &mut bool,
+    ) {
+        let _ = (stack, entity, hand, duration, canceled);
+    }
+    /// NeoForge's `LivingEntityUseItemEvent.Finish`: `entity`'s use of
+    /// `stack` in `hand` ran its time (`LivingEntity.completeUsingItem`),
+    /// `duration` the ticks left, always 0. `entity` is as in
+    /// `native_living_entity_use_item_start`. `result` arrives with what
+    /// `finishUsingItem` left in the hand (the bowl of a stew, none for the
+    /// last apple; a mod's own item is kept) and may be replaced. Fired for
+    /// consumables, potions and mods' items. Server-side, for every player
+    /// of the world (the helpers read the acting one). API @API:item_use_over_time@.
+    pub(super) fn native_living_entity_use_item_finish(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: i32,
+        result: &mut Option<ItemStack>,
+    ) {
+        let _ = (stack, entity, hand, duration, result);
     }
     /// A player breaks the block `state` at `pos`, once the game allowed it
     /// (the held item can break blocks, the debug stick didn't take the
@@ -2912,6 +3077,16 @@ impl Game<'_> {
             dimension: self.dim.id(),
         })
     }
+    /// The clock of the world this window shows, for client mods: its game
+    /// time and time of day as the server last sent them
+    /// (`ClientboundSetTimePacket`), advanced each tick between packets; none
+    /// on the title screen. API @API:native_clock@.
+    pub(super) fn native_clock(&self) -> Option<NativeClock> {
+        self.player.is_some().then_some(NativeClock {
+            game_time: self.world.game_time,
+            day_time: self.world.day_time,
+        })
+    }
     /// The frame counter: frames in the last second, the slowest frame and
     /// the 1% low of the last 5 seconds, in frames per second.
     pub(super) fn native_frame_rate(&self) -> (u32, u32, u32) {
@@ -3912,9 +4087,12 @@ fn debug_takes(corner: Corner, debug: bool, charts: [bool; 2]) -> bool {
         }
 }
 
-/// A menu of `MOD_MENUS`, by its name.
+/// A menu of `MOD_MENUS` or a content mod's menu type, by its name.
 fn mod_menu(name: &str) -> Option<(&'static str, usize)> {
-    MOD_MENUS.into_iter().find(|(menu, _)| *menu == name)
+    MOD_MENUS
+        .into_iter()
+        .find(|(menu, _)| *menu == name)
+        .or_else(|| horizon_client::containers::mod_menu_type(name).map(|m| (m.id, m.slots)))
 }
 
 /// `state` with its property `key` set to `value`; none when the block has

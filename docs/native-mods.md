@@ -918,7 +918,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
   registered command no mod takes answers as vanilla's unknown command.
 - Helpers: `native_server_players()` (uuid, name, level, dimension, position and game mode of each player on);
-  `native_tell(uuid, text)`, a system line to one player; `native_broadcast(text)`, to every player and the server's
+  `native_tell(uuid, text)`, a system line to one player, also the acting player inside their hook;
+  `native_broadcast(text)`, to every player and the server's
   log; `native_feedback(text)`, the command's answer to the player whose command it is; `native_world_dir()`, the
   open world's folder, where a server mod keeps its data in a folder of its own so the world's backups carry it.
 - Items (API 9), of the acting player (inside `native_perform_command`, whose player is swapped in): `native_held()`
@@ -934,7 +935,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   swapped in (`native_tick`, a menu hook): a teleport to another level (`execute in minecraft:the_nether run tp Alex 0
   70 0`) lands at the next tick's start. `native_server_players()` and the acting player carry `health` (0 once dead).
   `native_action_bar(uuid, text)`, a line over a player's hotbar, which also reaches the acting player inside their
-  hook (where `native_tell` reaches nobody).
+  hook.
 - **`native_right_click_block(pos, face, canceled)`** (API 21): a player's right click on a block, before the block's
   own use and the item's (`ServerPlayerGameMode.useItemOn`), once per hand. A mod that sets `canceled` stops both,
   without a swing; the player's client is sent the block back. With `native_destroy_block` it keeps players out of
