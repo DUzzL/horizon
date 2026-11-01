@@ -18,7 +18,6 @@ the trace wrapped as a JSON array: Perfetto (ui.perfetto.dev) opens it.
 """
 import argparse
 import json
-import os
 import pathlib
 import shutil
 import signal
@@ -27,6 +26,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+try:
+    from . import lab
+except ImportError:
+    import lab
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # What each `--until` waits for.
@@ -64,19 +68,17 @@ def summarize(events):
 
 
 def scratch_env(home):
-    env = dict(os.environ)
+    """lab.game_env with every folder in `home`, so a later start (`--warm`) finds what the first one built."""
     for d in ("home", "launcher", "data", "config", "trash"):
         (home / d).mkdir(parents=True, exist_ok=True)
-    env.update(
-        HORIZON_HOME=str(home / "home"),
-        HORIZON_LAUNCHER_HOME=str(home / "launcher"),
-        XDG_DATA_HOME=str(home / "data"),
-        XDG_CONFIG_HOME=str(home / "config"),
-        HORIZON_LAUNCHER_TRASH=str(home / "trash"),
-        HORIZON_LAUNCHER_NO_SELF_UPDATE="1",
-        HORIZON_NO_AUDIO="1",
+    return lab.game_env(
+        HORIZON_HOME=home / "home",
+        HORIZON_LAUNCHER_HOME=home / "launcher",
+        XDG_DATA_HOME=home / "data",
+        XDG_CONFIG_HOME=home / "config",
+        HORIZON_LAUNCHER_TRASH=home / "trash",
+        HORIZON_TELEMETRY_URL="off",
     )
-    return env
 
 
 def run_once(args, home, label):
