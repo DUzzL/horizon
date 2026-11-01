@@ -219,10 +219,24 @@ impl StateModels {
                 models.block_library_or_missing(root, names)?
             }
         };
+        let resolved: Vec<_> = variants
+            .iter()
+            .map(|(name, ..)| library.resolve(name))
+            .collect();
+        // Every texture the models name, decoded side by side before the bake adds them one
+        // by one in its own order.
+        sprites.prefetch(
+            root,
+            resolved
+                .iter()
+                .flatten()
+                .flat_map(|model| model.textures.values())
+                .map(|material| material.sprite.as_str()),
+        );
         let mut baked = Vec::with_capacity(variants.len());
         let mut index = BTreeMap::new();
-        for (name, turns, lock) in variants {
-            let model = library.resolve(&name)?;
+        for ((name, turns, lock), model) in variants.into_iter().zip(resolved) {
+            let model = model?;
             let particle = model
                 .material("particle")?
                 .map(|material| sprites.insert(root, &material.sprite))

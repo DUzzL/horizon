@@ -3369,3 +3369,101 @@ fn biome_modifiers_take_one_biome_or_a_list() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+/// Blocks and items a native mod declares in code join the content plan:
+/// inside the content mod of their namespace, or as one of their own, with
+/// ids after vanilla's as files' are.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn blocks_and_items_declared_in_code_get_ids() {
+    use horizon_mods::content::{Block, Item};
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-declared-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let known = known_components(&base).unwrap();
+    let block = |id: &str| Block {
+        id: id.into(),
+        template: "minecraft:oak_log".into(),
+        item: true,
+        ..Block::default()
+    };
+    let wrench = Item {
+        id: "gears:wrench".into(),
+        template: "minecraft:stick".into(),
+        max_stack_size: Some(1),
+        ..Item::default()
+    };
+    let mut mods = vec![ruby_mod(&scratch.join("ruby"))];
+    let errors = accept_declared(
+        &mut mods,
+        &[block("ruby:ruby_log"), block("gears:shaft")],
+        &[wrench],
+        &known,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(mods.len(), 2);
+    assert!(
+        mods[0]
+            .content
+            .blocks
+            .iter()
+            .any(|b| b.id == "ruby:ruby_log")
+    );
+    assert_eq!(mods[1].id, "gears");
+    // A namespace another mod owns, and a clash with a file's block, are refused whole.
+    let refused = accept_declared(
+        &mut mods,
+        &[block("ruby:ruby_block"), block("ruby:ruby_post")],
+        &[],
+        &known,
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        !mods[0]
+            .content
+            .blocks
+            .iter()
+            .any(|b| b.id == "ruby:ruby_post")
+    );
+
+    let root = resource_root(&base, &mods, &scratch.join("cache")).unwrap();
+    let vanilla = Assets::load(&base).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let n = vanilla.registry.len() as u32;
+    let log_states = (0..n)
+        .filter(|&s| vanilla.registry.state(BlockStateId(s)).unwrap().name == "minecraft:oak_log")
+        .count() as u32;
+    // Sorted by mod, then block: gears:shaft, then ruby's ruby_block, ruby_door, ruby_glass, ruby_log.
+    let shaft = (n..assets.registry.len() as u32)
+        .find(|&s| assets.registry.state(BlockStateId(s)).unwrap().name == "gears:shaft")
+        .unwrap();
+    assert_eq!(shaft, n);
+    assert!(assets.registry.default_state("ruby:ruby_log").is_some());
+    assert_eq!(
+        assets.registry.len() as u32,
+        n + log_states + 1 + 64 + 1 + log_states
+    );
+    let ids = horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap();
+    for item in ["gears:shaft", "gears:wrench", "ruby:ruby_log"] {
+        assert!(
+            ids.get("minecraft:item").unwrap().id(item).is_some(),
+            "{item}"
+        );
+    }
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let items = Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
+    assert_eq!(items.items["gears:wrench"].max_stack, 1);
+    assert!(items.items["gears:shaft"].block.is_some());
+    // The same declarations reuse the root; others build a new one.
+    assert_eq!(
+        resource_root(&base, &mods, &scratch.join("cache")).unwrap(),
+        root
+    );
+    let stamp = fs::read(root.join(STAMP)).unwrap();
+    mods[1].content.items[0].max_stack_size = Some(2);
+    resource_root(&base, &mods, &scratch.join("cache")).unwrap();
+    assert_ne!(fs::read(root.join(STAMP)).unwrap(), stamp);
+    let _ = fs::remove_dir_all(&scratch);
+}

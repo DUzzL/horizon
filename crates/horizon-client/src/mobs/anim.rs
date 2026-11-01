@@ -146,7 +146,11 @@ impl Poses {
         self.skipped.insert(name.to_owned());
     }
     pub fn skips(&self, part: &Part) -> bool {
-        self.skipped.contains(&part.name)
+        self.skips_named(&part.name)
+    }
+    /// `skips` by the part's name.
+    pub fn skips_named(&self, name: &str) -> bool {
+        self.skipped.contains(name)
     }
     pub fn has(&self, name: &str) -> bool {
         self.map.contains_key(name)
@@ -169,7 +173,11 @@ impl Poses {
         }
     }
     pub fn is_hidden(&self, part: &Part) -> bool {
-        self.hidden.contains(&part.name)
+        self.is_hidden_named(&part.name)
+    }
+    /// `is_hidden` by the part's name.
+    pub fn is_hidden_named(&self, name: &str) -> bool {
+        self.hidden.contains(name)
     }
 }
 /// The LivingEntityRenderState values setupAnim reads.

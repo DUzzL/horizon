@@ -278,7 +278,7 @@ use super::{
     execution_role::ExecutionRole,
     maps::{NativeMapDecoration, NativeMapInfo},
     native_block_entity_draw::BlockEntityDraw,
-    native_mob_draw::NativeMobRender,
+    native_mob_draw::{NativeMobRender, NativePlayerRender},
     native_panel_recipes::RecipePage,
 };
 use horizon_client::mod_api::{
@@ -1552,6 +1552,35 @@ impl Game<'_> {
     pub(super) fn native_component_types(types: &mut Vec<String>) {
         mod_api::dispatch_component_types(mod_api::mods(), types);
     }
+    /// Blocks this mod adds, declared in code rather than one file each
+    /// (NeoForge's `DeferredRegister.Blocks` drained by `RegisterEvent`):
+    /// push a `horizon_mods::content::Block` per block, the same declaration
+    /// a content mod's `data/<id>/horizon/block/<path>.json` holds (a
+    /// vanilla `template`, `properties`, `state_properties`, `shapes`...),
+    /// with its id in your mod's namespace. `item: true` gives it a block
+    /// item, as a file does unless told not to (`..Default::default()`
+    /// leaves it false). They join the content mods' blocks: the one whose
+    /// id is that namespace when it is on (your models, textures, loot and
+    /// recipes are its files), else one of their own, with the template's
+    /// look. Ids, saves and the check that a joining client has the same
+    /// blocks are the files' (docs/mods.md). Asked once at start, on every
+    /// side, before any resource loads: push the same ones every time, from
+    /// nothing but your code. Declarations that don't pass the files' checks
+    /// are logged and that namespace's are left out. API
+    /// @API:native_blocks_items@.
+    pub(super) fn native_blocks(blocks: &mut Vec<horizon_mods::content::Block>) {
+        let _ = blocks;
+    }
+    /// Items this mod adds, declared in code (NeoForge's
+    /// `DeferredRegister.Items`), as `native_blocks` declares blocks: a
+    /// `horizon_mods::content::Item` per item, a content mod's
+    /// `data/<id>/horizon/item/<path>.json` (a vanilla `template`,
+    /// `max_stack_size`, `rarity`, `components`, `crafting_remainder`). A
+    /// block's item comes with its block (`item: true`), not from here.
+    /// Asked once at start, on every side. API @API:native_blocks_items@.
+    pub(super) fn native_items(items: &mut Vec<horizon_mods::content::Item>) {
+        let _ = items;
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         mod_api::dispatch_mods(self, mod_api::mods(), mods);
@@ -1667,6 +1696,17 @@ impl Game<'_> {
     ) {
         let _ = (block, energy);
     }
+    /// Item `item` (`mod_id:name`) is a fluid container
+    /// (`Capabilities.FluidHandler.ITEM`): set `capacity`, in millibuckets,
+    /// when the item is yours (clamped to 1..=1 000 000; vanilla's buckets
+    /// are built in and cannot be changed). Asked at each call of the item
+    /// fluid helpers (`native_item_fluid`, `native_item_fluid_fill`,
+    /// `native_item_fluid_drain`, in `native_item_fluids.rs`). What the
+    /// container holds is kept in the stack's `minecraft:custom_data`, under
+    /// `horizon_fluid`. API @API:item_fluid_tank@.
+    pub(super) fn native_item_fluid_tank(&self, item: &str, capacity: &mut Option<i32>) {
+        let _ = (item, capacity);
+    }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
     /// and change its saved compound `nbt`, its item slots `items` (keep
@@ -1780,6 +1820,47 @@ impl Game<'_> {
         drawn: &mut bool,
     ) {
         let _ = (mob, draw, drawn);
+    }
+    /// Whether a mod listens to `native_player_submit` or `native_mob_layer`: a
+    /// mod that hooks either hooks this one too and sets `listened` (HEAD,
+    /// `*listened = true`). Without it the game poses no player or mob for
+    /// them, each frame. Client-side. API @API:player_render@.
+    pub(super) fn native_player_render_listened(&self, listened: &mut bool) {
+        let _ = listened;
+    }
+    /// Draw the player `player` (`who`: its profile name, and whether it is
+    /// this window's own player) with a model of your own, once a frame while
+    /// it is in view (`RenderPlayerEvent.Pre`), and set `drawn` to leave out its
+    /// vanilla model, armour, held items, cape and the other layers. This
+    /// window's player is drawn only in third person (and F5 front view); an
+    /// invisible player is not asked. `draw` is the frame of `native_mob_submit`:
+    /// at the player's feet, turned with the body. The name tag, shadow,
+    /// flames and glowing outline draw as before. API @API:player_render@.
+    pub(super) fn native_player_submit(
+        &self,
+        player: &NativeMobRender<'_>,
+        who: &NativePlayerRender<'_>,
+        draw: &mut BlockEntityDraw,
+        drawn: &mut bool,
+    ) {
+        let _ = (player, who, draw, drawn);
+    }
+    /// A layer on every mob and player in view, once a frame after its
+    /// vanilla model and layers (`EntityRenderersEvent.AddLayers`, with
+    /// `RenderLivingEvent.Post` and `RenderPlayerEvent.Post`): add geometry
+    /// in the entity's frame, which starts at its feet turned with the body
+    /// (`mob.head_yaw`, `mob.pitch` and the walk cycle place a part, the eyes
+    /// being at the entity type's eye height). `who` is set for a player.
+    /// Not asked for what a mod drew itself (`native_mob_submit`,
+    /// `native_player_submit`) nor for a mob that isn't drawn at all.
+    /// API @API:player_render@.
+    pub(super) fn native_mob_layer(
+        &self,
+        mob: &NativeMobRender<'_>,
+        who: Option<&NativePlayerRender<'_>>,
+        draw: &mut BlockEntityDraw,
+    ) {
+        let _ = (mob, who, draw);
     }
     /// Icons a mod puts on map `map` each time it is drawn: held, in an
     /// item frame or on the cartography table's screen (a map's pixels are
@@ -2818,6 +2899,36 @@ impl Game<'_> {
     ) {
         let _ = (player, name, entity, uuid, kind);
     }
+    /// Whether a mod listens to the mobs' `native_living_equipment_change`: a
+    /// mod that hooks it hooks this one too and sets `listened` (HEAD,
+    /// `*listened = true`). Without it the game does not read every mob's
+    /// equipment each tick, and mobs are not told (armor stands still are). A
+    /// mob that ticks once it is set counts from empty. Asked once a tick, after
+    /// the mobs' tick. Server-side. API @API:living_equipment_change@.
+    pub(super) fn native_living_equipment_listened(&mut self, listened: &mut bool) {
+        let _ = listened;
+    }
+    /// A mob's or an armor stand's equipment slot took a different stack
+    /// (NeoForge's `LivingEquipmentChangeEvent`, posted in
+    /// `LivingEntity.collectEquipmentChanges`): `entity` is its ID and `kind`
+    /// its type (`minecraft:zombie`), `slot` the `EquipmentSlot` (`mainhand`,
+    /// `offhand`, `feet`, `legs`, `chest`, `head`, `body`, `saddle`), `from`
+    /// what the slot held when this was last heard (none for empty) and `to`
+    /// what it holds now. Once for each slot that changed, in that order,
+    /// after the mobs' tick, so a mob that joins the level wearing something
+    /// counts from empty on its first tick. It only hears: change the mob with
+    /// its own helpers. Players are heard by `native_on_equip`. Server-side.
+    /// API @API:living_equipment_change@.
+    pub(super) fn native_living_equipment_change(
+        &mut self,
+        entity: u32,
+        kind: &str,
+        slot: &str,
+        from: Option<&ItemStack>,
+        to: Option<&ItemStack>,
+    ) {
+        let _ = (entity, kind, slot, from, to);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
@@ -2917,6 +3028,41 @@ impl Game<'_> {
             mounting,
             canceled,
         );
+    }
+    /// Whether a mod listens to `native_entity_tick_pre` and `native_entity_tick_post`: a mod
+    /// that hooks them hooks this one too and sets `listened` (HEAD, `*listened = true`).
+    /// Without it the game tells no entity's tick, and keeps no list of them. Asked once for
+    /// each family (mobs, items, minecarts, boats) each tick. Server-side. API @API:entity_tick@.
+    pub(super) fn native_entity_tick_listened(&mut self, listened: &mut bool) {
+        let _ = listened;
+    }
+    /// An entity of type `kind` (`minecraft:zombie`, `minecraft:item`) with ID `entity` is
+    /// about to tick in the server level `dimension` (NeoForge's `EntityTickEvent.Pre`, posted
+    /// around `Entity.commonTick` and `tick` in `ServerLevel.tickNonPassenger`). Set `canceled`
+    /// and it does not tick this tick: a mob has no AI, physics or effects, an item no movement,
+    /// ageing or merging, a minecart or boat no motion, and `native_entity_tick_post` is not told.
+    /// Horizon ticks a family of entities together, so mobs and items hear every Pre before the
+    /// first of them ticks; minecarts and boats hear theirs one by one. Told for the mobs, item
+    /// entities, minecarts and boats that tick: those in an entity-ticking chunk, not a player's
+    /// boat or cart (it ticks with the player). Later APIs add other kinds, so check `kind`. It
+    /// runs for every ticking entity each tick, so keep it cheap. Server-side. API
+    /// @API:entity_tick@.
+    pub(super) fn native_entity_tick_pre(
+        &mut self,
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        canceled: &mut bool,
+    ) {
+        let _ = (dimension, entity, kind, canceled);
+    }
+    /// The entity `entity` of type `kind` ticked in the server level `dimension` (NeoForge's
+    /// `EntityTickEvent.Post`): for each entity `native_entity_tick_pre` let through, after it
+    /// ticked, also one that died or was removed in its tick. Mobs and items hear their Posts
+    /// once the whole family has ticked; minecarts and boats right after their own tick. Server-side.
+    /// API @API:entity_tick@.
+    pub(super) fn native_entity_tick_post(&mut self, dimension: &str, entity: u32, kind: &str) {
+        let _ = (dimension, entity, kind);
     }
     /// Whether the experience orb `into` takes the orb `from` in (vanilla's
     /// `ExperienceOrb.canMerge`): the same value, and ids a multiple of 40 apart. Asked
@@ -5804,6 +5950,22 @@ mod tests {
     }
 
     #[test]
+    fn native_breathing_stays_hookable() {
+        let source = include_str!("../breathing.rs");
+        let hook = source.find("pub fn native_living_breathe(").unwrap();
+        // From its doc comment's first line, so an attribute above it counts.
+        let start = source[..hook].find("/// An entity's breathing").unwrap();
+        let body = &source[start..hook + source[hook..].find("\n}\n").unwrap()];
+        assert!(body.contains("#[inline(never)]"));
+        for line in body.lines() {
+            assert!(!line.contains("cfg"), "a cfg in the breathing hook: {line}");
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(!line.contains(mac), "a macro in the breathing hook: {line}");
+            }
+        }
+    }
+
+    #[test]
     fn native_loot_kinds_stay_hookable() {
         let source = include_str!("../../../horizon-world/src/loot.rs");
         for hook in [
@@ -5924,6 +6086,8 @@ mod tests {
         let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
         // The menu engine's (`horizon_client::menu`).
         let menu_hooks = free_hooks(include_str!("../menu.rs"));
+        // The air supply's (`horizon_client::breathing`).
+        let breath_hooks = free_hooks(include_str!("../breathing.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -5937,6 +6101,7 @@ mod tests {
             .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
             .chain(menu_hooks.iter().copied())
+            .chain(breath_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -5956,6 +6121,8 @@ mod tests {
                 format!("horizon_world::loot::native_{name}")
             } else if menu_hooks.contains(name) {
                 format!("horizon_client::menu::native_{name}")
+            } else if breath_hooks.contains(name) {
+                format!("horizon_client::breathing::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {
