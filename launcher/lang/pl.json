@@ -778,5 +778,15 @@
   "tweaks": "Poprawki",
   "utility": "Użytkowe",
   "vanilla like": "W stylu vanilla",
-  "worldgen": "Generowanie świata"
+  "worldgen": "Generowanie świata",
+  "No version is installed yet.": "Nie zainstalowano jeszcze żadnej wersji.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} Często nadal się kompilują: przekaż --allow-version-mismatch, aby spróbować.",
+  "Built the server engine: {path}": "Zbudowano silnik serwera: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Wskaż serwer na ten plik: ustaw engine.path w server.toml serwera (docs/hosting.md); launcher nic sam nie zapisuje.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} już istnieje. Przenieś go, lub buduj do innego folderu.",
+  "Choose a new folder for the server export.": "Wybierz nowy folder dla eksportu serwera.",
+  "Export the server outside the launcher's managed folders.": "Eksportuj serwer poza foldery zarządzane przez launcher.",
+  "{path} is not a folder to build into.": "{path} nie jest folderem do kompilacji.",
+  "Could not copy the build: {error}": "Nie można skopiować kompilacji: {error}",
+  "Could not move the build to {path}: {error}": "Nie można przenieść kompilacji do {path}: {error}"
 }

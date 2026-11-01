@@ -778,5 +778,15 @@
   "tweaks": "İnce ayarlar",
   "utility": "Yardımcı araçlar",
   "vanilla like": "Vanilla benzeri",
-  "worldgen": "Dünya üretimi"
+  "worldgen": "Dünya üretimi",
+  "No version is installed yet.": "Henüz bir sürüm yüklenmemiş.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} Bazen yine de derlenebilir: denemek için --allow-version-mismatch geçirin.",
+  "Built the server engine: {path}": "Sunucu motoru derlendi: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Sunucuyu buna işaret edin: sunucunun server.toml dosyasında (docs/hosting.md) engine.path'i bu dosya olarak ayarlayın; launcher kendisi hiçbir şey yazmaz.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} zaten var. Taşıyın veya başka bir klasöre derleyin.",
+  "Choose a new folder for the server export.": "Sunucu dışa aktarımı için yeni bir klasör seçin.",
+  "Export the server outside the launcher's managed folders.": "Sunucuyu launcher tarafından yönetilen klasörlerin dışına aktarın.",
+  "{path} is not a folder to build into.": "{path} derleme yapılacak klasör değil.",
+  "Could not copy the build: {error}": "Build kopyalanamadı: {error}",
+  "Could not move the build to {path}: {error}": "Build {path} konumuna taşınamadı: {error}"
 }

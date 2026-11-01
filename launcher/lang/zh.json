@@ -778,5 +778,15 @@
   "tweaks": "调整",
   "utility": "实用工具",
   "vanilla like": "原版风格",
-  "worldgen": "世界生成"
+  "worldgen": "世界生成",
+  "No version is installed yet.": "尚未安装任何版本。",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} 它们通常仍然可以构建：传递 --allow-version-mismatch 以尝试。",
+  "Built the server engine: {path}": "服务器引擎已构建：{path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "指向服务器：在服务器的 server.toml (docs/hosting.md) 中将 engine.path 设置为此文件；启动器本身不写入任何内容。",
+  "{path} already exists. Move it away, or build into another folder.": "{path} 已存在。移动它，或构建到另一个文件夹。",
+  "Choose a new folder for the server export.": "为服务器导出选择一个新文件夹。",
+  "Export the server outside the launcher's managed folders.": "将服务器导出到启动器管理的文件夹之外。",
+  "{path} is not a folder to build into.": "{path} 不是可供构建的文件夹。",
+  "Could not copy the build: {error}": "无法复制构建：{error}",
+  "Could not move the build to {path}: {error}": "无法将构建移动到 {path}：{error}"
 }

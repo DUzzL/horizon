@@ -778,5 +778,15 @@
   "tweaks": "Ajustements",
   "utility": "Utilitaire",
   "vanilla like": "Style Vanilla",
-  "worldgen": "Génération du monde"
+  "worldgen": "Génération du monde",
+  "No version is installed yet.": "Aucune version n'est installée pour l'instant.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} Ils se compilent souvent quand même : passez --allow-version-mismatch pour essayer.",
+  "Built the server engine: {path}": "Moteur de serveur compilé : {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Pointez le serveur vers ce fichier : définissez engine.path dessus dans le server.toml du serveur (docs/hosting.md) ; le launcher n'écrit rien lui-même.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} existe déjà. Déplacez-le, ou compilez dans un autre dossier.",
+  "Choose a new folder for the server export.": "Choisissez un nouveau dossier pour l'export du serveur.",
+  "Export the server outside the launcher's managed folders.": "Exportez le serveur en dehors des dossiers gérés par le launcher.",
+  "{path} is not a folder to build into.": "{path} n'est pas un dossier dans lequel compiler.",
+  "Could not copy the build: {error}": "Impossible de copier la compilation : {error}",
+  "Could not move the build to {path}: {error}": "Impossible de déplacer la compilation vers {path} : {error}"
 }
