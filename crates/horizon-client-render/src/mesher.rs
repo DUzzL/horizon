@@ -1357,7 +1357,7 @@ impl Mesher<'_> {
                 },
             )
         };
-        let vertices = |tint: Option<u32>| {
+        let vertices = |tint: Option<u32>, uv: [[f32; 2]; 4]| {
             std::array::from_fn::<_, 4, _>(|i| {
                 let g = gray[i] as u32;
                 let rgb = match tint {
@@ -1368,16 +1368,16 @@ impl Mesher<'_> {
                 (
                     TerrainVertex::new(
                         [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
-                        q.uv[i],
+                        uv[i],
                         0,
                         emitting(pack_rgb(rgb), tier),
                         pack_coords(lighting::with_emission(coords[i], q.light_emission)),
                     ),
-                    q.uv[i],
+                    uv[i],
                 )
             })
         };
-        let corners = vertices(tint);
+        let corners = vertices(tint, q.uv);
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
@@ -1426,6 +1426,15 @@ impl Mesher<'_> {
             Pick::Tile(t) => self.translucent(tile(t)),
             Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
         };
+        // Overlay tiles face the standard way (Continuity: "overlay textures always have the
+        // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
+        // rotations): the cube's UVs at the quad's corners.
+        let standard = q.positions.map(|p| standard_uv(q.facing, p));
+        // Over a `ctm_compact` face, the same pieces: the same depths and sort centres.
+        let cuts = match pick {
+            Pick::Quarters(_) => cuts(&corners),
+            _ => Cuts([0.0, 1.0, 1.0, 1.0], 2),
+        };
         for overlay in overlays[..count].iter().flatten().copied() {
             let tint = overlay.tint.and_then(|(index, block)| {
                 let info = block
@@ -1438,7 +1447,14 @@ impl Mesher<'_> {
                 translucent: overlay.translucent || face_translucent,
                 opaque: false,
             };
-            self.quad_as(out, false, tile, vertices(tint).map(|c| c.0), false);
+            let whole = vertices(tint, standard);
+            for s in cuts.windows(2) {
+                for t in cuts.windows(2) {
+                    let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]
+                        .map(|(s, t)| bilinear(&whole, s, t).0);
+                    self.quad_as(out, false, tile, piece, false);
+                }
+            }
         }
     }
     /// One terrain quad with sprite `tile`, in the pass its alpha needs (`solid_leaves`: no
@@ -1547,6 +1563,19 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
         }
     }
     out
+}
+/// The UV a vanilla cube's face gives the block-local point `p` (`BlockElement`'s default UVs),
+/// in sprite units: up is north on the top face, south on the bottom one, and up on the sides.
+fn standard_uv(facing: horizon_assets::model::Direction, [x, y, z]: [f32; 3]) -> [f32; 2] {
+    use horizon_assets::model::Direction as D;
+    match facing {
+        D::Down => [x, 1.0 - z],
+        D::Up => [x, z],
+        D::North => [1.0 - x, 1.0 - y],
+        D::South => [x, 1.0 - y],
+        D::West => [z, 1.0 - y],
+        D::East => [1.0 - z, 1.0 - y],
+    }
 }
 /// The quarter of the sprite (top-left, top-right, bottom-left, bottom-right) a piece of a
 /// quad lies in, by its UV centre (v grows downward).
@@ -1657,5 +1686,18 @@ mod quarter_tests {
             .map(|p| quarter_of(&p)),
             [0, 1, 2, 3]
         );
+    }
+
+    #[test]
+    fn overlays_take_the_cubes_own_uvs() {
+        use horizon_assets::model::Direction as D;
+        // A top face: the north-west corner is the sprite's top-left, so a tile's top edge is
+        // north whatever the model's turn.
+        assert_eq!(standard_uv(D::Up, [0.0, 1.0, 0.0]), [0.0, 0.0]);
+        assert_eq!(standard_uv(D::Up, [1.0, 1.0, 1.0]), [1.0, 1.0]);
+        // A north face seen from the north: its top-left is the east top corner.
+        assert_eq!(standard_uv(D::North, [1.0, 1.0, 0.0]), [0.0, 0.0]);
+        assert_eq!(standard_uv(D::East, [1.0, 0.0, 1.0]), [0.0, 1.0]);
+        assert_eq!(standard_uv(D::Down, [0.0, 0.0, 1.0]), [0.0, 0.0]);
     }
 }
