@@ -5244,6 +5244,27 @@ mod tests {
     }
 
     #[test]
+    fn native_loot_kinds_stay_hookable() {
+        let source = include_str!("../../../horizon-world/src/loot.rs");
+        for hook in [
+            "pub fn native_loot_function(",
+            "pub fn native_loot_condition(",
+        ] {
+            let at = source
+                .find(hook)
+                .unwrap_or_else(|| panic!("{hook} not found"));
+            let start = source[..at].rfind("///").unwrap();
+            let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+            for line in body.lines() {
+                assert!(!line.contains("cfg"), "a cfg in a loot hook point: {line}");
+                for mac in ["!(", "![", "! {", "!{"] {
+                    assert!(!line.contains(mac), "a macro in a loot hook point: {line}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn loot_table_load_stays_hookable() {
         let source = include_str!("../../../horizon-world/src/loot.rs");
         // From its doc comment's last line, so an attribute above it counts.

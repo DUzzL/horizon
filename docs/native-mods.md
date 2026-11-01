@@ -414,6 +414,21 @@ dropped it silently — reaches `native_consume_effect(kind, data)` when the ite
 thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
 sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
 
+### A mod's own loot functions and conditions
+
+A loot table's function or condition that names a `type` in a namespace outside `minecraft:` — where the
+loot roll used to silently skip it — reaches `native_loot_function(kind, data, ctx, stack)` or
+`native_loot_condition(kind, data, ctx, holds)` when the table rolls. The function changes the stack; the
+condition says whether it holds. The context brings the entity, the damage, the player who killed it, the
+tool, the block, the luck, the biome and a seed from the roll's random. An unclaimed function leaves the
+stack, an unclaimed condition fails, as unknown kinds do; a bare type name is minecraft's own.
+
+The tables the items engine rolls (block drops, entity drops, `loot_table`, `interact_loot` and the
+built-in tables) answer the condition hook, with the tool and the block in the context; the function hook
+there follows when the stack types converge. In the items engine's context the `entity`, `damage`, `player`
+and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
+fields are `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
