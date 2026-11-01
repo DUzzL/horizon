@@ -86,6 +86,35 @@ pub struct BlockProperties {
     pub map_color: Option<u8>,
     /// A vanilla block whose sounds this block uses.
     pub sounds: Option<String>,
+    /// Which states tick randomly, whatever the template does (`isRandomlyTicking`).
+    pub random_ticks: Option<RandomTicks>,
+}
+
+/// Which of a block's states get random ticks (`BlockBehaviour.isRandomlyTicking(state)`), so a
+/// crop, sapling or soil on a template that doesn't tick still grows. The sections' random tick
+/// counts follow it, and `native_random_tick` fires for the states it picks.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum RandomTicks {
+    /// Every state (`true`), or none (`false`, for a template that ticks).
+    All(bool),
+    /// The states whose own state property `property` is one of `values`.
+    States {
+        property: String,
+        values: Vec<String>,
+    },
+}
+
+impl RandomTicks {
+    /// Whether a state ticks, `combo` being its values of the block's own state properties.
+    pub fn applies(&self, combo: &[(String, String)]) -> bool {
+        match self {
+            RandomTicks::All(all) => *all,
+            RandomTicks::States { property, values } => combo
+                .iter()
+                .any(|(name, value)| name == property && values.contains(value)),
+        }
+    }
 }
 
 /// Per-state outline and collision boxes, selected by one state property.
@@ -734,6 +763,19 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         }
     }
     let p = &file.properties;
+    if let Some(RandomTicks::States { property, values }) = &p.random_ticks {
+        let declared = file
+            .state_properties
+            .get(property)
+            .map(StateProperty::values);
+        if declared.is_none_or(|all| {
+            values.is_empty() || values.iter().any(|v| !all.contains(&v.as_str()))
+        }) {
+            return Err(format!(
+                "random_ticks needs values of the block's own state property {property:?} (state_properties)"
+            ));
+        }
+    }
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
     if !finite(p.hardness) || !finite(p.explosion_resistance) || !finite(p.friction) {
         return Err("hardness, explosion_resistance and friction are numbers".into());
@@ -1116,6 +1158,42 @@ capabilities = ["registries"]
         ];
         let e = hmod("type-shared", MANIFEST_TEXT, files).unwrap_err();
         assert!(e.contains("already throws another entity type"), "{e}");
+    }
+
+    #[test]
+    fn blocks_pick_the_states_that_tick_randomly() {
+        let own = r#""state_properties": {"grown": {"type": "boolean"}}"#;
+        let block = |ticks: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:dirt", {own}, "properties": {{"random_ticks": {ticks}}}}}"#
+            );
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/crop.json", text.as_bytes())];
+            hmod("random-ticks", MANIFEST_TEXT, files)
+        };
+        let ticks =
+            |c: Result<Content, String>| c.unwrap().blocks[0].properties.random_ticks.clone();
+        let state = |v: &str| [("grown".to_owned(), v.to_owned())];
+        // Every state, whatever the template does; `false` stops a template that ticks.
+        let all = ticks(block("true")).unwrap();
+        assert!(all.applies(&state("true")) && all.applies(&[]));
+        assert!(!ticks(block("false")).unwrap().applies(&state("false")));
+        // Chosen states: a crop that stops ticking once it is grown.
+        let chosen = ticks(block(r#"{"property": "grown", "values": ["false"]}"#)).unwrap();
+        assert!(chosen.applies(&state("false")) && !chosen.applies(&state("true")));
+        assert!(
+            !chosen.applies(&[]),
+            "a state without the property does not tick"
+        );
+        // Not the block's own property, no values, or a value it doesn't have.
+        for bad in [
+            r#"{"property": "age", "values": ["0"]}"#,
+            r#"{"property": "grown", "values": []}"#,
+            r#"{"property": "grown", "values": ["maybe"]}"#,
+        ] {
+            let e = block(bad).err().unwrap();
+            assert!(e.contains("random_ticks"), "{bad}: {e}");
+        }
+        assert!(block("3").is_err());
     }
 
     #[test]
