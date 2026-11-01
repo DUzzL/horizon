@@ -2588,6 +2588,27 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_perform_command(self, mod_api::mods(), player, command, ran);
     }
+    /// A server player's game mode is about to change (NeoForge's
+    /// `PlayerChangeGameModeEvent`): from `from` to `to` (0 survival, 1
+    /// creative, 2 adventure, 3 spectator, as `NativeServerPlayer`'s
+    /// `game_mode`), `player` being the UUID and `name` the name. Heard for
+    /// the `/gamemode` command, the F3+F4 switcher's packet and a hardcore
+    /// world's respawn into spectator, once for each change to a different
+    /// mode; not for the world's default mode a player joins with. Set
+    /// `cancel` and the player keeps their mode (nothing is sent, the
+    /// command counts it as no change). For a change the game makes inside
+    /// a player's turn their state is swapped in; for the hardcore respawn
+    /// it is not. @API:native_player_game_mode_changed@.
+    pub(super) fn native_player_game_mode_changed(
+        &mut self,
+        player: u128,
+        name: &str,
+        from: i32,
+        to: i32,
+        cancel: &mut bool,
+    ) {
+        let _ = (player, name, from, to, cancel);
+    }
     /// `player` (`name`) changed dimension (NeoForge's
     /// `PlayerChangedDimensionEvent`): `from` and `to` are dimension ids
     /// (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`).

@@ -394,6 +394,7 @@ mod tests {
             "0123456789012345678901234567890123456789",
             "mixins",
             super::super::Profile::Fast,
+            super::super::Target::Client,
             &[first.clone(), second.clone()],
         )
         .unwrap();
@@ -401,6 +402,7 @@ mod tests {
             "0123456789012345678901234567890123456789",
             "mixins",
             super::super::Profile::Fast,
+            super::super::Target::Client,
             &[second, first],
         )
         .unwrap();

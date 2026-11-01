@@ -779,5 +779,15 @@
   "tweaks": "Anpassungen",
   "utility": "Werkzeuge",
   "vanilla like": "Vanilla-ähnlich",
-  "worldgen": "Weltgenerierung"
+  "worldgen": "Weltgenerierung",
+  "No version is installed yet.": "Noch keine Version installiert.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} Sie bauen oft trotzdem: übergib --allow-version-mismatch, um es zu versuchen.",
+  "Built the server engine: {path}": "Server-Engine gebaut: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Zeige den Server auf diese Datei: Setze engine.path darauf in der server.toml des Servers (docs/hosting.md); der Launcher schreibt selbst nichts.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} existiert bereits. Verschieben Sie es, oder bauen Sie in einen anderen Ordner.",
+  "Choose a new folder for the server export.": "Wählen Sie einen neuen Ordner für den Server-Export.",
+  "Export the server outside the launcher's managed folders.": "Exportiere den Server außerhalb der vom Launcher verwalteten Ordner.",
+  "{path} is not a folder to build into.": "{path} ist kein Ordner, in den gebaut wird.",
+  "Could not copy the build: {error}": "Build konnte nicht kopiert werden: {error}",
+  "Could not move the build to {path}: {error}": "Build konnte nicht nach {path} verschoben werden: {error}"
 }

@@ -142,6 +142,14 @@ pub(super) fn stage(
     for name in ["horizon-client", "horizon-threads", "horizon-mods"] {
         deps.insert(name.into(), path_dep(&format!("../{name}")));
     }
+    // horizon-client's defaults (sound, controllers) are this package's, so a server build's
+    // `--no-default-features` turns them off here too.
+    if let Some(client) = deps
+        .get_mut("horizon-client")
+        .and_then(toml::Value::as_table_mut)
+    {
+        client.insert("default-features".into(), false.into());
+    }
     let mut members = Vec::new();
     for (i, (index, bundle)) in mods.iter().enumerate() {
         let relative = format!("native-api/{}", bundle.id);
@@ -176,6 +184,11 @@ pub(super) fn stage(
                     new.insert(key.into(), value.clone());
                 }
             }
+        }
+        // The game's features are the generated package's to choose (a server build turns its
+        // defaults off), so no mod turns them back on.
+        if let Some(new) = rewritten.as_table_mut() {
+            new.insert("default-features".into(), false.into());
         }
         *dependency = rewritten;
         let targets: Vec<_> = declared[*index]
@@ -237,6 +250,13 @@ pub(super) fn stage(
         ]))]),
     );
     manifest.insert("dependencies".into(), toml::Value::Table(deps));
+    manifest.insert(
+        "features".into(),
+        toml::Value::Table(toml::Table::from_iter([(
+            "default".into(),
+            toml::Value::Array(vec!["horizon-client/default".into()]),
+        )])),
+    );
     write(&game.join("Cargo.toml"), &manifest)?;
     fs::write(game.join("src/main.rs"), main_rs(mods.len())).map_err(|e| e.to_string())?;
     let root = stage.join("Cargo.toml");
@@ -363,6 +383,20 @@ mod tests {
                     .unwrap()
             )
             .ends_with("crates/native-game/../horizon-client"));
+        // The game's default features are the generated package's alone, so a server build's
+        // `--no-default-features` reaches horizon-client.
+        assert_eq!(
+            engine["dependencies"]["horizon-client"]["default-features"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            game["dependencies"]["horizon-client"]["default-features"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            game["features"]["default"][0].as_str(),
+            Some("horizon-client/default")
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

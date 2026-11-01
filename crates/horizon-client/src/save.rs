@@ -3427,16 +3427,19 @@ impl Default for WorldGen {
 }
 /// Writes a new world's `world_gen_settings` (seed, options and dimensions).
 pub fn write_world_gen_settings(dir: &Path, seed: i64, options: WorldGen) -> Result<()> {
-    write_world_gen_settings_with(dir, seed, options, None)
+    write_world_gen_settings_with(dir, seed, options, None, None)
 }
 /// [`write_world_gen_settings`] with a flat overworld's own generator
 /// settings (FlatLevelGeneratorSettings, as `flatgen::settings_from_json`
-/// reads them) instead of the Superflat preset's classic layers.
+/// reads them) instead of the Superflat preset's classic layers, and with the
+/// biome the single-biome preset fixes (`CreateBuffetWorldScreen`'s choice,
+/// `minecraft:plains` when none was made).
 pub fn write_world_gen_settings_with(
     dir: &Path,
     seed: i64,
     options: WorldGen,
     flat_settings: Option<Tag>,
+    single_biome: Option<&str>,
 ) -> Result<()> {
     fs::create_dir_all(dir)?;
     // worldgen/world_preset/flat.json's overworld: the classic flat layers.
@@ -3513,7 +3516,7 @@ pub fn write_world_gen_settings_with(
             "minecraft:overworld",
             Tag::compound([
                 ("type", string("minecraft:fixed")),
-                ("biome", string("minecraft:plains")),
+                ("biome", string(single_biome.unwrap_or("minecraft:plains"))),
             ]),
         ),
         WorldPreset::Normal => dimension(

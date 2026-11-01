@@ -779,5 +779,15 @@
   "tweaks": "調整",
   "utility": "ユーティリティ",
   "vanilla like": "バニラ風",
-  "worldgen": "地形生成"
+  "worldgen": "地形生成",
+  "No version is installed yet.": "まだバージョンがインストールされていません。",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} 多くの場合、それでもビルドできます：--allow-version-mismatch を渡して試してください。",
+  "Built the server engine: {path}": "サーバーエンジンがビルドされました: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "サーバーを指定してください: サーバーの server.toml (docs/hosting.md) で engine.path をこのファイルに設定してください; ランチャー自身は何も書き込みません。",
+  "{path} already exists. Move it away, or build into another folder.": "{path} は既に存在しています。移動するか、別のフォルダーにビルドしてください。",
+  "Choose a new folder for the server export.": "サーバーのエクスポート先となる新しいフォルダーを選択してください。",
+  "Export the server outside the launcher's managed folders.": "ランチャーが管理するフォルダーの外にサーバーをエクスポートしてください。",
+  "{path} is not a folder to build into.": "{path} はビルド先のフォルダーではありません。",
+  "Could not copy the build: {error}": "ビルドをコピーできませんでした: {error}",
+  "Could not move the build to {path}: {error}": "ビルドを {path} に移動できませんでした: {error}"
 }

@@ -2752,6 +2752,19 @@ impl Game<'_> {
         if let Some(mask) = mask {
             dissolve_mask(&mut out[first..], skin, mask);
         }
+        // The skin's OptiFine emissive overlay, full bright.
+        let glow = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .overlay("entity/enderdragon/dragon")
+            .and_then(sprite);
+        if let Some(glow) = glow.filter(|_| mask.is_none()) {
+            let full = horizon_client::mobs::render::FULL_BRIGHT;
+            horizon_client::mobs::render::draw(model, base, &poses, glow, color, full, 0, out);
+        }
         // RenderTypes.eyes: the glowing eyes, added on top.
         let mut eye_quads = Vec::new();
         horizon_client::mobs::render::draw(
