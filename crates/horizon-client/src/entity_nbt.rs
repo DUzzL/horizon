@@ -796,7 +796,24 @@ pub fn mob_to_nbt(
             put_memories(map, m);
             crate::mobs::villager::write_nbt(m, map);
         }
-        "minecraft:wandering_trader" => put_offers(map, m),
+        "minecraft:wandering_trader" => {
+            put_offers(map, m);
+            // WanderingTrader.addAdditionalSaveData: the visit's countdown and
+            // the place it is walking to, a BlockPos codec (an int array).
+            map.insert("DespawnDelay".into(), Tag::Int(m.extra.ints[5]));
+            if let Some(p) = m.extra.point {
+                // The trader keeps its target as a position; the tag is a
+                // BlockPos, so only the block it is in is saved.
+                map.insert(
+                    "wander_target".into(),
+                    Tag::IntArray(vec![
+                        p[0].floor() as i32,
+                        p[1].floor() as i32,
+                        p[2].floor() as i32,
+                    ]),
+                );
+            }
+        }
         "minecraft:axolotl" => {
             write_axolotl_memories(m, map);
             map.insert(
@@ -2986,6 +3003,16 @@ fn read_villager(m: &mut Mob, tag: &Tag) {
     if m.species() == crate::mobs::Species::Villager {
         crate::mobs::villager::read_nbt(m, tag);
     }
+    if m.species() == crate::mobs::Species::WanderingTrader {
+        // WanderingTrader.readAdditionalSaveData: both default to idle.
+        m.extra.ints[5] = number(tag.get("DespawnDelay")).unwrap_or(0) as i32;
+        m.extra.point = match tag.get("wander_target") {
+            Some(Tag::IntArray(a)) if a.len() == 3 => {
+                Some([f64::from(a[0]), f64::from(a[1]), f64::from(a[2])])
+            }
+            _ => None,
+        };
+    }
     let offers_tag = tag.get("Offers");
     let xp = number(tag.get("Xp")).unwrap_or(0) as i32;
     if offers_tag.is_none() && xp == 0 && tag.get("LastRestock").is_none() {
@@ -3936,6 +3963,49 @@ mod sheep_nbt_tests {
         assert_eq!(number(tag.get("Age")), Some(-21359));
         assert_eq!(number(tag.get("AgeLocked")), Some(0));
         assert_eq!(number(tag.get("VillagerDataFinalized")), Some(1));
+    }
+
+    /// `WanderingTrader.addAdditionalSaveData`: the visit's countdown and the
+    /// place it is walking to (a `BlockPos` codec, so an int array), which the
+    /// despawn and stroll goals read back after a reload.
+    #[test]
+    fn a_wandering_traders_countdown_and_target_survive_a_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            types["minecraft:wandering_trader"].clone(),
+            Vec3::new(0.5, 64.0, 0.5),
+            0.0,
+        );
+        m.extra.ints[5] = 48000;
+        m.extra.point = Some([12.0, 65.0, -30.0]);
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("DespawnDelay")), Some(48000));
+        let Some(Tag::IntArray(target)) = tag.get("wander_target") else {
+            panic!("wander_target missing");
+        };
+        assert_eq!(target, &vec![12, 65, -30]);
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.ints[5], 48000);
+        assert_eq!(back.extra.point, Some([12.0, 65.0, -30.0]));
+        // A save with neither field: idle, and nothing to walk to.
+        let bare = Tag::compound([
+            ("id", string("minecraft:wandering_trader")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+        ]);
+        let back = mob_from_nbt(&bare, &types, 3, None).unwrap();
+        assert_eq!((back.extra.ints[5], back.extra.point), (0, None));
     }
 
     #[test]
