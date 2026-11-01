@@ -3182,8 +3182,9 @@ mod villager_ambient_tests {
                 None,
                 "sleeping wins over trading"
             );
+            let trading = |m: &mut Mob| m.extra.flag2 = true;
             assert_eq!(
-                sound(w, types, "minecraft:wandering_trader", |m| m.extra.flag2 = true),
+                sound(w, types, "minecraft:wandering_trader", trading),
                 Some("entity.wandering_trader.trade")
             );
         });
