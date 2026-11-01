@@ -235,7 +235,8 @@ fn cit_sprites(
         .collect();
     // No more than the atlas could ever hold, by their headers, so a pack naming thousands of
     // big textures is cut short before they are decoded, not after. Each is charged what it
-    // can be packed as, a 512x512 frame at most (`cit_sprite` refuses more), with a gutter;
+    // can be packed as (a strip's frame, or a still image whole), 1024x512 at most since
+    // `cit_sprite` refuses more, with a gutter;
     // the glyph rows and the shelves' waste (a tenth) are kept aside.
     let side = u64::from(MAX_ATLAS_SIZE);
     let used: u64 = packed
@@ -256,7 +257,8 @@ fn cit_sprites(
                 // Refused by `cit_sprite` without decoding: costs nothing.
                 return true;
             }
-            let frame = (w.min(h).min(512) + 1).pow(2);
+            // A strip's frame is at most its width squared; a still image is all of it.
+            let frame = (w * h).min(w * w).min(1024 * 512) + w + h + 1;
             match left.checked_sub(frame) {
                 Some(rest) => {
                     left = rest;
@@ -313,7 +315,12 @@ fn cit_sprite(root: &Path, id: &str) -> Option<(PackedImage, Option<TextureFlags
     };
     let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
     let animation = animation_of(mcmeta.as_deref());
-    let (w, h, pixels) = first_frame(image, animation.as_ref());
+    // Only an animation is cut to its first frame: a still CIT texture is drawn whole, and
+    // armour layers are twice as wide as they are tall.
+    let (w, h, pixels) = match &animation {
+        Some(animation) => first_frame(image, Some(animation)),
+        None => image,
+    };
     if !fits(w, h) {
         log::warn!("skipped custom item texture {}: {w}x{h}", path.display());
         return None;
@@ -2628,6 +2635,17 @@ mod tests {
         assert_eq!(texel_at(&atlas, rect, 1, 1), [10, 200, 30, 255]);
     }
     #[test]
+    fn a_still_cit_texture_is_packed_whole() {
+        // Not cut to a square as an unmarked strip would be: armour layers are 2:1.
+        let root = cit_root("still", &[("a.properties", "items=stick\ntexture=a")]);
+        let cit = root.join("assets/minecraft/optifine/cit");
+        write_strip(&cit.join("a.png"), 4, 2, &[[7, 8, 9, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let rect = atlas.sprites["horizon_cit:minecraft/optifine/cit/a"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (4, 2));
+    }
+    #[test]
     fn an_animated_cit_texture_packs_one_frame_and_animates() {
         let root = cit_root("anim", &[("a.properties", "items=stick\ntexture=a")]);
         let cit = root.join("assets/minecraft/optifine/cit");
@@ -2699,7 +2717,7 @@ texture=wide",
         let cit = root.join("assets/minecraft/optifine/cit");
         write_strip(&cit.join("b.png"), 2, 2, &[[5, 6, 7, 255]], None);
         fs::write(cit.join("broken.png"), b"not a png").unwrap();
-        // Square after the crop a still texture gets, and still past the limit.
+        // A still image past the 1024x512 limit.
         write_strip(&cit.join("wide.png"), 1040, 1040, &[[1, 1, 1, 255]], None);
         // Vanilla's stick is already packed when the CIT pass runs.
         let stick = ("item/stick".to_owned(), 16, 16, vec![0; 16 * 16 * 4]);
