@@ -46,6 +46,8 @@ pub(super) struct Parked {
     tickets: ChunkTickets,
     random_tick_sections: RandomTickSections,
     level_events: Vec<LevelEvent>,
+    /// Entity portal processes and cooldowns belong to this level's entities.
+    portal_states: HashMap<u32, horizon_client::nether_portal::PortalState>,
     falling: Vec<FallingBlock>,
     paintings: Vec<horizon_client::entities::Painting>,
     item_frames: Vec<horizon_client::entities::ItemFrame>,
@@ -179,6 +181,7 @@ impl Game<'_> {
             tickets: Default::default(),
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
+            portal_states: HashMap::new(),
             falling: Vec::new(),
             paintings: Vec::new(),
             item_frames: Vec::new(),
@@ -233,6 +236,7 @@ impl Game<'_> {
         swap(&mut self.tickets, &mut p.tickets);
         swap(&mut self.random_tick_sections, &mut p.random_tick_sections);
         swap(&mut self.level_events, &mut p.level_events);
+        swap(&mut self.portals.entities, &mut p.portal_states);
         swap(&mut self.falling, &mut p.falling);
         swap(&mut self.paintings, &mut p.paintings);
         swap(&mut self.item_frames, &mut p.item_frames);
