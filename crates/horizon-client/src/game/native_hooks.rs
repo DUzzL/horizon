@@ -1549,9 +1549,12 @@ impl Game<'_> {
     }
     /// Block `block` (`mymod:machine`) gets a block entity
     /// (`EntityBlock.newBlockEntity`): set `entity` to its id and saved
-    /// compound when the block is yours and `entity` is none yet. The block's
-    /// template must have a block entity (a chest, a furnace...), so that
-    /// breaking the block removes it; on another template it gets none. API 15.
+    /// compound when the block is yours and `entity` is none yet. It works on
+    /// any template: the engine removes the block entity when its block is
+    /// broken or replaced, no piston moves it, and a mod that draws it
+    /// (`native_block_entity_submit`) is asked for it. API 15; before
+    /// @API:mod_block_entity_any_template@ the block's template had to have a
+    /// block entity of its own (a chest, a furnace...), or the block got none.
     pub(super) fn native_block_entity(
         &mut self,
         block: &str,
@@ -4274,12 +4277,6 @@ impl Game<'_> {
         let mut entity = None;
         self.native_block_entity(name, &mut entity);
         let (id, nbt) = entity?;
-        // A template with no block entity (stone) never removes one, so it would stay in the save.
-        let state = self.pack.assets.registry.default_state(name)?;
-        if !self.res.facts().get(state).block_entity {
-            super::mods::warn_no_block_entity(name, &id);
-            return None;
-        }
         Some(BlockEntity::Mod(Box::new(ModBlockEntity {
             id,
             nbt,

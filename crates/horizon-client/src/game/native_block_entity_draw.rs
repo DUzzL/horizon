@@ -280,6 +280,18 @@ impl KeptGeometry {
 }
 
 impl Game<'_> {
+    /// The mod block entities whose block's template has none, which the
+    /// mesher's block entity lists (made from the template) leave out: where
+    /// they are and their block's state, for `mod_block_entity_geometry`.
+    pub(super) fn untemplated_mod_block_entities(&self) -> Vec<([i32; 3], u32)> {
+        self.world
+            .block_entities
+            .iter()
+            .filter(|(_, e)| matches!(e, BlockEntity::Mod(_)))
+            .map(|(p, _)| ([p.0, p.1, p.2], self.world.block(p.0, p.1, p.2).0))
+            .filter(|&(_, state)| !self.res.facts().get(BlockStateId(state)).block_entity)
+            .collect()
+    }
     /// `native_block_entity_submit` for each of `blocks` (in drawn sections,
     /// drawn by no vanilla renderer) whose block entity is a mod's, closer than
     /// `BlockEntityRenderer.getViewDistance` to the camera (`shouldRender`)
