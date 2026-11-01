@@ -47,6 +47,9 @@ pub struct ParticleOptions {
     /// `GeyserParticleOptions.waterBlocks` and `GeyserBaseParticleOptions`'
     /// `waterBlocks` and `burstImpulseBase` (0 where the type has none).
     pub geyser: Option<(i32, f32)>,
+    /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
+    /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
+    pub mod_particle: Option<String>,
 }
 impl ParticleOptions {
     pub fn simple(ty: ParticleType) -> Self {
@@ -59,6 +62,15 @@ impl ParticleOptions {
             trail: None,
             item: None,
             geyser: None,
+            mod_particle: None,
+        }
+    }
+    /// A native mod's `SimpleParticleType`: the sprite set of
+    /// `assets/<namespace>/particles/<path>.json`, drawn as a plain billboard.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            mod_particle: Some(name.into()),
+            ..Self::simple(ParticleType::Smoke)
         }
     }
     /// `GeyserParticleOptions(type, waterBlocks)`.
@@ -1055,6 +1067,8 @@ pub struct ParticleEngine {
     /// it on the translucent layer (a texel with 0 < alpha < 255).
     atlas: HashMap<String, (Rect, bool)>,
     sets: HashMap<ParticleType, u32>,
+    /// A native mod's sprite sets, by namespaced particle name.
+    mod_sets: HashMap<String, u32>,
     set_sprites: Vec<Vec<u32>>,
     /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
     emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
@@ -1092,6 +1106,7 @@ impl ParticleEngine {
             rects: Vec::new(),
             atlas: HashMap::new(),
             sets: HashMap::new(),
+            mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
             emitters: Vec::new(),
             starters: Vec::new(),
@@ -1123,12 +1138,24 @@ impl ParticleEngine {
             .map(|name| self.atlas.get(name).map(|&(rect, _)| rect))
             .collect();
         self.sets.clear();
+        self.mod_sets.clear();
         self.set_sprites.clear();
         self.item_sprites.clear();
         self.load_sprites(root);
     }
-    /// The sprite sets of every `particles/*.json` under `root`.
+    /// The sprite sets of every `particles/*.json` under `root`: vanilla's own
+    /// and a native mod's (`assets/<namespace>/particles/<name>.json`).
     fn load_sprites(&mut self, root: &Path) {
+        let assets = root.join("assets");
+        if let Ok(namespaces) = std::fs::read_dir(&assets) {
+            for namespace in namespaces.flatten() {
+                let ns = namespace.file_name().to_string_lossy().into_owned();
+                if ns == "minecraft" || !namespace.path().is_dir() {
+                    continue;
+                }
+                self.load_mod_sprites(&ns, &namespace.path().join("particles"));
+            }
+        }
         let dir = root.join("assets/minecraft/particles");
         for &ty in ParticleType::ALL {
             let Ok(bytes) = std::fs::read(dir.join(format!("{}.json", ty.name()))) else {
@@ -1150,6 +1177,56 @@ impl ParticleEngine {
                 .unwrap_or_default();
             if !sprites.is_empty() {
                 self.sets.insert(ty, self.set_sprites.len() as u32);
+                self.set_sprites.push(sprites);
+            }
+        }
+    }
+    /// A namespace's particle JSONs that vanilla has no type for: each becomes
+    /// one sprite set under `<ns>:<file name>`.
+    fn load_mod_sprites(&mut self, ns: &str, dir: &Path) {
+        let Ok(files) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let key = format!("{ns}:{stem}");
+            if ParticleType::from_name(&key).is_some() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let sprites: Vec<u32> = json["textures"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str())
+                        .map(|t| {
+                            // A texture is `<ns>:<path>` (bare means
+                            // `minecraft:`), and the atlas names a sprite
+                            // `<ns>:particle/<path>` — `minecraft`'s own
+                            // without its namespace.
+                            let name = match t.split_once(':') {
+                                Some(("minecraft", path)) => format!("particle/{path}"),
+                                Some((ns, path)) => format!("{ns}:particle/{path}"),
+                                None => format!("particle/{t}"),
+                            };
+                            self.intern(&name)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !sprites.is_empty() {
+                self.mod_sets.insert(key, self.set_sprites.len() as u32);
                 self.set_sprites.push(sprites);
             }
         }
@@ -1626,6 +1703,23 @@ impl ParticleEngine {
     ) -> Option<Particle> {
         use ParticleType as T;
         let ty = o.ty;
+        // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
+        // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
+        if let Some(name) = &o.mod_particle {
+            let set = *self.mod_sets.get(name)?;
+            let mut r = LegacyRandom::new(seed);
+            let mut q = Particle::moving(&mut r, ParticleType::Smoke, p, v);
+            q.ty = ParticleType::Smoke;
+            q.gravity = 0.0;
+            q.rgba = [1.0; 4];
+            q.lifetime = 20 + r.next_int_bound(20).unwrap_or(0);
+            q.set = Some(set);
+            let sprites = &self.set_sprites[set as usize];
+            q.sprite = Sprite::Index(
+                sprites[r.next_int_bound(sprites.len() as i32).unwrap_or(0) as usize],
+            );
+            return Some(q);
+        }
         let set = self.set_of(ty);
         let mut local = LegacyRandom::new(seed);
         let r = &mut local;
@@ -4221,6 +4315,48 @@ const CREEPER: [[f64; 2]; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mod_particles_json_becomes_its_sprite_set() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-mod-particles-{}", std::process::id()));
+        let particles = dir.join("assets/mymod/particles");
+        std::fs::create_dir_all(&particles).unwrap();
+        std::fs::write(
+            particles.join("spark.json"),
+            br#"{"textures":["mymod:spark/1","mymod:spark/2"]}"#,
+        )
+        .unwrap();
+        assert!(particles.join("spark.json").exists());
+        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
+        let set = *engine
+            .mod_sets
+            .get("mymod:spark")
+            .expect("the set is loaded");
+        assert_eq!(engine.set_sprites[set as usize].len(), 2);
+        // The named option spawns a billboard from that set, not a vanilla type.
+        let made = engine
+            .make(
+                &ParticleOptions::named("mymod:spark"),
+                [0.0; 3],
+                [0.0; 3],
+                7,
+            )
+            .expect("a mod particle is made");
+        assert_eq!(made.set, Some(set));
+        // A name no pack knows draws nothing, like a missing vanilla sprite set.
+        assert!(
+            engine
+                .make(
+                    &ParticleOptions::named("mymod:missing"),
+                    [0.0; 3],
+                    [0.0; 3],
+                    7
+                )
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn egg_teleport_unpacks_offsets_and_preserves_seeded_draw_order() {

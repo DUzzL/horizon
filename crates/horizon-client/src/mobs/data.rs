@@ -48,6 +48,8 @@ pub struct MobData {
     pub animations: HashMap<String, Animation>,
     /// Replaced when the resource packs change (the rest of `MobData` never is).
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
+    /// The packs' custom entity models (OptiFine CEM); replaced when the resource packs change.
+    pub cem: std::sync::RwLock<std::sync::Arc<super::cem::CemModels>>,
     /// The packs' random entity textures, replaced with them too.
     pub random_textures: std::sync::RwLock<horizon_optifine::random_textures::RandomTextures>,
     /// The packs' emissive overlays of entity textures, replaced with them too.
@@ -156,6 +158,7 @@ impl MobData {
             heightmaps,
             animations,
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -216,6 +219,7 @@ impl MobData {
             heightmaps: HashMap::new(),
             animations: HashMap::new(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),

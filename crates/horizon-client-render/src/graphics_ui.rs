@@ -2,7 +2,10 @@
 //! they show, in what groups, with what description and cost, and their
 //! input. How they look comes from `graphics_style`.
 use crate::{
-    graphics::{FarDetail, GraphicsApi, Overlay, Pacing, PresentMode, Preset, Upscaling},
+    graphics::{
+        EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
+        Pacing, PresentMode, Preset, Upscaling,
+    },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
     lang,
@@ -27,12 +30,14 @@ pub enum H {
     FarDetail,
     CaveCulling,
     EntityCulling,
+    LeafCulling,
     ChunkUpdates,
     UploadBudget,
     Sky,
     Fog,
     Weather,
     AnimatedTextures,
+    DitherCutoutMips,
     PresentMode,
     Pacing,
     Workers,
@@ -41,6 +46,7 @@ pub enum H {
     Antialiasing,
     Upscaling,
     ScreenshotQuality,
+    FrameGeneration,
     Hdr,
     /// Opens `Level::Hdr`.
     HdrSettings,
@@ -187,6 +193,12 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "How far away mobs and items are drawn, as a share of normal.",
             ),
             h(
+                H::ChunkUpdates,
+                Low,
+                "Meshed sections uploaded per frame. Lower is smoother while loading.",
+            ),
+            Row::Header("Culling"),
+            h(
                 H::CaveCulling,
                 Saves,
                 "Skips terrain hidden behind closed sections. Off costs a lot.",
@@ -194,12 +206,12 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::EntityCulling,
                 None,
-                "Hides models behind opaque blocks. Entities update. Off with custom packs.",
+                "Hides models behind opaque blocks. Async checks off-thread; entities tick.",
             ),
             h(
-                H::ChunkUpdates,
-                Low,
-                "Meshed sections uploaded per frame. Lower is smoother while loading.",
+                H::LeafCulling,
+                Saves,
+                "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
             ),
             Row::Header("Quality"),
             v(
@@ -261,6 +273,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 Low,
                 "Animates water, lava, fire and other moving textures.",
             ),
+            h(
+                H::DitherCutoutMips,
+                Low,
+                "Keeps fine plants in high-res packs from fading far away.",
+            ),
             Row::Header("Display"),
             fov,
             fps,
@@ -284,6 +301,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::ScreenshotQuality,
                 None,
                 "F2 screenshots at this many times the game's resolution. Higher takes longer.",
+            ),
+            h(
+                H::FrameGeneration,
+                Medium,
+                "Shows a made-up frame between each two real ones: smoother, a little more lag.",
             ),
             h(
                 H::HdrSettings,
@@ -440,6 +462,16 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         (Item::Horizon(H::HdrPeak | H::HdrPaperWhite), Setup::Automatic | Setup::Changed) => {
             "Set up for your display. Leave on Auto unless it looks wrong."
         }
+        (Item::Horizon(H::LeafCulling), _) => match s.horizon.leaf_culling {
+            LeafCullingMode::Off => "Every leaf face. Vanilla's fancy leaves.",
+            LeafCullingMode::Solid => {
+                "Leaves fully inside a canopy draw solid: fewer see-through layers."
+            }
+            LeafCullingMode::SolidAggressive => {
+                "Leaves with one open side draw solid too: faster, chunkier edges."
+            }
+            LeafCullingMode::Hollow => "Drops faces between leaves: faster, but gaps look through.",
+        },
         _ => text,
     }
 }
@@ -509,7 +541,8 @@ impl H {
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
-            H::EntityCulling => labelled("Entity Culling", on_off(g.entity_culling)),
+            H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
+            H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
                 n => labelled("Chunk Updates", lang::tr("%s per frame", &[&n])),
@@ -525,6 +558,7 @@ impl H {
             H::Fog => labelled("Fog", on_off(g.fog)),
             H::Weather => labelled("Weather", on_off(g.weather)),
             H::AnimatedTextures => labelled("Animated Textures", on_off(g.animated_textures)),
+            H::DitherCutoutMips => labelled("Distant Plant Dither", on_off(g.dither_cutout_mips)),
             H::PresentMode => labelled("Present Mode", g.present_mode.label()),
             H::Pacing => labelled(
                 "Frame Pacing",
@@ -553,6 +587,7 @@ impl H {
             H::ScreenshotQuality => {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
+            H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrSettings => Text::literal(lang::get("HDR Settings...")),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
@@ -583,7 +618,7 @@ impl H {
             ),
             H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
             H::HdrKey => {
-                Text::literal("Shortcut: ").append(crate::keybinds::display_name(&g.hdr_key))
+                Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
@@ -641,11 +676,17 @@ impl H {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
-            H::EntityCulling => g.entity_culling = !g.entity_culling,
+            H::EntityCulling => {
+                g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
+            }
+            H::LeafCulling => {
+                g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
+            }
             H::Sky => g.sky = !g.sky,
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
             H::AnimatedTextures => g.animated_textures = !g.animated_textures,
+            H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
             // Off, FXAA, TAA.
             H::Antialiasing => {
@@ -669,6 +710,9 @@ impl H {
                     g.screenshot_quality,
                     back,
                 )
+            }
+            H::FrameGeneration => {
+                g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
@@ -728,11 +772,11 @@ impl Item {
         let g = &s.horizon;
         Some(match self {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
-            Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
+            Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
@@ -795,6 +839,7 @@ impl Item {
                     | H::Pacing
                     | H::PresentMode
                     | H::Workers
+                    | H::FrameGeneration
                     | H::BatteryMode
                     | H::ShadowCache
                     | H::GraphicsApi
@@ -1030,9 +1075,12 @@ impl GraphicsUi {
                     let mut label = item.label(s);
                     if item == Item::Horizon(H::HdrKey) && self.binding.is_some() {
                         // KeyBindsScreen: "> key <" while it waits.
-                        label = Text::literal("Shortcut: > ")
-                            .append(crate::keybinds::display_name(&s.horizon.hdr_key))
-                            .append(" <");
+                        label = Text::translate(
+                            "Shortcut: %s",
+                            &[Text::literal("> ")
+                                .append(crate::keybinds::display_name(&s.horizon.hdr_key))
+                                .append(" <")],
+                        );
                     }
                     let blocked = item.blocked(s);
                     let live = blocked.is_none();
@@ -1817,16 +1865,92 @@ mod tests {
     }
 
     #[test]
-    fn entity_culling_is_opt_in_and_toggles_from_advanced_graphics() {
+    fn leaf_culling_cycles_modes_in_the_advanced_culling_group() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::LeafCulling);
+        assert_eq!(item.switch(&s), None);
+        assert_eq!(item.label(&s).plain(), "Leaf Culling: Off");
+        for label in ["Solid", "Solid Aggressive", "Hollow", "Off"] {
+            item.cycle(&mut s, false, [854, 480]);
+            assert_eq!(item.label(&s).plain(), format!("Leaf Culling: {label}"));
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).leaf_culling,
+                s.horizon.leaf_culling
+            );
+        }
+        item.cycle(&mut s, true, [854, 480]);
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hollow);
+
+        // The three culling settings share one group, below Rendering's chunk
+        // updates and above Quality.
+        let rows = rows(Level::Advanced);
+        let culling = rows
+            .iter()
+            .position(|row| matches!(row, Row::Header("Culling")))
+            .unwrap();
+        assert!(matches!(
+            rows.get(culling + 1),
+            Some(Row::Setting(setting)) if setting.item == Item::Horizon(H::CaveCulling)
+        ));
+        assert!(matches!(
+            rows.get(culling + 2),
+            Some(Row::Setting(setting)) if setting.item == Item::Horizon(H::EntityCulling)
+        ));
+        assert!(matches!(
+            rows.get(culling + 3),
+            Some(Row::Setting(setting)) if setting.item == item
+        ));
+        assert!(matches!(
+            rows.get(culling + 4),
+            Some(Row::Header("Quality"))
+        ));
+
+        // The description names what the picked mode does.
+        for mode in LeafCullingMode::ALL {
+            s.horizon.leaf_culling = mode;
+            let text = description(item, &s, "fallback");
+            assert_ne!(text, "fallback", "{mode:?}");
+            assert!(text.len() < 80, "{mode:?}: {text}");
+        }
+
+        // A click cycles it and leaves the preset, as the other quality
+        // settings do.
+        let mut ui = GraphicsUi::default();
+        let size = (480.0, 4000.0);
+        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
+        let control = widgets
+            .iter()
+            .find(|w| matches!(w.target, Target::Item(i) if i == item))
+            .unwrap();
+        s.horizon.preset = Preset::Balanced;
+        s.horizon.leaf_culling = LeafCullingMode::Off;
+        assert_eq!(
+            ui.click(
+                Level::Advanced,
+                &mut s,
+                (control.x + 1.0, control.y + 1.0),
+                size,
+                [854, 480],
+                false,
+                false
+            ),
+            vec![Action::ButtonClick, Action::Changed]
+        );
+        assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Solid);
+        assert_eq!(s.horizon.preset, Preset::Custom);
+    }
+
+    #[test]
+    fn entity_culling_modes_are_opt_in_and_cycle_from_advanced_graphics() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::EntityCulling);
-        assert_eq!(item.switch(&s), Some(false));
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
         assert_eq!(item.label(&s).plain(), "Entity Culling: Off");
-        for enabled in [false, true] {
-            s.horizon.entity_culling = enabled;
+        for mode in EntityCullingMode::ALL {
+            s.horizon.entity_culling = mode;
             for preset in Preset::ALL {
                 crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.entity_culling, enabled);
+                assert_eq!(s.horizon.entity_culling, mode);
             }
         }
 
@@ -1838,7 +1962,11 @@ mod tests {
             .find(|w| matches!(w.target, Target::Item(i) if i == item))
             .unwrap();
         let point = (switch.x + 1.0, switch.y + 1.0);
-        for enabled in [false, true] {
+        for mode in [
+            EntityCullingMode::Off,
+            EntityCullingMode::Synchronous,
+            EntityCullingMode::Asynchronous,
+        ] {
             s.horizon.preset = Preset::Balanced;
             assert_eq!(
                 ui.click(
@@ -1852,10 +1980,10 @@ mod tests {
                 ),
                 vec![Action::ButtonClick, Action::Changed]
             );
-            assert_eq!(item.switch(&s), Some(enabled));
+            assert_eq!(s.horizon.entity_culling, mode);
             assert_eq!(s.horizon.preset, Preset::Custom);
         }
-        assert_eq!(item.label(&s).plain(), "Entity Culling: On");
+        assert_eq!(item.label(&s).plain(), "Entity Culling: Asynchronous");
     }
 
     #[test]

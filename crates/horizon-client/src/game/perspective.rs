@@ -275,18 +275,28 @@ impl Game<'_> {
             facts: self.res.facts(),
             context,
         };
-        view.align_with_entity(&entity, partial, kind, |from, to| {
-            let hit = clip_world(
-                &mut rays,
-                Vec3::new(from[0], from[1], from[2]),
-                Vec3::new(to[0], to[1], to[2]),
-                RayBlockMode::Visual,
-                RayFluidMode::None,
-                4096,
-            )
-            .ok()?;
-            (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
-        });
+        view.align_with_entity_distance(
+            &entity,
+            partial,
+            kind,
+            |distance| {
+                let mut distance = distance;
+                self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
+                distance
+            },
+            |from, to| {
+                let hit = clip_world(
+                    &mut rays,
+                    Vec3::new(from[0], from[1], from[2]),
+                    Vec3::new(to[0], to[1], to[2]),
+                    RayBlockMode::Visual,
+                    RayFluidMode::None,
+                    4096,
+                )
+                .ok()?;
+                (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
+            },
+        );
         self.view = view;
         Some((
             glam::DVec3::from_array(view.position),
@@ -1405,6 +1415,7 @@ mod preview_tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),

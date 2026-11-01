@@ -1663,6 +1663,32 @@ fn render_visible(
     let overlay = u32::from(red_overlay(m));
     let s = anim::state(m, alpha);
     let (model_key, texture) = body(m);
+    // The packs' custom entity models replace a layer's parts and maybe its texture. The read
+    // guard, not a clone of the Arc: one uncontended lock per mob, nothing else without a pack.
+    let cem = data
+        .cem
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // `main` is the wide player model, `kind.model`.
+    let cem_key = if model_key == "main" {
+        "player#main"
+    } else {
+        model_key.as_str()
+    };
+    let body_animation = cem.layer(cem_key).and_then(|c| c.animation.as_ref());
+    let (model, texture) = match cem.layer(cem_key) {
+        Some(custom) => (
+            custom.model.clone(),
+            custom.texture.clone().unwrap_or(texture),
+        ),
+        None => (
+            m.kind
+                .layer(&model_key)
+                .cloned()
+                .unwrap_or_else(|| m.kind.model.clone()),
+            texture,
+        ),
+    };
     // OptiFine random textures and ETF blinking: the sprite a texture draws with instead, when
     // the atlas has it: the variant the mob wears, then its blink frame while it blinks (or
     // sleeps). The texture keeps its name for everything else.
@@ -1705,13 +1731,11 @@ fn render_visible(
         }
         atlas(emissive.overlay(drawn)?)
     };
-    let model = m
-        .kind
-        .layer(&model_key)
-        .cloned()
-        .unwrap_or_else(|| m.kind.model.clone());
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
+    if let Some(animation) = body_animation {
+        animation.run(m, &s, &mut poses);
+    }
     let draw_body = |out: &mut Vec<Vertex>| {
         // A player or mannequin whose skin has no atlas sprite (an evicted or
         // never stored download) draws with its default skin, not invisibly.
@@ -1778,9 +1802,19 @@ fn render_visible(
     // One Poses refilled for every layer (armour draws up to seven): it keeps
     // its maps' capacity.
     let mut layer_poses = Poses::default();
-    for layer in all_layers {
-        let Some(part) = m.kind.layer(&layer.model).cloned() else {
-            continue;
+    for mut layer in all_layers {
+        let custom = cem.layer(&layer.model);
+        let part = match custom {
+            Some(custom) => {
+                if let Some(texture) = &custom.texture {
+                    layer.texture.clone_from(texture);
+                }
+                custom.model.clone()
+            }
+            None => match m.kind.layer(&layer.model) {
+                Some(part) => part.clone(),
+                None => continue,
+            },
         };
         let Some((drawn, uv)) = sprite(&layer.texture)
             .or_else(|| Some((layer.texture.as_str(), atlas(&layer.texture)?)))
@@ -1789,6 +1823,9 @@ fn render_visible(
         };
         layer_poses.reset(&part);
         anim::setup(m, &s, &mut layer_poses, &data.animations);
+        if let Some(animation) = custom.and_then(|c| c.animation.as_ref()) {
+            animation.run(m, &s, &mut layer_poses);
+        }
         if matches!(m.species(), Species::Villager | Species::ZombieVillager)
             && let Some((folder, variant)) = layer
                 .texture
@@ -2282,6 +2319,17 @@ mod tests {
                 .custom_name()
                 .is_none()
         );
+        // An admiring piglin holds gold beside its crossbow. Both the item
+        // id and the model components must come from the appropriate hand.
+        extra.off_hand = Some("minecraft:gold_ingot".into());
+        assert_eq!(
+            &*held_item_stack(&extra, true).unwrap().item,
+            "minecraft:gold_ingot"
+        );
+        assert_eq!(
+            &*held_item_stack(&extra, false).unwrap().item,
+            "minecraft:crossbow"
+        );
         extra.off_hand = None;
         assert!(held_item_stack(&extra, true).is_none());
     }
@@ -2471,6 +2519,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -2563,6 +2612,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -2619,6 +2669,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -2731,6 +2782,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
             blinks: Default::default(),
@@ -3022,6 +3074,7 @@ mod emissive_tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
             random_textures: RwLock::new(random),
             emissive: RwLock::new(emissive),
             blinks: RwLock::new(blinks),

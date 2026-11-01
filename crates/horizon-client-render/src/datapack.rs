@@ -575,7 +575,7 @@ pub struct DataStore {
     /// `item_modifier` files, for `/item modify`.
     pub item_modifiers: BTreeMap<String, serde_json::Value>,
     /// The content tables' raw files from the packs after the built-in one:
-    /// `recipe/`, `loot_table/`, `advancement/`, `dialog/` and `tags/…/` files, by
+    /// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `dialog/` and `tags/…/` files, by
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
     /// merge them over what they read from the resource root.
     pub files: BTreeMap<String, Vec<Vec<u8>>>,
@@ -583,7 +583,7 @@ pub struct DataStore {
     pub errors: Vec<(String, String)>,
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
-/// `recipe/`, `loot_table/`, `advancement/`, `trade_set/`,
+/// `recipe/`, `recipe_filter/`, `loot_table/`, `advancement/`, `trade_set/`,
 /// `villager_trade/`, `dialog/` or `tags/<sub>/`, where the id keeps the sub
 /// path so a nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
@@ -591,7 +591,8 @@ fn content_id(file: &str) -> Option<String> {
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade" | "dialog" => kind,
+        "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
+        | "villager_trade" | "dialog" => kind,
         // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
         // test:sub/mytag`), the whole path after the namespace, so nested
         // registries keep their directory (`TagLoader`'s id shape).
@@ -628,6 +629,7 @@ impl DataStore {
                 "loot_table",
                 "predicate",
                 "recipe",
+                "recipe_filter",
                 "tags",
                 "trade_set",
                 "villager_trade",

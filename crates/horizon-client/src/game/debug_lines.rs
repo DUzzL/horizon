@@ -162,6 +162,13 @@ impl Game<'_> {
                     if self.debug && !pass_lines.is_empty() {
                         d.group("shader pack", pass_lines);
                     }
+                    // Horizon's own passes, in a group of their own.
+                    let own_lines = self.renderer.as_ref().map_or_else(Vec::new, |r| {
+                        overlay::labelled_pass_lines("Horizon GPU", &r.own_pass_times())
+                    });
+                    if self.debug && !own_lines.is_empty() {
+                        d.group("Horizon passes", own_lines);
+                    }
                 }
                 "tps" => self.debug_tps_line(d),
                 // DebugEntryChunkGeneration, where the world is generated
