@@ -993,6 +993,16 @@ fn login_and_configure(
             }),
         )?;
     }
+    // And how far it samples far terrain for it (crate::lod_net).
+    if brand == "horizon" && shared.config.lod_distance > 0 {
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: crate::lod_net::CHANNEL.into(),
+                data: crate::lod_net::Offer::new(shared.config.lod_distance).encode(),
+            }),
+        )?;
+    }
     if brand == "horizon"
         && let Some(hash) = sync.content_identity
     {

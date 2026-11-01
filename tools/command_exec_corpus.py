@@ -1437,6 +1437,79 @@ def creative_shulker_drops():
     return out
 
 
+def piglin_pickups():
+    """PiglinAi.pickUpItem/stopHoldingOffHandItem: babies keep admired gold, adults barter it."""
+    ops = [*setup('/fill 2 209 2 6 212 6 minecraft:glass hollow',
+                  '/fill 3 209 3 5 209 5 minecraft:stone')]
+    for baby, held in ((False, "crossbow"), (True, None), (True, "golden_sword"),
+                       (True, "crossbow")):
+        # NoAI would skip admiration expiry. A small pen keeps both the piglin
+        # and its item together without suppressing the server's normal ticks.
+        # Finish the previous corpse's death ticks before clearing its drops.
+        ops += [
+            *setup('/kill @e[type=!player]'),
+            {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]',
+                   '/summon minecraft:piglin 4.5 210 4.5 '
+                   '{Tags:["barter"],IsImmuneToZombification:1b,PersistenceRequired:1b,drop_chances:{mainhand:0.0f},IsBaby:'
+                   + ('1b' if baby else '0b')
+                   + (',equipment:{mainhand:{id:"minecraft:' + held + '",count:1}}' if held else '') + '}'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand *'),
+            *setup('/summon minecraft:item 4.5 210 4.5 '
+                   '{PickupDelay:0s,Item:{id:"minecraft:gold_ingot",count:1}}'),
+            {'op': 'tick', 'n': 40},
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand minecraft:gold_ingot'),
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            {'op': 'tick', 'n': 140},
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.offhand *'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:gold_ingot'),
+            cmd('/execute if entity @e[type=minecraft:item]'),
+        ]
+        if baby:
+            ops.append(cmd('/execute if data entity @e[tag=barter,limit=1] Inventory[{id:"minecraft:golden_sword"}]'))
+    # IGNORED_BY_PIGLIN_BABIES contains leather: adults take it, babies leave it.
+    for baby in (False, True):
+        ops += [
+            *setup('/kill @e[type=!player]'),
+            {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]',
+                   '/summon minecraft:piglin 4.5 210 4.5 '
+                   '{Tags:["barter"],IsImmuneToZombification:1b,IsBaby:' + ('1b' if baby else '0b') + '}',
+                   '/summon minecraft:item 4.5 210 4.5 '
+                   '{PickupDelay:0s,Item:{id:"minecraft:leather",count:1}}'),
+            {'op': 'tick', 'n': 40},
+            cmd('/execute if entity @e[type=minecraft:item]'),
+            cmd('/execute if items entity @e[tag=barter,limit=1] weapon.mainhand minecraft:leather'),
+        ]
+    ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25},
+            *setup('/kill @e[type=minecraft:item]', '/fill 2 209 2 6 212 6 minecraft:air')]
+    return ops
+
+
+def experience_orb_stuck():
+    """`ExperienceOrb.tick`'s push out of a block, the one path of the tick that
+    draws a random: a 3x3 block placed over a settled orb leaves it colliding
+    with its only free side the top, and with no player within the 8 block
+    follow radius the server nudges it up, `nextFloat() * 0.2 + 0.1` at a time,
+    gravity skipped while its box is inside blocks. The draw's magnitude only
+    decides how many ticks the escape takes, so the settled orb is the same
+    either way; an orb that is never pushed stays boxed in at y 215 instead of
+    resting on top of the block at 216. 25 blocks from the player, out of the
+    follow radius."""
+    return [
+        *setup('/fill 30 214 20 36 214 26 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 33.5 215 23.5 {Value:1s}'),
+        {'op': 'tick', 'n': 2},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        *setup('/fill 32 215 22 34 215 24 minecraft:stone'),
+        {'op': 'tick', 'n': 60},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 30 214 20 36 215 26 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1469,4 +1542,6 @@ def groups():
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
         ('experience orb fall', experience_orb_fall()),
+        ('piglin pickups', piglin_pickups()),
+        ('experience orb stuck', experience_orb_stuck()),
     ]

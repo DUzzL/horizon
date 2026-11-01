@@ -32,6 +32,15 @@ pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Resu
             Ok(json!(true))
         }
         "server/system_message" => game.system_message(argument),
+        "serversettings/difficulty" => game.difficulty(client, None),
+        "serversettings/difficulty/set" => game.difficulty(
+            client,
+            Some(
+                argument
+                    .as_str()
+                    .ok_or_else(|| invalid_params("Not a string"))?,
+            ),
+        ),
         "allowlist" => Ok(lists.allowlist()),
         "bans" => Ok(lists.bans()),
         "ip_bans" => Ok(lists.ip_bans()),
@@ -263,6 +272,29 @@ struct Game<'a> {
 }
 
 impl Game<'_> {
+    /// `MinecraftServerSettingsServiceImpl.getDifficulty` and `setDifficulty`.
+    fn difficulty(&self, client: u32, value: Option<&str>) -> Result<Value, Failure> {
+        let mut request = json!({ "method": "serversettings/difficulty" });
+        if let Some(value) = value {
+            request["method"] = json!("serversettings/difficulty/set");
+            request["value"] = json!(value);
+        }
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err((INTERNAL_ERROR, Some(error.to_owned())));
+        }
+        if let Some(value) = value {
+            crate::config::update(
+                &self.shared.dir,
+                "world",
+                "difficulty",
+                toml::Value::String(value.into()),
+            )
+            .map_err(|e| (INTERNAL_ERROR, Some(e)))?;
+        }
+        Ok(reply["value"].clone())
+    }
+
     fn running(&self) -> bool {
         self.shared.state.lock().unwrap().phase == Phase::Running
     }
