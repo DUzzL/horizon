@@ -102,6 +102,11 @@ pub(super) struct Minecart {
     pub flipped: bool,
     pub(super) on_ground: bool,
     horizontal_collision: bool,
+    /// The horizontal speed the cart wanted when the collision stopped it:
+    /// `MinecartTNT.tick` reads the delta after the move, which a cart on a
+    /// rail keeps (`AbstractMinecart.moveAlongTrack` re-applies the track's
+    /// velocity), so a cart that ran into a block still counts as moving.
+    collision_speed: f64,
     fall_distance: f64,
     pub hurt_time: i32,
     pub hurt_dir: i32,
@@ -256,6 +261,7 @@ impl Minecart {
             flipped: false,
             on_ground: false,
             horizontal_collision: false,
+            collision_speed: 0.0,
             fall_distance: 0.0,
             hurt_time: 0,
             hurt_dir: 1,
@@ -485,6 +491,9 @@ impl Game<'_> {
             c.on_ground = delta.y < 0.0 && moved.y > delta.y;
             c.horizontal_collision =
                 (moved.x - delta.x).abs() > 1.0e-7 || (moved.z - delta.z).abs() > 1.0e-7;
+            if c.horizontal_collision {
+                c.collision_speed = delta.x * delta.x + delta.z * delta.z;
+            }
             if (moved.x - delta.x).abs() > 1.0e-7 {
                 c.velocity.x = 0.0;
             }
@@ -983,12 +992,9 @@ impl Game<'_> {
                     self.explode_cart(c, speed);
                     return false;
                 }
-                if c.horizontal_collision {
-                    let speed = c.velocity.x * c.velocity.x + c.velocity.z * c.velocity.z;
-                    if speed >= f64::from(0.01_f32) {
-                        self.explode_cart(c, speed);
-                        return false;
-                    }
+                if tnt_ignites_by_collision(c.horizontal_collision, c.collision_speed) {
+                    self.explode_cart(c, c.collision_speed);
+                    return false;
                 }
             }
             // MinecartSpawner.tick: `BaseSpawner.serverTick` at the cart's block.
@@ -2252,8 +2258,25 @@ impl Minecart {
     }
 }
 
+/// `MinecartTNT.tick`'s collision detonation: a cart still moving at a tenth
+/// of a block a tick or more when a block stops it blows up.
+fn tnt_ignites_by_collision(horizontal_collision: bool, speed_sqr: f64) -> bool {
+    horizontal_collision && speed_sqr >= 0.009_999_999_776_482_582
+}
+
 #[cfg(test)]
 mod tests {
+    /// The collision detonation of a TNT minecart needs both the collision and
+    /// a cart that was still moving: a nudge below a tenth of a block a tick
+    /// does not set it off, and a fast cart on an open track does not either.
+    #[test]
+    fn a_tnt_cart_detonates_only_when_a_collision_stops_a_moving_one() {
+        assert!(tnt_ignites_by_collision(true, 0.01));
+        assert!(tnt_ignites_by_collision(true, 0.36), "three tenths a tick");
+        assert!(!tnt_ignites_by_collision(true, 0.0), "stopped at the wall");
+        assert!(!tnt_ignites_by_collision(true, 0.009), "a nudge");
+        assert!(!tnt_ignites_by_collision(false, 0.36), "nothing in the way");
+    }
     use super::*;
 
     #[test]
