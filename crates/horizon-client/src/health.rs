@@ -1260,14 +1260,15 @@ mod tests {
         assert_eq!(velocity(&turned), (0.8, 0.4, 0.0));
         // Numbers that are not finite are put back as the game made them.
         assert_eq!(velocity(&push(9103, 0.0)), (-0.4, 0.4, 0.0));
-        // After the resistance: half of 0.4 is what the hook is handed.
+        // Before the resistance (`LivingKnockBackEvent`): the hook is handed the raw 0.4, and
+        // the push that follows is halved.
         let resisted = push(9104, 0.5);
         assert_eq!(velocity(&resisted), (-0.2, 0.2, 0.0));
-        assert_eq!(seen(9104)[0].1.strength, 0.2);
-        // A full resistance leaves a strength of 0, which a mod may raise.
-        let raised = push(9105, 1.0);
-        assert_eq!(seen(9105)[0].1.strength, 0.0);
-        assert_eq!(velocity(&raised), (-0.4, 0.4, 0.0));
+        assert_eq!(seen(9104)[0].1.strength, 0.4);
+        // A full resistance takes all of what the hook leaves: no push.
+        let stopped = push(9105, 1.0);
+        assert_eq!(seen(9105)[0].1.strength, 0.4);
+        assert_eq!(velocity(&stopped), (0.0, 0.0, 0.0));
         // The game's own hit on a mob reaches the hook with its damage.
         let mut hurt = mob(9106, 0.0);
         assert!(hurt.damage(2.0, hit));
