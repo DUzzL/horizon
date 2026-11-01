@@ -55,7 +55,7 @@ TheEndBiomeSource.getNoiseBiome	port	crates/horizon-world/src/worldgen/biome_sou
 AbstractFurnaceBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
 AbstractFurnaceBlock.createFurnaceTicker	port	crates/horizon-client/src/game/block_entity_ticks.rs::Game::tick_furnace	furnace ticker
 AbstractFurnaceBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	
-AmethystBlock	missing		player: an arrow or other projectile that hits an amethyst block plays no chime (vanilla plays block.amethyst_block.chime)
+AmethystBlock	home	crates/horizon-client/src/game/creatures.rs	onProjectileHit: `amethyst_projectile_hit` plays the chime for every projectile that hits the block (arrows included, through `projectile_hit`)
 AmethystClusterBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	
 AmethystClusterBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
 AmethystClusterBlock.getFluidState	port	crates/horizon-world/src/registry_fluid.rs::RegistryFluidWorld::fluid_state	waterlogged state from block data

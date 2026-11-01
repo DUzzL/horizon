@@ -51,6 +51,7 @@ pub mod illager;
 pub mod illusioner;
 pub mod item_break;
 pub mod keyframes;
+pub mod landing;
 pub mod leash;
 pub mod living;
 pub mod llama;
@@ -1398,6 +1399,16 @@ pub enum MobEvent {
     ElderCurse {
         at: [f64; 3],
     },
+    /// `Entity.setDeltaMovement`: replace a target's velocity.
+    SetVelocity {
+        target: Who,
+        velocity: [f64; 3],
+    },
+    /// `Entity.remove(RemovalReason.KILLED)` of a mob that is no longer alive: it vanishes at once,
+    /// with no death animation (`ShootTongue.eatEntity`).
+    RemoveKilled {
+        target: u32,
+    },
     /// `Entity.push`: add to a target's velocity.
     Push {
         target: Who,
@@ -2348,6 +2359,8 @@ pub struct MobWorld<'a> {
     pub thundering: bool,
     pub nether: bool,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
+    /// Each block's `fallOn` rule (the player's landing registry).
+    pub landing: &'a horizon_world::block_landing::BlockLandingRegistry,
     pub biomes: &'a crate::biome::Biomes,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,

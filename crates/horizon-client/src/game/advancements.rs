@@ -2006,7 +2006,7 @@ impl Game<'_> {
                     criteria.push(adv::Criterion {
                         name: name.clone(),
                         trigger: String::new(),
-                        conditions: Value::Null,
+                        conditions: Value::Null.into(),
                     });
                 }
             }
