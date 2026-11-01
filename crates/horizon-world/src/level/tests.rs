@@ -3339,6 +3339,36 @@ fn a_level_can_answer_how_a_block_burns() {
         planks,
         "fireproof planks don't"
     );
+
+    // Fire in the air beside a block stays only while the block's ignite
+    // odds are above zero, and burn odds of zero never destroy the block.
+    let lit_beside = |w: &mut World, at: BlockPos, ticks: usize| {
+        w.set(at.offset(1, 0, 0), glass);
+        w.set(at, w.id("fire", &[]));
+        for _ in 0..ticks {
+            w.tick();
+        }
+        w.get(at)
+    };
+    let fire = w.id("fire", &[]);
+    w.level.fire_odds.clear();
+    let at = BlockPos::new(-6, 5, 0);
+    assert_ne!(
+        w.b().block(lit_beside(&mut w, at, 45)),
+        w.b().block(fire),
+        "fire beside plain glass goes out"
+    );
+    w.level.fire_odds.insert(glass, (5, 0));
+    let at = BlockPos::new(-6, 5, 6);
+    assert_eq!(
+        w.b().block(lit_beside(&mut w, at, 45)),
+        w.b().block(fire),
+        "fire stands beside glass that ignites"
+    );
+    for _ in 0..4000 {
+        w.tick();
+    }
+    assert_eq!(w.get(at.offset(1, 0, 0)), glass, "and never burns it away");
 }
 
 #[test]

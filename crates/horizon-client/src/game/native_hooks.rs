@@ -674,8 +674,10 @@ impl GameLevel<'_> {
     /// isn't read. Ignite odds above zero let fire stand beside the block and
     /// spread into the air around it (planks 5, wool 30, leaves 30); burn odds
     /// are how fast fire destroys it (planks 20, wool 60, leaves 60). `(0, 0)`
-    /// never burns. A waterlogged state never burns and isn't asked. Asked
-    /// hundreds of times per fire tick: keep it short. API @API:fire_odds@.
+    /// never burns; keep both within vanilla's 0 to 100. A waterlogged state
+    /// never burns and isn't asked. Answer only for your own blocks and leave
+    /// `odds` empty otherwise; the level is read-only. Asked hundreds of times
+    /// per fire tick: keep it short. API @API:fire_odds@.
     #[inline(always)]
     pub(super) fn native_fire_odds(
         &self,
