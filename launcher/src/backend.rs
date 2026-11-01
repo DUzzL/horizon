@@ -575,17 +575,30 @@ pub fn build_dir() -> PathBuf {
     real
 }
 
-/// [`build_dir`] when `real` isn't [`ascii`]: the folder's own short (8.3) name where the
-/// volume keeps one — the same files, spelled in ASCII — else a folder of ProgramData's,
-/// named for the path so each user's is its own and can be created there.
+/// [`build_dir`] when `real` isn't [`ascii`]: [`ascii_build_dir`], a real folder of
+/// ProgramData's. Only when it can't be created, the data folder's short (8.3) name.
+///
+/// The short name came first until #6009, and wasn't enough: it is only another spelling of the
+/// same folder, and rustc canonicalizes its own path to find its sysroot, which spells the long,
+/// Cyrillic name again and hands it to the linker (`x86_64-w64-mingw32-gcc`: "No such file or
+/// directory" on `C:/Users/\xca\xe8…`). A folder whose real name is ASCII stays ASCII however a
+/// tool resolves it.
 #[cfg(windows)]
 fn windows_build_dir(real: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-    if let Some(short) = short_path(real).filter(|p| ascii(p)) {
-        return short;
+    let dir = ascii_build_dir(real, std::env::var_os("ProgramData").map(PathBuf::from));
+    if fs::create_dir_all(&dir).is_ok() {
+        return dir;
     }
-    let public = std::env::var_os("ProgramData")
-        .map(PathBuf::from)
+    short_path(real).filter(|p| ascii(p)).unwrap_or(dir)
+}
+
+/// The build folder for a data folder `real` whose path isn't [`ascii`]: in `program_data`
+/// (`%ProgramData%`, `C:\ProgramData` when unset, relative or not ASCII), which every user may
+/// create folders in, named for `real` so each user's is their own.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ascii_build_dir(real: &Path, program_data: Option<PathBuf>) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let public = program_data
         .filter(|p| p.is_absolute() && ascii(p))
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
     let key = Sha256::digest(real.as_os_str().as_encoded_bytes());
@@ -3422,6 +3435,33 @@ mod tests {
                     .map(plain)
                     .unwrap_or_else(|_| built.clone())
             );
+        }
+    }
+
+    /// [#6009](https://github.com/horizon-rust/horizon/issues/6009): with a Cyrillic user name the
+    /// build folder is a real ASCII folder of ProgramData's (not a short name of the data folder,
+    /// which rustc resolves back to the Cyrillic one), its own for each data folder.
+    #[test]
+    fn a_cyrillic_data_folder_builds_in_an_ascii_folder_of_its_own() {
+        let pavlo = Path::new(r"C:\Users\Кириченко Павло\AppData\Roaming\horizon-launcher");
+        let other = Path::new(r"C:\Users\Олена\AppData\Roaming\horizon-launcher");
+        let public = PathBuf::from(if cfg!(windows) { r"D:\Data" } else { "/data" });
+        let dir = ascii_build_dir(pavlo, Some(public.clone()));
+        assert!(ascii(&dir), "{}", dir.display());
+        assert_eq!(dir.parent(), Some(public.as_path()));
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("horizon-launcher-") && name.len() == 25,
+            "{name}"
+        );
+        assert_eq!(dir, ascii_build_dir(pavlo, Some(public.clone())), "stable");
+        assert_ne!(dir, ascii_build_dir(other, Some(public)), "one per user");
+        // %ProgramData% unset, relative or itself not ASCII: C:\ProgramData.
+        let default = PathBuf::from(r"C:\ProgramData");
+        for pd in [None, Some("ProgramData".into()), Some(r"C:\Дані".into())] {
+            let dir = ascii_build_dir(pavlo, pd);
+            assert_eq!(dir.parent(), Some(default.as_path()));
+            assert!(ascii(&dir));
         }
     }
 
