@@ -764,6 +764,25 @@ impl<'a> Plan<'a> {
                         .into());
                     }
                 }
+                // A block's states are its template's times the declared combinations, the
+                // template's properties varying slowest, but the game reads a state table the
+                // way vanilla's `StateDefinition` does: sorted by property name, the first name
+                // slowest. The two agree only when every declared name sorts after the template's,
+                // and a table that disagrees stops the game at load, so such a block is refused.
+                let last = match properties(default) {
+                    Some(J::Obj(own)) => own.iter().map(|(k, _)| k.as_str()).max(),
+                    _ => None,
+                };
+                if let Some(last) = last
+                    && let Some(early) = decl.state_properties.keys().find(|k| k.as_str() < last)
+                {
+                    return Err(format!(
+                        "{}: state property {early} sorts before {last}, a property of {}: the \
+                         game orders states by property name, so name it after {last}",
+                        decl.id, decl.template
+                    )
+                    .into());
+                }
                 let combos = combinations(&decl.state_properties, &decl.default_state)
                     .map_err(|e| format!("{}: {e}", decl.id))?;
                 // A `default_state` key the block itself declares is its own,
@@ -966,7 +985,7 @@ impl<'a> Plan<'a> {
                     if !b.decl.item {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
-                    self.override_gameplay(b, &mut row);
+                    self.override_gameplay(b, combo, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[t];
                         let boxes = shape
@@ -1003,8 +1022,11 @@ impl<'a> Plan<'a> {
     }
 
     /// The declared properties, on a gameplay row.
-    fn override_gameplay(&self, b: &NewBlock, row: &mut J) {
+    fn override_gameplay(&self, b: &NewBlock, combo: &[(String, String)], row: &mut J) {
         let p = &b.decl.properties;
+        if let Some(ticks) = &p.random_ticks {
+            row.set("random_ticks", J::Bool(ticks.applies(combo)));
+        }
         if let Some(v) = p.hardness {
             row.set("hardness", J::f64(v as f64));
         }
