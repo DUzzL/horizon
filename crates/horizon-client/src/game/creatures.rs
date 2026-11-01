@@ -6475,14 +6475,7 @@ impl Game<'_> {
             // ShulkerBulletRenderer: the tumbling bullet model, then a larger
             // translucent copy of it (colour 0x26FFFFFF); always 15 block light.
             if matches!(a.kind, ProjectileKind::ShulkerBullet { .. }) {
-                static BULLET: std::sync::OnceLock<Option<horizon_client::mobs::Part>> =
-                    std::sync::OnceLock::new();
-                let model = BULLET.get_or_init(|| {
-                    horizon_client::mobs::load_model(
-                        &self.options.resources,
-                        "minecraft:shulker_bullet#main",
-                    )
-                });
+                let model = &self.entity_models.shulker_bullet;
                 if let (Some(model), Some(r)) =
                     (model, atlas.sprites.get("entity/shulker/spark").copied())
                 {
@@ -6534,14 +6527,7 @@ impl Game<'_> {
             }
             // WitherSkullRenderer: the skull model facing its flight.
             if let Some(dangerous) = super::wither::skull_kind(a) {
-                static SKULL: std::sync::OnceLock<Option<horizon_client::mobs::Part>> =
-                    std::sync::OnceLock::new();
-                let model = SKULL.get_or_init(|| {
-                    horizon_client::mobs::load_model(
-                        &self.options.resources,
-                        "minecraft:wither_skull#main",
-                    )
-                });
+                let model = &self.entity_models.wither_skull;
                 let tex = if dangerous {
                     "entity/wither/wither_invulnerable"
                 } else {
