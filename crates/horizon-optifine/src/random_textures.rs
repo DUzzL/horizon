@@ -41,6 +41,8 @@ use crate::random::{MAX_INDEX, Rules};
 pub struct RandomTextures {
     entries: HashMap<String, Entry>,
     rules: Vec<Rules>,
+    /// Different for every scan: choices made from another scan's rules are stale.
+    generation: u64,
 }
 
 /// One texture's variants.
@@ -82,6 +84,20 @@ struct Source {
 
 impl RandomTextures {
     pub fn scan(root: &Path) -> Self {
+        static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            generation,
+            ..Self::scan_files(root)
+        }
+    }
+
+    /// This scan's number, never 0 (the empty set's).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn scan_files(root: &Path) -> Self {
         let mut found: HashMap<String, [Source; FOLDERS.len()]> = HashMap::new();
         let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
             return Self::default();

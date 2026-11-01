@@ -967,6 +967,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   in, so `native_tell` and the other helpers reach them. Set `cancel` to refuse it: the player keeps the state they
   had and gets their abilities back, so the client lands or flies again. Only what a client asks for is heard: not the
   flight a game-mode change starts or ends, and not a LAN host's own player.
+- **`native_sign_changed(player, name, dimension, pos, front, lines, cancel)`**: a player finished a sign they were
+  editing, heard once every check has passed (editing that sign, in reach, not waxed, the chat filter) and right before
+  the text goes on it. `lines` holds the four lines as written, formatting codes still in; rewrite them and that is
+  what the sign gets (the chat filter does not look at it again), or set `cancel` and it keeps its old text. The
+  player's state is swapped in, so `native_tell` reaches them. Not told: the host's own editing on a LAN or
+  single-player world, and changes that are no text edit (dye, glow ink, wax, `/data`, `/setblock`).
 - **`native_player_command(player, name, command, canceled, replies)`**: any command a player typed (without the
   slash), vanilla's too and commands the player may not run, heard before anything looks at it, and each line of a
   quiet command batch. Set `canceled` and nothing runs; push lines to `replies` and the player gets them as system chat
@@ -976,7 +982,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_perform_console_command(command, ran)`**: a registered command typed on the dedicated server's console
   (without its slash), run as the server at level 4: no player, so `native_acting_player()` is None and the player-only
   helpers give nothing. The mod parses the line and sets `ran`; `native_feedback` answers on the console. A name no mod
-  registered goes to vanilla's dispatcher as before; the single player owner's console is not covered.
+  registered goes to vanilla's dispatcher as before. The single player owner's console (`horizon-ctl command`, the MCP
+  command tool) is a player's: it reaches `native_perform_command` with the owner, at level 4.
 - **`native_player_respawned(player, name)`**: a dead player came back, once per respawn, on a server: after
   `PlayerList.respawn` reset their health, food and experience and placed them at their bed, anchor or the world spawn
   (NeoForge's `PlayerRespawnEvent`). The player's state is swapped in for the call, as for their other actions, so
@@ -1130,6 +1137,13 @@ items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag
 - A mod's own creature is an ordinary mob (`native_spawn_mob`, API 37) drawn this way: a quiet villager, an allay or a bat
   gives it movement, sounds and saving, and the mod gives it a model and animations of its own. Tell yours apart by the
   ids the server half sends with mod messages (API 40), or by its custom name.
+- Players have their own hook, `native_player_submit(player, who, draw, drawn)` (`RenderPlayerEvent.Pre`): once a frame for
+  each other player in view and for this window's player in third person, with the same frame and `who` (the profile name,
+  and `local`). `drawn` leaves out the vanilla model, armour, held items, cape and other layers.
+- `native_mob_layer(mob, who, draw)` (`EntityRenderersEvent.AddLayers`, `RenderLivingEvent.Post`) adds to every mob and player
+  after its vanilla model and layers, in the same frame (not for one a mod drew itself); `who` is set for a player. The
+  geometry hangs from the entity's frame, not from a model bone: place a hat from `head_yaw`, `pitch` and the entity type's
+  eye height.
 
 ### Advancement triggers
 

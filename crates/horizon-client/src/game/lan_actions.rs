@@ -93,6 +93,8 @@ pub(super) struct GuestPlay {
     pub(super) mount_window: Option<super::lan_mount_menu::GuestMount>,
     /// The lectern the guest reads (game/lan_stations.rs).
     pub(super) lectern: Option<super::lan_stations::GuestLectern>,
+    /// The menu the mods last heard this guest open (`tick_player_menus`).
+    pub(super) menu_heard: Option<super::native_menus::HeardMenu>,
     /// What the guest's body was given for its effects and enchantments.
     potions: super::potions::BodyPotions,
     /// `ServerPlayer.getStats` and the inventory `inventory_changed` last saw.
@@ -1305,6 +1307,8 @@ impl Game<'_> {
         self.lan_station_closed(host, conn, None);
         self.lan_mount_closed(host, conn, None);
         self.guest_carried_back(host, gi);
+        // `PlayerContainerEvent.Close`, after the menu's `removed`.
+        self.player_menu_closing(host, conn);
     }
 
     /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
@@ -3289,6 +3293,7 @@ impl Game<'_> {
         self.lan_tables_tick(host);
         self.lan_containers_tick(host);
         self.tick_lan_mount_menus(host);
+        self.tick_player_menus(host);
         self.announce_guest_advancements(host);
         let conns: Vec<u32> = host
             .hub
