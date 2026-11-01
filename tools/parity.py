@@ -644,6 +644,15 @@ def prebuild_commands(artifacts, packages=None):
         if len(artifact) < 5:
             continue
         kind, name, profile, selection, examples = artifact
+        owner = (packages or {}).get((kind, name))
+        selected = [value for flag, value in zip(selection, selection[1:]) if flag == "-p"]
+        if not name and kind in ("bins", "examples") and "horizon-client" in selected \
+                and "horizon-client-lib" in (packages or {}).values():
+            # Broad records predate the client package split too.
+            owner = "horizon-client-lib"
+        if owner and selected and owner not in selected:
+            # A recorded target may have moved packages; retain its feature flags and old selections.
+            selection = [*selection, "-p", owner]
         targets = groups.setdefault((profile, tuple(selection), examples), [])
         target = [f"--{kind}", name] if name else [f"--{kind}"]
         if target not in targets:
@@ -1365,6 +1374,9 @@ def feature_sources_changed(crate, feature, changed):
         if re.search(r'^\[package\][^\[]*?^name\s*=\s*"' + re.escape(crate) + '"', text, re.M | re.S):
             break
     else:
+        return False
+    if any(not root.is_relative_to(manifest.parent.resolve()) for root in parity_reach.crate_roots(manifest.parent)):
+        # A directory-only scan cannot prove that shared external sources changed too.
         return False
     table = re.search(r"^\[features\]\n(.*?)(?=^\[|\Z)", text, re.M | re.S)
     implies = {name: re.findall(r'"([^"]+)"', value) for name, value in
