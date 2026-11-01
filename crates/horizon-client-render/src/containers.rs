@@ -9,6 +9,59 @@ pub use crate::chunk::block_entity::{
 use crate::items::ItemStack;
 use std::collections::HashMap;
 
+/// a content mod's menu type (`data/<id>/horizon/menu/`, vanilla's
+/// `MenuType`): its container slots, its data slots (`ContainerData`) and the
+/// slots players only take from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModMenuType {
+    pub id: &'static str,
+    pub slots: usize,
+    pub data_slots: usize,
+    pub results: Vec<usize>,
+}
+
+static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
+
+/// registers the content mods' menu types, `(id, slots, data slots,
+/// results)`, a list set once per process (false when it already was).
+pub fn register_mod_menu_types(
+    menus: impl IntoIterator<Item = (String, usize, usize, Vec<usize>)>,
+) -> bool {
+    if MOD_MENU_TYPES.get().is_some() {
+        return false;
+    }
+    let menus = menus
+        .into_iter()
+        .map(|(id, slots, data_slots, results)| ModMenuType {
+            id: Box::leak(id.into_boxed_str()),
+            slots,
+            data_slots,
+            results,
+        });
+    MOD_MENU_TYPES.set(menus.collect()).is_ok()
+}
+
+/// the content mods' menu types, in registry order.
+pub fn mod_menu_types() -> &'static [ModMenuType] {
+    MOD_MENU_TYPES.get().map_or(&[], Vec::as_slice)
+}
+
+/// the mod menu type named `id`, kept out of line: a vanilla menu never
+/// looks one up.
+#[cold]
+#[inline(never)]
+pub fn mod_menu_type(id: &str) -> Option<&'static ModMenuType> {
+    mod_menu_types().iter().find(|m| m.id == id)
+}
+
+/// whether a client of `brand` can be sent menu type `menu`: a vanilla
+/// client reads the type through `ByteBufCodecs.registry(Registries.MENU)`,
+/// and an id it lacks (`IdMap.byIdOrThrow`) disconnects it, so it is sent
+/// vanilla's only. A Horizon client has the server's (the content identity).
+pub fn menu_reaches(brand: &str, menu: &str) -> bool {
+    brand == "horizon" || menu.starts_with("minecraft:")
+}
+
 impl FurnaceKind {
     pub fn recipe_type(self) -> &'static str {
         match self {
@@ -610,6 +663,15 @@ pub fn block_menu_type(block: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use horizon_core::random::{LegacyRandom, RandomSource};
+
+    /// a client that isn't Horizon's is sent vanilla's menu types only.
+    #[test]
+    fn a_mod_menu_type_reaches_horizon_clients_only() {
+        assert!(menu_reaches("horizon", "ruby:press"));
+        assert!(!menu_reaches("vanilla", "ruby:press"));
+        assert!(!menu_reaches("fabric", "ruby:press"));
+        assert!(menu_reaches("vanilla", "minecraft:generic_9x3"));
+    }
 
     #[test]
     fn campfire_slots_take_food_cook_it_and_cool_down() {

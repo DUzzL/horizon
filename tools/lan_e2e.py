@@ -1554,6 +1554,30 @@ def check_deaths(host, guest, out):
             guest.wait(10)
         said['thorns'] = host.raw('messages', 10)['chat']
         host.shot(out, 'deaths-thorns')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        ready()
+        gx, gy, gz = pos_of(guest)
+        host('command', command=f'tp @s {gx - 4:.2f} {gy:.2f} {gz:.2f}')
+        bx, by, bz = int(gx) - 1, int(gy), int(gz)
+        host('command', command=f'setblock {bx} {by} {bz} minecraft:tnt')
+        host.raw('look-at', f'{bx + 0.5:.2f}', f'{by + 0.5:.2f}', f'{bz + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        guest.wait(100)
+        said['tnt'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-tnt')
+        ready()
+        hx, hy, hz = pos_of(host)
+        host('command', command='effect give @s minecraft:resistance 10 5')
+        host('command', command=f'summon minecraft:pig {hx + 3:.2f} {hy:.2f} {hz:.2f} {{NoAI:1b}}')
+        host('command', command=f'setblock {int(hx) + 2} {int(hy)} {int(hz)} minecraft:tnt')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:flint_and_steel')
+        host.raw('look-at', f'{int(hx) + 2.5:.2f}', f'{int(hy) + 0.5:.2f}', f'{int(hz) + 0.5:.2f}')
+        host.wait(2)
+        host.raw('use-item')
+        host.wait(100)
+        said['blast_pig'] = host.raw('entities', 6, 'pig')['entities']
+        host.shot(out, 'deaths-blast-pig')
     finally:
         host('command', command='gamerule natural_health_regeneration true')
         for g in (host, guest):
@@ -1565,9 +1589,11 @@ def check_deaths(host, guest, out):
             'host_death_behind_guest': f'{name} was slain by {GUEST_NAME}',
             'arrow': f'{GUEST_NAME} was shot by {name}',
             'arrow_behind_guest': f'{name} was shot by {GUEST_NAME}',
-            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}'}
+            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}',
+            'tnt': f'{GUEST_NAME} was blown up by {name}'}
     for case, line in want.items():
         assert line in said[case], f'no "{line}" in the {case} chat: {said[case]}'
+    assert not said['blast_pig'], f'the blast left the pig standing: {said["blast_pig"]}'
     for case, lines in said.items():
         assert not any('%1$s' in line or '%2$s' in line for line in lines), \
             f'a raw template in the {case} chat: {lines}'
@@ -10612,6 +10638,44 @@ CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
 
 
+def check_trident_pickup(host, guest, out):
+    """#5577: a thrown trident a player picks up (AbstractArrow.playerTouch, then Player.take) flies
+    into them on every client as an ItemPickupParticle, like an arrow, instead of vanishing. A
+    server's client keeps tridents apart from the other projectiles."""
+    face_each_other(host, guest)
+    seen = {}
+    try:
+        for game in (host, guest):
+            game('command', command='gamemode survival')
+            game('command', command='clear @s')
+            game('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+            # Straight down: it sticks at the player's feet, inside their pickup box.
+            game('command', command='tp @s ~ ~ ~ ~ 90')
+            game.wait(5)
+            before = {g.name: g('status')['pickups'].get('trident', 0) for g in (host, guest)}
+            game.raw('use-item', '--hold', 1.2)
+            game.wait(40)
+            game.shot(out, 'trident-pickup')
+            seen[game.name] = {'flown': {g.name: g('status')['pickups'].get('trident', 0) - before[g.name]
+                                         for g in (host, guest)},
+                               'tridents': game('inventory')['counts'].get('minecraft:trident', 0)}
+    finally:
+        for game in (host, guest):
+            game.raw('mouse', 'right', 'up')
+            game('command', command='clear @s')
+        host('command', command='kill @e[type=minecraft:trident]')
+        face_each_other(host, guest)
+    for name, case in seen.items():
+        assert case['tridents'] == 1, f'{name} did not pick the trident up: {seen}'
+        if SERVER_THREAD:
+            assert all(n == 1 for n in case['flown'].values()), f"{name}'s trident did not fly to them: {seen}"
+    return seen
+
+
+CHECKS += ['trident_pickup']
+CHECK_FNS['trident_pickup'] = check_trident_pickup
+
+
 # Mounts for mount_other_level: (kind, summon NBT, blocks in front of the player). A camel is
 # always tame (Camel.isTamed); the equines need Tame:1b, and a nautilus an Owner, the player's
 # offline UUID (TamableAnimal.readAdditionalSaveData tames it). A donkey, mule and llama get a
@@ -10828,6 +10892,51 @@ def check_cushion_break_seated(host, guest, out):
 
 CHECKS += ['cushion_break_seated']
 CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
+
+
+def check_attack_over_slab(host, guest, out):
+    """#5772: a mob whose centre a block hides from the eyes, but whose head shows over it, takes the
+    hit the crosshair aims at its head. The attack packet names only the entity, so the server aims
+    the swapped-in player itself; it aimed at the centre and dropped the hit (#5903). A bottom slab at
+    eye height between the player and a zombie hides the zombie's centre, not its head."""
+    x, y, z = map(math.floor, pos_of(host))
+    tag = 'attack_over_slab'
+    target = [x + 2.5, y, z + 0.5]
+    seen = {}
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 5} {y - 1} {z + 3} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 5} {y + 4} {z + 3} minecraft:air')
+    host('command', command=f'setblock {x + 1} {y + 1} {z} minecraft:stone_slab[type=bottom]')
+    try:
+        for label, player, other in (('host', host, guest), ('guest', guest, host)):
+            player('command', command='gamemode survival')
+            player('command', command='clear @s')
+            player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+            other('command', command=f'tp @s {x + 0.5} {y} {z + 3.5}')
+            host('command', command=f'summon minecraft:zombie {target[0]} {y} {target[2]} '
+                 f'{{NoAI:1b,PersistenceRequired:1b,Tags:["{tag}"]}}')
+            player.wait(20)  # full attack charge and the zombie paired
+            mob = next(m for m in player.raw('mobs', 16)['near']
+                       if m['kind'] == 'minecraft:zombie' and math.dist(m['pos'], target) < 0.1)
+            before = mob_seen(player, mob['id'])['health']
+            # The head, over the slab: the crosshair hits the zombie, not the slab.
+            player.raw('look-at', target[0], y + 1.8, target[2])
+            player.wait(2)
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            after = mob_seen(player, mob['id'])['health']
+            player.shot(out, f'attack-over-slab-{label}')
+            seen[label] = {'health': [before, after]}
+            host('command', command=f'kill @e[tag={tag}]')
+            player.wait(5)
+            assert after < before, f'{label}: the hit over the slab did no damage: {seen}'
+        return seen
+    finally:
+        host('command', command=f'kill @e[tag={tag}]')
+        host('command', command=f'setblock {x + 1} {y + 1} {z} minecraft:air')
+
+
+CHECKS += ['attack_over_slab']
+CHECK_FNS['attack_over_slab'] = check_attack_over_slab
 
 
 if __name__ == '__main__':

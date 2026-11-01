@@ -179,7 +179,7 @@ fn state(registry: &BlockRegistry, text: &str) -> BlockStateId {
     registry
         .resolve(&BlockState {
             name: name.to_owned(),
-            properties,
+            properties: properties.into(),
         })
         .unwrap_or_else(|e| panic!("{text}: {e}"))
 }

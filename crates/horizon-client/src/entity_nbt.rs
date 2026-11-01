@@ -2287,10 +2287,21 @@ const THROWABLES: [(ProjectileKind, &str); 3] = [
     (ProjectileKind::EnderPearl, "minecraft:ender_pearl"),
 ];
 fn throwable_item(kind: &ProjectileKind) -> Option<&'static str> {
+    if let ProjectileKind::Thrown(t) = kind {
+        return Some(t.item);
+    }
     THROWABLES
         .iter()
         .find(|(k, _)| k == kind)
         .map(|&(_, id)| id)
+}
+
+/// The thrown kind an entity id names: vanilla's, or a content mod's type.
+pub fn throwable_kind(id: &str) -> Option<ProjectileKind> {
+    match THROWABLES.iter().find(|(_, i)| *i == id) {
+        Some((kind, _)) => Some(kind.clone()),
+        None => crate::projectiles::thrown_type(id).map(ProjectileKind::Thrown),
+    }
 }
 
 /// Whether its chunk saves it: the kinds `arrow_to_nbt`, `fireball_to_nbt`
@@ -2341,8 +2352,7 @@ pub fn throwable_to_nbt(
 /// `ThrowableItemProjectile.readAdditionalSaveData` for the kinds
 /// [`throwable_to_nbt`] writes; the owner is the player when it is theirs.
 pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
-    let id = kind(tag)?;
-    let (kind, _) = THROWABLES.iter().find(|(_, i)| *i == id)?.clone();
+    let kind = throwable_kind(&kind(tag)?)?;
     let owner = owner_uuid(tag);
     let from_player = player.is_some() && owner == player;
     let mut p = Projectile::new(kind, position(tag)?, from_player.then_some(Who::Player));
@@ -4470,5 +4480,35 @@ mod held_item_name_tests {
                 .custom_name()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod mod_thrown_nbt_tests {
+    use super::*;
+
+    #[test]
+    fn a_mod_thrown_type_saves_its_id_and_item_and_loads_back() {
+        crate::projectiles::register_test_types();
+        let bolt = crate::projectiles::thrown_type("ruby:bolt").unwrap();
+        let mut p = Projectile::new(
+            ProjectileKind::Thrown(bolt),
+            Vec3::new(1.0, 80.0, 2.0),
+            None,
+        );
+        p.velocity = Vec3::new(0.0, 0.5, 1.0);
+        assert!(saved_with_chunk(&p));
+        let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
+        assert_eq!(super::kind(&tag).as_deref(), Some("ruby:bolt"));
+        let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+        assert_eq!(&*item.item, "ruby:gem");
+        let back = throwable_from_nbt(&tag, None).unwrap();
+        assert_eq!((&back.kind, back.velocity), (&p.kind, p.velocity));
+        // NoGravity comes back too, as for vanilla's (a summoned bolt that floats).
+        p.no_gravity = true;
+        let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
+        assert!(throwable_from_nbt(&tag, None).unwrap().no_gravity);
+        // a type no mod declares now is not a thrown kind.
+        assert!(throwable_kind("gone:bolt").is_none());
     }
 }
