@@ -23,7 +23,9 @@ def lift(path, start, end):
 class RemoteOwnRocketTests(unittest.TestCase):
     def test_the_spark_follows_the_moved_player_at_the_rocket_hand(self):
         methods = lift(
-            GAME / "fireworks.rs", "    /// `Entity.getHandHoldingItemAngle", "    /// The trail ("
+            GAME / "fireworks.rs",
+            "    /// `Entity.getHandHoldingItemAngle",
+            "    /// `FireworkRocketItem.use` while gliding",
         ) + lift(
             GAME / "remote_projectiles.rs",
             "    /// This client's own player's entity id",
@@ -44,8 +46,26 @@ fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
 }
 struct ItemStack { item: String }
 struct Remote { entity_id: i32 }
+mod horizon_core {
+    pub mod random {
+        // Gaussians in turn from a list.
+        pub struct LegacyRandom(pub Vec<f64>);
+        impl LegacyRandom {
+            pub fn next_gaussian(&mut self) -> f64 { self.0.remove(0) }
+        }
+    }
+}
+struct World { random: horizon_core::random::LegacyRandom }
+enum ParticleType { Firework }
+struct ParticleOptions;
+impl ParticleOptions { fn simple(_: ParticleType) -> Self { Self } }
+#[derive(Default)]
+struct Particles { added: Vec<([f64; 3], [f64; 3])> }
+impl Particles {
+    fn add(&mut self, _: &ParticleOptions, at: [f64; 3], v: [f64; 3]) { self.added.push((at, v)); }
+}
 struct Clock { runs: bool }
-impl Clock { fn world_runs(&self) -> bool { self.runs } }
+impl Clock { fn runs_normally(&self) -> bool { self.runs } }
 struct Settings { main_hand_left: bool }
 struct Player { position: Vec3, velocity: Vec3, fall_flying: bool }
 #[derive(Default)]
@@ -53,13 +73,10 @@ struct Rocket { attached_to: Option<u32>, position: Vec3, velocity: Vec3 }
 struct Game {
     remote: Option<Remote>, clock: Clock, player: Option<Player>, settings: Settings,
     hotbar: Option<ItemStack>, offhand: Option<ItemStack>, selected: usize,
-    rockets: Vec<Rocket>, yaw: f32, pitch: f32, sparks: Vec<([f64; 3], f64)>,
+    rockets: Vec<Rocket>, yaw: f32, pitch: f32, world: World, particles: Particles,
 }
 impl Game {
-fn stack_in(&self, _slot: usize) -> Option<&ItemStack> { self.hotbar.as_ref() }
-fn rocket_spark(&mut self, r: &Rocket) {
-    self.sparks.push(([r.position.x, r.position.y, r.position.z], -r.velocity.y * 0.5));
-}
+fn stack_in(&self, slot: usize) -> Option<&ItemStack> { self.hotbar.as_ref().filter(|_| slot == 3) }
 METHODS
 }
 fn rocket() -> Option<ItemStack> { Some(ItemStack { item: "minecraft:firework_rocket".into() }) }
@@ -74,13 +91,15 @@ fn game(runs: bool) -> Game {
             fall_flying: true,
         }),
         settings: Settings { main_hand_left: false },
-        hotbar: rocket(), offhand: None, selected: 0,
+        hotbar: rocket(), offhand: None, selected: 3,
         rockets: vec![
             Rocket { attached_to: Some(7), ..Rocket::default() },
             Rocket { attached_to: Some(8), position: Vec3::new(1.0, 2.0, 3.0), ..Rocket::default() },
             Rocket { attached_to: None, position: Vec3::new(4.0, 5.0, 6.0), ..Rocket::default() },
         ],
-        yaw: 90.0, pitch: 0.0, sparks: Vec::new(),
+        yaw: 90.0, pitch: 0.0,
+        world: World { random: horizon_core::random::LegacyRandom(vec![1.0, -2.0, 1.0, -2.0]) },
+        particles: Particles::default(),
     }
 }
 fn near(a: [f64; 3], b: [f64; 3]) -> bool { a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-4) }
@@ -105,9 +124,11 @@ fn main() {
     let right = [10.0 - 0.0868, 70.0, 20.0 - 0.4924];
     assert!(near(at(g.rockets[0].position), right), "{:?}", g.rockets[0].position);
     assert!(near(at(g.rockets[0].velocity), boosted));
-    // One spark, at the rocket, drifting against the boosted motion.
-    assert_eq!(g.sparks.len(), 1);
-    assert!(near(g.sparks[0].0, right) && (g.sparks[0].1 - 0.05).abs() < 1e-9, "{:?}", g.sparks);
+    // One firework spark at the rocket, drifting against the boosted motion
+    // with a gaussian spread of 0.05 across it.
+    let sparks = &g.particles.added;
+    assert_eq!(sparks.len(), 1);
+    assert!(near(sparks[0].0, right) && near(sparks[0].1, [0.05, 0.05, -0.1]), "{:?}", sparks);
     // Rockets of another entity, or free ones, tick with the other entities.
     assert_eq!(g.rockets[1].position, Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(g.rockets[2].position, Vec3::new(4.0, 5.0, 6.0));
@@ -125,12 +146,12 @@ fn main() {
     g.tick_own_rockets();
     assert_eq!(g.player.as_ref().unwrap().velocity, Vec3::new(0.0, -0.2, 1.0));
     assert_eq!(g.rockets[0].position, Vec3::new(10.0, 70.0, 20.0));
-    assert_eq!(g.sparks.len(), 1);
+    assert_eq!(g.particles.added.len(), 1);
 
     // A frozen level ticks no entities.
     let mut g = game(false);
     g.tick_own_rockets();
-    assert!(g.sparks.is_empty());
+    assert!(g.particles.added.is_empty());
     assert_eq!(g.player.as_ref().unwrap().velocity, Vec3::new(0.0, -0.2, 1.0));
 }
 '''.replace("METHODS", methods)

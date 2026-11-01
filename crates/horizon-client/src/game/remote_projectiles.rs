@@ -588,7 +588,7 @@ impl Game<'_> {
         let Some(me) = self.remote_player_id() else {
             return;
         };
-        if !self.clock.world_runs()
+        if !self.clock.runs_normally()
             || self.player.is_none()
             || !self.rockets.iter().any(|r| r.attached_to == Some(me))
         {
