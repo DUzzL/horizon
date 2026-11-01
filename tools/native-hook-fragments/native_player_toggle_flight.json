@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "name": "player_toggle_flight",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_toggle_flight",
+      "neoforge": "none (NeoForge has no flight toggle event; Bukkit's PlayerToggleFlightEvent)",
+      "side": "server",
+      "cancellable": true
+    }
+  ],
+  "rust_summary": "a player starting or stopping flight, cancellable (`native_player_toggle_flight`).",
+  "doc_summary": "a player starting or stopping flight: `native_player_toggle_flight(player, name, flying, cancel)` is heard once for each change a player's client makes to its flying (vanilla honours it only for a player who may fly), on a server, with the player's state swapped in. A mod sets `cancel` to refuse it: the player keeps the state they had and the server sends their abilities back, so the client lands or flies again. Only what a client asks for is heard, not the flight a game-mode change starts or ends, and not a LAN host's own player. Bundles that use it need `\"hooks\": @API:native_player_toggle_flight@`."
+}
