@@ -28,7 +28,8 @@ pub fn load(root: &Path, sprites: &mut Sprites) {
     }
 }
 
-/// OptiFine's emissive overlays of the block and item sprites already loaded: for each
+/// OptiFine's emissive overlays of the block sprites already loaded (what the terrain draws;
+/// items draw from the HUD atlas): for each
 /// `<ns>:block/<name>` whose `<name><suffix>.png` sits beside it, the overlay is loaded too and
 /// paired with it, first by name, at most [`MAX`]. A pack without such files adds nothing.
 pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)> {
@@ -37,9 +38,8 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
         .layers
         .keys()
         .filter(|name| {
-            name.split_once(':').is_some_and(|(_, p)| {
-                (p.starts_with("block/") || p.starts_with("item/")) && !p.ends_with(&suffix)
-            })
+            name.split_once(':')
+                .is_some_and(|(_, p)| p.starts_with("block/") && !p.ends_with(&suffix))
         })
         .cloned()
         .collect();
@@ -111,21 +111,16 @@ mod tests {
                 .insert(&root, &format!("minecraft:block/{name}"))
                 .unwrap();
         }
+        // Items draw from the HUD atlas, not the terrain: no pair.
         sprites.insert(&root, "minecraft:item/stick").unwrap();
         // glowstone isn't loaded: its overlay pairs with nothing.
         let pairs = load_optifine(&root, &mut sprites);
         assert_eq!(
             pairs,
-            [
-                (
-                    "minecraft:block/stone".into(),
-                    "minecraft:block/stone_e".into()
-                ),
-                (
-                    "minecraft:item/stick".into(),
-                    "minecraft:item/stick_e".into()
-                ),
-            ]
+            [(
+                "minecraft:block/stone".into(),
+                "minecraft:block/stone_e".into()
+            ),]
         );
         assert!(sprites.layers.contains_key("minecraft:block/stone_e"));
         // The pack's own suffix.

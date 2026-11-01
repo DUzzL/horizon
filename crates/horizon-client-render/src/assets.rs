@@ -93,7 +93,7 @@ pub struct RenderAssets {
     pub model_gallery: Vec<Value>,
     pub animations: Vec<crate::sprites::SpriteAnimation>,
     pub sprite_layers: std::collections::BTreeMap<String, u32>,
-    /// OptiFine's emissive block and item overlays: base sprite and overlay sprite names.
+    /// OptiFine's emissive block overlays: base sprite and overlay sprite names.
     pub emissive: Vec<(String, String)>,
     pub translucent_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
