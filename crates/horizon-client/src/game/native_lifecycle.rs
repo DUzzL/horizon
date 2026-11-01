@@ -239,6 +239,8 @@ impl Game<'_> {
 
     /// `error_text` is the engine's own error text, unchanged.
     pub(super) fn native_lifecycle_world_failed(&mut self, error_text: &str) {
+        // The levels that opened before the failure close first.
+        self.native_levels_closing();
         if let Some(context) = self.native_lifecycle.world_open_failed() {
             self.native_world_lifecycle(&context, WorldPhase::WorldOpenFailed, error_text);
         }
@@ -246,6 +248,7 @@ impl Game<'_> {
 
     /// Report a server-loop or shutdown failure once and retire its epoch.
     pub(super) fn native_lifecycle_close_failed(&mut self, error_text: &str) {
+        self.native_levels_closing();
         if let Some(context) = self.native_lifecycle.world_close_failed() {
             self.native_world_lifecycle(&context, WorldPhase::WorldCloseFailed, error_text);
         }
@@ -256,6 +259,8 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
+        // Each level closes after the final save (`LevelEvent.Unload`).
+        self.native_levels_closing();
         if let Some(context) = self.native_lifecycle.world_close_final() {
             self.native_world_lifecycle(&context, WorldPhase::WorldCloseFinal, "");
         }

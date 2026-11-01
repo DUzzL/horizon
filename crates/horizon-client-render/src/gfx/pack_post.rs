@@ -2740,6 +2740,13 @@ impl PackPost {
                 let rp = &mut open.as_mut().expect("open").0;
                 rp.set_pipeline(pass.render());
                 rp.set_bind_group(0, group, &[]);
+                // A sky program that reads the pack's SSBOs (Noble's `gbuffers_textured`, the
+                // sun's fallback) binds them, as the other passes do.
+                if pass.buffers
+                    && let Some(g) = &self.buffers.group
+                {
+                    rp.set_bind_group(4, g, &[]);
+                }
                 sky.geometry.bind(rp, part.textured);
                 open.as_mut().expect("open").1 = i;
             }

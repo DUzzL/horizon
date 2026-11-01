@@ -100,6 +100,15 @@ pub(super) fn blast_reaches(center: [f64; 3], diameter: f64, at: [f64; 3]) -> bo
     d / diameter <= 1.0
 }
 
+/// `ItemEntity.ignoreExplosion` through
+/// `ServerExplosion.shouldAffectBlocklikeEntities`: an explosion that does not
+/// affect blocklike entities is ignored entirely by a dropped item. With
+/// `mobGriefing` off that is every blast that keeps blocks; with it on, none
+/// (no wind charge goes through `server_explode`).
+fn items_ignore_explosion(mob_griefing: bool, interaction: BlockInteraction) -> bool {
+    !mob_griefing && interaction == BlockInteraction::Keep
+}
+
 /// Whether a blast leaves item frames, paintings, cushions and armour stands
 /// alone. Without `mobGriefing`, a blast that keeps blocks is ignored
 /// (`ServerExplosion.shouldAffectBlocklikeEntities` through their
@@ -605,9 +614,15 @@ impl Game<'_> {
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
+        // `ItemEntity.ignoreExplosion` asks `shouldAffectBlocklikeEntities`
+        // first, so a blast that keeps blocks leaves every item untouched.
+        let items_ignore = items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction);
         let before = self.dropped_ids();
         let mut items = std::mem::take(&mut self.dropped);
         items.retain_mut(|item| {
+            if items_ignore {
+                return true;
+            }
             let feet = [item.position.x, item.position.y, item.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
@@ -1199,6 +1214,20 @@ mod tests {
         assert_eq!(blast_resistance(0.3, Some(0.8), false), 0.3, "already low");
         assert_eq!(blast_resistance(4.0, Some(0.8), true), 4.0, "wither immune");
         assert_eq!(blast_resistance(4.0, None, false), 4.0, "another blast");
+    }
+
+    /// A dropped item survives a mob's blast untouched while `mobGriefing` is
+    /// off, and is thrown and hurt as usual by one that destroys blocks or by
+    /// any blast with the rule back on.
+    #[test]
+    fn items_ignore_a_blast_that_keeps_blocks_with_griefing_off() {
+        assert!(items_ignore_explosion(false, BlockInteraction::Keep));
+        assert!(!items_ignore_explosion(false, BlockInteraction::Destroy));
+        assert!(!items_ignore_explosion(
+            false,
+            BlockInteraction::DestroyWithDecay
+        ));
+        assert!(!items_ignore_explosion(true, BlockInteraction::Keep));
     }
 
     #[test]
