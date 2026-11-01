@@ -284,6 +284,7 @@ impl<'a> Split<'a> {
                 for button in std::mem::take(&mut game.physical_buttons) {
                     game.extras_mouse(button, false);
                 }
+                game.drag_button = None;
                 game.modifiers = Default::default();
                 game.left = false;
                 game.right = false;
@@ -375,6 +376,8 @@ impl<'a> Split<'a> {
         let mut old = self.host.renderer.take().ok_or("no renderer")?;
         old.release_surface();
         let api = self.host.settings.horizon.api;
+        let batching = self.host.settings.horizon.translucent_batching;
+        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             true,
@@ -383,6 +386,8 @@ impl<'a> Split<'a> {
             Some(&old),
             None,
             api,
+            batching,
+            shader_pack,
         );
         let renderer = match built {
             Ok(r) => r,
@@ -446,6 +451,8 @@ impl<'a> Split<'a> {
         let old = self.host.renderer.take().ok_or("no renderer")?;
         old.take_back(main.compositor);
         let api = self.host.settings.horizon.api;
+        let batching = self.host.settings.horizon.translucent_batching;
+        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             false,
@@ -454,6 +461,8 @@ impl<'a> Split<'a> {
             Some(&old),
             None,
             api,
+            batching,
+            shader_pack,
         );
         let renderer = match built {
             Ok(r) => r,

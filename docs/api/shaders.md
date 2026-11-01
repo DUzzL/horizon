@@ -196,3 +196,5 @@ stages.
 - 2026-11-01: API 0.1 (additions): `[material] fog`.
 - 2026-11-01: API 0.1 (additions): the material stage reads the resource packs' LabPBR maps (`_n`, `_s`): `block_pbr_maps`, `block_normal_map`, `block_specular_map`, their `_level` forms and `block_pbr_size`. The maps load only while a native pack is picked: without one they cost nothing, and the first pick reloads the resources once.
 - 2026-11-01: API 0.1 (additions): `[[post]] output` and `scale`, targets of a pack's own at the world's size, half or a quarter of it.
+- 2026-11-01: API 0.1 (additions): the material stage's `block_texture`, `block_texture_level`, `block_texture_size` and `block_texture_lod`, the surface's own sprite anywhere on it. The LabPBR `_level` functions now count the block texture's mip levels, the same footprint where a map is smaller.
+- 2026-11-01: API 0.1 (additions): the material stage's `set_surface` and the post stage's `surface_at` and `scene_surface`: a normal, a smoothness and a value of the pack's own per pixel of solid terrain. Only a material stage that calls `set_surface` pays for the target.

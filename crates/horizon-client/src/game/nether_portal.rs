@@ -657,6 +657,9 @@ impl Game<'_> {
         for c in &self.carts {
             self.portals.before.insert(c.id, c.position);
         }
+        for t in &self.tnts {
+            self.portals.before.insert(t.id, t.position);
+        }
         // Only an entity in a portal, or cooling down from one, has a state
         // here: whether the others could use a portal is not worth asking
         // for each of them on every tick.
@@ -671,6 +674,11 @@ impl Game<'_> {
             for m in &self.mobs {
                 if tracked.contains_key(&m.id) {
                     ids.push((m.id, self.mob_can_use_portal(m)));
+                }
+            }
+            for t in &self.tnts {
+                if tracked.contains_key(&t.id) {
+                    ids.push((t.id, self.tnt_can_use_portal(t.id)));
                 }
             }
             let vehicles = self.boats.iter().map(|b| b.id);
@@ -752,6 +760,11 @@ impl Game<'_> {
     }
     /// `canUsePortal(false)` of a boat or minecart: empty, or ridden by
     /// server players only, whom it carries along.
+    /// `Entity.canUsePortal(false)` for a primed TNT: it carries no mob.
+    fn tnt_can_use_portal(&self, id: u32) -> bool {
+        // Id 0: not tracked yet (the in-frame path), nothing to key its portal state by.
+        id != 0 && !self.mobs.iter().any(|m| m.extra.mount == Some(id))
+    }
     fn vehicle_can_use_portal(&self, id: u32) -> bool {
         if !self.vehicle_occupied(id) {
             return true;
@@ -812,6 +825,13 @@ impl Game<'_> {
             .iter()
             .map(|e| (e.id, e.position, 0.25, 0.25))
             .collect();
+        // PrimedTnt is 0.98 across; one that carries a mob stays (the rider would be left behind).
+        let tnts: Vec<(u32, Vec3, f32, f32)> = self
+            .tnts
+            .iter()
+            .filter(|t| self.tnt_can_use_portal(t.id))
+            .map(|t| (t.id, t.position, 0.98, 0.98))
+            .collect();
         let mobs: Vec<(u32, Vec3, f32, f32)> = self
             .mobs
             .iter()
@@ -834,7 +854,7 @@ impl Game<'_> {
             .map(|(id, at, w, h)| (id, at, w as f32, h as f32))
             .collect();
         let mut portal_sections = std::mem::take(&mut self.portals.sections);
-        for (id, to, width, height) in items.into_iter().chain(mobs).chain(vehicles) {
+        for (id, to, width, height) in items.into_iter().chain(tnts).chain(mobs).chain(vehicles) {
             let from = self.portals.before.get(&id).copied().unwrap_or(to);
             if let Some(pos) = self.swept_portal(from, to, width, height, &mut portal_sections) {
                 inside.push((id, pos));
@@ -954,6 +974,26 @@ impl Game<'_> {
                 self.persist_raw(id),
             );
             self.remove_dropped(i);
+            self.forget_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
+        } else if let Some(i) = self.tnts.iter().position(|t| t.id == id) {
+            let t = &self.tnts[i];
+            let plan = self.entity_plan(entry, t.position, 0.98, 0.98, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let t = &self.tnts[i];
+            let tag = horizon_client::entity_nbt::tnt_to_nbt(
+                t.position,
+                t.velocity,
+                t.on_ground,
+                t.fuse,
+                uuid,
+                self.persist_raw(id),
+            );
+            self.tnts.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
