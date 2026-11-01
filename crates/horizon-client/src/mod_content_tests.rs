@@ -2608,6 +2608,98 @@ fn content_block_state_properties_fan_out_its_states() {
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 }
 
+/// A declared property whose name sorts before the template's goes in vanilla's order
+/// (`StateDefinition`): all the names sorted, the first slowest, so `alpha` varies slower than the
+/// template's `axis`. A state table that read the rows in the other order stopped the game at
+/// load ("registry state order differs from vanilla's state definition").
+#[test]
+fn content_block_state_properties_follow_vanilla_name_order() {
+    let (base, mods) = block_base(
+        "block-name-order",
+        &[r#"{"template":"minecraft:test","item":false,
+           "state_properties":{"alpha":{"type":"boolean"}}}"#],
+    );
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(rows.len(), 2 + 4);
+    let properties = |i: usize| -> (String, String) {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        let Some((_, J::Obj(p))) = state.iter().find(|(k, _)| k == "properties") else {
+            panic!("row {i} has no properties")
+        };
+        let value = |name: &str| match p.iter().find(|(k, _)| k == name) {
+            Some((_, J::Str(s))) => s.clone(),
+            _ => panic!("row {i} has no {name}"),
+        };
+        (value("alpha"), value("axis"))
+    };
+    let own = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+    // `alpha` slowest, then `axis`: the first name varies slowest, as in vanilla.
+    assert_eq!(
+        (2..6).map(properties).collect::<Vec<_>>(),
+        [
+            own("false", "x"),
+            own("false", "y"),
+            own("true", "x"),
+            own("true", "y")
+        ]
+    );
+    // The default is the template's default state with every declared property at its default.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// `state_order` over the template's and the declared properties together.
+#[test]
+fn block_states_are_laid_out_in_vanilla_order() {
+    let p = |name: &str, len: u32| (name.to_owned(), len);
+    // Every declared name after the template's: the template's states times the combinations,
+    // as before, so ids of existing blocks do not move.
+    let order = state_order(&[p("axis", 2)], &[p("lit", 2)]);
+    assert_eq!(order, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+    // No declared property, or no template property: the identity, whichever side it is on.
+    assert_eq!(state_order(&[p("axis", 3)], &[]), [(0, 0), (1, 0), (2, 0)]);
+    assert_eq!(state_order(&[], &[p("lit", 2)]), [(0, 0), (0, 1)]);
+    assert_eq!(state_order(&[], &[]), [(0, 0)]);
+    // `bites` (4 values) before `facing` (4 values): the declared one slowest.
+    let order = state_order(&[p("facing", 4)], &[p("bites", 4)]);
+    assert_eq!(order.len(), 16);
+    assert!(
+        order
+            .iter()
+            .enumerate()
+            .all(|(j, &(s, c))| (s, c) == (j as u32 % 4, j as u32 / 4))
+    );
+    // Interleaved: `b` between the template's `a` and `c`. a (2), b (2), c (3), a slowest.
+    let order = state_order(&[p("a", 2), p("c", 3)], &[p("b", 2)]);
+    assert_eq!(order.len(), 12);
+    // Template state = a * 3 + c, combo = b.
+    assert_eq!(order[0], (0, 0));
+    assert_eq!(order[1], (1, 0));
+    assert_eq!(order[3], (0, 1));
+    assert_eq!(order[6], (3, 0));
+    assert_eq!(order[11], (5, 1));
+    // Every pair appears once.
+    let mut seen = order.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), 12);
+}
+
 /// The declared default comes first in the run, so its id is the block's
 /// default with no arithmetic of its own.
 #[test]
@@ -2674,24 +2766,6 @@ fn content_block_state_properties_are_validated() {
         Ok(_) => panic!("a shadowed template property was accepted"),
     };
     assert!(error.contains("axis is already on"), "{error}");
-    fs::remove_dir_all(&base).unwrap();
-    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
-
-    // A declared name that sorts before the template's `axis` would make the state table
-    // disagree with vanilla's order and stop the game at load: refused, naming the block.
-    let (base, mods) = block_base(
-        "block-name-order",
-        &[r#"{"template":"minecraft:test","state_properties":{"alpha":{"type":"boolean"}}}"#],
-    );
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("a property sorting before the template's was accepted"),
-    };
-    assert!(
-        error.contains("testmod:") && error.contains("alpha sorts before axis, a property of"),
-        "{error}"
-    );
-    assert!(!error.contains("  "), "one space between words: {error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 
@@ -3367,5 +3441,103 @@ fn biome_modifiers_take_one_biome_or_a_list() {
         features["minecraft:desert"],
         serde_json::json!([["minecraft:fossil"], ["minecraft:lake"]])
     );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// Blocks and items a native mod declares in code join the content plan:
+/// inside the content mod of their namespace, or as one of their own, with
+/// ids after vanilla's as files' are.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn blocks_and_items_declared_in_code_get_ids() {
+    use horizon_mods::content::{Block, Item};
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-declared-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let known = known_components(&base).unwrap();
+    let block = |id: &str| Block {
+        id: id.into(),
+        template: "minecraft:oak_log".into(),
+        item: true,
+        ..Block::default()
+    };
+    let wrench = Item {
+        id: "gears:wrench".into(),
+        template: "minecraft:stick".into(),
+        max_stack_size: Some(1),
+        ..Item::default()
+    };
+    let mut mods = vec![ruby_mod(&scratch.join("ruby"))];
+    let errors = accept_declared(
+        &mut mods,
+        &[block("ruby:ruby_log"), block("gears:shaft")],
+        &[wrench],
+        &known,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(mods.len(), 2);
+    assert!(
+        mods[0]
+            .content
+            .blocks
+            .iter()
+            .any(|b| b.id == "ruby:ruby_log")
+    );
+    assert_eq!(mods[1].id, "gears");
+    // A namespace another mod owns, and a clash with a file's block, are refused whole.
+    let refused = accept_declared(
+        &mut mods,
+        &[block("ruby:ruby_block"), block("ruby:ruby_post")],
+        &[],
+        &known,
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        !mods[0]
+            .content
+            .blocks
+            .iter()
+            .any(|b| b.id == "ruby:ruby_post")
+    );
+
+    let root = resource_root(&base, &mods, &scratch.join("cache")).unwrap();
+    let vanilla = Assets::load(&base).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let n = vanilla.registry.len() as u32;
+    let log_states = (0..n)
+        .filter(|&s| vanilla.registry.state(BlockStateId(s)).unwrap().name == "minecraft:oak_log")
+        .count() as u32;
+    // Sorted by mod, then block: gears:shaft, then ruby's ruby_block, ruby_door, ruby_glass, ruby_log.
+    let shaft = (n..assets.registry.len() as u32)
+        .find(|&s| assets.registry.state(BlockStateId(s)).unwrap().name == "gears:shaft")
+        .unwrap();
+    assert_eq!(shaft, n);
+    assert!(assets.registry.default_state("ruby:ruby_log").is_some());
+    assert_eq!(
+        assets.registry.len() as u32,
+        n + log_states + 1 + 64 + 1 + log_states
+    );
+    let ids = horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap();
+    for item in ["gears:shaft", "gears:wrench", "ruby:ruby_log"] {
+        assert!(
+            ids.get("minecraft:item").unwrap().id(item).is_some(),
+            "{item}"
+        );
+    }
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let items = Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
+    assert_eq!(items.items["gears:wrench"].max_stack, 1);
+    assert!(items.items["gears:shaft"].block.is_some());
+    // The same declarations reuse the root; others build a new one.
+    assert_eq!(
+        resource_root(&base, &mods, &scratch.join("cache")).unwrap(),
+        root
+    );
+    let stamp = fs::read(root.join(STAMP)).unwrap();
+    mods[1].content.items[0].max_stack_size = Some(2);
+    resource_root(&base, &mods, &scratch.join("cache")).unwrap();
+    assert_ne!(fs::read(root.join(STAMP)).unwrap(), stamp);
     let _ = fs::remove_dir_all(&scratch);
 }

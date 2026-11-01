@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "name": "entity_tick_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_tick_pre",
+      "neoforge": "EntityTickEvent.Pre",
+      "side": "server",
+      "cancellable": true
+    },
+    {
+      "name": "entity_tick_post",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_tick_post",
+      "neoforge": "EntityTickEvent.Post",
+      "side": "server",
+      "cancellable": false
+    },
+    {
+      "name": "entity_tick_listened",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_tick_listened",
+      "side": "server",
+      "cancellable": false
+    }
+  ],
+  "rust_summary": "entities ticking, which a mod can stop (`native_entity_tick_pre`, `native_entity_tick_post`, told while a mod sets `native_entity_tick_listened`).",
+  "doc_summary": "entities ticking, through `native_entity_tick_pre` (NeoForge's `EntityTickEvent.Pre`) and `native_entity_tick_post` (`EntityTickEvent.Post`), with the entity's id and type (`minecraft:zombie`, `minecraft:item`) and the level. Set `canceled` in the Pre and the entity doesn't tick this tick (and its Post isn't told). Told for the mobs, item entities, minecarts and boats that tick in an entity-ticking chunk, on the single player server thread and on a dedicated server; not for a player's own boat or minecart, projectiles, orbs, primed TNT, falling blocks or armor stands yet (check `kind`: later APIs add kinds). Mobs and items hear every Pre before the family's first tick and every Post after its last; minecarts and boats hear theirs around each one's tick. A mod that hooks them also hooks `native_entity_tick_listened(listened)` and sets `*listened = true`: otherwise no entity's tick is told. It runs each tick for every ticking entity, so keep it cheap. Bundles that use them need \"hooks\": @API:entity_tick@."
+}

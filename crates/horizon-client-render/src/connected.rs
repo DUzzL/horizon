@@ -41,9 +41,35 @@ pub enum Pick {
     Quarters([TileLayer; 4]),
 }
 
+/// A tile drawn over a face, after its own (`overlay*` methods).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Overlay {
+    pub layer: u16,
+    /// `layer=translucent`: drawn in the translucent pass, else with an alpha cutout.
+    pub translucent: bool,
+    /// `tintIndex` and the state whose tint it is (`tintBlock`, else the face's block).
+    pub tint: Option<(i32, Option<u32>)>,
+}
+
 struct LoadedRule {
     rule: Rule,
     tiles: Vec<TileLayer>,
+    overlay: OverlayJoin,
+}
+
+/// What an overlay rule joins: `connectBlocks` as state ids and `connectTiles` as sprite
+/// layers (sorted), and its tint.
+#[derive(Default)]
+struct OverlayJoin {
+    states: Vec<u32>,
+    tiles: Vec<u16>,
+    tint: Option<(i32, Option<u32>)>,
+}
+
+impl OverlayJoin {
+    fn any(&self) -> bool {
+        !self.states.is_empty() || !self.tiles.is_empty()
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -98,9 +124,8 @@ impl ConnectedTextures {
         mut face_layer: impl FnMut(BlockStateId, Face) -> Option<u32>,
     ) -> Self {
         let mut rules = ctm::load(root);
-        // Rules no face can use load no tiles: overlays (not drawn yet), and custom names (section
-        // meshes see no block entity).
-        rules.retain(|r| !r.method.is_overlay() && r.name.is_none());
+        // Rules with a custom name load no tiles: section meshes see no block entity.
+        rules.retain(|r| r.name.is_none());
         // Rule indices are `u16`.
         rules.truncate(usize::from(u16::MAX));
         if rules.is_empty() {
@@ -141,7 +166,11 @@ impl ConnectedTextures {
                     })
                     .collect::<crate::Result<Vec<_>>>();
                 match tiles {
-                    Ok(tiles) => Some(LoadedRule { rule, tiles }),
+                    Ok(tiles) => Some(LoadedRule {
+                        rule,
+                        tiles,
+                        overlay: OverlayJoin::default(),
+                    }),
                     Err(e) => {
                         log::warn!("Horizon: connected textures {}: a tile: {e}", rule.path);
                         None
@@ -155,7 +184,11 @@ impl ConnectedTextures {
                 .map(|s| (s.name.as_str(), &s.properties))
         });
         let mut out = Self::build(loaded, states, |name| sprites.layers.get(name).copied());
-        if out.rules.iter().any(|r| r.rule.connect == Connect::Tile) {
+        if out
+            .rules
+            .iter()
+            .any(|r| r.rule.connect == Connect::Tile || !r.overlay.tiles.is_empty())
+        {
             out.face_layers = (0..registry.len() as u32)
                 .map(|id| {
                     Face::ALL
@@ -177,6 +210,48 @@ impl ConnectedTextures {
             rules,
             ..Self::default()
         };
+        let states: Vec<_> = states.collect();
+        // Each block's states, for `connectBlocks` and `tintBlock`.
+        let mut block_states: HashMap<&str, Vec<u32>> = HashMap::new();
+        if out.rules.iter().any(|r| r.rule.method.is_overlay()) {
+            for (id, state) in states.iter().enumerate() {
+                if let Some((name, _)) = state {
+                    block_states.entry(name).or_default().push(id as u32);
+                }
+            }
+        }
+        for r in out.rules.iter_mut().filter(|r| r.rule.method.is_overlay()) {
+            let rule = &r.rule;
+            // `connectBlocks` and `connectTiles` are "only for method overlay".
+            if rule.method == Method::Overlay {
+                for m in &rule.connect_blocks {
+                    let candidates = block_states
+                        .get(m.id.as_str())
+                        .map_or(&[][..], Vec::as_slice);
+                    r.overlay.states.extend(candidates.iter().filter(|&&id| {
+                        states[id as usize].is_some_and(|(name, props)| {
+                            m.matches(name, |k| props.get(k).map(String::as_str))
+                        })
+                    }));
+                }
+                r.overlay.states.sort_unstable();
+                r.overlay.states.dedup();
+                r.overlay.tiles = rule
+                    .connect_tiles
+                    .iter()
+                    .filter_map(|t| layer(&sprite_name(t)).map(|l| l as u16))
+                    .collect();
+                r.overlay.tiles.sort_unstable();
+            }
+            // A `tintBlock` the game doesn't have tints nothing.
+            let tint = match rule.tint_block.as_deref() {
+                None => Some(None),
+                Some(block) => block_states.get(block).map(|ids| Some(ids[0])),
+            };
+            r.overlay.tint = tint
+                .filter(|_| rule.tint_index >= 0)
+                .map(|b| (rule.tint_index, b));
+        }
         let mut blocks = HashMap::new();
         let mut by_layer: Vec<Vec<u16>> = Vec::new();
         // Block rules by the block each entry names, so a state tests only its own.
@@ -260,6 +335,7 @@ impl ConnectedTextures {
         pos: [i32; 3],
         neighbour: impl Fn([i32; 3]) -> u32,
         biome: impl Fn() -> Option<&'b str>,
+        mut overlay: impl FnMut(Overlay),
     ) -> Pick {
         let (mut by_state, mut by_layer) = (
             self.list(&self.by_state, state as usize),
@@ -290,14 +366,16 @@ impl ConnectedTextures {
             let r = &self.rules[usize::from(i)];
             if (block || r.rule.match_blocks.is_empty())
                 && (tile || r.rule.match_tiles.is_empty())
-                && let Some(pick) = self.apply(r, state, layer, face, pos, &neighbour, &biome)
+                && let Some(pick) =
+                    self.apply(r, state, layer, face, pos, &neighbour, &biome, &mut overlay)
             {
                 return pick;
             }
         }
     }
 
-    /// One rule on a face: `None` when it doesn't apply or picks `<skip>`.
+    /// One rule on a face: `None` when it doesn't apply, picks `<skip>` or draws an overlay
+    /// (handed to `overlay`: the rules after it still choose the face's own sprite).
     #[allow(clippy::too_many_arguments)]
     fn apply<'b>(
         &self,
@@ -308,6 +386,7 @@ impl ConnectedTextures {
         pos: [i32; 3],
         neighbour: &impl Fn([i32; 3]) -> u32,
         biome: &impl Fn() -> Option<&'b str>,
+        overlay: &mut impl FnMut(Overlay),
     ) -> Option<Pick> {
         let rule = &r.rule;
         // `Rule::applies_at`, with the biome looked up only for rules that test one. Rules with
@@ -323,8 +402,17 @@ impl ConnectedTextures {
             return None;
         }
         let info = self.states.get(state as usize).copied().unwrap_or_default();
+        let join = &r.overlay;
         let joins = |offset: [i32; 3]| {
             let other = neighbour(offset);
+            if join.any() {
+                // An overlay joins the blocks it is drawn beside.
+                return join.states.binary_search(&other).is_ok()
+                    || self
+                        .face_layers
+                        .get(other as usize)
+                        .is_some_and(|f| join.tiles.binary_search(&f[face as usize]).is_ok());
+            }
             match rule.connect {
                 Connect::Block => {
                     self.states.get(other as usize).map(|s| s.block) == Some(info.block)
@@ -343,7 +431,36 @@ impl ConnectedTextures {
         };
         let mask = || geometry::neighbours(axes(face), face.normal(), rule.inner_seams, joins);
         let tile = |i: usize| r.tiles.get(i).copied().unwrap_or(TileLayer::Default);
-        let index = match rule.method {
+        let mut draw = |t: TileLayer| {
+            if let TileLayer::Layer { layer, .. } = t {
+                overlay(Overlay {
+                    layer,
+                    translucent: rule.layer == ctm::Layer::Translucent,
+                    tint: join.tint,
+                });
+            }
+        };
+        // An overlay picks its tile as the method it is the overlay of.
+        let method = match rule.method {
+            Method::Overlay => {
+                // The 17 transition tiles, toward the blocks it names (none: it draws nothing).
+                if join.any() {
+                    let mask = geometry::neighbours(axes(face), face.normal(), false, joins);
+                    geometry::overlay_tiles(mask).for_each(|i| draw(tile(i)));
+                }
+                return None;
+            }
+            Method::OverlayCtm => Method::Ctm,
+            Method::OverlayRandom => Method::Random,
+            Method::OverlayRepeat => Method::Repeat,
+            Method::OverlayFixed => Method::Fixed,
+            Method::OverlayHorizontal => Method::Horizontal,
+            Method::OverlayVertical => Method::Vertical,
+            Method::OverlayHorizontalVertical => Method::HorizontalVertical,
+            Method::OverlayVerticalHorizontal => Method::VerticalHorizontal,
+            m => m,
+        };
+        let index = match method {
             Method::Ctm => geometry::ctm_index(mask()),
             Method::CtmCompact => {
                 let mask = mask();
@@ -388,9 +505,13 @@ impl ConnectedTextures {
                 let face = geometry::symmetric_face(face, rule.symmetry);
                 geometry::repeat_index(pos, axes(face), rule.width, rule.height)
             }
-            // Overlays are not loaded yet.
+            // Every overlay was mapped to its method above.
             _ => return None,
         };
+        if rule.method.is_overlay() {
+            draw(tile(index));
+            return None;
+        }
         match tile(index) {
             TileLayer::Skip => None,
             TileLayer::Default => Some(Pick::Keep),
@@ -423,6 +544,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(n, rule)| LoadedRule {
+                overlay: OverlayJoin::default(),
                 tiles: rule
                     .tiles
                     .iter()
@@ -443,7 +565,7 @@ mod tests {
     }
 
     /// State 0 air, 1 glass, 2 stone, 3 and 4 oak logs (axis y, x), 5 and 6 a door (lower,
-    /// upper); the stone sprite is layer 7.
+    /// upper); the stone sprite is layer 7, glass 3.
     fn world(files: &[(&str, &str)]) -> ConnectedTextures {
         let props = |pairs: &[(&str, &str)]| -> BlockProperties {
             pairs
@@ -463,7 +585,11 @@ mod tests {
         ConnectedTextures::build(
             rules(files),
             states.iter().map(|(n, p)| Some((*n, p))),
-            |name| (name == "minecraft:block/stone").then_some(7),
+            |name| match name {
+                "minecraft:block/stone" => Some(7),
+                "minecraft:block/glass" => Some(3),
+                _ => None,
+            },
         )
     }
 
@@ -484,7 +610,7 @@ mod tests {
         blocks: &[([i32; 3], u32)],
     ) -> Pick {
         let at = |o: [i32; 3]| blocks.iter().find(|(p, _)| *p == o).map_or(0, |b| b.1);
-        ctm.pick(state, layer, face, [0, 64, 0], at, || None)
+        ctm.pick(state, layer, face, [0, 64, 0], at, || None, |_| {})
     }
 
     const GLASS: &str = "matchBlocks=glass\nmethod=ctm\ntiles=0-46";
@@ -607,8 +733,8 @@ mod tests {
         )]);
         let mut tiles = std::collections::HashSet::new();
         for x in 0..20 {
-            let lower = ctm.pick(5, 3, Face::North, [x, 64, 0], |_| 0, || None);
-            let upper = ctm.pick(6, 3, Face::North, [x, 65, 0], |_| 0, || None);
+            let lower = ctm.pick(5, 3, Face::North, [x, 64, 0], |_| 0, || None, |_| {});
+            let upper = ctm.pick(6, 3, Face::North, [x, 65, 0], |_| 0, || None, |_| {});
             assert_eq!(lower, upper, "{x}");
             tiles.insert(format!("{lower:?}"));
         }
@@ -621,8 +747,9 @@ mod tests {
             "glass.properties",
             "matchBlocks=glass\nmethod=fixed\ntiles=0\nheights=0-63\nbiomes=desert",
         )]);
-        let at =
-            |y, biome: &'static str| ctm.pick(1, 3, Face::Up, [0, y, 0], |_| 0, || Some(biome));
+        let at = |y, biome: &'static str| {
+            ctm.pick(1, 3, Face::Up, [0, y, 0], |_| 0, || Some(biome), |_| {})
+        };
         assert_eq!(at(10, "minecraft:desert"), tile(1000));
         assert_eq!(at(64, "minecraft:desert"), Pick::Keep);
         assert_eq!(at(10, "minecraft:plains"), Pick::Keep);
@@ -656,7 +783,7 @@ mod tests {
             "glass.properties",
             "matchBlocks=glass\nmethod=repeat\nwidth=2\nheight=2\ntiles=0-3",
         )]);
-        let at = |pos| ctm.pick(1, 3, Face::North, pos, |_| 0, || None);
+        let at = |pos| ctm.pick(1, 3, Face::North, pos, |_| 0, || None, |_| {});
         assert_eq!(at([0, 64, 0]), tile(1000));
         // The north face's right is west; rows run down.
         assert_eq!(at([-1, 64, 0]), tile(1001));
@@ -719,6 +846,136 @@ mod tests {
             ),
         ]);
         assert_eq!(pick_in(&top, 1, 3, Face::Up, &[]), tile(2000));
+    }
+
+    /// The overlays `pick` hands out, with what it picks for the face itself.
+    fn overlays_in(
+        ctm: &ConnectedTextures,
+        state: u32,
+        face: Face,
+        blocks: &[([i32; 3], u32)],
+    ) -> (Vec<u16>, Pick) {
+        let at = |o: [i32; 3]| blocks.iter().find(|(p, _)| *p == o).map_or(0, |b| b.1);
+        let mut out = Vec::new();
+        let pick = ctm.pick(
+            state,
+            3,
+            face,
+            [0, 64, 0],
+            at,
+            || None,
+            |o| out.push(o.layer),
+        );
+        (out, pick)
+    }
+
+    #[test]
+    fn overlays_draw_toward_the_blocks_they_name() {
+        // Stone gets glass's edge where glass is beside it; then a fixed tile for the stone.
+        let ctm = world(&[
+            (
+                "a_overlay.properties",
+                "matchBlocks=stone\nmethod=overlay\nconnectBlocks=glass\ntiles=0-16\ntintIndex=0\ntintBlock=oak_log",
+            ),
+            ("b.properties", "matchBlocks=stone\nmethod=fixed\ntiles=0"),
+        ]);
+        // Nothing beside: no overlay, and b draws.
+        assert_eq!(overlays_in(&ctm, 2, Face::Up, &[]), (vec![], tile(2000)));
+        // Glass to the north of a top face (its texture's up): tile 15. Glass east and west
+        // too: one tile for the three sides, 13.
+        assert_eq!(overlays_in(&ctm, 2, Face::Up, &[([0, 0, -1], 1)]).0, [1015]);
+        let three = [([0, 0, -1], 1), ([1, 0, 0], 1), ([-1, 0, 0], 1)];
+        assert_eq!(overlays_in(&ctm, 2, Face::Up, &three).0, [1013]);
+        // Glass only at the north-east corner: the corner tile, 14.
+        assert_eq!(overlays_in(&ctm, 2, Face::Up, &[([1, 0, -1], 1)]).0, [1014]);
+        // Stone beside stone draws nothing.
+        assert_eq!(
+            overlays_in(&ctm, 2, Face::Up, &[([0, 0, -1], 2)]).0,
+            [0u16; 0]
+        );
+        let mut tint = None;
+        ctm.pick(
+            2,
+            3,
+            Face::Up,
+            [0, 64, 0],
+            |o| if o == [0, 0, -1] { 1 } else { 0 },
+            || None,
+            |o| {
+                tint = Some((o.tint, o.translucent));
+            },
+        );
+        assert_eq!(
+            tint,
+            Some((Some((0, Some(3))), false)),
+            "oak_log's first state is 3"
+        );
+    }
+
+    #[test]
+    fn overlay_joins_layers_and_tints() {
+        let mut ctm = world(&[
+            (
+                "a.properties",
+                "matchBlocks=stone\nmethod=overlay\nconnectTiles=glass\ntiles=0-16\nlayer=translucent\ntintIndex=0\ntintBlock=no_such_block",
+            ),
+            (
+                "b.properties",
+                "matchBlocks=glass\nmethod=overlay_ctm\nconnectBlocks=stone\ntiles=0-46",
+            ),
+        ]);
+        // connectTiles joins neighbours showing a named sprite on the same side: the door to the
+        // north shows glass (sprite 3) on top.
+        let mut faces = vec![[9u16; 6]; 7];
+        faces[5][Face::Up as usize] = 3;
+        ctm.face_layers = faces;
+        let mut got = Vec::new();
+        let door_north = |o: [i32; 3]| if o == [0, 0, -1] { 5 } else { 0 };
+        ctm.pick(
+            2,
+            7,
+            Face::Up,
+            [0, 64, 0],
+            door_north,
+            || None,
+            |o| got.push(o),
+        );
+        assert_eq!(
+            got,
+            [Overlay {
+                layer: 1015,
+                translucent: true,
+                // A tintBlock the game lacks tints nothing.
+                tint: None,
+            }]
+        );
+        // connectBlocks is only for `overlay`: overlay_ctm joins glass by `connect`, not stone.
+        let (layers, _) = overlays_in(&ctm, 1, Face::North, &[([-1, 0, 0], 2)]);
+        assert_eq!(layers, [2000]);
+        let (layers, _) = overlays_in(&ctm, 1, Face::North, &[([-1, 0, 0], 1)]);
+        assert_eq!(layers, [2001]);
+    }
+
+    #[test]
+    fn overlay_methods_pick_like_their_own() {
+        let ctm = world(&[
+            (
+                "a.properties",
+                "matchBlocks=glass\nmethod=overlay_ctm\ntiles=0-46\nlayer=translucent",
+            ),
+            (
+                "b.properties",
+                "matchBlocks=glass\nmethod=overlay_fixed\ntiles=<skip>",
+            ),
+            (
+                "c.properties",
+                "matchBlocks=glass\nmethod=overlay_fixed\ntiles=0",
+            ),
+        ]);
+        // overlay_ctm joins glass (connect=block): the left end of a row, tile 1; b's <skip>
+        // draws nothing; c draws; the face keeps its own sprite.
+        let (layers, pick) = overlays_in(&ctm, 1, Face::North, &[([-1, 0, 0], 1)]);
+        assert_eq!((layers, pick), (vec![1001, 3000], Pick::Keep));
     }
 
     #[test]
