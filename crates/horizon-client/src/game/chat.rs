@@ -1073,8 +1073,7 @@ impl Game<'_> {
     /// `Screen.clickCommandAction`: run a clicked command as the player
     /// without adding it to the chat history. A client mod's command goes
     /// first, as `ClientPacketListener.sendUnattendedCommand` lets client
-    /// commands take it. (Vanilla asks first when the command fails to
-    /// parse; here the server answers it.)
+    /// commands take it.
     pub(super) fn click_command(&mut self, command: &str) {
         let command = command.strip_prefix('/').unwrap_or(command);
         if self.client_mod_command(command) {
