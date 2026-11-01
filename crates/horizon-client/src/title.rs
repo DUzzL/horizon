@@ -461,6 +461,28 @@ pub(crate) struct Button {
     /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text centred.
     trailing: Option<(&'static str, f32)>,
 }
+impl Button {
+    /// `AbstractButton.extractDefaultLabel`: the label centred with a 2 px
+    /// margin, and slid inside the button when it does not fit
+    /// (`AbstractWidget.extractScrollingStringOverContents`), instead of being
+    /// drawn past it over the buttons beside it (so_so's 590 px World Type
+    /// label on Create World, hi_in's Join Server in the Multiplayer footer).
+    fn draw_label(&self, batch: &mut HudBatch, atlas: &HudAtlas, color: u32) {
+        let label = Text::literal(&self.label);
+        crate::ui::scrolling_text(
+            batch,
+            atlas,
+            &label,
+            self.x + 2.0,
+            self.x + self.w - 2.0,
+            self.y,
+            self.y + 20.0,
+            self.y + 6.0,
+            color,
+        );
+    }
+}
+
 /// Java String.hashCode for text seeds (WorldOptions.parseSeed).
 pub fn parse_seed(text: &str) -> Option<i64> {
     let t = text.trim();
@@ -2991,15 +3013,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 );
                 continue;
             }
-            let tw = HudBatch::text_width(atlas, &b.label);
-            batch.text(
-                atlas,
-                &b.label,
-                b.x + (b.w / 2.0).floor() - (tw.ceil() / 2.0).floor(),
-                b.y + 6.0,
-                color,
-                true,
-            );
+            b.draw_label(batch, atlas, color);
             if let Some((icon, size)) = b.trailing {
                 // TextAndIcon: `x + width - spriteWidth - 2`, centred in the height.
                 batch.sprite_scaled(
