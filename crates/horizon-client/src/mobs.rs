@@ -20,6 +20,8 @@ pub mod brain;
 pub mod breeze;
 pub mod camel;
 pub mod caravan;
+pub mod cem;
+pub mod cem_anim;
 pub mod combat;
 pub mod control;
 pub mod conversion;
@@ -49,6 +51,7 @@ pub mod illager;
 pub mod illusioner;
 pub mod item_break;
 pub mod keyframes;
+pub mod landing;
 pub mod leash;
 pub mod living;
 pub mod llama;
@@ -64,6 +67,7 @@ pub mod piglin;
 pub mod polar_bear;
 pub mod rabbit;
 pub mod raider;
+pub mod random_textures;
 pub mod ravager;
 pub mod render;
 pub mod riders;
@@ -1187,6 +1191,8 @@ pub struct Mob {
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
+    /// The packs' random texture variants it wears (`random_textures::choose`).
+    pub random_textures: random_textures::Choice,
 }
 /// A mannequin's `description` and `hide_description` (`Mannequin.updateDescription`):
 /// the default `entity.minecraft.mannequin.label`, none at all, or a component.
@@ -1392,6 +1398,16 @@ pub enum MobEvent {
     /// `ElderGuardian`'s curse on players within 50 blocks.
     ElderCurse {
         at: [f64; 3],
+    },
+    /// `Entity.setDeltaMovement`: replace a target's velocity.
+    SetVelocity {
+        target: Who,
+        velocity: [f64; 3],
+    },
+    /// `Entity.remove(RemovalReason.KILLED)` of a mob that is no longer alive: it vanishes at once,
+    /// with no death animation (`ShootTongue.eatEntity`).
+    RemoveKilled {
+        target: u32,
     },
     /// `Entity.push`: add to a target's velocity.
     Push {
@@ -1632,6 +1648,12 @@ pub enum MobEvent {
         kind: &'static str,
         at: [f64; 3],
         velocity: [f64; 3],
+    },
+    /// One `minecraft:entity_effect` particle at `at` in the colour `color`
+    /// (`ColorParticleOption.create(ENTITY_EFFECT, r, g, b)`), standing still.
+    ParticleColored {
+        at: [f64; 3],
+        color: [f32; 3],
     },
     Experience {
         at: [f64; 3],
@@ -2337,6 +2359,8 @@ pub struct MobWorld<'a> {
     pub thundering: bool,
     pub nether: bool,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
+    /// Each block's `fallOn` rule (the player's landing registry).
+    pub landing: &'a horizon_world::block_landing::BlockLandingRegistry,
     pub biomes: &'a crate::biome::Biomes,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,
@@ -2459,6 +2483,7 @@ impl Mob {
             slim: false,
             cape: None,
             profile: None,
+            random_textures: Default::default(),
             attrs: Attrs {
                 speed: kind.speed,
                 attack_damage: kind.attack_damage,

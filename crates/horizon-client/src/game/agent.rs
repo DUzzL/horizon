@@ -417,6 +417,7 @@ impl Game<'_> {
             Screen::Advancements => "advancements",
             Screen::WorldOptions => "world-options",
             Screen::Friends => "friends",
+            Screen::Social => "social",
             Screen::ServerLinks => "server-links",
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
@@ -424,6 +425,7 @@ impl Game<'_> {
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
+            Screen::Mod => "mod",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {

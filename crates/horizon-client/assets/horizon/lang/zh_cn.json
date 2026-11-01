@@ -203,5 +203,11 @@
   "horizon.multiplayer.not_signed_in": "该服务器为在线模式服务器。请先在 Horizon 启动器中登录 Microsoft 账户再加入。",
   "horizon.multiplayer.invalid_address": "无效的服务器地址：%s",
   "horizon.multiplayer.connected_friend_direct": "已直连好友的世界…",
-  "horizon.multiplayer.connected_friend_relay": "已通过中继连接好友的世界…"
+  "horizon.multiplayer.connected_friend_relay": "已通过中继连接好友的世界…",
+  "horizon.pages.shader_options": "光影选项",
+  "horizon.pages.split_profiles": "谁在玩？",
+  "horizon.pages.split_profiles.tooltip": "谁在玩：保存在此游戏文件夹中的一份档案。",
+  "horizon.shader_options.open": "光影选项…",
+  "horizon.shader_options.profile": "档案",
+  "horizon.shader_options.loading": "正在读取光影包的选项…"
 }

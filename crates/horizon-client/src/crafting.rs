@@ -1219,6 +1219,15 @@ pub(crate) fn recipe_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(named)
 }
 /// The type of a recipe the game doesn't craft itself: one outside `minecraft`.
+/// A recipe's whole id from its name in the tables: vanilla's are kept bare
+/// (`oak_planks`), everyone else's whole (`mymod:crusher/iron`).
+pub fn recipe_id(name: &str) -> String {
+    if name.contains(':') {
+        name.to_owned()
+    } else {
+        format!("minecraft:{name}")
+    }
+}
 fn custom_type(v: &Value) -> Option<&str> {
     v["type"]
         .as_str()
@@ -1309,10 +1318,14 @@ fn matches_all(ingredients: &[Ingredient], stacks: &[&ItemStack]) -> bool {
 }
 impl Recipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Result<Self> {
-        let mut crafting = Vec::new();
-        let mut cooking = Vec::new();
-        let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
-        let mut meta = HashMap::new();
+        let sources = Self::sources(root, overlay)?;
+        Self::from_sources(root, items, overlay, sources)
+    }
+    /// The recipe files the tables are built from, each id once: vanilla's by
+    /// bare name, then the content mods' as `<ns>:<name>`, the world's packs'
+    /// over them (`overlay`), parsed, and only those whose load conditions
+    /// hold. A server sends some of them to its clients (`recipe_content`).
+    pub fn sources(root: &Path, overlay: &PackOverlay) -> Result<Vec<(String, Value)>> {
         // Vanilla's recipes by bare name, then content mods' as `<ns>:<name>`.
         let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
         // NeoForge's load conditions: `mod_loaded` asks which mods' data is
@@ -1356,10 +1369,12 @@ impl Recipes {
                 None => sources.push((name, bytes)),
             }
         }
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        let mut parsed = Vec::with_capacity(sources.len());
         for (name, bytes) in sources {
             // Vanilla's RecipeManager logs a file that does not parse and
             // goes on ("Couldn't parse data file").
-            let v: Value = match serde_json::from_slice(&bytes) {
+            let mut v: Value = match serde_json::from_slice(&bytes) {
                 Ok(v) => v,
                 Err(e) => {
                     log::warn!("Horizon: recipe {name} not loaded: {e}");
@@ -1373,6 +1388,27 @@ impl Recipes {
             }) {
                 continue;
             }
+            // The data's recipe filters, over the final set.
+            if !filters.apply(&recipe_id(&name), &mut v) {
+                continue;
+            }
+            parsed.push((name, v));
+        }
+        Ok(parsed)
+    }
+    /// The tables from `sources` (`Recipes::sources`' shape); `root` and
+    /// `overlay` give the enchantment tags the tables keep.
+    pub fn from_sources(
+        root: &Path,
+        items: &Items,
+        overlay: &PackOverlay,
+        sources: Vec<(String, Value)>,
+    ) -> Result<Self> {
+        let mut crafting = Vec::new();
+        let mut cooking = Vec::new();
+        let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
+        let mut meta = HashMap::new();
+        for (name, v) in sources {
             if let Some(kind) = custom_type(&v) {
                 let id = if name.contains(':') {
                     name
@@ -2161,6 +2197,44 @@ mod tests {
         let recipes = Recipes::load(&root, &items, &PackOverlay { files: &packs }).unwrap();
         let ids = &recipes.custom["mymod:crusher"];
         assert!(ids.iter().any(|r| r.id == "minecraft:pack_yes"));
+        let _ = fs::remove_dir_all(&root);
+    }
+    /// A pack's recipe filter removes a recipe and swaps a mod recipe's input
+    /// in the loaded tables, after the packs are merged.
+    #[test]
+    fn recipe_filters_remove_and_swap() {
+        let root = std::env::temp_dir().join(format!("horizon-filters-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        let crusher = |input: &str| {
+            format!(
+                r#"{{"type":"mymod:crusher","input":"{input}","result":{{"id":"mymod:dust"}}}}"#
+            )
+            .into_bytes()
+        };
+        fs::write(
+            root.join("data/minecraft/recipe/iron.json"),
+            crusher("minecraft:iron_ingot"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/minecraft/recipe/gold.json"),
+            crusher("minecraft:gold_ingot"),
+        )
+        .unwrap();
+        let filter = br##"{"filters":[
+            {"id":"minecraft:gold","remove":true},
+            {"type":"mymod:*","replace_input":{"from":"minecraft:iron_ingot","to":"#c:ingots/iron"}}
+        ]}"##;
+        let packs = [("recipe_filter/pack:f".to_owned(), vec![filter.to_vec()])];
+        let items = Items::for_tests(HashMap::new());
+        let recipes = Recipes::load(&root, &items, &PackOverlay { files: &packs }).unwrap();
+        let crushed = &recipes.custom["mymod:crusher"];
+        assert_eq!(
+            crushed.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["minecraft:iron"]
+        );
+        assert_eq!(crushed[0].json["input"], "#c:ingots/iron");
         let _ = fs::remove_dir_all(&root);
     }
     #[test]

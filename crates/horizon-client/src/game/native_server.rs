@@ -628,7 +628,8 @@ fn add_to(
 /// screen as any change to their inventory does.
 #[allow(dead_code)]
 impl Game<'_> {
-    /// The main hand's stack: its item, count, and whether it is plain.
+    /// The main hand's stack: its item, count, and whether it is plain. On a
+    /// client, the player's own.
     pub(super) fn native_held(&self) -> Option<(String, u32, bool)> {
         let s = self.inventory.get(self.selected)?.as_ref()?;
         Some((s.item.to_string(), s.count, plain(s)))

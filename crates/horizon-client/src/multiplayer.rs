@@ -157,7 +157,16 @@ fn centered_x(width: f32, text_width: f32) -> f32 {
     half(width) - half(text_width)
 }
 
+/// The server list, beside `saves/`; with `--player-dir`, the player's own.
 pub fn servers_file(saves: &Path) -> PathBuf {
+    servers_file_of(crate::logging::player_dir_override(), saves)
+}
+
+/// [`servers_file`] for a given `--player-dir`.
+fn servers_file_of(player: Option<&Path>, saves: &Path) -> PathBuf {
+    if let Some(player) = player {
+        return player.join("servers.dat");
+    }
     saves
         .parent()
         .map_or_else(|| PathBuf::from("servers.dat"), |p| p.join("servers.dat"))
@@ -1834,6 +1843,19 @@ pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn servers_dat_is_beside_saves_or_in_the_player_dir() {
+        let saves = Path::new("/games/shared/saves");
+        assert_eq!(
+            servers_file_of(None, saves),
+            Path::new("/games/shared/servers.dat")
+        );
+        assert_eq!(
+            servers_file_of(Some(Path::new("/games/players/alex")), saves),
+            Path::new("/games/players/alex/servers.dat")
+        );
+    }
 
     #[test]
     fn only_discovered_entries_get_lan_authentication() {

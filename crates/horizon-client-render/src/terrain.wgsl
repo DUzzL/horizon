@@ -92,19 +92,29 @@ fn sprite_level(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
 }
 // texture_sampling.glsl's sampleNearest: the sprite's texels stay square pixels, blending only
 // across the one screen pixel where two meet, so a linear (and anisotropic) sampler keeps them crisp.
+// `tiled`: a distant tile's face takes its sprite again per block, so its gradients span many
+// sprites while `uv` stays inside one (see `tile_uv` below).
 fn sample_nearest(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: vec2<f32>,
-                  texel_screen: vec2<f32>) -> vec4<f32> {
+                  texel_screen: vec2<f32>, tiled: bool) -> vec4<f32> {
     let texel_coords = uv / pixel;
     let center = round(texel_coords) - 0.5;
     var offset = texel_coords - center;
     offset = (offset - 0.5) * pixel / max(texel_screen, vec2(1e-12)) + 0.5;
     offset = clamp(offset, vec2(0.0), vec2(1.0));
-    return sprite_grad((center + offset) * pixel, layer, du, dv);
+    let at = (center + offset) * pixel;
+    if tiled {
+        // An anisotropic sampler lays its taps along those gradients, past the sprite's edge,
+        // where the clamped sampler reads that edge texel again: long streaks on the far tiles.
+        // Asking for the level the gradients give takes the one tap an anisotropy of 1 would.
+        let level = max(length(du), length(dv)) / min(pixel.x, pixel.y);
+        return sprite_level(at, layer, max(0.0, log2(level)));
+    }
+    return sprite_grad(at, layer, du, dv);
 }
 // sampleRGSS: four rotated-grid samples of the two nearest mip levels, faded in as the texels
 // shrink below two screen pixels, over sample_nearest.
 fn sample_rgss(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: vec2<f32>,
-               texel_screen: vec2<f32>) -> vec4<f32> {
+               texel_screen: vec2<f32>, tiled: bool) -> vec4<f32> {
     let max_texel = max(texel_screen.x, texel_screen.y);
     let min_pixel = min(pixel.x, pixel.y);
     let blend = smoothstep(min_pixel, min_pixel * 2.0, max_texel);
@@ -124,7 +134,7 @@ fn sample_rgss(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: v
         sum_high += sprite_level(p, layer, low + 1.0);
     }
     let rgss = mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
-    return mix(sample_nearest(uv, layer, pixel, du, dv, texel_screen), rgss, blend);
+    return mix(sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled), rgss, blend);
 }
 // Distant terrain tiles (lod/mesh.rs) count their UVs in blocks past 1: each block takes the
 // sprite again, as separate faces would under the clamped sampler. Sprite UVs in [0, 1] stay.
@@ -137,12 +147,15 @@ fn sprite(tiled: vec2<f32>, layer: u32) -> vec4<f32> {
     let du = dpdx(tiled);
     let dv = dpdy(tiled);
     let uv = tile_uv(tiled);
+    // The wrap shifts a face's UVs by whole blocks, so half of one tells a tile's face from a
+    // block's (whose UVs stay inside its sprite).
+    let tiled_face = any(tiled - uv >= vec2(0.5));
     let pixel = vec2(1.0 / globals.filtering.y);
     let texel_screen = sqrt(du * du + dv * dv);
     if u32(globals.filtering.x) == 1u {
-        return sample_rgss(uv, layer, pixel, du, dv, texel_screen);
+        return sample_rgss(uv, layer, pixel, du, dv, texel_screen, tiled_face);
     }
-    return sample_nearest(uv, layer, pixel, du, dv, texel_screen);
+    return sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled_face);
 }
 
 struct TerrainOut {
@@ -295,6 +308,56 @@ fn fade_code(w: f32) -> u32 {
     return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
         origin.w);
 }
+// Solid terrain draws in two passes from the same draws: first the quads with no
+// cutout that are not fading, through `fs_opaque`, which never discards, so a tiled
+// GPU (Apple's) keeps hiding the pixels behind them; then the rest through
+// `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
+// all the terrain it drew. A quad the pass leaves out is decided before any of the
+// vertex's work and lies outside the clip volume: it makes no pixel.
+fn opaque_quad(layer: u32, w: f32) -> bool {
+    return (layer & 0x8000u) != 0u && fade_code(w) == 0u;
+}
+fn left_out() -> TerrainOut {
+    var out: TerrainOut;
+    out.clip = vec4(2.0, 2.0, 2.0, 1.0);
+    return out;
+}
+@vertex fn vs_terrain_opaque(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    if !opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
+@vertex fn vs_terrain_cutout(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    if opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
+@vertex fn vs_terrain_flat_opaque(
+    @builtin(vertex_index) vertex: u32,
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+) -> TerrainOut {
+    let origin = slot_origins[block_slots[vertex >> 8u]];
+    if !opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
+@vertex fn vs_terrain_flat_cutout(
+    @builtin(vertex_index) vertex: u32,
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+) -> TerrainOut {
+    let origin = slot_origins[block_slots[vertex >> 8u]];
+    if opaque_quad(layer, origin.w) { return left_out(); }
+    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w);
+}
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>, w: f32) -> TerrainOut {
     let pos = position + origin;
@@ -344,6 +407,13 @@ fn brightness(c: vec3<f32>) -> f32 {
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     return solid_color(in);
 }
+// `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
+@fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    var color = texel * in.color;
+    color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
+    return solid_finish(in, texel, color);
+}
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
 @fragment fn fs_solid_mirror(in: TerrainOut) -> @location(0) vec4<f32> {
@@ -360,6 +430,10 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     // terrain.fsh: the fade-in mixes toward the fog colour.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    return solid_finish(in, texel, color);
+}
+// The rest of a solid pixel's colour once it is kept: emission and fog.
+fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
     // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel may
     // shine, and at which tier (mesher::hdr_tier): 0.525 at the lowest, 0 at the
     // brightest. Only pixels as bright as their sprite's threshold may: its
@@ -516,6 +590,11 @@ fn sky_along_ray(d: vec3<f32>) -> vec3<f32> {
 }
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     return vec4(sky_along_ray(view_ray(in.ndc)), 1.0);
+}
+// The first-person hand's depth clear inside the world pass: `vs_sky`'s triangle lies at the
+// far plane, written over the whole depth target with no colour.
+@fragment fn fs_depth_reset(in: SkyOut) -> @location(0) vec4<f32> {
+    return vec4(0.0);
 }
 @fragment fn fs_dark_disc(in: SkyOut) -> @location(0) vec4<f32> {
     let d = view_ray(in.ndc);
