@@ -3213,15 +3213,23 @@ impl Game<'_> {
         self.stack_in_mut(self.held_slot())
     }
     /// The slot of the hand that acts: the selected one, or `OFFHAND_SLOT`.
-    /// `LivingEntity.canGlideUsing`: a glider in the chest slot that will
-    /// not break with its next point of wear.
+    /// `LivingEntity.canGlide`'s equipment half: any slot holds a stack that
+    /// glides there (`canGlideUsing`), the elytra or anything a server or a
+    /// command gave `glider` and an `equippable` for that slot.
     fn glider_worn(&self) -> bool {
-        self.armor[1].as_ref().is_some_and(|s| {
-            self.res
-                .items()
-                .get(&s.item)
-                .is_some_and(|i| i.glider && (i.max_damage == 0 || s.damage + 1 < i.max_damage))
-        })
+        let hands = [
+            (self.inventory[self.selected].as_ref(), "mainhand"),
+            (self.offhand.as_ref(), "offhand"),
+        ];
+        let armor = self.armor.iter().map(Option::as_ref);
+        hands
+            .into_iter()
+            .chain(armor.zip(["head", "chest", "legs", "feet"]))
+            .any(|(stack, slot)| {
+                stack.is_some_and(|s| {
+                    horizon_client::item_sync::can_glide_using(s, slot, self.res.items())
+                })
+            })
     }
     /// `LivingEntity.canFreeze`'s armor half: any worn piece in
     /// `freeze_immune_wearables`.
