@@ -435,6 +435,9 @@ impl Game<'_> {
             ]
             .map(String::from),
         );
+        // content mods' thrown types.
+        let thrown = horizon_client::projectiles::thrown_types().iter();
+        summonable.extend(thrown.map(|t| t.id.to_owned()));
         summonable.sort();
         summonable.dedup();
         reg.summonable = summonable;

@@ -387,7 +387,7 @@ impl MobType {
 }
 /// Each type's default attribute values, parsed exactly (serde_json's
 /// default float parsing can miss the nearest double by one ulp).
-fn exact_attributes(bytes: &[u8]) -> HashMap<String, HashMap<String, f64>> {
+pub(crate) fn exact_attributes(bytes: &[u8]) -> HashMap<String, HashMap<String, f64>> {
     use serde_json::value::RawValue;
     type Raw = HashMap<String, Box<RawValue>>;
     let Ok(types) = serde_json::from_slice::<Raw>(bytes) else {

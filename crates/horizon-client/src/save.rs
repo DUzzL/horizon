@@ -3456,6 +3456,8 @@ pub struct Level {
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
     pub flying: bool,
+    /// Abilities.flyingSpeed, when the file has one (vanilla's is 0.05).
+    pub fly_speed: Option<f32>,
     /// The vehicle the player rides, by UUID (`ServerPlayer.saveParentVehicle`'s
     /// "RootVehicle"), so the ride comes back on the next login.
     pub root_vehicle: Option<[i32; 4]>,
@@ -3696,6 +3698,10 @@ impl Level {
             .get("abilities")
             .and_then(|a| number(a.get("flying")))
             .is_some_and(|v| v != 0);
+        self.fly_speed = p
+            .get("abilities")
+            .and_then(|a| float(a.get("flySpeed")))
+            .map(|v| v as f32);
         if let Some(d) = text(p.get("Dimension")) {
             self.dimension = d;
         }
@@ -3845,6 +3851,9 @@ impl Level {
         }
         if let Tag::Compound(map) = &mut abilities {
             map.entry("mayBuild".into()).or_insert(Tag::Byte(1));
+            if let Some(speed) = self.fly_speed {
+                map.insert("flySpeed".into(), Tag::Float(speed.to_bits()));
+            }
             map.entry("flySpeed".into())
                 .or_insert(Tag::Float(0.05f32.to_bits()));
             map.entry("walkSpeed".into())

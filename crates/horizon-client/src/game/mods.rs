@@ -103,12 +103,14 @@ pub(super) fn content_root(
             }
             register_mob_effects(&mods);
             register_entity_types(&mods);
+            register_menu_types(&mods);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
             register_mob_effects(&[]);
             register_entity_types(&[]);
+            register_menu_types(&[]);
             root.to_owned()
         }
     }
@@ -158,6 +160,25 @@ fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
             .ne(types.iter().map(|t| t.id.as_str()))
     {
         log::warn!("Horizon: the mods' entity types changed; restart the game to use them");
+    }
+}
+
+/// the mods' menu types, as their entity types: set once, from the startup
+/// root.
+fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_client::containers;
+    let menus = horizon_client::mod_content::menu_types(mods);
+    let set = containers::register_mod_menu_types(menus.iter().map(|m| {
+        let results = m.results.iter().map(|&r| usize::from(r)).collect();
+        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+    }));
+    if !set
+        && containers::mod_menu_types()
+            .iter()
+            .map(|m| m.id)
+            .ne(menus.iter().map(|m| m.id.as_str()))
+    {
+        log::warn!("Horizon: the mods' menu types changed; restart the game to use them");
     }
 }
 

@@ -49,6 +49,8 @@ pub struct Over {
     pub weight: f32,
     /// The farthest tick, as played: what the log tells of it.
     pub at_worst: Option<Played>,
+    /// One of them came with a move.
+    pub moved: bool,
 }
 
 /// Ticks within the tolerance in a row after which a replay that lands off takes the client's
@@ -93,6 +95,12 @@ pub struct Played {
     pub moved: f64,
     /// What the replayed body was doing when the tick ended ([`Played::state`]).
     pub state: u8,
+    /// The tick's keys (ServerboundPlayerInputPacket's flags).
+    pub input: u8,
+    /// Where the client said it ended the tick.
+    pub at: [f64; 3],
+    /// The replay's velocity at the end of the tick, in blocks a tick.
+    pub velocity: [f64; 3],
 }
 
 impl Played {
@@ -106,7 +114,9 @@ impl Played {
     pub const FLYING: u8 = 64;
     pub const RIDING: u8 = 128;
 
-    /// What a log line says of the tick: `off +0.000 +0.173 +0.000, moved 0.281, air sprinting`.
+    /// What a log line says of the tick, so a flag can be found again in the world and played:
+    /// `off +0.000 +0.173 +0.000, moved 0.281, air sprinting, keys forward jump, at 12.30 64.00
+    /// -5.50, velocity +0.000 -0.078 +0.000`.
     pub fn describe(&self) -> String {
         let names = [
             (Self::WATER, "water"),
@@ -129,8 +139,24 @@ impl Played {
             }
         }
         let [x, y, z] = self.off;
+        let keys = [
+            "forward", "backward", "left", "right", "jump", "shift", "sprint",
+        ]
+        .into_iter()
+        .enumerate()
+        .filter(|&(bit, _)| self.input & (1 << bit) != 0)
+        .map(|(_, name)| name)
+        .collect::<Vec<_>>();
+        let keys = if keys.is_empty() {
+            "none".to_owned()
+        } else {
+            keys.join(" ")
+        };
+        let [ax, ay, az] = self.at;
+        let [vx, vy, vz] = self.velocity;
         format!(
-            "off {x:+.3} {y:+.3} {z:+.3}, moved {:.3}, {state}",
+            "off {x:+.3} {y:+.3} {z:+.3}, moved {:.3}, {state}, keys {keys}, at {ax:.2} {ay:.2} \
+             {az:.2}, velocity {vx:+.3} {vy:+.3} {vz:+.3}",
             self.moved
         )
     }
@@ -314,6 +340,7 @@ impl Replay {
             } else {
                 counted = true;
                 over.ticks += 1;
+                over.moved |= tick.position.is_some();
                 if offset > over.worst {
                     over.at_worst = self.ticks.back().copied();
                 }
@@ -459,6 +486,8 @@ impl Replay {
         };
         let body = &mut self.body;
         let end = said.unwrap_or(last);
+        // The replay's own velocity, before an excuse brings it to the client's.
+        let velocity = body.velocity;
         let off = [
             end.x - body.position.x,
             end.y - body.position.y,
@@ -514,6 +543,7 @@ impl Replay {
         let ground = tick
             .flags
             .is_none_or(|f| (f & 1 != 0) == self.body.ground.on_ground);
+        let velocity = [velocity.x, velocity.y, velocity.z];
         let played = Played {
             offset,
             candidate,
@@ -521,6 +551,9 @@ impl Replay {
             off,
             moved,
             state,
+            input: tick.input,
+            at: [end.x, end.y, end.z],
+            velocity,
         };
         if self.ticks.len() == KEPT {
             self.ticks.pop_front();
@@ -641,6 +674,9 @@ mod tests {
         /// On tick `.0`, the server sends the player attributes (the server's body has no sprint
         /// modifier): `.1` as in [`Change::Attributes`], which the client takes.
         attributes: Option<(usize, Option<bool>)>,
+        /// The first ticks the client is on its loading screen: it ends them without moving or
+        /// sending a move.
+        frozen: usize,
     }
 
     impl Run {
@@ -655,6 +691,7 @@ mod tests {
                 burst: None,
                 blocks: Vec::new(),
                 attributes: None,
+                frozen: 0,
             }
         }
     }
@@ -733,6 +770,7 @@ mod tests {
         let run_teleport = run.teleport;
         let run_burst = run.burst;
         let run_attributes = run.attributes;
+        let run_frozen = run.frozen;
         let mut back = start;
         for (i, (input, yaw)) in run.script.into_iter().enumerate() {
             let tick = i as u64;
@@ -757,13 +795,16 @@ mod tests {
                 back = before;
             }
             client.yaw = yaw;
-            world(&mut client, &mut |w| {
-                w.controlled_simulation_tick(keys(input)).unwrap()
-            });
-            client.position = cheat(i, before, client.position);
+            if i >= run_frozen {
+                world(&mut client, &mut |w| {
+                    w.controlled_simulation_tick(keys(input)).unwrap()
+                });
+                client.position = cheat(i, before, client.position);
+                let p = client.position;
+                let ground = u8::from(client.ground.on_ground);
+                record.moved(Some([p.x, p.y, p.z]), Some((yaw, run.pitch)), ground);
+            }
             let p = client.position;
-            let ground = u8::from(client.ground.on_ground);
-            record.moved(Some([p.x, p.y, p.z]), Some((yaw, run.pitch)), ground);
             record.tick_end(input, client.sprinting);
             // A burst: the server hears these ticks now and plays them together at the last one.
             if run_burst.is_some_and(|(from, to)| (from..to).contains(&i)) {
@@ -798,6 +839,26 @@ mod tests {
         Some(played)
     }
 
+    /// A client still loading the level (#5849) neither moves nor sends a move, while the replay
+    /// falls from where it joined: those ticks are over, but none with a move, which is what lets
+    /// the server excuse them. Its first move after them counts as any other.
+    #[test]
+    fn a_client_on_its_loading_screen_is_over_without_a_move() {
+        let run = Run {
+            start: Vec3::new(20.5, 12.0, 20.5),
+            script: vec![(0, 0.0); 20],
+            frozen: 7,
+            ..Run::walk()
+        };
+        let Some(steps) = steps_in(run, |_, _, honest| honest, None) else {
+            return;
+        };
+        let (frozen, after) = steps.split_at(7);
+        assert!(frozen.iter().any(|s| s.over.ticks > 0), "the replay falls");
+        assert!(frozen.iter().all(|s| !s.over.moved));
+        assert!(after.iter().all(|s| s.over.ticks == 0 || s.over.moved));
+    }
+
     #[test]
     fn a_played_tick_tells_its_offset_and_state() {
         let played = Played {
@@ -807,10 +868,14 @@ mod tests {
             off: [0.0, 0.1729, -0.001],
             moved: 0.2806,
             state: Played::SPRINTING | Played::WATER,
+            input: 1 | 16 | 64,
+            at: [12.3, 63.004, -5.5],
+            velocity: [0.0, 0.0412, -0.25],
         };
         assert_eq!(
             played.describe(),
-            "off +0.000 +0.173 -0.001, moved 0.281, air water sprinting"
+            "off +0.000 +0.173 -0.001, moved 0.281, air water sprinting, keys forward jump sprint, \
+             at 12.30 63.00 -5.50, velocity +0.000 +0.041 -0.250"
         );
     }
 

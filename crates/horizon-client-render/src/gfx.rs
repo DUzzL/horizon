@@ -88,6 +88,7 @@ mod frame_gen;
 mod hdr;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
+pub mod block_light;
 pub mod lightning;
 mod lod;
 mod native_material;
@@ -412,6 +413,9 @@ pub struct Frame<'a> {
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
     pub see_through: &'a [Vertex],
+    /// Opaque entity quads only a native pack's shadow pass draws (the local player in first
+    /// person).
+    pub shadow_only: &'a [Vertex],
     /// Camera-relative sun and moon, or the animated End flash (additive,
     /// behind everything and after the resident End sky box).
     pub celestial: &'a [Vertex],
@@ -599,6 +603,8 @@ pub struct Renderer {
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
+    /// The layout of `entity_group`, for the native shadow pass.
+    entity_bindings: wgpu::BindGroupLayout,
     /// The entity resources with the hand's projection (`hand_globals`).
     hand_group: wgpu::BindGroup,
     hand_globals: wgpu::Buffer,
@@ -607,6 +613,8 @@ pub struct Renderer {
     entity_batch: EntityBatch,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
+    /// The resource packs' LabPBR maps (normals, specular), for native shader packs.
+    pbr_maps: Option<[wgpu::Texture; 2]>,
     lightmap: wgpu::Texture,
     /// The block sprites, `sprite_split` layers per array (the first is
     /// `sprites` in terrain.wgsl, the others `sprites_1`...).
@@ -699,6 +707,9 @@ pub struct Renderer {
     section_uploaded: crate::fast_hash::FxHashMap<SectionKey, std::time::Instant>,
     /// Changes whenever `block_entities` does (unique across renderers).
     block_entity_revision: u64,
+    /// The light sources of each section and their revision, for `block_light`.
+    light_blocks: crate::fast_hash::FxHashMap<SectionKey, Vec<([i32; 3], u32)>>,
+    light_revision: u64,
     /// VisGraph face connectivity per meshed section (cave culling).
     occlusion: occlusion::Occlusion,
     /// The column `occlusion`, `sections` and `detail_columns` count in: the
@@ -924,6 +935,37 @@ pub struct PreparedTextures {
     /// The sprite layers per array `sprites` is cut by.
     split: u32,
     forcefield: (Vec<u8>, u32),
+    /// The LabPBR maps' mip chains (normals, specular), their levels, layers and size.
+    pbr: Option<(Vec<u8>, Vec<u8>, u32, u32, u32)>,
+}
+/// Every level of `layers` square RGBA layers of `size`, each the mean of four texels of the
+/// one above, layer major: the LabPBR maps' mips (their channels are data, not colour).
+fn box_mip_chain(pixels: &[u8], size: u32, layers: u32) -> Vec<u8> {
+    let layer_bytes = (size * size * 4) as usize;
+    let mut out = Vec::new();
+    for layer in pixels.chunks_exact(layer_bytes).take(layers as usize) {
+        let mut level = layer.to_vec();
+        let mut side = size as usize;
+        out.extend_from_slice(&level);
+        while side > 1 {
+            let half = side / 2;
+            let mut next = Vec::with_capacity(half * half * 4);
+            for y in 0..half {
+                for x in 0..half {
+                    for c in 0..4 {
+                        let at = |dx: usize, dy: usize| {
+                            u32::from(level[((2 * y + dy) * side + 2 * x + dx) * 4 + c])
+                        };
+                        next.push(((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8);
+                    }
+                }
+            }
+            out.extend_from_slice(&next);
+            level = next;
+            side = half;
+        }
+    }
+    out
 }
 impl PreparedTextures {
     pub fn new(
@@ -956,7 +998,23 @@ impl PreparedTextures {
                 .collect(),
             split,
             forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
+            pbr: None,
         }
+    }
+
+    /// With the resource packs' LabPBR `normals` and `specular` maps (`layers` layers of
+    /// `size`, as `RenderAssets` holds them; nothing when empty).
+    pub fn with_pbr(mut self, normals: &[u8], specular: &[u8], size: u32, layers: u32) -> Self {
+        if !normals.is_empty() {
+            self.pbr = Some((
+                box_mip_chain(normals, size, layers),
+                box_mip_chain(specular, size, layers),
+                size.trailing_zeros() + 1,
+                layers,
+                size,
+            ));
+        }
+        self
     }
 
     /// The same mip chains cut by `split` layers per array: chains made before
@@ -1923,6 +1981,40 @@ impl Renderer {
         };
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
+        // The resource packs' LabPBR maps, for native shader packs: one array each, cut to
+        // the layers the GPU has (`block_normal_map` gives the default past them).
+        let pbr_maps = prepared
+            .pbr
+            .map(|(normals, specular, levels, layers, size)| {
+                let kept = layers.min(device.limits().max_texture_array_layers);
+                let count = array_layers(kept, gl);
+                [("LabPBR normals", normals), ("LabPBR specular", specular)].map(
+                    |(label, mut data)| {
+                        // The extra layers are empty.
+                        let layer_bytes = data.len() / layers as usize;
+                        data.resize(layer_bytes * count as usize, 0);
+                        device.create_texture_with_data(
+                            &queue,
+                            &wgpu::TextureDescriptor {
+                                label: Some(label),
+                                size: wgpu::Extent3d {
+                                    width: size,
+                                    height: size,
+                                    depth_or_array_layers: count,
+                                },
+                                mip_level_count: levels,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::Rgba8Unorm,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                                view_formats: &[],
+                            },
+                            wgpu::util::TextureDataOrder::LayerMajor,
+                            &data,
+                        )
+                    },
+                )
+            });
         let sprite_textures: Vec<wgpu::Texture> = prepared
             .sprites
             .into_iter()
@@ -3160,6 +3252,7 @@ impl Renderer {
             screen_buffer,
             screen_capacity,
             entity_group,
+            entity_bindings,
             hand_group,
             hand_globals,
             entity_buffer,
@@ -3167,6 +3260,7 @@ impl Renderer {
             entity_batch: EntityBatch::default(),
             group,
             globals,
+            pbr_maps,
             lightmap,
             sprite_textures,
             sprite_unused,
@@ -3224,6 +3318,8 @@ impl Renderer {
             block_entities: Default::default(),
             section_uploaded: Default::default(),
             block_entity_revision: next_block_entity_revision(),
+            light_blocks: Default::default(),
+            light_revision: 0,
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
@@ -3472,6 +3568,11 @@ impl Renderer {
     pub fn section_count(&self) -> usize {
         self.sections.len()
     }
+    /// Whether one of Horizon's own packs with `[shadow]` draws, whose shadow pass takes the
+    /// frame's `shadow_only` quads.
+    pub fn native_shadow(&self) -> bool {
+        self.native.as_ref().is_some_and(|n| n.shadow.is_some())
+    }
     /// What a shader pack's shadow pass draws of the entities this frame: (entities or block
     /// entities other than the player, so those Horizon's culling hides from the camera are
     /// kept for it; the local player, so its model is built in first person too). (false,
@@ -3503,6 +3604,15 @@ impl Renderer {
         };
         if changed {
             self.block_entity_revision = next_block_entity_revision();
+        }
+        let lights_changed = if mesh.lights.is_empty() {
+            self.light_blocks.remove(&key).is_some()
+        } else {
+            let old = self.light_blocks.insert(key, mesh.lights.clone());
+            old.as_deref() != Some(&mesh.lights[..])
+        };
+        if lights_changed {
+            self.light_revision += 1;
         }
         if !self.lod_retiring.is_empty() {
             self.lod_retiring.remove(&key);
@@ -3883,6 +3993,9 @@ impl Renderer {
             for sy in 0..self.layout.sections() as i32 {
                 let key = (x, sy, z);
                 block_entities |= self.block_entities.remove(&key).is_some();
+                if self.light_blocks.remove(&key).is_some() {
+                    self.light_revision += 1;
+                }
                 self.section_uploaded.remove(&key);
                 if retiring {
                     // Distant tiles still leave its column out: drawn until they don't.
@@ -4182,9 +4295,11 @@ impl Renderer {
             horizon_shader_api::Report,
             Vec<(String, f64)>,
             Vec<(u32, u32)>,
+            Vec<(u32, u32)>,
+            block_light::LightTable,
         )>,
     ) -> std::result::Result<Vec<String>, String> {
-        let Some((report, constants, sprite_tags)) = pack else {
+        let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
             self.native = None;
             return Ok(Vec::new());
         };
@@ -4194,9 +4309,19 @@ impl Renderer {
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
             sprite_tags: &sprite_tags,
+            sprite_materials: &sprite_materials,
+            entities: &self.entity_bindings,
+            weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
+            pbr: self.pbr_maps.as_ref(),
         };
-        let (pack, labels) =
-            native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
+        let (pack, labels) = native_pack::NativePack::new(
+            &self.device,
+            &self.queue,
+            &terrain,
+            report,
+            &constants,
+            lights,
+        )?;
         self.native = pack.draws().then_some(pack);
         if self.native.is_some() {
             self.pack_post = None;
@@ -5465,6 +5590,7 @@ impl Renderer {
             frame.see_through,
             oit_on,
         );
+        self.entity_batch.append_shadow_only(frame.shadow_only);
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
             + text_quads
@@ -5479,7 +5605,8 @@ impl Renderer {
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
         let base_quads = world_quads - oit_entity_quads;
-        let cloud_quads = if let Some(input) = &frame.clouds {
+        let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
+        let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
             let vertices = self.cloud_mesh.vertices.len() as u64;
@@ -5521,6 +5648,7 @@ impl Renderer {
         let hand_quads = (frame.hand.len() / 4) as u32;
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
         let see_through_quads = (frame.see_through.len() / 4) as u32;
+        let shadow_only_quads = (frame.shadow_only.len() / 4) as u32;
         let entity_vertices = all_entities.len() as u64;
         if entity_vertices > self.entity_capacity {
             self.entity_capacity = entity_vertices.next_power_of_two();
@@ -5566,15 +5694,16 @@ impl Renderer {
                 bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
             );
         }
-        let max_quads = (world_quads + additive_quads + hand_quads + see_through_quads)
-            .max(cloud_quads)
-            .max(if frame.lightning.bolts.is_empty() {
-                0
-            } else {
-                lightning::QUADS
-            })
-            .max(weather_quads)
-            .max(frame.glowing.len() as u32 / 4);
+        let max_quads =
+            (world_quads + additive_quads + hand_quads + see_through_quads + shadow_only_quads)
+                .max(cloud_quads)
+                .max(if frame.lightning.bolts.is_empty() {
+                    0
+                } else {
+                    lightning::QUADS
+                })
+                .max(weather_quads)
+                .max(frame.glowing.len() as u32 / 4);
         if max_quads > self.index_quads {
             self.index_quads = max_quads.next_power_of_two();
             self.indices = Self::quad_indices(&self.device, self.index_quads);
@@ -5859,6 +5988,12 @@ impl Renderer {
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
             native.frame.write(&self.queue, frame, size);
+            native.frame.block_light.update(
+                &self.queue,
+                frame.camera,
+                &self.light_blocks,
+                self.light_revision,
+            );
             if let Some(t) = &mut native.timing {
                 t.begin(&self.device, &self.queue);
                 native_sky_pass =
@@ -5926,6 +6061,22 @@ impl Renderer {
                     shadow_first + shadow_solid,
                     shadow_translucent,
                 );
+            }
+            drop(pass);
+            if entity_quads > 0 || shadow_only_quads > 0 {
+                let mut pass = native
+                    .frame
+                    .shadow_map
+                    .begin_entities(&mut encoder, "Native shader pack entity shadow");
+                pass.set_pipeline(&shadow.entity);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                // At the end of the buffer (`EntityBatch::append_shadow_only`).
+                let first = entity_vertices as u32 - shadow_only_quads * 4;
+                pass.draw_indexed(0..shadow_only_quads * 6, first as i32, 0..1);
             }
         }
         if native_sky_pass
@@ -6160,12 +6311,24 @@ impl Renderer {
                         self.end_sky.draw(&mut pass);
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
+                        // The Overworld's bodies start with the sun's quad
+                        // (`Game::celestial_geometry`): a pack sky drawing its own skips it.
+                        let own_sun = !frame.end_sky
+                            && self
+                                .native
+                                .as_ref()
+                                .is_some_and(|n| n.sky.is_some() && !n.vanilla_sun);
+                        let first = if own_sun { 6 } else { 0 };
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
-                        pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                        pass.draw_indexed(first..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
-                if !frame.title && frame.stars.is_some() && !pack_draws_sky {
+                let own_stars = self
+                    .native
+                    .as_ref()
+                    .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
+                if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
                     self.stars.draw(&mut pass);
                     pass.set_bind_group(0, &self.group, &[]);
                 }
@@ -6649,7 +6812,13 @@ impl Renderer {
             // terrain and clouds, so the water behind the rain is drawn first.
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             if !pack_draws_weather && !oit_on {
-                self.weather.draw(&mut pass, &self.entity_group);
+                let native_weather = self
+                    .native
+                    .as_ref()
+                    .filter(|_| !frame.title)
+                    .and_then(|n| Some((n.weather.as_ref()?, &n.frame.group)));
+                self.weather
+                    .draw(&mut pass, &self.entity_group, native_weather);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             // LevelRenderer: the world border after translucent terrain and weather.

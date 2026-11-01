@@ -42,6 +42,7 @@ pub(super) struct GuestPlay {
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
+    use_duration: i32,
     use_delay: u32,
     /// The shield's ItemCooldowns entry: an axe disabled it for this many ticks.
     pub(super) shield_cooldown: u32,
@@ -172,6 +173,7 @@ pub(super) struct GuestSwap {
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
+    use_duration: i32,
     use_delay: u32,
     pub(super) shield_cooldown: u32,
     /// The guest's item cooldowns (`Game::cooldowns` for its turn).
@@ -412,6 +414,7 @@ impl Game<'_> {
         motion.sprinting = g.sprinting;
         motion.may_fly = g.creative() || g.game_mode == SPECTATOR;
         motion.flying = g.flying;
+        motion.flying_speed = g.flying_speed;
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
         motion.invulnerable = motion.may_fly;
@@ -466,6 +469,7 @@ impl Game<'_> {
         let mining = std::mem::replace(&mut self.mining, play.mining.take());
         let destroy_delay = std::mem::replace(&mut self.destroy_delay, play.destroy_delay);
         let using = std::mem::replace(&mut self.using, play.using.take());
+        let use_duration = std::mem::replace(&mut self.use_duration, play.use_duration);
         let use_delay = std::mem::replace(&mut self.use_delay, play.use_delay);
         let shield_cooldown = std::mem::replace(&mut self.shield_cooldown, play.shield_cooldown);
         let cooldowns = std::mem::replace(&mut self.cooldowns, std::mem::take(&mut play.cooldowns));
@@ -579,6 +583,7 @@ impl Game<'_> {
             mining,
             destroy_delay,
             using,
+            use_duration,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -654,6 +659,7 @@ impl Game<'_> {
             mining,
             destroy_delay,
             using,
+            use_duration,
             use_delay,
             shield_cooldown,
             cooldowns,
@@ -771,6 +777,7 @@ impl Game<'_> {
         play.mining = std::mem::replace(&mut self.mining, mining);
         play.destroy_delay = std::mem::replace(&mut self.destroy_delay, destroy_delay);
         play.using = std::mem::replace(&mut self.using, using);
+        play.use_duration = std::mem::replace(&mut self.use_duration, use_duration);
         play.use_delay = std::mem::replace(&mut self.use_delay, use_delay);
         play.shield_cooldown = std::mem::replace(&mut self.shield_cooldown, shield_cooldown);
         play.cooldowns = std::mem::replace(&mut self.cooldowns, cooldowns);
@@ -1181,6 +1188,12 @@ impl Game<'_> {
                 source as i32,
                 None,
             );
+            return false;
+        }
+        // A mod menu type only for a client that has it: as
+        // `ServerPlayer.openMenu` with no menu, nothing opens.
+        let brand = host.hub.guest(conn).map_or("", |g| g.brand.as_str());
+        if !horizon_client::containers::menu_reaches(brand, menu) {
             return false;
         }
         // ServerPlayer.openMenu closes the menu that was open.
@@ -2750,6 +2763,30 @@ impl Game<'_> {
         command: &str,
         signed: Option<Vec<(String, horizon_client::lan::hub::chat::ChatMessage)>>,
     ) {
+        // The mods hear every command first, and may stop it.
+        let mut canceled = false;
+        let mut replies = Vec::new();
+        if let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone())) {
+            self.native_player_command(
+                uuid,
+                &name,
+                command.trim_start_matches('/'),
+                &mut canceled,
+                &mut replies,
+            );
+        }
+        for line in replies {
+            host.hub.send_to(
+                conn,
+                &C::SystemChat(play::SystemChat {
+                    content: horizon_client::lan::data::component_nbt(&line.component()),
+                    overlay: false,
+                }),
+            );
+        }
+        if canceled {
+            return;
+        }
         if self.guest_message_command(host, conn, command, signed.as_ref()) {
             return;
         }
@@ -3086,6 +3123,7 @@ impl Game<'_> {
         // restartClientLoadTimerAfterRespawn.
         g.dead = false;
         g.load_timeout = horizon_client::lan::guest::CLIENT_LOADED_TIMEOUT;
+        g.loading = true;
         g.death_time = 0;
         g.health = 20.0;
         g.food = 20;

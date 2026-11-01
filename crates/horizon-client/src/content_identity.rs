@@ -1,6 +1,7 @@
 //! Identity of the ordered block-state registry used by chunk packets, and of
-//! the item, mob effect and entity type registries once content mods add to
-//! them (item stacks, effect and entity packets carry their network ids).
+//! the item, mob effect, entity type and menu registries once content mods
+//! add to them (item stacks, effect, entity and open screen packets carry
+//! their network ids).
 use horizon_protocol::registry::Builtin;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use sha2::{Digest, Sha256};
@@ -108,10 +109,11 @@ fn hash_facts(bytes: &[u8]) -> Result<[u8; 32], IdentityError> {
 }
 
 /// The built-in registries whose network ids content mods extend besides blocks.
-const REGISTRIES: [&str; 3] = [
+const REGISTRIES: [&str; 4] = [
     "minecraft:item",
     "minecraft:mob_effect",
     "minecraft:entity_type",
+    "minecraft:menu",
 ];
 
 fn parse_registries(bytes: &[u8]) -> Result<Builtin, IdentityError> {
@@ -178,6 +180,32 @@ mod tests {
             hash_entries(blocks, ITEM, &glow),
             hash_entries(blocks, EFFECT, &glow)
         );
+    }
+
+    /// a mod menu type in the report changes the identity, so a client
+    /// without it is refused before it could be sent an id it lacks.
+    #[test]
+    fn a_mod_menu_type_joins_the_identity() {
+        let root = |name: &str, extra: &str| {
+            let root = std::env::temp_dir().join(format!(
+                "horizon-content-identity-menu-{name}-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let facts = br#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}]]}"#;
+            std::fs::write(root.join("facts.json"), facts).unwrap();
+            let report = format!(
+                r#"{{"minecraft:menu":{{"entries":{{"minecraft:generic_9x1":{{"protocol_id":0}}{extra}}}}}}}"#
+            );
+            std::fs::write(root.join("registries.json"), report).unwrap();
+            let hash = identity(&root).unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            hash
+        };
+        let vanilla = root("vanilla", "");
+        let press = root("press", r#","ruby:press":{"protocol_id":25}"#);
+        assert_ne!(press, vanilla);
+        assert_ne!(press, root("mill", r#","ruby:mill":{"protocol_id":25}"#));
     }
 
     #[test]

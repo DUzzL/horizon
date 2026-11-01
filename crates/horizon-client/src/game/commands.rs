@@ -77,6 +77,11 @@ pub(in crate::game) struct OtherEntity {
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
 }
+/// `EntityType.getDescriptionId`: `entity.<namespace>.<path>`.
+fn entity_name_key(id: &str) -> String {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    format!("entity.{namespace}.{}", path.replace('/', "."))
+}
 fn texts(args: &[Text]) -> Vec<Text> {
     args.to_vec()
 }
@@ -2014,18 +2019,18 @@ impl Game<'_> {
                 && self
                     .res
                     .mob_types()
-                    .get(&format!("minecraft:{short}"))
+                    .get(&kind)
                     .is_some_and(|t| t.category == "monster")
             {
                 return Err(err("commands.summon.failed.peaceful", &[]));
             }
             let before = self.spawned_mark();
-            let name = match self.summon_with_nbt(&format!("minecraft:{short}"), pos, &nbt)? {
+            let name = match self.summon_with_nbt(&kind, pos, &nbt)? {
                 Some(target) => self.target_name(target),
                 // Spawned as a kind no command target stands for (primed
                 // TNT, falling blocks, projectiles): its type's name.
                 None if self.spawned_mark() != before => {
-                    Text::translate(&format!("entity.minecraft.{short}"), &[])
+                    Text::translate(&entity_name_key(&kind), &[])
                 }
                 None => return Err(err("commands.summon.failed", &[])),
             };
@@ -2033,17 +2038,12 @@ impl Game<'_> {
             return Ok(1);
         }
         let name;
-        if let Some(t) = self
-            .res
-            .mob_types()
-            .get(&format!("minecraft:{short}"))
-            .cloned()
-        {
+        if let Some(t) = self.res.mob_types().get(&kind).cloned() {
             if self.ui.difficulty == 0 && t.category == "monster" {
                 return Err(err("commands.summon.failed.peaceful", &[]));
             }
             self.spawn_mob_spawned(&short, pos);
-            name = Text::translate(&format!("entity.minecraft.{short}"), &[]);
+            name = Text::translate(&entity_name_key(&kind), &[]);
         } else {
             match short.as_str() {
                 "item" => {
@@ -2125,7 +2125,7 @@ impl Game<'_> {
                         // Spawned as a kind no command target stands for
                         // (primed TNT, falling blocks, projectiles).
                         None if self.spawned_mark() != before => {
-                            Text::translate(&format!("entity.minecraft.{short}"), &[])
+                            Text::translate(&entity_name_key(&kind), &[])
                         }
                         None => return Err(err("commands.summon.failed", &[])),
                     };
@@ -3567,6 +3567,20 @@ fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     }
     out.push(&s[start..]);
     out
+}
+
+#[cfg(test)]
+mod summon_tests {
+    #[test]
+    fn a_summoned_entity_is_named_from_its_own_namespace() {
+        use super::entity_name_key;
+        assert_eq!(
+            entity_name_key("minecraft:snowball"),
+            "entity.minecraft.snowball"
+        );
+        assert_eq!(entity_name_key("ruby:bolt"), "entity.ruby.bolt");
+        assert_eq!(entity_name_key("ruby:spell/bolt"), "entity.ruby.spell.bolt");
+    }
 }
 
 #[cfg(test)]

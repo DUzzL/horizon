@@ -173,6 +173,10 @@ pub struct Guest {
     pub moved: bool,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
+    /// Since it joined or respawned, the client hasn't said it loaded the level
+    /// (ServerboundPlayerLoadedPacket): it may still be on its loading screen, where it doesn't
+    /// move, even once the server stops waiting for it (`load_timeout`).
+    pub loading: bool,
     /// Ticks left before the server stops waiting for that packet
     /// (ServerGamePacketListenerImpl.clientLoadedTimeoutTimer): 60 at join and
     /// after a respawn, 0 once it comes.
@@ -274,6 +278,9 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
+    /// another (`native_set_flying_speed`). Saved with the player.
+    pub flying_speed: f32,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -370,6 +377,7 @@ impl Guest {
             changes: Default::default(),
             moved: false,
             loaded: false,
+            loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
             center: None,
             sent_chunks: Default::default(),
@@ -422,6 +430,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
@@ -438,6 +447,14 @@ impl Guest {
             scoreboard: Default::default(),
             recipes_unlocked: Vec::new(),
         }
+    }
+    /// `ServerPlayer.onUpdateAbilities`: the guest's abilities, flying speed included.
+    pub fn abilities(&self) -> play::Clientbound {
+        play::Clientbound::PlayerAbilities(play::PlayerAbilities {
+            flags: self.ability_flags(),
+            flying_speed: self.flying_speed,
+            walking_speed: 0.1,
+        })
     }
     pub fn send(&self, packet: &play::Clientbound) {
         if self.anticheat.record.is_some() {
