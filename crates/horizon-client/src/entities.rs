@@ -1157,6 +1157,12 @@ pub struct ArmorStand {
     /// `ArmorStand.disabledSlots`: bit `filterFlag` locks a slot, bit
     /// `filterFlag + 8` takes from it and bit `filterFlag + 16` puts into it.
     pub disabled_slots: i32,
+    /// Server-only `LivingEntity.lastPos` for location-based enchantments.
+    pub enchantment_block: Option<BlockPos>,
+    /// Travel accumulated for `LivingEntity.checkFallDamage`'s landing callback.
+    pub enchantment_fall_distance: f64,
+    /// Last equipment seen by `collectEquipmentChanges`; not saved to NBT.
+    pub enchantment_equipment: [Option<ItemStack>; 6],
 }
 impl ArmorStand {
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
@@ -1228,6 +1234,9 @@ impl ArmorStand {
             pose: Self::DEFAULT_POSE,
             vehicle: None,
             disabled_slots: 0,
+            enchantment_block: None,
+            enchantment_fall_distance: 0.0,
+            enchantment_equipment: Default::default(),
         }
     }
     /// `EquipmentSlot.getFilterFlag` of an `equipment` index (main hand, off

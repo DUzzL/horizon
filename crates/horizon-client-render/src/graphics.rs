@@ -79,6 +79,47 @@ impl Preset {
     }
 }
 
+/// Entity occlusion strategy. The synchronous mode preserves the original
+/// same-frame CPU test; asynchronous results only hide a mesh when their
+/// camera, bounds and occluder evidence still match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EntityCullingMode {
+    #[default]
+    Off,
+    Synchronous,
+    Asynchronous,
+}
+impl EntityCullingMode {
+    pub const ALL: [EntityCullingMode; 3] = [
+        EntityCullingMode::Off,
+        EntityCullingMode::Synchronous,
+        EntityCullingMode::Asynchronous,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Synchronous => "sync",
+            Self::Asynchronous => "async",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Synchronous => "Synchronous",
+            Self::Asynchronous => "Asynchronous",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            // Keep graphics files written before the mode selector readable.
+            "true" | "synchronous" | "sync" => Self::Synchronous,
+            "false" | "off" => Self::Off,
+            "asynchronous" | "async" => Self::Asynchronous,
+            _ => Self::default(),
+        }
+    }
+}
+
 /// How the swapchain presents frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PresentMode {
@@ -466,8 +507,8 @@ pub struct Graphics {
     pub far_detail: FarDetail,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
-    /// Skip drawing entities hidden behind opaque terrain.
-    pub entity_culling: bool,
+    /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
+    pub entity_culling: EntityCullingMode,
     /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
     /// vanilla's fancy leaves. Ignored with a resource pack that may replace
     /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
@@ -544,7 +585,7 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
-            entity_culling: false,
+            entity_culling: EntityCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
             chunk_updates: 0,
             upload_budget_kib: 0,
@@ -614,7 +655,7 @@ impl Graphics {
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
-                "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
@@ -686,7 +727,7 @@ impl Graphics {
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
-            bool_text(self.entity_culling),
+            self.entity_culling.name(),
             self.leaf_culling.name(),
             self.chunk_updates,
             self.upload_budget_kib,
@@ -843,7 +884,7 @@ mod tests {
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             cave_culling: false,
-            entity_culling: true,
+            entity_culling: EntityCullingMode::Synchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
             chunk_updates: 12,
             upload_budget_kib: 4096,
@@ -875,6 +916,21 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        for mode in EntityCullingMode::ALL {
+            let graphics = Graphics {
+                entity_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert_eq!(
+            Graphics::parse("entityCulling:true\n").entity_culling,
+            EntityCullingMode::Synchronous
+        );
+        assert_eq!(
+            Graphics::parse("entityCulling:false\n").entity_culling,
+            EntityCullingMode::Off
+        );
         assert_eq!(Graphics::parse(""), Graphics::default());
         // Translucent Batching is opt-in for now: only the file turns it on.
         assert!(!Graphics::default().translucent_batching);

@@ -17,7 +17,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Group | Setting | Stored in |
 | --- | --- | --- |
 | Rendering | render distance, simulation distance, entity distance | `options.txt` (vanilla keys) |
-| | LOD distance, cave culling, entity culling, leaf culling, chunk updates per frame | `horizon-graphics.txt` |
+| | LOD distance, cave culling, entity culling mode, leaf culling, chunk updates per frame | `horizon-graphics.txt` |
 | Quality | smooth lighting, mipmap levels, biome blend, clouds, cloud distance, weather radius, particles, entity shadows, cutout leaves | `options.txt` |
 | | sky, fog, weather, animated textures | `horizon-graphics.txt` |
 | | distant plant dither (`ditherCutoutMips`, off by default: cutouts from 64 texels up) | `horizon-graphics.txt` |
@@ -28,6 +28,8 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Overlay | performance overlay: FPS, frame/CPU/GPU times, frame-time graph | `horizon-graphics.txt` |
 
 `options.txt` keeps exactly vanilla's keys and values, so the options harness still compares it with vanilla; Horizon's settings live in `horizon-graphics.txt` beside it. Their defaults render as vanilla does: cave culling on, entity and leaf culling off, no upload budgets, sky, fog and weather on, 100% resolution, no anti-aliasing, HDR off, the present mode following VSync. VSync on always waits for the display (Fifo), in a window and in fullscreen, as in vanilla; the present mode setting chooses how frames are shown only while VSync is off. Frame pacing defaults to Efficient: the limiter sleeps through the last half millisecond where vanilla spins, which changes timing, not pixels.
+
+**Entity Culling** is off by default and disabled with non-vanilla resource packs. Synchronous mode uses the existing same-frame CPU test. Asynchronous mode checks meshes on a worker and uses a result only when the camera and mesh bounds still match and the opaque chunks and rendered sections that proved occlusion are unchanged and ready. Until then, it leaves the mesh visible. Both modes leave simulation and interaction unchanged; older `entityCulling:true` settings select Synchronous.
 
 **Battery mode** (Performance, off by default) is for laptops and handhelds: at most 60 frames per second in a world, 30 in menus without a world or while another window has focus, and half the automatic worker threads (chunks load slower). It changes only when frames are drawn: what they show and the game's 20 ticks per second stay as they are.
 

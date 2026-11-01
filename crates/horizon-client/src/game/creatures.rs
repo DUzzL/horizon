@@ -5765,12 +5765,28 @@ impl Game<'_> {
         );
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
+        let mob_type = parent.kind.clone();
         let target = self.mob_entity(&self.mobs[index]);
-        let Some(id) = self.spawn_mob_spawned(&kind, at) else {
-            return false;
+        let id = if species == Species::Piglin {
+            // SpawnEggItem.spawnOffspringFromSpawnEgg: a non-AgeableMob is
+            // constructed, then setBaby(true), without finalizeSpawn. Giving
+            // it adult spawn gear first leaves the baby holding a weapon.
+            self.next_entity += 1;
+            let id = self.next_entity;
+            self.mobs
+                .push(Mob::new(id, mob_type, Vec3::new(at[0], at[1], at[2]), 0.0));
+            id
+        } else {
+            let Some(id) = self.spawn_mob_spawned(&kind, at) else {
+                return false;
+            };
+            id
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
+        }
+        if species == Species::Piglin {
+            self.native_mobs_joined(self.mobs.len() - 1, false);
         }
         // `Mob.checkAndHandleImportantInteractions` then calls
         // `onOffspringSpawnedFromEgg`: `Fox`'s makes the baby trust the player

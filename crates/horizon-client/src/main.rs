@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 mod game;
 
-use horizon_client::{crash, logging};
+use horizon_client::{crash, logging, ram_limit};
 
 #[global_allocator]
 static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
@@ -54,6 +54,7 @@ fn main() {
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
+        ram_limit::start(&home, side);
     }
     raise_open_file_limit();
     if let Err(error) = game::run() {
