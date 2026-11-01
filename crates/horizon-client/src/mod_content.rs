@@ -513,6 +513,73 @@ fn component_types(map: &J) -> BTreeSet<String> {
     }
 }
 
+/// Blocks and items native mods declare in code (`native_blocks`,
+/// `native_items`), joined to the content mods: each namespace's go into
+/// the content mod of that id when one is on (a native mod's own `.hmod`,
+/// with its models and textures), else into a content mod with no files of
+/// its own. Checked as files are ([`horizon_mods::Content::declare`],
+/// [`accept_mod`]); a namespace whose declarations are refused is left out
+/// whole, and its error returned.
+pub fn accept_declared(
+    mods: &mut Vec<ContentMod>,
+    blocks: &[horizon_mods::content::Block],
+    items: &[horizon_mods::content::Item],
+    known: &BTreeSet<String>,
+) -> Vec<String> {
+    let namespace = |id: &str| id.split_once(':').map_or("", |(ns, _)| ns).to_owned();
+    let mut by_namespace: std::collections::BTreeMap<String, (Vec<_>, Vec<_>)> = Default::default();
+    for block in blocks {
+        by_namespace
+            .entry(namespace(&block.id))
+            .or_default()
+            .0
+            .push(block.clone());
+    }
+    for item in items {
+        by_namespace
+            .entry(namespace(&item.id))
+            .or_default()
+            .1
+            .push(item.clone());
+    }
+    let mut errors = Vec::new();
+    for (ns, (blocks, items)) in by_namespace {
+        let result = match mods.iter().position(|m| m.id == ns) {
+            Some(i) => {
+                let mut content = horizon_mods::Content::declared(&ns);
+                content.blocks.clone_from(&mods[i].content.blocks);
+                content.items.clone_from(&mods[i].content.items);
+                content
+                    .declare(&blocks, &items)
+                    .and_then(|()| {
+                        let mut added = horizon_mods::Content::declared(&ns);
+                        added.blocks.clone_from(&blocks);
+                        added.items.clone_from(&items);
+                        validate_components(&added, known).map_err(|e| e.to_string())
+                    })
+                    .map(|()| {
+                        mods[i].content.blocks.extend(blocks);
+                        mods[i].content.items.extend(items);
+                    })
+            }
+            None => {
+                let mut content = horizon_mods::Content::declared(&ns);
+                content.declare(&blocks, &items).and_then(|()| {
+                    let candidate = ContentMod {
+                        id: ns.clone(),
+                        content,
+                    };
+                    accept_mod(mods, candidate, known).map_err(|e| e.to_string())
+                })
+            }
+        };
+        if let Err(e) = result {
+            errors.push(format!("native blocks and items of {ns}: {e}"));
+        }
+    }
+    errors
+}
+
 /// Check and accept one mod without disturbing previously accepted mods.
 pub fn accept_mod(
     mods: &mut Vec<ContentMod>,
@@ -764,6 +831,25 @@ impl<'a> Plan<'a> {
                         .into());
                     }
                 }
+                // A block's states are its template's times the declared combinations, the
+                // template's properties varying slowest, but the game reads a state table the
+                // way vanilla's `StateDefinition` does: sorted by property name, the first name
+                // slowest. The two agree only when every declared name sorts after the template's,
+                // and a table that disagrees stops the game at load, so such a block is refused.
+                let last = match properties(default) {
+                    Some(J::Obj(own)) => own.iter().map(|(k, _)| k.as_str()).max(),
+                    _ => None,
+                };
+                if let Some(last) = last
+                    && let Some(early) = decl.state_properties.keys().find(|k| k.as_str() < last)
+                {
+                    return Err(format!(
+                        "{}: state property {early} sorts before {last}, a property of {}: the \
+                         game orders states by property name, so name it after {last}",
+                        decl.id, decl.template
+                    )
+                    .into());
+                }
                 let combos = combinations(&decl.state_properties, &decl.default_state)
                     .map_err(|e| format!("{}: {e}", decl.id))?;
                 // A `default_state` key the block itself declares is its own,
@@ -966,7 +1052,7 @@ impl<'a> Plan<'a> {
                     if !b.decl.item {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
-                    self.override_gameplay(b, &mut row);
+                    self.override_gameplay(b, combo, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[t];
                         let boxes = shape
@@ -1003,8 +1089,11 @@ impl<'a> Plan<'a> {
     }
 
     /// The declared properties, on a gameplay row.
-    fn override_gameplay(&self, b: &NewBlock, row: &mut J) {
+    fn override_gameplay(&self, b: &NewBlock, combo: &[(String, String)], row: &mut J) {
         let p = &b.decl.properties;
+        if let Some(ticks) = &p.random_ticks {
+            row.set("random_ticks", J::Bool(ticks.applies(combo)));
+        }
         if let Some(v) = p.hardness {
             row.set("hardness", J::f64(v as f64));
         }
@@ -2240,7 +2329,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 /// and mod files reuse it. With ATM10's carried mods a build takes about
 /// 25 s and peaks above 3 GB, more than everything the game keeps.
 pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<PathBuf> {
-    if mods.iter().all(|m| m.content.is_empty()) {
+    if mods
+        .iter()
+        .all(|m| m.content.is_empty() && m.content.blocks.is_empty() && m.content.items.is_empty())
+    {
         return Ok(base.to_owned());
     }
     let out = cache.join("mod-content");
@@ -2295,8 +2387,12 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
     }
     for m in mods {
         parts.push(m.id.clone());
+        // What it declares, so blocks and items from code count too.
+        parts.push(format!("{:?} {:?}", m.content.blocks, m.content.items));
         let source = m.content.source();
-        if source.is_dir() {
+        if m.content.files.is_empty() {
+            // Declared in code only: nothing to read.
+        } else if source.is_dir() {
             for file in &m.content.files {
                 parts.push(meta(&source.join(file))?);
             }
