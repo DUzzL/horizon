@@ -8049,6 +8049,8 @@ impl Renderer {
                     radius,
                     timing.as_mut(),
                 );
+        } else if let Some(blur) = &mut self.menu_blur {
+            blur.release();
         }
         self.hud.draw_range(
             encoder,
