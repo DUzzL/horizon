@@ -129,6 +129,12 @@ impl Split<'_> {
             // the one controller pressed while P1 plays with the keyboard and mouse makes a
             // second player rather than taking P1's controls.
             let in_world = self.in_world();
+            // The players waiting for a controller come first: the same kind back takes back
+            // its player, another takes over the one waiting longest (`claim`). Only what that
+            // passes on, with P1 the one waiting, goes to P1 here.
+            if in_world && self.claim_for_lost(id, button) {
+                continue;
+            }
             let p1_waits = self.lost.iter().any(|l| l.seat == 1);
             let claims_p1 = p1_takes(
                 in_world,
@@ -142,9 +148,6 @@ impl Split<'_> {
                 continue;
             }
             if !in_world {
-                continue;
-            }
-            if self.claim_for_lost(id, button) {
                 continue;
             }
             match self.offers.iter().position(|(o, _)| *o == id) {
