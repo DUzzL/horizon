@@ -73,8 +73,11 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
   --attack NAME          attack the player NAME twice a second, from wherever the bot is (a reach test),
                          swinging after each attack as vanilla's client does. NAME,NAME...: each of them
                          in the same tick (a multi-target kill aura, for the anticheat's tests);
-                         the report gives each bot's last health
+                         the report gives each bot's last health. A UUID instead of a NAME: the
+                         entity with that UUID (a boat summoned with it, say)
   --attack-after S       start attacking S seconds after joining; default 5
+  --attack-rounds N      stop after N rounds of attacks (each hits every target seen so far once);
+                         default no limit
   --no-swing             attack without swinging (a kill aura hiding its swing, for the anticheat's tests)
   --no-loaded            never say the level is loaded (ServerboundPlayerLoadedPacket): a vanilla server
                          ignores the player's moves and actions for its first 3 seconds
@@ -153,9 +156,11 @@ struct Options {
     seed: u64,
     explore_speed: f64,
     pvp: bool,
-    /// The player to attack, and how long after joining to start.
+    /// The players or entity UUIDs to attack, how long after joining to start,
+    /// and how many rounds.
     attack: Option<String>,
     attack_after: f64,
+    attack_rounds: u32,
     no_swing: bool,
     flood: usize,
     no_read: bool,
@@ -190,6 +195,7 @@ fn options() -> Result<Options, String> {
         pvp: true,
         attack: None,
         attack_after: 5.0,
+        attack_rounds: u32::MAX,
         no_swing: false,
         flood: 100,
         no_read: false,
@@ -247,6 +253,7 @@ fn options() -> Result<Options, String> {
             "--flood" => o.flood = value.parse().map_err(|_| number("packets a tick"))?,
             "--attack" => o.attack = Some(value),
             "--attack-after" => o.attack_after = value.parse().map_err(|_| number("seconds"))?,
+            "--attack-rounds" => o.attack_rounds = value.parse().map_err(|_| number("a number"))?,
             "--name" => o.name = value,
             "--report" => o.report = Some(value),
             "--brand" => o.brand = Some(value),
@@ -399,6 +406,16 @@ fn join_summary(mut times: Vec<u64>) -> serde_json::Value {
         "p99_ms": percentile(&times, 99),
         "max_ms": times.last().copied().unwrap_or(0),
     })
+}
+
+/// An `--attack` target's UUID: a UUID as written (`8-4-4-4-12` hex), else
+/// the offline UUID of the player with that name (a name has no `-`).
+fn target_uuid(name: &str) -> u128 {
+    let hex: String = name.chars().filter(|&c| c != '-').collect();
+    match u128::from_str_radix(&hex, 16) {
+        Ok(uuid) if name.contains('-') && hex.len() == 32 => uuid,
+        _ => offline_uuid(name),
+    }
 }
 
 /// A small deterministic generator (SplitMix64), so every run moves the bots the same way.
@@ -984,7 +1001,7 @@ fn run_bot(
         .attack
         .iter()
         .flat_map(|names| names.split(','))
-        .map(|name| (offline_uuid(name), None))
+        .map(|name| (target_uuid(name), None))
         .collect();
     bot.online.store(true, Ordering::SeqCst);
     {
@@ -1039,6 +1056,7 @@ fn run_bot(
         send(play::Serverbound::SetCarriedItem(play::SetCarriedItem { slot: 0 }).encode());
     }
     let mut sequence = 0;
+    let mut rounds = 0;
     let mut random = Random(o.seed ^ (index as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
     let mut pos = spawn;
     // Fight bots stay at their spawn height; the others climb to fly above the terrain.
@@ -1202,8 +1220,13 @@ fn run_bot(
                 send(body);
             }
         }
-        if joined.elapsed().as_secs_f64() >= o.attack_after && tick % 10 == 0 {
+        if joined.elapsed().as_secs_f64() >= o.attack_after
+            && tick % 10 == 0
+            && rounds < o.attack_rounds
+        {
             let targets: Vec<i32> = lock(&bot.target).iter().filter_map(|t| t.1).collect();
+            // A round counts once a target is known.
+            rounds += u32::from(!targets.is_empty());
             for id in targets {
                 send(play::Serverbound::Attack(play::Attack { id }).encode());
                 // Minecraft.startAttack swings right after the attack.
@@ -1444,6 +1467,20 @@ mod tests {
             id,
             values: vec![(HEALTH_DATA, 3, entity_data::Value::Float(health))],
         })
+    }
+
+    /// `--attack`: a UUID names that entity, anything else a player.
+    #[test]
+    fn attack_targets_a_uuid_or_a_player() {
+        assert_eq!(target_uuid("00000000-0000-0000-0000-00000000000a"), 10);
+        assert_eq!(
+            target_uuid("0000000a-0000-0001-0000-000000000002"),
+            0x0000000a_0000_0001_0000_000000000002
+        );
+        assert_eq!(target_uuid("V0"), offline_uuid("V0"));
+        // A name of 32 hex digits is a name: a UUID is written with dashes.
+        let name = "0123456789abcdef0123456789abcdef";
+        assert_eq!(target_uuid(name), offline_uuid(name));
     }
 
     #[test]

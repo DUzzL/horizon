@@ -359,8 +359,10 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        // `skipAttackInteraction` when `mayInteract` is false.
+        // `Cushion.hurtServer` refuses a player who may not build, so
+        // skipAttackInteraction is false and Player.attack goes on to onAttack.
         if !self.may_build() {
+            self.attack_ticks = 0;
             return true;
         }
         self.break_cushion(i, true);

@@ -255,6 +255,12 @@ impl Game<'_> {
             return false;
         }
         if self.item_frames[i].fixed {
+            // A fixed frame refuses the hit of a player who isn't in creative
+            // (canHurtWhenFixed), so skipAttackInteraction is false and
+            // Player.attack goes on to onAttack.
+            if !self.creative {
+                self.attack_ticks = 0;
+            }
             return true;
         }
         let with_frame = self.item_frames[i].item.is_none();
