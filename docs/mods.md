@@ -88,8 +88,12 @@ A block names its template and what differs from it:
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
 connects to, or a machine whether it is running. Its states then become its
-template's states times the combinations of the ones it declares, in a fixed
-order with every declared default first, so ids do not move between loads:
+template's states times the combinations of the ones it declares, laid out as
+vanilla lays out a block's states (`StateDefinition`): every property, the
+template's and the declared ones, sorted by name with the first name varying
+slowest, and each declared property's default value first. The order is fixed,
+so ids do not move between loads, and a declared name may sort before one of
+the template's (`bites` on a carved pumpkin, whose `facing` comes after it):
 
 ```json
 { "template": "minecraft:stone",

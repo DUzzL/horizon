@@ -225,6 +225,10 @@ struct Rename {
     /// template state moves to the first of them, which is the one every
     /// declared property is at its default for.
     fanout: u32,
+    /// The lookup from a template state and a declared combination to the state's row, as an
+    /// offset from `first`: `rows[template offset * fanout + combination]`, laid out as vanilla
+    /// does (`state_order`). Empty: the template's states times the combinations, in that order.
+    rows: Vec<u32>,
 }
 impl Rename {
     fn new(from: &str, to: &str) -> Self {
@@ -234,6 +238,7 @@ impl Rename {
             states: 0..0,
             first: 0,
             fanout: 1,
+            rows: Vec::new(),
         }
     }
     /// The id itself, `Block{id}`, and `block.<ns>.<path>` / `item.<ns>.<path>` keys.
@@ -252,11 +257,98 @@ impl Rename {
         }
         None
     }
+    /// The row of a template state's `combination`, as an offset from `first`.
+    fn row(&self, at: u32, combination: u32) -> u32 {
+        let index = at * self.fanout + combination;
+        self.rows.get(index as usize).copied().unwrap_or(index)
+    }
+    /// Where a template state moves: its combination with every declared property at its default.
     fn id(&self, id: u32) -> Option<u32> {
         self.states
             .contains(&id)
-            .then(|| self.first + (id - self.states.start) * self.fanout)
+            .then(|| self.first + self.row(id - self.states.start, 0))
     }
+}
+
+/// A template's own state properties, sorted by name, each with how many values it takes across
+/// the template's `states`: how `StateTable::new` reads them back, the first name slowest.
+fn template_properties<'a>(
+    states: &Range<u32>,
+    properties: impl Fn(u32) -> Option<&'a J>,
+) -> Vec<(String, u32)> {
+    let Some(J::Obj(own)) = states.clone().next().and_then(&properties) else {
+        return Vec::new();
+    };
+    let mut names: Vec<&str> = own.iter().map(|(k, _)| k.as_str()).collect();
+    names.sort_unstable();
+    let mut out = Vec::new();
+    for name in names {
+        let mut seen: Vec<&J> = Vec::new();
+        for id in states.clone() {
+            if let Some(v) = properties(id).and_then(|p| p.get(name))
+                && !seen.contains(&v)
+            {
+                seen.push(v);
+            }
+        }
+        out.push((name.to_owned(), (seen.len() as u32).max(1)));
+    }
+    out
+}
+
+/// A block's states: in vanilla's order when the template's own properties multiply out to its
+/// states (every vanilla block's do), else the template's states times the combinations.
+fn block_order<'a>(
+    states: &Range<u32>,
+    properties: impl Fn(u32) -> Option<&'a J>,
+    declared: &[(String, u32)],
+    combinations: u32,
+) -> Vec<(u32, u32)> {
+    let template = template_properties(states, properties);
+    if template.iter().map(|p| p.1).product::<u32>() == states.len() as u32 {
+        return state_order(&template, declared);
+    }
+    (0..states.len() as u32)
+        .flat_map(|state| (0..combinations).map(move |combo| (state, combo)))
+        .collect()
+}
+
+/// The states of a block in vanilla's order (`StateDefinition`): every property, the template's
+/// and the declared ones, sorted by name, the first name varying slowest. Each entry is a
+/// template state's offset and the index of a declared combination (`combinations`), whose own
+/// order is by declared name, the first slowest. With every declared name after the template's
+/// this is the template's states times the combinations, as before.
+fn state_order(template: &[(String, u32)], declared: &[(String, u32)]) -> Vec<(u32, u32)> {
+    // (name, values, its own side's stride, from the template)
+    let mut all: Vec<(&str, u32, u32, bool)> = Vec::new();
+    for (side, from_template) in [(template, true), (declared, false)] {
+        let mut stride = 1;
+        let mut strides = Vec::new();
+        for (_, len) in side.iter().rev() {
+            strides.push(stride);
+            stride *= len;
+        }
+        for ((name, len), stride) in side.iter().zip(strides.into_iter().rev()) {
+            all.push((name, *len, stride, from_template));
+        }
+    }
+    all.sort_by(|a, b| a.0.cmp(b.0));
+    let total: u32 = all.iter().map(|p| p.1).product();
+    (0..total)
+        .map(|position| {
+            let (mut state, mut combo, mut rest) = (0, 0, total);
+            for &(_, len, stride, from_template) in &all {
+                rest /= len;
+                let value = (position / rest) % len;
+                if from_template {
+                    state += value * stride;
+                } else {
+                    combo += value * stride;
+                }
+            }
+            (state, combo)
+        })
+        .collect()
 }
 
 /// The combinations of a block's declared state properties, in a fixed
@@ -450,14 +542,17 @@ struct NewBlock<'a> {
     /// default first (one empty combination when the block declares none):
     /// the block's states are its template's states times these.
     combos: Vec<Vec<(String, String)>>,
+    /// Each state's template state offset and combination index, in registry order
+    /// (`state_order`).
+    order: Vec<(u32, u32)>,
 }
 impl NewBlock<'_> {
     /// Template states and declared combinations in registry order.
     fn state_combinations(&self) -> impl Iterator<Item = (u32, &[(String, String)])> {
-        self.rename
-            .states
-            .clone()
-            .flat_map(|id| self.combos.iter().map(move |combo| (id, combo.as_slice())))
+        let start = self.rename.states.start;
+        self.order
+            .iter()
+            .map(move |&(state, combo)| (start + state, self.combos[combo as usize].as_slice()))
     }
 }
 /// An item being added (declared, or a block's).
@@ -764,24 +859,6 @@ impl<'a> Plan<'a> {
                         .into());
                     }
                 }
-                // A block's states are its template's times the declared combinations, the
-                // template's properties varying slowest, but the game reads a state table the
-                // way vanilla's `StateDefinition` does: sorted by property name, the first name
-                // slowest. The two agree only when every declared name sorts after the template's,
-                // and a table that disagrees stops the game at load, so such a block is refused.
-                let last = match properties(default) {
-                    Some(J::Obj(own)) => own.iter().map(|(k, _)| k.as_str()).max(),
-                    _ => None,
-                };
-                if let Some(last) = last
-                    && let Some(early) = decl.state_properties.keys().find(|k| k.as_str() < last)
-                {
-                    return Err(format!(
-                        "{}: state property {early} sorts before {last}, a property of {}: the                          game orders states by property name, so name it after {last}",
-                        decl.id, decl.template
-                    )
-                    .into());
-                }
                 let combos = combinations(&decl.state_properties, &decl.default_state)
                     .map_err(|e| format!("{}: {e}", decl.id))?;
                 // A `default_state` key the block itself declares is its own,
@@ -835,9 +912,25 @@ impl<'a> Plan<'a> {
                     }
                     default = matches[0];
                 }
+                // The game reads a state table as vanilla's `StateDefinition` does: every
+                // property, the template's and the declared ones, sorted by name, the first
+                // name slowest. A declared name that sorts before the template's has to
+                // interleave with them, so the states are laid out in that order.
+                let declared: Vec<(String, u32)> = decl
+                    .state_properties
+                    .iter()
+                    .map(|(name, property)| (name.clone(), property.values().len() as u32))
+                    .collect();
+                let order = block_order(&states, &properties, &declared, combos.len() as u32);
+                // The lookup from (template state, combination) to the state's row.
+                let mut rows = vec![0; order.len()];
+                for (position, &(state, combo)) in order.iter().enumerate() {
+                    rows[state as usize * combos.len() + combo as usize] = position as u32;
+                }
                 let mut rename = Rename::new(&decl.template, &decl.id);
                 rename.first = next;
                 rename.fanout = combos.len() as u32;
+                rename.rows = rows;
                 let count =
                     u32::try_from(states.len() as u64 * combos.len() as u64).unwrap_or(u32::MAX);
                 next = next.saturating_add(count);
@@ -855,6 +948,7 @@ impl<'a> Plan<'a> {
                     shapes,
                     default,
                     combos,
+                    order,
                 });
             }
         }
@@ -1334,15 +1428,20 @@ impl<'a> Plan<'a> {
         };
         for block in &self.blocks {
             if let Some(shapes) = &block.shapes {
-                let fanout = block.combos.len();
-                for (i, shape) in shapes.iter().enumerate() {
-                    let id = entries.len() as i32;
-                    entries.push(encode_shape(shape));
-                    // One shape per template state, shared by every combination
-                    // of it: the geometry is the template's, the properties are
-                    // the block's.
-                    for c in 0..fanout {
-                        indices.push((block.rename.first as usize + i * fanout + c, id));
+                // One shape per template state, shared by every combination
+                // of it: the geometry is the template's, the properties are
+                // the block's.
+                let ids: Vec<i32> = shapes
+                    .iter()
+                    .map(|shape| {
+                        entries.push(encode_shape(shape));
+                        entries.len() as i32 - 1
+                    })
+                    .collect();
+                for (at, &shape) in ids.iter().enumerate() {
+                    for combination in 0..block.rename.fanout {
+                        let row = block.rename.row(at as u32, combination);
+                        indices.push((block.rename.first as usize + row as usize, shape));
                     }
                 }
             }
@@ -1450,10 +1549,11 @@ impl<'a> Plan<'a> {
                     for b in &self.blocks {
                         // Parallel to `states`: every combination of a template
                         // state keeps that state's shape.
-                        let mut copy = Vec::new();
-                        for id in b.rename.states.clone() {
-                            for _ in &b.combos {
-                                copy.push(a[id as usize]);
+                        let mut copy = vec![0; b.order.len()];
+                        for (at, id) in b.rename.states.clone().enumerate() {
+                            for combination in 0..b.rename.fanout {
+                                copy[b.rename.row(at as u32, combination) as usize] =
+                                    a[id as usize];
                             }
                         }
                         a.extend(copy);
