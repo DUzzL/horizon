@@ -6,6 +6,8 @@ use wgpu::util::DeviceExt;
 
 /// Native cube order: +X, -X, +Y, -Y, +Z, -Z (CubeMapTexture.SUFFIXES).
 const FACE_ORDER: [u8; 6] = [1, 3, 5, 4, 0, 2];
+/// Where the cube's faces live in a resource root.
+const BACKGROUND: &str = "assets/minecraft/textures/gui/title/background";
 
 #[derive(Debug)]
 pub struct Faces {
@@ -14,9 +16,18 @@ pub struct Faces {
 }
 
 impl Faces {
-    pub fn load(root: &Path) -> Self {
-        Self::try_load(root).unwrap_or_else(|error| {
-            log::warn!("Horizon: title panorama unavailable ({error})");
+    /// The title artwork of `root` (the packs' overlay) over `defaults` (the
+    /// game's own resources). `CubeMapTexture` registers each face with the
+    /// resource manager, which takes the topmost pack that has it: a pack that
+    /// leaves a face alone keeps vanilla's, and only a cube no layer completes
+    /// falls back to the grey placeholder that an installation without the
+    /// imported panorama shows.
+    pub fn load(root: &Path, defaults: &Path) -> Self {
+        Self::try_load(root, defaults).unwrap_or_else(|error| {
+            log::warn!(
+                "Horizon: no title panorama ({error}); prepare the game again in the launcher \
+                 (or run horizon-prepare panorama)"
+            );
             Self {
                 size: 1,
                 pixels: [96, 110, 111, 255].repeat(6),
@@ -24,13 +35,11 @@ impl Faces {
         })
     }
 
-    fn try_load(root: &Path) -> Result<Self> {
-        let background = root.join("assets/minecraft/textures/gui/title/background");
+    fn try_load(root: &Path, defaults: &Path) -> Result<Self> {
         let mut size = 0;
         let mut pixels = Vec::new();
         for face in FACE_ORDER {
-            let path = background.join(format!("panorama_{face}.png"));
-            let (w, h, data) = decode(&path)?;
+            let (path, w, h, data) = load_face(root, defaults, face)?;
             if w != h || (size != 0 && w != size) {
                 return Err(format!(
                     "{}: panorama faces must be equally sized squares",
@@ -46,6 +55,34 @@ impl Faces {
         }
         Ok(Self { size, pixels })
     }
+}
+
+/// `panorama_{face}.png` from the first layer that has one, with the path it
+/// came from. Reading a face that no layer provides fails naming every path
+/// tried, so a report of a missing panorama says where the game looked.
+fn load_face(
+    root: &Path,
+    defaults: &Path,
+    face: u8,
+) -> Result<(std::path::PathBuf, u32, u32, Vec<u8>)> {
+    let name = format!("panorama_{face}.png");
+    let mut tried: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for layer in [root, defaults] {
+        let path = layer.join(BACKGROUND).join(&name);
+        // A vanilla-only installation loads one root twice.
+        if tried.first().is_some_and(|(seen, _)| *seen == path) {
+            continue;
+        }
+        match decode(&path) {
+            Ok((w, h, data)) => return Ok((path, w, h, data)),
+            Err(error) => tried.push((path, error.to_string())),
+        }
+    }
+    let tried: Vec<String> = tried
+        .iter()
+        .map(|(path, error)| format!("{}: {error}", path.display()))
+        .collect();
+    Err(tried.join("; ").into())
 }
 
 fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
@@ -253,9 +290,18 @@ mod tests {
         sync::atomic::{AtomicU32, Ordering},
     };
 
+    /// One resource root: a pack overlay, or the game's own resources.
     struct Fixture(std::path::PathBuf);
     impl Fixture {
         fn new(size: u32) -> Self {
+            let fixture = Self::bare();
+            for face in 0..6 {
+                fixture.write(face, size, size);
+            }
+            fixture
+        }
+        /// A root with the faces' folder and none of the faces.
+        fn bare() -> Self {
             static NEXT: AtomicU32 = AtomicU32::new(0);
             let root = std::env::temp_dir().join(format!(
                 "horizon-panorama-{}-{}",
@@ -264,9 +310,6 @@ mod tests {
             ));
             let fixture = Self(root);
             fs::create_dir_all(fixture.background()).unwrap();
-            for face in 0..6 {
-                fixture.write(face, size, size);
-            }
             fixture
         }
         fn background(&self) -> std::path::PathBuf {
@@ -309,7 +352,7 @@ mod tests {
     #[test]
     fn original_resolution_texels_and_vanilla_cube_orientation_are_preserved() {
         let f = Fixture::new(1024);
-        let faces = Faces::try_load(&f.0).unwrap();
+        let faces = Faces::try_load(&f.0, &f.0).unwrap();
         assert_eq!(faces.size, 1024);
         assert_eq!(faces.pixels.len(), 6 * 1024 * 1024 * 4);
         // CubeMapTexture's actual layer suffixes, with each source row flipped vertically.
@@ -329,21 +372,56 @@ mod tests {
     #[test]
     fn placeholders_load_and_incomplete_or_mismatched_cubes_fall_back() {
         let f = Fixture::new(1);
-        assert_eq!(Faces::try_load(&f.0).unwrap().size, 1);
+        assert_eq!(Faces::try_load(&f.0, &f.0).unwrap().size, 1);
         f.write(5, 2, 1);
         assert!(
-            Faces::try_load(&f.0)
+            Faces::try_load(&f.0, &f.0)
                 .unwrap_err()
                 .to_string()
                 .contains("equally sized squares")
         );
-        let fallback = Faces::load(&f.0);
+        let fallback = Faces::load(&f.0, &f.0);
         assert_eq!(fallback.pixels.len(), 24);
         f.write(5, 2, 2);
-        assert!(Faces::try_load(&f.0).is_err());
+        assert!(Faces::try_load(&f.0, &f.0).is_err());
         fs::remove_file(f.background().join("panorama_5.png")).unwrap();
-        assert!(Faces::try_load(&f.0).is_err());
-        assert_eq!(Faces::load(&f.0).size, 1);
+        assert!(Faces::try_load(&f.0, &f.0).is_err());
+        assert_eq!(Faces::load(&f.0, &f.0).size, 1);
+    }
+
+    #[test]
+    fn a_pack_without_a_face_keeps_vanillas_and_its_own_face_wins() {
+        let vanilla = Fixture::new(4);
+        // A pack that replaces one face of the cube: the other five are
+        // still the game's, as the bottom of the pack stack provides them.
+        let pack = Fixture::bare();
+        pack.write(2, 4, 4);
+        let faces = Faces::try_load(&pack.0, &vanilla.0).unwrap();
+        assert_eq!(faces.size, 4);
+        assert_eq!(faces.pixels.len(), 6 * 4 * 4 * 4);
+        // Each face's red channel is its index (`face` above), and the cube
+        // holds them in FACE_ORDER: layer 5 is face 2, the pack's, and layer 4
+        // is face 0, which only the game's resources have.
+        let red = |layer: usize, texel: usize| faces.pixels[(layer * 16 + texel) * 4];
+        assert_eq!(red(5, 0), 2);
+        assert_eq!(red(4, 0), 0);
+    }
+
+    #[test]
+    fn a_missing_cube_names_every_path_it_tried() {
+        let vanilla = Fixture::bare();
+        let pack = Fixture::bare();
+        let error = Faces::try_load(&pack.0, &vanilla.0)
+            .unwrap_err()
+            .to_string();
+        for root in [&pack, &vanilla] {
+            let path = root.background().join("panorama_1.png");
+            assert!(error.contains(&path.display().to_string()), "{error}");
+        }
+        // No layer completes the cube: the one-pixel grey placeholder, and the
+        // window still has a title.
+        let fallback = Faces::load(&pack.0, &vanilla.0);
+        assert_eq!((fallback.size, fallback.pixels.len()), (1, 24));
     }
 
     #[test]

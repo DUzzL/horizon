@@ -431,6 +431,12 @@ there follows when the stack types converge. In the items engine's context the `
 and `biome` fields are `None` and `luck` is 0; in the main loot engine's context the `tool` and `block`
 fields are `None`.
 
+Both engines' contexts carry `place`, where the roll happens: `origin` (a broken block's centre, a dead mob's
+position), `block_entity` (the broken block's entity as it was before the break, saved with its id, position and
+`Items`) and `level` (the dimension, the game time, the time of day, the rain and the thunder, for conditions like
+vanilla's `time_check` and `weather_check`). The game sets it for a block a player or an explosion breaks and for a
+mob's death loot; on other rolls `place` is `None`.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
@@ -1174,6 +1180,14 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_player_changed_dimension(player, name, from, to)`**: a player changed dimension, once per move
+  (`from` and `to` are ids such as `minecraft:overworld` and `minecraft:the_nether`), heard when the move has ended:
+  the portal's exit is found and the player stands there, a command's teleport has landed, or a respawn in another
+  level than the death's is placed for good. `to` is the level in place and the player's state is swapped in (as in
+  `native_perform_command`), so `native_acting_player` and `native_tell` reach them. Heard for Nether and End portals
+  (also riding, and leaving the End as its winner), `/execute in ... run tp` and any command teleporting into another
+  level, and the death respawn. Not heard: a move within a level (`/tp`, an End gateway), a player who leaves before
+  the move ends, a respawn in the dimension of the death, and anything outside a dedicated server.
 - **`native_player_toggle_flight(player, name, flying, cancel)`**: a player's client started (`flying`) or stopped
   flying, once per change, for a player who may fly (creative or spectator), on a server. The player's state is swapped
   in, so `native_tell` and the other helpers reach them. Set `cancel` to refuse it: the player keeps the state they

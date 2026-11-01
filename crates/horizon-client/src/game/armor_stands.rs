@@ -1286,6 +1286,7 @@ impl Game<'_> {
                     self.dim == super::Dim::Nether,
                 )),
                 glint: self.glint(),
+                tier: 0,
             };
             let profile = stack
                 .extra

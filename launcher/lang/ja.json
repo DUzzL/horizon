@@ -634,7 +634,7 @@
   "No version": "バージョンなし",
   "Search, then Enter": "検索してEnterキーを押す",
   "Signed in as {name}.": "{name} としてサインインしました。",
-  "follows updates": "アップデートに追従",
+  "auto-update": "自動更新",
   "Waiting for account access…": "アカウントへのアクセスを待機中…",
   "Reading keychain…": "キーチェーンを読み込み中…",
   "Renewing Microsoft sign-in…": "Microsoftのサインインを更新中…",

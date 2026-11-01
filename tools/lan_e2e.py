@@ -376,7 +376,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
-          'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
+          'piston-push', 'piston-entities', 'piston-slime', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
@@ -3326,6 +3326,40 @@ def wait_state(game, pos, key, want, ticks):
             return want
         game.wait(10)
     return state_of(game, pos, key)
+
+
+def check_piston_entities(host, guest, out):
+    """A moving piston pushes a falling block and an arrow standing in front of it."""
+    hx, _, hz = pos_of(host)
+    x, y, z = (int(hx // 16) * 16 + 8, 100, int(hz // 16) * 16 + 8)
+    host('command', command=f'fill {x-4} {y-1} {z-4} {x+7} {y-1} {z+4} minecraft:stone')
+    host('command', command=f'fill {x-4} {y} {z-4} {x+7} {y+5} {z+4} minecraft:air')
+    host('command', command=f'setblock {x} {y} {z} minecraft:piston[facing=east]')
+    host('command', command=f'tp @s {x+5.5} {y} {z+3.5}')
+    kinds = {
+        'falling_block': '{BlockState:{Name:"minecraft:sand"},Time:1,NoGravity:1b}',
+        'arrow': '{}',
+    }
+    for i, (kind, nbt) in enumerate(kinds.items()):
+        host('command', command=f'summon minecraft:{kind} {x+1.5} {y} {z+0.5} {nbt}')
+    host.wait(20)
+    def xs():
+        got = {}
+        for kind in kinds:
+            objs = [o for o in host('status')['projectiles'] if kind in str(o.get('kind', '')).lower()
+                    and abs(o["position"][2] - z - 0.5) < 0.6]
+            assert objs, f'{kind} not found before the push'
+            got[kind] = objs[0]['position'][0]
+        return got
+    before = xs()
+    host('command', command=f'setblock {x-1} {y} {z} minecraft:redstone_block')
+    host.wait(30)
+    after = xs()
+    results = {}
+    for kind in kinds:
+        results[kind] = after[kind] - before[kind]
+        assert results[kind] > 0.3, f'piston did not push {kind}: {before[kind]} -> {after[kind]}'
+    return results
 
 
 def check_piston_push(host, guest, out):
@@ -6666,7 +6700,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'shift-drag': check_shift_drag, 'wheel': check_wheel, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,
              'modifier-release': check_modifier_release,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,
-             'push': check_push, 'piston-push': check_piston_push,
+             'push': check_push, 'piston-push': check_piston_push, 'piston-entities': check_piston_entities,
              'piston-slime': check_piston_slime,
              'eat': check_eat, 'eat-on-block': check_eat_on_block, 'cauldron': check_cauldron, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast, 'blast-projectiles': check_blast_projectiles,

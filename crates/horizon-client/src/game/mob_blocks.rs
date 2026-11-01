@@ -654,6 +654,7 @@ impl Game<'_> {
                     None
                 },
                 glint: self.glint(),
+                tier: 0,
             };
             let profile = stack
                 .extra

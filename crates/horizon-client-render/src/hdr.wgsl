@@ -156,7 +156,8 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     // 1/255 (Hdr::mark_hand: drawn at the world's brightness), else the HUD or a
     // menu, by how much.
     let covered = f.a > 0.0;
-    let ui = select(f.a, 0.0, f.a < 1.5 / 255.0);
+    let hand = covered && f.a < 1.5 / 255.0;
+    let ui = select(f.a, 0.0, hand);
     // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
     var light = pow(max(c, vec3(0.0)), vec3(2.2));
     let w = textureLoad(world, at, 0);
@@ -164,10 +165,11 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     // (terrain.wgsl, entity.wgsl): only those shine, and only where nothing was
     // drawn over them since: grey text over the white sun still looks like the sun
     // darkened, but it raised the frame's alpha. Its band of 0.175 is the tier, the
-    // lower the brighter, and where in the band how much (hdr_mark).
+    // lower the brighter, and where in the band how much (hdr_mark). The hand
+    // writes its own alpha there (Hdr::hand_light_view): 1, or a light source it holds.
     var lifted = false;
-    if params.world > 0.5 && params.peak > 1.0 && w.a < 0.75 && !covered
-        && shows_world(c, w.rgb) {
+    if params.world > 0.5 && params.peak > 1.0 && w.a < 0.75
+        && (hand || (!covered && shows_world(c, w.rgb))) {
         let band = u32(clamp(floor((w.a + 0.005) / 0.175), 0.0, 3.0));
         let tier = 3u - band;
         let lift = 1.0 - clamp((w.a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);

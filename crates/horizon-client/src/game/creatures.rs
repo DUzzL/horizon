@@ -1467,7 +1467,11 @@ impl Game<'_> {
             mob_drops: self.ui.rules.bool("mob_drops"),
             world_seed: self.level.seed,
         };
-        let (items, skulls) = drops::die(m, &death, &mut self.rand_sequences);
+        // LootContextParams.ORIGIN of a death: the mob's position.
+        let place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None);
+        let (items, skulls) = horizon_world::loot::with_native_loot_place(place, || {
+            drops::die(m, &death, &mut self.rand_sequences)
+        });
         if skulls && let Some(Who::Mob(id)) = m.last_damage.and_then(|(d, _)| d.attacker) {
             // Creeper.droppedSkulls: one head per charged explosion.
             self.combat.charged_exploders.retain(|c| *c != id);

@@ -358,6 +358,8 @@ impl Game<'_> {
                         | "minecraft:egg"
                         | "minecraft:ender_pearl"
                         | "minecraft:falling_block"
+                        | "minecraft:firework_rocket"
+                        | "minecraft:trident"
                         | "minecraft:end_crystal"
                         | "minecraft:ender_dragon"
                 ) || horizon_client::projectiles::thrown_type(&kind).is_some())
@@ -473,6 +475,12 @@ impl Game<'_> {
                                 ),
                                 saved: Some(Box::new((uuid, tag.clone()))),
                             });
+                        }
+                    }
+                    "minecraft:trident" => {
+                        if let Some(n) = entity_nbt::trident_from_nbt(&tag) {
+                            self.tridents
+                                .push(super::trident::ThrownTrident::from_nbt(n));
                         }
                     }
                     "minecraft:firework_rocket" => {
@@ -1179,6 +1187,41 @@ impl Game<'_> {
                 out.entry(chunk_of(f.position)).or_default().push(tag);
             }
         }
+        for r in &self.rockets {
+            if keys.contains(&chunk_of(r.position)) {
+                let (uuid, raw) = anon(&self.persist, "minecraft:firework_rocket", r.position);
+                out.entry(chunk_of(r.position)).or_default().push(r.to_nbt(
+                    uuid,
+                    self.level.player_uuid,
+                    raw.as_ref(),
+                ));
+            }
+        }
+        for t in &self.tridents {
+            if keys.contains(&chunk_of(t.position)) {
+                let (uuid, raw) = anon(&self.persist, "minecraft:trident", t.position);
+                out.entry(chunk_of(t.position))
+                    .or_default()
+                    .push(t.to_nbt(uuid, raw.as_ref()));
+            }
+        }
+        for i in 0..self.tnts.len() {
+            let t = &self.tnts[i];
+            if keys.contains(&chunk_of(t.position)) {
+                let (id, at) = (t.id, t.position);
+                let uuid = self.uuid_for(id);
+                let t = &self.tnts[i];
+                let tag = entity_nbt::tnt_to_nbt(
+                    t.position,
+                    t.velocity,
+                    t.on_ground,
+                    t.fuse,
+                    uuid,
+                    self.persist.raw.get(&id),
+                );
+                out.entry(chunk_of(at)).or_default().push(tag);
+            }
+        }
         let boats: Vec<usize> = (0..self.boats.len())
             .filter(|&i| keys.contains(&chunk_of(self.boats[i].position)))
             .collect();
@@ -1433,6 +1476,9 @@ impl Game<'_> {
                 !leaves || !gone(p.position)
             });
             self.falling.retain(|f| !gone(f.position));
+            self.rockets.retain(|r| !gone(r.position));
+            self.tridents.retain(|t| !gone(t.position));
+            self.tnts.retain(|t| !gone(t.position));
             self.persist
                 .anon
                 .retain(|_, (at, _, _)| !keys.contains(&chunk_of(*at)));
