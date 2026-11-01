@@ -1755,6 +1755,17 @@ impl Game<'_> {
     ) {
         let _ = (block, energy);
     }
+    /// Item `item` (`mod_id:name`) is a fluid container
+    /// (`Capabilities.FluidHandler.ITEM`): set `capacity`, in millibuckets,
+    /// when the item is yours (clamped to 1..=1 000 000; vanilla's buckets
+    /// are built in and cannot be changed). Asked at each call of the item
+    /// fluid helpers (`native_item_fluid`, `native_item_fluid_fill`,
+    /// `native_item_fluid_drain`, in `native_item_fluids.rs`). What the
+    /// container holds is kept in the stack's `minecraft:custom_data`, under
+    /// `horizon_fluid`. API @API:item_fluid_tank@.
+    pub(super) fn native_item_fluid_tank(&self, item: &str, capacity: &mut Option<i32>) {
+        let _ = (item, capacity);
+    }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
     /// and change its saved compound `nbt`, its item slots `items` (keep
