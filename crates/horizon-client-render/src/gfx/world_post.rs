@@ -299,6 +299,16 @@ impl Post {
         Mat4::from_translation(jitter.extend(0.0))
     }
 
+    /// This frame's jitter in rendered pixels, y down (FSR's `jitterOffset`); zero
+    /// without TAA.
+    pub fn jitter_pixels(&self) -> [f32; 2] {
+        let Some(size) = self.size().filter(|_| self.taa_on) else {
+            return [0.0; 2];
+        };
+        let j = self.taa_this_frame.jitter;
+        [j[0] * size[0] as f32 * 0.5, -j[1] * size[1] as f32 * 0.5]
+    }
+
     /// The world's colour and depth targets this frame, or `None` to draw
     /// it straight to the screen.
     /// `always`: a target even at scale 1 without anti-aliasing (a shader pack reads it).
@@ -507,7 +517,12 @@ impl Post {
 
 /// This frame's clip space to the previous frame's, for camera-relative projections:
 /// a point `camera - previous_camera` further from the previous camera than from this one.
-fn reprojection(previous: DMat4, previous_camera: DVec3, current: DMat4, camera: DVec3) -> DMat4 {
+pub(super) fn reprojection(
+    previous: DMat4,
+    previous_camera: DVec3,
+    current: DMat4,
+    camera: DVec3,
+) -> DMat4 {
     previous * DMat4::from_translation(camera - previous_camera) * current.inverse()
 }
 

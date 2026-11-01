@@ -287,6 +287,36 @@ impl FarDetail {
     }
 }
 
+/// Frame generation: a frame made between each two real ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrameGeneration {
+    #[default]
+    Off,
+    /// AMD FidelityFX Super Resolution 3.1's frame interpolation, ported to WGSL.
+    Fsr31,
+}
+impl FrameGeneration {
+    pub const ALL: [FrameGeneration; 2] = [FrameGeneration::Off, FrameGeneration::Fsr31];
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "off",
+            FrameGeneration::Fsr31 => "fsr3.1",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "Off",
+            FrameGeneration::Fsr31 => "FSR 3.1",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|f| f.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// What the section mesher does with leaf faces inside a canopy. Terrain
 /// geometry only: entities, particles and block entities are untouched.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -542,6 +572,8 @@ pub struct Graphics {
     pub upscaling: Upscaling,
     /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
     pub screenshot_quality: u32,
+    /// Frame generation (Horizon setting), off by default.
+    pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
     pub hdr: bool,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
@@ -604,6 +636,7 @@ impl Default for Graphics {
             taa: false,
             upscaling: Upscaling::Native,
             screenshot_quality: 1,
+            frame_generation: FrameGeneration::Off,
             hdr: false,
             hdr_paper_white: 0,
             hdr_peak: 0,
@@ -685,6 +718,7 @@ impl Graphics {
                         .filter(|q| SCREENSHOT_QUALITIES.contains(q))
                         .unwrap_or(1)
                 }
+                "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
@@ -722,7 +756,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -753,6 +787,7 @@ impl Graphics {
             bool_text(self.taa),
             self.upscaling.name(),
             self.screenshot_quality,
+            self.frame_generation.name(),
             bool_text(self.hdr),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -903,6 +938,7 @@ mod tests {
             taa: true,
             upscaling: Upscaling::Balanced,
             screenshot_quality: 4,
+            frame_generation: FrameGeneration::Fsr31,
             hdr: true,
             hdr_paper_white: 240,
             hdr_peak: 1400,
