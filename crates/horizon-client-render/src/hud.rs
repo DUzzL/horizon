@@ -85,6 +85,8 @@ pub struct HudAtlas {
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
+    /// Their emissive overlays (`_e`), packed here too.
+    pub emissive: horizon_optifine::emissive::Emissive,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -482,6 +484,7 @@ impl HudAtlas {
             white,
             text_shader: None,
             random_textures: Default::default(),
+            emissive: Default::default(),
         }
     }
     /// Shelf placements of `images` (tallest first) in the narrowest atlas
@@ -566,8 +569,13 @@ impl HudAtlas {
         } else {
             Default::default()
         };
+        let emissive = if folders.contains(&"entity") {
+            horizon_optifine::emissive::Emissive::scan(root, &random_textures)
+        } else {
+            Default::default()
+        };
         let mut named: HashMap<PathBuf, String> = HashMap::new();
-        for (file, name) in random_textures.files() {
+        for (file, name) in random_textures.files().chain(emissive.files()) {
             named.insert(root.join(file), name.to_owned());
         }
         if !named.is_empty() {
@@ -790,6 +798,7 @@ impl HudAtlas {
             glint_armor,
             text_shader: None,
             random_textures,
+            emissive,
             font,
             white,
         })

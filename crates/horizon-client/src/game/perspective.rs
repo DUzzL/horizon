@@ -1406,6 +1406,7 @@ mod preview_tests {
             entity_tags: Default::default(),
             villager_hats: Default::default(),
             random_textures: Default::default(),
+            emissive: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };

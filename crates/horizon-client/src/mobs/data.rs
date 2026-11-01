@@ -50,6 +50,8 @@ pub struct MobData {
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
     /// The packs' random entity textures, replaced with them too.
     pub random_textures: std::sync::RwLock<horizon_optifine::random_textures::RandomTextures>,
+    /// The packs' emissive overlays of entity textures, replaced with them too.
+    pub emissive: std::sync::RwLock<horizon_optifine::emissive::Emissive>,
     /// Biome tags (spawns_warm_variant_farm_animals, is_ocean...) by tag id.
     pub biome_tags: HashMap<String, std::collections::HashSet<String>>,
     /// Entity type tags (`data/*/tags/entity_type`).
@@ -86,9 +88,10 @@ impl MobData {
             crate::items::load_tags(root, "entity_type", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default();
         data.villager_hats = std::sync::RwLock::new(super::villager_hats::VillagerHats::load(root));
-        data.random_textures = std::sync::RwLock::new(
-            horizon_optifine::random_textures::RandomTextures::scan(root),
-        );
+        let random = horizon_optifine::random_textures::RandomTextures::scan(root);
+        data.emissive =
+            std::sync::RwLock::new(horizon_optifine::emissive::Emissive::scan(root, &random));
+        data.random_textures = std::sync::RwLock::new(random);
         data
     }
     /// Only the keyframe animation definitions of `mob-data.json`.
@@ -151,6 +154,7 @@ impl MobData {
             animations,
             villager_hats: Default::default(),
             random_textures: Default::default(),
+            emissive: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),
@@ -209,6 +213,7 @@ impl MobData {
             animations: HashMap::new(),
             villager_hats: Default::default(),
             random_textures: Default::default(),
+            emissive: Default::default(),
             biome_tags: HashMap::new(),
             entity_tags: HashMap::new(),
             pois: Default::default(),

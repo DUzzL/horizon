@@ -254,7 +254,7 @@ fn split_variant(stem: &str) -> Option<(&str, u32)> {
 }
 
 /// A path under `assets/<ns>/` as the entity atlas names it.
-fn atlas_name(ns: &str, inner: &str) -> String {
+pub(crate) fn atlas_name(ns: &str, inner: &str) -> String {
     match inner.strip_prefix("textures/") {
         Some(path) if ns == "minecraft" => path.to_owned(),
         Some(path) => format!("{ns}:{path}"),

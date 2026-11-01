@@ -341,7 +341,8 @@ impl Game<'_> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             horizon_client::mobs::villager_hats::VillagerHats::load(&root);
-        // The random entity textures the new atlas packs: every mob chooses again.
+        // The random entity textures and emissive overlays the new atlas packs: every mob
+        // chooses again.
         *self
             .res
             .mob_data()
@@ -349,6 +350,13 @@ impl Game<'_> {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             std::mem::take(&mut self.gui.atlas.random_textures);
+        *self
+            .res
+            .mob_data()
+            .emissive
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::mem::take(&mut self.gui.atlas.emissive);
         for m in &mut self.mobs {
             m.random_textures.forget_picks();
         }
