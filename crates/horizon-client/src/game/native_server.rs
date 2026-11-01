@@ -291,7 +291,7 @@ impl Game<'_> {
     }
     /// Sends `packet` to that player, also when they are the acting player
     /// (their packets then go after the hook); false when they aren't on.
-    fn native_send(&mut self, uuid: u128, packet: C) -> bool {
+    pub(super) fn native_send(&mut self, uuid: u128, packet: C) -> bool {
         self.native_send_all(uuid, vec![packet])
     }
     fn native_send_all(&mut self, uuid: u128, packets: Vec<C>) -> bool {

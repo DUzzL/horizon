@@ -198,6 +198,7 @@ mod native_entities;
 mod native_explosions;
 mod native_falling;
 mod native_hooks;
+mod native_inventories;
 mod native_lifecycle;
 mod native_menus;
 mod native_mob_draw;
