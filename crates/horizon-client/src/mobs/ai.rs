@@ -193,7 +193,7 @@ pub fn family(s: Species) -> Family {
         | S::Parched
         | S::WitherSkeleton
         | S::ZombifiedPiglin => Family::Undead,
-        S::Creeper | S::Spider | S::CaveSpider | S::Silverfish => Family::Hostile,
+        S::Creeper | S::Spider | S::CaveSpider | S::Silverfish | S::Endermite => Family::Hostile,
         S::Squid
         | S::GlowSquid
         | S::Cod
@@ -3119,6 +3119,37 @@ mod forgiveness_tests {
         forgive_dead_player(&mut golem);
         assert_eq!(golem.extra.anger, 300, "anger at another mob stays");
         assert_eq!(golem.ai.target, Some(Who::Mob(7)));
+    }
+}
+
+#[cfg(test)]
+mod endermite_goal_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// `Endermite.registerGoals` is the silverfish's family list without the
+    /// stone tricks: a powder-snow climb, a stroll at 1.0 and a
+    /// `HurtByTargetGoal` that alerts the others. The generic monster block
+    /// an unlisted species gets has none of those (stroll 0.8, no alert).
+    #[test]
+    fn an_endermite_takes_the_hostile_goal_list() {
+        let ran = with_test_world(&[], |_, types| {
+            let m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:endermite"].clone()),
+                Vec3::ZERO,
+                0.0,
+            );
+            assert_eq!(family(m.species()), Family::Hostile);
+            assert!(
+                m.ai.goals.has("ClimbOnTopOfPowderSnow"),
+                "ClimbOnTopOfPowderSnowGoal"
+            );
+            assert!(m.ai.goals.has("Stroll"), "WaterAvoidingRandomStrollGoal");
+            assert!(m.ai.targets.has("HurtByTarget"));
+            assert!(m.ai.targets.has("NearestTarget"));
+        });
+        let _ = ran;
     }
 }
 

@@ -4,8 +4,8 @@
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity,
-    ModBlockEntityFields, ModContainer, ModFluidTanks, ModRevision, PotentSulfur, Shelf, Skull,
-    SkullSkin,
+    ModBlockEntityFields, ModContainer, ModEnergyBuffer, ModFluidTanks, ModRevision, PotentSulfur,
+    Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
