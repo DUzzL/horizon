@@ -296,6 +296,14 @@ impl Game<'_> {
     fn raw_mut(&mut self, t: Target) -> Option<&mut Tag> {
         match t {
             Target::Player => Some(self.level.player_extra.get_or_insert_with(empty)),
+            Target::Guest(conn) => self
+                .lan
+                .as_mut()?
+                .hub
+                .guests
+                .iter_mut()
+                .find(|g| g.conn == conn)
+                .map(|g| g.saved.get_or_insert_with(empty)),
             Target::Mob(id)
             | Target::Item(id)
             | Target::Stand(id)
