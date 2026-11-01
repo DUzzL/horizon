@@ -886,12 +886,17 @@ impl Game<'_> {
         let assets = &self.armor_stand_assets;
         let sprites = &self.gui.atlas.sprites;
         let uv_of = |name: &str| sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
-        let emissive = self
-            .res
-            .mob_data()
-            .emissive
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A texture's OptiFine emissive overlay. The lock is read per lookup and let go:
+        // `wings_geometry` below reads it too.
+        let glow_of = |texture: &str| {
+            let emissive = self
+                .res
+                .mob_data()
+                .emissive
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            emissive.overlay(texture).and_then(|e| uv_of(e))
+        };
         let Some(wood) = uv_of("entity/armorstand/armorstand") else {
             return;
         };
@@ -931,6 +936,19 @@ impl Game<'_> {
                 0,
                 out,
             );
+            if let Some(glow) = glow_of("entity/armorstand/armorstand") {
+                let full = horizon_client::mobs::render::FULL_BRIGHT;
+                horizon_client::mobs::render::draw(
+                    model,
+                    base,
+                    &poses,
+                    glow,
+                    0xFFFF_FFFF,
+                    full,
+                    0,
+                    out,
+                );
+            }
         }
         self.armor_stand_items(a, model, base, &posed, packed, out);
         // HumanoidArmorLayer: head, chest, legs, feet.
@@ -997,7 +1015,7 @@ impl Game<'_> {
                     out,
                 );
                 // The layer's OptiFine emissive overlay, full bright without the glint.
-                if let Some(glow) = emissive.overlay(texture).and_then(|e| uv_of(e)) {
+                if let Some(glow) = glow_of(texture) {
                     horizon_client::mobs::render::draw(
                         part,
                         base,

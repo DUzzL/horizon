@@ -751,16 +751,18 @@ impl HudAtlas {
         } else {
             Default::default()
         };
-        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
-            horizon_optifine::emissive::Emissive::scan(root, &random_textures)
-        } else {
-            Default::default()
-        });
         let blinks = if folders.contains(&"entity") {
             horizon_optifine::blink::Blinks::scan(root, &random_textures)
         } else {
             Default::default()
         };
+        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
+            let mut e = horizon_optifine::emissive::Emissive::scan(root, &random_textures);
+            e.pair_beside(root, blinks.files());
+            e
+        } else {
+            Default::default()
+        });
         let mut named: HashMap<PathBuf, String> = HashMap::new();
         let extra = random_textures
             .files()
@@ -773,7 +775,12 @@ impl HudAtlas {
             // A pack's variants can't grow the shared atlas past what a GPU takes: every variant
             // (those beside their texture too) counts, in name order, and those past the budget
             // stay out (their mobs wear the texture itself), not the whole pack.
-            let overlays: HashSet<PathBuf> = emissive.files().map(|(f, _)| root.join(f)).collect();
+            // Overlays and blink frames only after every variant.
+            let overlays: HashSet<PathBuf> = emissive
+                .files()
+                .chain(blinks.files())
+                .map(|(f, _)| root.join(f))
+                .collect();
             let kept = budgeted(named.keys(), &overlays, RANDOM_TEXELS);
             if kept.len() < named.len() {
                 log::warn!(
@@ -781,7 +788,20 @@ impl HudAtlas {
                     named.len() - kept.len()
                 );
             }
-            files.retain(|p| !named.contains_key(p) || kept.contains(p));
+            // A dropped variant beside its texture takes its walked overlay with it: nothing
+            // would draw it.
+            let png = format!("{}.png", emissive.suffix);
+            let orphans: HashSet<PathBuf> = named
+                .keys()
+                .filter(|p| !kept.contains(*p))
+                .filter_map(|p| {
+                    Some(PathBuf::from(format!(
+                        "{}{png}",
+                        p.to_str()?.strip_suffix(".png")?
+                    )))
+                })
+                .collect();
+            files.retain(|p| (!named.contains_key(p) || kept.contains(p)) && !orphans.contains(p));
             // Those beside their texture are walked already.
             let walked: HashSet<&PathBuf> = files.iter().collect();
             let mut extra: Vec<PathBuf> = kept

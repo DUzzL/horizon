@@ -1792,7 +1792,7 @@ fn render_visible(
         if emissive.is_empty() {
             return None;
         }
-        atlas(emissive.overlay(drawn)?)
+        atlas(emissive.overlay_of(drawn)?)
     };
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
