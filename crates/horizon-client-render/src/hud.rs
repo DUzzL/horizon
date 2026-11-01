@@ -86,7 +86,7 @@ pub struct HudAtlas {
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
     /// Their emissive overlays (`_e`), packed here too.
-    pub emissive: horizon_optifine::emissive::Emissive,
+    pub emissive: std::sync::Arc<horizon_optifine::emissive::Emissive>,
     /// ETF's blinking frames (`_blink`), packed here too.
     pub blinks: horizon_optifine::blink::Blinks,
     white: Rect,
@@ -739,11 +739,11 @@ impl HudAtlas {
         } else {
             Default::default()
         };
-        let emissive = if folders.contains(&"entity") {
+        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
             horizon_optifine::emissive::Emissive::scan(root, &random_textures)
         } else {
             Default::default()
-        };
+        });
         let blinks = if folders.contains(&"entity") {
             horizon_optifine::blink::Blinks::scan(root, &random_textures)
         } else {

@@ -387,8 +387,7 @@ impl Game<'_> {
             .mob_data()
             .emissive
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            std::mem::take(&mut self.gui.atlas.emissive);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.gui.atlas.emissive.clone();
         *self
             .res
             .mob_data()

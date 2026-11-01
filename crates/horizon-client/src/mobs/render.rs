@@ -3149,7 +3149,7 @@ mod emissive_tests {
             villager_hats: Default::default(),
             cem: Default::default(),
             random_textures: RwLock::new(random),
-            emissive: RwLock::new(emissive),
+            emissive: RwLock::new(Arc::new(emissive)),
             blinks: RwLock::new(blinks),
             pois: Default::default(),
             species_placements: Default::default(),

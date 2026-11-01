@@ -53,7 +53,7 @@ pub struct MobData {
     /// The packs' random entity textures, replaced with them too.
     pub random_textures: std::sync::RwLock<horizon_optifine::random_textures::RandomTextures>,
     /// The packs' emissive overlays of entity textures, replaced with them too.
-    pub emissive: std::sync::RwLock<horizon_optifine::emissive::Emissive>,
+    pub emissive: std::sync::RwLock<std::sync::Arc<horizon_optifine::emissive::Emissive>>,
     /// ETF's blinking textures, replaced with the packs too.
     pub blinks: std::sync::RwLock<horizon_optifine::blink::Blinks>,
     /// Biome tags (spawns_warm_variant_farm_animals, is_ocean...) by tag id.
@@ -93,8 +93,9 @@ impl MobData {
                 .unwrap_or_default();
         data.villager_hats = std::sync::RwLock::new(super::villager_hats::VillagerHats::load(root));
         let random = horizon_optifine::random_textures::RandomTextures::scan(root);
-        data.emissive =
-            std::sync::RwLock::new(horizon_optifine::emissive::Emissive::scan(root, &random));
+        data.emissive = std::sync::RwLock::new(std::sync::Arc::new(
+            horizon_optifine::emissive::Emissive::scan(root, &random),
+        ));
         data.blinks = std::sync::RwLock::new(horizon_optifine::blink::Blinks::scan(root, &random));
         data.random_textures = std::sync::RwLock::new(random);
         data

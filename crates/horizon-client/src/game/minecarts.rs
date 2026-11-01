@@ -2123,6 +2123,7 @@ impl Game<'_> {
             max_y: self.world.shape.max_y() - 1,
             world: &self.world,
             sprites: &self.gui.atlas.sprites,
+            emissive: &self.gui.atlas.emissive,
             nether: self.dim == super::Dim::Nether,
             lid: &lid,
             sign: &|_| None,

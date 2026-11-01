@@ -10646,6 +10646,7 @@ impl Game<'_> {
                 max_y: self.world.shape.max_y() - 1,
                 world: &self.world,
                 sprites: &self.gui.atlas.sprites,
+                emissive: &self.gui.atlas.emissive,
                 nether: self.dim == Dim::Nether,
                 lid: &lid,
                 sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
