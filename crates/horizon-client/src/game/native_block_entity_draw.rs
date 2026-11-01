@@ -130,7 +130,7 @@ impl BlockEntityDraw {
     /// yours, and moves nothing by itself: an idle machine, not a turning
     /// shaft. Kept geometry stands still: an enchanted item's glint, and an
     /// item drawn with `native_draw_item` whose model reads the time (a clock,
-    /// a compass), stop where they were. API @API:block_entity_keep@.
+    /// a compass), stop where they were. API 94.
     pub fn keep(&mut self) {
         self.kept = true;
     }
@@ -492,7 +492,7 @@ impl Game<'_> {
     /// are multiplied by the 0xRRGGBB `tint` (0xFFFFFF for none), the
     /// others drawn as they are. False when the model isn't baked: not
     /// named, missing from the resources, or on a side that draws nothing.
-    /// API @API:standalone_models@.
+    /// API 151.
     pub(super) fn native_draw_model(
         &self,
         draw: &mut BlockEntityDraw,
@@ -522,7 +522,7 @@ impl Game<'_> {
     /// client's copy of a block entity has no item slots (`entity.items` is
     /// empty there): send the stacks you draw in
     /// `native_block_entity_update_tag` and read them from `entity.nbt`.
-    /// API @API:block_entity_draw_item@.
+    /// API 91.
     pub(super) fn native_draw_item(
         &self,
         draw: &mut BlockEntityDraw,
@@ -545,7 +545,7 @@ impl Game<'_> {
 
     /// Property `key` of block state `state` (a machine's `facing`, from the
     /// `state` `native_block_entity_submit` gets), if it has one: no lookup in
-    /// the world, so cheap each frame. API @API:block_entity_draw_item@.
+    /// the world, so cheap each frame. API 91.
     pub(super) fn native_block_state_property(
         &self,
         state: BlockStateId,
