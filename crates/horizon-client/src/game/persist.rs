@@ -458,7 +458,12 @@ impl Game<'_> {
                     }
                     "minecraft:firework_rocket" => {
                         if let Some(r) = entity_nbt::firework_rocket_from_nbt(&tag, player_uuid) {
-                            self.rockets.push(super::fireworks::Rocket::from_nbt(r));
+                            self.next_entity += 1;
+                            let id = self.next_entity;
+                            let mut rocket = super::fireworks::Rocket::from_nbt(r);
+                            rocket.id = id;
+                            self.rockets.push(rocket);
+                            self.remember(id, uuid, tag);
                         }
                     }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
@@ -1173,14 +1178,13 @@ impl Game<'_> {
                 out.entry(chunk_of(f.position)).or_default().push(tag);
             }
         }
-        for r in &self.rockets {
-            if keys.contains(&chunk_of(r.position)) {
-                let (uuid, raw) = anon(&self.persist, "minecraft:firework_rocket", r.position);
-                out.entry(chunk_of(r.position)).or_default().push(r.to_nbt(
-                    uuid,
-                    self.level.player_uuid,
-                    raw.as_ref(),
-                ));
+        for i in 0..self.rockets.len() {
+            if keys.contains(&chunk_of(self.rockets[i].position)) {
+                let (id, at) = (self.rockets[i].id, self.rockets[i].position);
+                let uuid = self.uuid_for(id);
+                let tag =
+                    self.rockets[i].to_nbt(uuid, self.level.player_uuid, self.persist.raw.get(&id));
+                out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
         for t in &self.tridents {
