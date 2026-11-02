@@ -20036,10 +20036,26 @@ struct Loading {
     delivered: bool,
     handle: Option<JoinHandle<()>>,
     shown: bool,
+    /// When the menu bundle arrived (`set_ui`), and whether a title frame with
+    /// it was presented since: the world renderer waits for that frame
+    /// (`ready_for_handoff`).
+    ui_at: Option<Instant>,
+    title_drawn: bool,
     menu: startup_menu::StartupMenu,
     error: Option<Box<dyn std::error::Error>>,
 }
+/// How long the handoff waits for the first title frame before building the
+/// world renderer anyway (a hidden window may never be asked to redraw).
+const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
 impl Loading {
+    /// The world renderer is built on the main thread, so building it before
+    /// the title is on the screen holds the title back by that build. Wait for
+    /// one title frame first, unless a world is waiting to open.
+    fn ready_for_handoff(&self) -> bool {
+        self.title_drawn
+            || self.menu.pending.is_some()
+            || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -20150,6 +20166,8 @@ impl Loading {
         );
         self.menu.set_root(root, &self.settings);
         self.gui = Some(gui);
+        self.ui_at = Some(Instant::now());
+        self.title_drawn = false;
         horizon_client::ui_theme::reset_atlas();
         self.apply_menu_settings();
         let Some(window) = self.window.clone() else {
@@ -20221,6 +20239,7 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             match renderer.render(&frame) {
                 Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                    self.title_drawn = true;
                     self.menu.perf.title_shown()
                 }
                 Ok(_) => {}
@@ -20358,7 +20377,7 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                match if loading.menu.reload_packs {
+                match if loading.menu.reload_packs || !loading.ready_for_handoff() {
                     None
                 } else {
                     loading.loaded.take()
@@ -20442,6 +20461,8 @@ fn run_loading(
         delivered: false,
         handle: Some(loader),
         shown: false,
+        ui_at: None,
+        title_drawn: false,
         menu,
         error: None,
     };
