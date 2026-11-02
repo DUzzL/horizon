@@ -20782,7 +20782,11 @@ mod startup_cpu_tests {
             r#"{
             "minecraft:end_crystal#main": {}, "minecraft:ender_dragon#main": {},
             "minecraft:arrow#main": {}, "minecraft:trident#main": {},
-            "minecraft:armor_stand#main": {}, "minecraft:cushion#main": {}
+            "minecraft:armor_stand#main": {}, "minecraft:cushion#main": {},
+            "minecraft:leash_knot#main": {}, "minecraft:wind_charge#main": {},
+            "minecraft:shulker_bullet#main": {}, "minecraft:wither_skull#main": {},
+            "minecraft:evoker_fangs#main": {}, "minecraft:standing_banner#main": {},
+            "minecraft:standing_banner#flag": {}
         }"#,
         )
         .unwrap();
