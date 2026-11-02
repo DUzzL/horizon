@@ -20166,7 +20166,6 @@ impl Loading {
         );
         self.menu.set_root(root, &self.settings);
         self.gui = Some(gui);
-        self.ui_at = Some(Instant::now());
         self.title_drawn = false;
         horizon_client::ui_theme::reset_atlas();
         self.apply_menu_settings();
@@ -20193,6 +20192,8 @@ impl Loading {
             }
             Err(e) => self.error = Some(e),
         }
+        // The title frame's wait starts once its renderer is built.
+        self.ui_at = Some(Instant::now());
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // The loop may run once more after exit(): keep the first error, the
