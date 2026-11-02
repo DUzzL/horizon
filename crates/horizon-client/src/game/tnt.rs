@@ -3,8 +3,7 @@
 //! (flint and steel / fire charge).
 use super::Game;
 use horizon_client::{
-    Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who,
-    text::Text,
+    Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who, text::Text,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
