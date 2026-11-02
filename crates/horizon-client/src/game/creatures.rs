@@ -3915,9 +3915,14 @@ impl Game<'_> {
                     .play(name, Some([at.x, at.y, at.z]), volume, pitch);
             }
             ArrowEvent::BubbleColumnParticles { pos } => self.bubble_column_particles(pos),
-            ArrowEvent::Block { pos, reaction } => match reaction {
+            ArrowEvent::Block {
+                pos,
+                reaction,
+                owner,
+            } => match reaction {
                 BlockReaction::PrimeTnt => {
-                    self.spawn_primed_tnt(pos, false, None, None);
+                    // `TntBlock.onProjectileHit`: the arrow's owner lights it.
+                    self.spawn_primed_tnt(pos, false, owner, None);
                     self.with_level(|b, level, ticks| b.remove_block(level, ticks, pos, false));
                     let _ = self.process_level_events();
                 }
