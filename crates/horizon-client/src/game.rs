@@ -184,6 +184,7 @@ mod mob_blocks;
 mod mob_gear;
 mod mob_looting;
 mod mob_sounds;
+mod mod_api_host;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -192,7 +193,7 @@ mod music;
 mod names;
 mod narrator;
 mod native_biome_colors;
-mod native_block_entity_draw;
+pub mod native_block_entity_draw;
 mod native_claimed_items;
 mod native_components;
 mod native_criteria;
@@ -2754,6 +2755,7 @@ struct Game<'a> {
     /// The camera's block and the second `water_plane` last scanned at.
     water_plane_scan: std::cell::Cell<Option<([i32; 3], i64)>>,
     persist: persist::EntityMemory,
+    entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
     /// This world is open to the network (game/lan.rs).
@@ -2869,6 +2871,12 @@ struct Game<'a> {
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_acting: Option<u32>,
+    player_attachments: horizon_world::attachments::Attachments,
+    /// The joined guests' attachments, by UUID: here rather than in their
+    /// records, so a hook in one guest's turn (when the hub is out of
+    /// `self.lan`) still reaches the others'. The acting guest's are in
+    /// `player_attachments` for the turn.
+    guest_attachments: HashMap<u128, horizon_world::attachments::Attachments>,
     /// The block the acting player is breaking (`break_block`): its destroy
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
     /// with the player excluded); the events after it are not.
@@ -4181,6 +4189,7 @@ impl Game<'_> {
             tnts: &self.tnts,
             falling: &self.falling,
         };
+        let native_authoritative = self.native_authoritative();
         let mut level = GameLevel {
             cart_boxes,
             item_frames: &self.item_frames,
@@ -4233,7 +4242,7 @@ impl Game<'_> {
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
             client_side: self.remote.is_some(),
-            native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
+            native_authoritative,
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
@@ -11553,6 +11562,9 @@ impl Game<'_> {
     }
     fn tick_mobs(&mut self) -> Result<()> {
         self.tick_creatures()?;
+        if !self.entity_attachments.is_empty() {
+            self.prune_entity_attachments();
+        }
         self.native_mobs_equipment();
         self.position_rider();
         self.tick_stats();
@@ -12356,6 +12368,7 @@ impl Game<'_> {
         self.pickups.clear();
         self.riding = None;
         self.persist = Default::default();
+        self.entity_attachments.clear();
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
     fn apply_equipment(&mut self) {
@@ -14915,7 +14928,9 @@ impl Game<'_> {
         {
             // The vehicle tree goes into a player's file when they leave
             // (`take_parent_vehicle`); here it stays in the chunk saves.
-            for g in host.hub.guests.iter().filter(|g| g.placed) {
+            let mut host = host;
+            for g in host.hub.guests.iter_mut().filter(|g| g.placed) {
+                self.guest_attachments_into(g);
                 horizon_client::lan::playerdata::save(g, &self.world_root);
             }
             self.lan = Some(host);
@@ -14926,6 +14941,7 @@ impl Game<'_> {
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.save.save_attachments(&self.world.attachments)?;
         self.save.save_forced_chunks(&self.streaming.forced)?;
         self.streaming.save(&mut self.world, wait);
         let keys: Vec<_> = self.world.modified.drain().collect();
@@ -18420,6 +18436,7 @@ impl<'a> Game<'a> {
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
             persist: Default::default(),
+            entity_attachments: Default::default(),
             remote: None,
             lan: None,
             integrated: None,
@@ -18476,6 +18493,8 @@ impl<'a> Game<'a> {
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
             lan_acting: None,
+            player_attachments: Default::default(),
+            guest_attachments: HashMap::new(),
             lan_break_pos: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
@@ -20558,7 +20577,7 @@ fn run_loading(
 
 pub use launch_api::{UsageError, exit_code};
 
-pub fn run() -> Result<()> {
+pub fn run_with() -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };

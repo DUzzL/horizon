@@ -21,6 +21,7 @@ use horizon_client::{
         farm::Climate,
         spawning::{self, BiomeFacts},
     },
+    mod_api::NativeLootDrops,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld},
     text::Text,
@@ -1498,7 +1499,7 @@ impl Game<'_> {
         }
         let kind = super::native_hooks::mob_kind(m);
         let table = drops::death_loot_table(m, death.mob_drops).filter(|t| loot.has_table(t));
-        let context = super::native_hooks::NativeLootDrops {
+        let context = NativeLootDrops {
             table: table.as_deref().unwrap_or_default(),
             dimension: self.dim.id(),
             origin: [m.position.x, m.position.y, m.position.z],
