@@ -42,6 +42,7 @@ pub type NativeDispensed = (Option<ItemStack>, i32);
 
 /// What dropped the items heard by the `loot_drops` hook.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct NativeLootDrops<'a> {
     /// The block's or mob's own loot table (`minecraft:blocks/stone`, `minecraft:entities/zombie`);
     /// empty when none rolled: the block or mob has none, the `mob_drops` rule is off, a baby
@@ -84,6 +85,7 @@ pub struct NativeLootDrops<'a> {
 /// it is, its menu and title, where its container panel is, how many slots its
 /// menu has, and where the mouse and the frame's partial tick are.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct NativeScreenView<'a> {
     /// One id per `Screen` (`Screen::id`): `inventory`, `creative`, `paused`,
     /// `stats`, `options`, `win`… Stable across releases, so a mod can match
@@ -195,6 +197,7 @@ pub struct NativeStack {
 
 /// What the player did on a native mod's panel (`native_panel_event`).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum NativePanelEvent {
     /// A click on an item of the panel, by its index in
     /// `native_panel_items`' list.
@@ -236,6 +239,7 @@ pub struct NativeZoom {
 
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct NativeServerPlayer {
     pub uuid: u128,
     pub name: String,
@@ -263,6 +267,7 @@ pub struct NativeServerPlayer {
 /// `item`, `block_pos`. Usages of one command share their words; the
 /// server merges them into one tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NativeCommand {
     pub usage: String,
     /// The operator level a player needs to see and run it (0: everyone).
@@ -288,6 +293,7 @@ impl NativeCommand {
 
 /// Which `Game` observes the phase; a mirror `Game` never fires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NativeAuthority {
     LocalAuthoritative,
     IntegratedServer,
@@ -332,6 +338,7 @@ impl NativeTickId {
 /// The phase names are the hook log's stable vocabulary (the Debug text
 /// the mixins write); keep them despite the shared prefix.
 #[allow(clippy::enum_variant_names)]
+#[non_exhaustive]
 pub enum WorldPhase {
     WorldOpenReady,
     /// The open failed; `error_text` is the engine's own error text.
@@ -343,6 +350,7 @@ pub enum WorldPhase {
 
 /// The tick phases carry whether the world runs, including frozen steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ServerTickPhase {
     ServerTickStart { world_running: bool },
     ServerTickEnd { world_running: bool },
@@ -354,6 +362,7 @@ pub enum ServerTickPhase {
 /// the same epoch identifies its ready, final-close, or failed-close event.
 /// `tick` counts non-paused server ticks since the world opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NativeLifecycleContext {
     pub authority: NativeAuthority,
     pub epoch: NativeWorldEpoch,

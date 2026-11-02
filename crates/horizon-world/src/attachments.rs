@@ -5,6 +5,7 @@ use crate::nbt::{Compound, JavaString, Tag};
 
 /// An attachment operation could not be completed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AttachmentError {
     /// The holder does not exist or is unavailable on this side.
     MissingHolder,
@@ -34,6 +35,7 @@ pub fn attachment_compound(tag: Option<&Tag>) -> Result<Option<&Compound>, Attac
 
 /// A server holder in the host's current dimension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Holder {
     Entity(u32),
     Player(u128),

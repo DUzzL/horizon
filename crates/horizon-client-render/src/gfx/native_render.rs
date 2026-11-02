@@ -43,6 +43,7 @@ pub fn world_drawn_hooked() -> bool {
 /// particles, weather and the world post pass, before the first-person hand, the HUD and the
 /// screens. `color` holds the world's picture (copy it out before reading it: it is the target
 /// drawn into), `depth` the world's depth, reversed (0 is the sky).
+#[non_exhaustive]
 pub struct WorldDrawn<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -78,6 +79,7 @@ pub struct WorldDrawn<'a> {
 /// What the mods need from a frame that the game doesn't make for itself. Each mod sets what it
 /// needs and leaves the rest, so several can ask.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RenderNeeds {
     /// Record `Frame::entity_spans` without a shader pack: entity runs get a stable id from
     /// their type's name, block entity runs their block state.
