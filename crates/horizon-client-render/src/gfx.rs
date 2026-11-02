@@ -743,7 +743,8 @@ pub struct Renderer {
     /// (F3+4 shows it).
     pub lightmap_pixels: [u8; 16 * 16 * 4],
     /// Time the last `render` spent blocked on the GPU or the display
-    /// (acquiring, presenting, offscreen pacing), excluded from CPU time.
+    /// (acquiring, presenting, offscreen pacing, the submit thread holding the queue),
+    /// excluded from CPU time.
     pub last_wait: std::time::Duration,
     /// CPU time of the last `render`, waits excluded.
     pub last_encode: std::time::Duration,
@@ -5354,7 +5355,11 @@ impl Renderer {
     }
     /// `checks`: the error scopes of a scaled screenshot's frame, checked before its PNG is written.
     fn draw_frame(&mut self, frame: &Frame, checks: Option<GpuChecks>) -> Result<bool> {
+        let landing = Instant::now();
         self.land_frame();
+        // Waiting for the previous frame (offscreen: at most two on the GPU), not work.
+        let landed = landing.elapsed();
+        self.queue.take_waited();
         // World frames alone follow the shader pack: the game loads the picked one
         // before it draws one. Title frames draw no terrain and keep the layout
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
@@ -5420,6 +5425,8 @@ impl Renderer {
         if !fg {
             self.frame_gen.stop();
         }
+        // Waits for the submit thread since the last frame's present (this frame's uploads).
+        let queued = self.queue.take_waited();
         let acquire = Instant::now();
         let fg_frames = fg
             .then(|| {
@@ -5441,7 +5448,9 @@ impl Renderer {
         } else {
             self.surface.as_ref().map(|s| s.get_current_texture())
         };
-        self.last_wait = acquire.elapsed();
+        self.last_wait = landed + queued + acquire.elapsed();
+        // Inside the acquire's time already.
+        self.queue.take_waited();
         let (surface_frame, reconfigure) = match acquired {
             None => (None, false),
             Some(wgpu::CurrentSurfaceTexture::Success(f)) => (Some(f), false),
@@ -8112,6 +8121,8 @@ impl Renderer {
             match self.queue.submit_later(job) {
                 Ok(()) => {
                     self.deferred = Some(offscreen);
+                    // The frame's waits for the previous one on the submit thread.
+                    self.last_wait += self.queue.take_waited();
                     self.last_encode = started.elapsed().saturating_sub(self.last_wait);
                     self.visible = visible;
                     self.visible_lods = visible_lods;
@@ -8176,6 +8187,8 @@ impl Renderer {
                 );
             }
         }
+        // The frame's own waits for the submit thread (its queue writes and passes).
+        self.last_wait += self.queue.take_waited();
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
             // On Wayland this ties RedrawRequested to the compositor's frame
@@ -8208,6 +8221,8 @@ impl Renderer {
             }
         }
         self.last_wait += present.elapsed();
+        // Inside the present's time already.
+        self.queue.take_waited();
         self.last_encode = started.elapsed().saturating_sub(self.last_wait);
         let _ = self.started;
         self.visible = visible;
