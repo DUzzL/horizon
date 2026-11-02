@@ -2608,6 +2608,8 @@ struct Game<'a> {
     crystal_model: Option<horizon_client::mobs::Part>,
     /// CushionModel's baked layer.
     cushion_model: Option<horizon_client::mobs::Part>,
+    /// Models drawn only once such an entity shows up (lead knots, wind charges...).
+    entity_models: EntityModels,
     carts: Vec<minecarts::Minecart>,
     /// Songs playing from jukeboxes (tracked sound handles).
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
@@ -18319,6 +18321,7 @@ impl<'a> Game<'a> {
             boat_models: prepared.boat_models,
             crystal_model: prepared.crystal_model,
             cushion_model: prepared.cushion_model,
+            entity_models: prepared.entity_models,
             carts: Vec::new(),
             jukebox_sounds: HashMap::new(),
             bolts: Vec::new(),
@@ -18525,7 +18528,40 @@ struct GameCpuResources {
     arrow_model: Option<horizon_client::mobs::Part>,
     bee_stinger_model: Option<horizon_client::mobs::Part>,
     trident_model: Option<horizon_client::mobs::Part>,
+    entity_models: EntityModels,
     creative_screen: Creative,
+}
+/// Baked layers of entities that may first show up deep into a session. They come from the
+/// document parsed once at startup: parsing entity-models.json (2.4 MB) when the first one
+/// appeared stalled that frame by 40 ms of CPU and the file read.
+#[derive(Default)]
+struct EntityModels {
+    /// LeashKnotModel.
+    leash_knot: Option<horizon_client::mobs::Part>,
+    /// WindChargeModel.
+    wind_charge: Option<horizon_client::mobs::Part>,
+    /// ShulkerBulletModel.
+    shulker_bullet: Option<horizon_client::mobs::Part>,
+    /// SkullModel of the wither skull.
+    wither_skull: Option<horizon_client::mobs::Part>,
+    /// EvokerFangsModel.
+    evoker_fangs: Option<Arc<horizon_client::mobs::Part>>,
+    /// BannerModel's pole and flag (a raid captain's banner).
+    banner: Option<(horizon_client::mobs::Part, horizon_client::mobs::Part)>,
+}
+impl EntityModels {
+    fn load(document: Option<&horizon_client::mobs::EntityModelDocument>) -> Self {
+        let model = |key| document.and_then(|document| document.model(key));
+        Self {
+            leash_knot: model("minecraft:leash_knot#main"),
+            wind_charge: model("minecraft:wind_charge#main"),
+            shulker_bullet: model("minecraft:shulker_bullet#main"),
+            wither_skull: model("minecraft:wither_skull#main"),
+            evoker_fangs: model("minecraft:evoker_fangs#main").map(Arc::new),
+            banner: model("minecraft:standing_banner#main")
+                .zip(model("minecraft:standing_banner#flag")),
+        }
+    }
 }
 impl GameCpuResources {
     fn load(root: &std::path::Path) -> Result<Self> {
@@ -18547,6 +18583,7 @@ impl GameCpuResources {
             arrow_model: model("minecraft:arrow#main"),
             bee_stinger_model: model("minecraft:bee_stinger#main"),
             trident_model: model("minecraft:trident#main"),
+            entity_models: EntityModels::load(document.as_ref()),
             creative_screen: Creative::load(root)?,
         })
     }
@@ -20745,7 +20782,11 @@ mod startup_cpu_tests {
             r#"{
             "minecraft:end_crystal#main": {}, "minecraft:ender_dragon#main": {},
             "minecraft:arrow#main": {}, "minecraft:trident#main": {},
-            "minecraft:armor_stand#main": {}, "minecraft:cushion#main": {}
+            "minecraft:armor_stand#main": {}, "minecraft:cushion#main": {},
+            "minecraft:leash_knot#main": {}, "minecraft:wind_charge#main": {},
+            "minecraft:shulker_bullet#main": {}, "minecraft:wither_skull#main": {},
+            "minecraft:evoker_fangs#main": {}, "minecraft:standing_banner#main": {},
+            "minecraft:standing_banner#flag": {}
         }"#,
         )
         .unwrap();
@@ -20766,6 +20807,10 @@ mod startup_cpu_tests {
         std::fs::remove_dir_all(&root).unwrap();
         assert!(prepared.crystal_model.is_some());
         assert!(prepared.cushion_model.is_some());
+        let models = &prepared.entity_models;
+        assert!(models.leash_knot.is_some() && models.wind_charge.is_some());
+        assert!(models.shulker_bullet.is_some() && models.wither_skull.is_some());
+        assert!(models.evoker_fangs.is_some() && models.banner.is_some());
         assert!(prepared.dragon_model.is_some());
         assert!(prepared.arrow_model.is_some());
         assert!(prepared.trident_model.is_some());
