@@ -328,6 +328,7 @@ mod world_loading;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
+use horizon_client::spans::startup;
 use horizon_client::{
     Result,
     assets::{Assets, RenderAssets},
@@ -16386,6 +16387,7 @@ impl ApplicationHandler for Game<'_> {
             attributes, "horizon", "horizon",
         );
         // `--offscreen` renders into a texture: its window would only show white.
+        let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
@@ -16399,6 +16401,7 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         };
+        drop(window_step);
         horizon_client::telemetry::note_display(&window);
         match self.new_renderer(window.clone()) {
             Ok(r) => {
@@ -17845,6 +17848,15 @@ impl Game<'_> {
                             self.perf.title_shown();
                         } else if self.screen == Screen::Playing && self.player.is_some() {
                             self.perf.frame(elapsed.as_secs_f32() * 1000.0);
+                            if startup::on() {
+                                startup::view_filled(
+                                    self.world.chunks.len(),
+                                    self.streaming.pending()
+                                        + self.pending_uploads.len()
+                                        + self.remote_backlog(),
+                                    self.streaming.radius.max(0) as u32,
+                                );
+                            }
                             self.world_frames += 1;
                         }
                         self.frames += 1;
@@ -19059,7 +19071,7 @@ fn load_core(
     parallel: bool,
     progress: &Progress,
 ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
-    let assets = match Assets::load(root) {
+    let assets = match startup::time("core.assets", || Assets::load(root)) {
         Ok(assets) => assets,
         Err(e) => return Ok(Err(e.to_string())),
     };
@@ -19071,18 +19083,22 @@ fn load_core(
             let render = Step::spawn(scope, parallel, move || {
                 // A server reads no block sprites' pixels, which only the
                 // renderer draws (32 MB).
-                let render = if headless {
-                    assets.reload_for_server(root)
-                } else {
-                    assets.reload(root)
-                }
+                let render = startup::time("core.block_models_sprites", || {
+                    if headless {
+                        assets.reload_for_server(root)
+                    } else {
+                        assets.reload(root)
+                    }
+                })
                 .map_err(|e| e.to_string())?;
                 let library = render.model_library.clone();
-                let item_renderer = if headless {
-                    horizon_client::item_render::ItemRenderer::load_for_server(root, library)
-                } else {
-                    horizon_client::item_render::ItemRenderer::load_with_library(root, library)
-                }
+                let item_renderer = startup::time("core.item_models", || {
+                    if headless {
+                        horizon_client::item_render::ItemRenderer::load_for_server(root, library)
+                    } else {
+                        horizon_client::item_render::ItemRenderer::load_with_library(root, library)
+                    }
+                })
                 .map_err(|e| e.to_string());
                 Ok((render, item_renderer))
             });
@@ -19092,16 +19108,21 @@ fn load_core(
                 if headless {
                     return Ok(horizon_world::block_render::FaceVisibility::empty());
                 }
-                models::load_visibility(root, registry).map_err(|e| e.to_string())
+                startup::time("core.visibility", || {
+                    models::load_visibility(root, registry)
+                })
+                .map_err(|e| e.to_string())
             });
             let biomes = Step::spawn(scope, parallel, || {
-                Biomes::load(root).map_err(|e| e.to_string())
+                startup::time("core.biomes", || Biomes::load(root)).map_err(|e| e.to_string())
             });
             let environment = Step::spawn(scope, parallel, || {
-                Environment::load(root).map_err(|e| e.to_string())
+                startup::time("core.environment", || Environment::load(root))
+                    .map_err(|e| e.to_string())
             });
             let collision = Step::spawn(scope, parallel, || {
-                collisions::load(root, registry).map_err(|e| e.to_string())
+                startup::time("core.collision", || collisions::load(root, registry))
+                    .map_err(|e| e.to_string())
             });
             let gameplay = gameplay_tables(root, assets, parallel, progress);
             (
@@ -19139,6 +19160,7 @@ fn gameplay_tables(
     parallel: bool,
     progress: &Progress,
 ) -> std::result::Result<GameplayTables, String> {
+    let facts_step = startup::step("core.block_facts");
     let behaviour_json: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(
         std::fs::File::open(root.join("block-behaviours.json")).map_err(|e| e.to_string())?,
     ))
@@ -19152,13 +19174,19 @@ fn gameplay_tables(
             .iter()
             .any(|s| !s.name.starts_with("minecraft:")),
     );
+    drop(facts_step);
     progress.set(2);
     let (light, motion) = std::thread::scope(|scope| {
         let light = Step::spawn(scope, parallel, || {
-            LightTables::load(root, assets.registry, &facts).map_err(|e| e.to_string())
+            startup::time("core.light", || {
+                LightTables::load(root, assets.registry, &facts)
+            })
+            .map_err(|e| e.to_string())
         });
-        let motion =
-            MotionResources::load_with_facts(root, assets, &facts).map_err(|e| e.to_string());
+        let motion = startup::time("core.motion", || {
+            MotionResources::load_with_facts(root, assets, &facts)
+        })
+        .map_err(|e| e.to_string());
         (light.join(), motion)
     });
     Ok(GameplayTables {
@@ -19195,6 +19223,7 @@ fn load_resources(
     // A dedicated server builds only the font (UiResources::server), as the
     // integrated server's game does: the full atlas and panorama are 144 MB.
     let load_ui = |root: &std::path::Path| {
+        let _step = startup::step("ui.load");
         if headless {
             UiResources::server(root)
         } else {
@@ -19222,7 +19251,7 @@ fn load_resources(
     let (core, loaded_gui) = loop {
         let (ui, core) = std::thread::scope(|scope| {
             let core = Step::spawn(scope, parallel, || {
-                load_core(&root, headless, parallel, progress)
+                startup::time("core", || load_core(&root, headless, parallel, progress))
             });
             let ui = load_ui(&root).map(|ui| offer(ui, &root));
             (ui, core.join())
@@ -19271,7 +19300,10 @@ fn load_resources(
     if let Some(folder) = launch_world {
         world_loading::preload_launch_world(folder, &root, assets.registry, biomes.clone());
     }
-    let tables = Arc::new(MeshTables::new(&assets, &render, &facts, visibility)?);
+    let tables = Arc::new(startup::time("pack.mesh_tables", || {
+        MeshTables::new(&assets, &render, &facts, visibility)
+    })?);
+    let pack_step = startup::step("pack.assemble");
     let pack = PackResources::assemble(
         &root,
         assets.clone(),
@@ -19281,6 +19313,7 @@ fn load_resources(
         biomes.clone(),
         Arc::new(light),
     );
+    drop(pack_step);
     log::info!("load pack tables: {:.2}s", started.elapsed().as_secs_f32());
     progress.set(4);
     if !menu {
@@ -19313,8 +19346,14 @@ fn load_resources(
     // Finish fallible CPU preparation before starting the tail, so an error
     // cannot detach a tail worker that races the next pack-loader generation.
     let prepared_at = Instant::now();
-    let game_cpu = menu.then(|| GameCpuResources::load(&root)).transpose()?;
-    let renderer_cpu = menu.then(|| prepare_renderer_textures(&pack));
+    let game_cpu = menu
+        .then(|| startup::time("handoff.game_cpu", || GameCpuResources::load(&root)))
+        .transpose()?;
+    let renderer_cpu = menu.then(|| {
+        startup::time("handoff.renderer_textures", || {
+            prepare_renderer_textures(&pack)
+        })
+    });
     if menu {
         log::info!(
             "Horizon: handoff CPU resources prepared on worker in {} ms",
@@ -19332,6 +19371,7 @@ fn load_resources(
         let handle = std::thread::Builder::new()
             .name("world-rest-loader".into())
             .spawn(move || {
+                let _step = startup::step("rest");
                 let rest = load_world_rest(
                     &root,
                     &resources,
@@ -19412,16 +19452,22 @@ fn load_world_rest(
     // Independent tables load together, within the worker budget the settings
     // allow. Only the recipes and the stations read another table: the items.
     let load_items = || -> Result<_> {
-        let items = Items::load(root, registry, facts, overlay)?;
+        let items = startup::time("rest.items", || Items::load(root, registry, facts, overlay))?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
         progress.set(7);
-        let recipes = Recipes::load(root, &items, overlay)?;
-        let stations = horizon_client::stations::StationData::load(root, &items, overlay);
+        let recipes = startup::time("rest.recipes", || Recipes::load(root, &items, overlay))?;
+        let stations = startup::time("rest.stations", || {
+            horizon_client::stations::StationData::load(root, &items, overlay)
+        });
         Ok((items, recipes, stations))
     };
-    let load_behaviours =
-        || Behaviours::load_with_gameplay(registry, root, behaviour_json, gameplay_projection);
+    let load_behaviours = || {
+        startup::time("rest.behaviours", || {
+            Behaviours::load_with_gameplay(registry, root, behaviour_json, gameplay_projection)
+        })
+    };
     let load_block_entity_render = || {
+        let _step = startup::step("rest.block_entity_render");
         if !draws {
             return Ok(Default::default());
         }
@@ -19430,6 +19476,7 @@ fn load_world_rest(
         )
     };
     let load_animate = || -> Result<_> {
+        let _step = startup::step("rest.animate_fog");
         let animate = if draws {
             horizon_client::animate_tick::AnimateTables::load(root, registry, biomes)?
         } else {
@@ -19438,6 +19485,7 @@ fn load_world_rest(
         Ok((animate, horizon_client::fog::FogTables::load(root, biomes)))
     };
     let load_mobs = || -> Result<_> {
+        let _step = startup::step("rest.mobs");
         let mob_types: HashMap<_, _> = MobTypes::load(root)?
             .types
             .into_iter()
@@ -19451,6 +19499,7 @@ fn load_world_rest(
         Ok((mob_types, mob_data))
     };
     let load_transformers = || -> Result<_> {
+        let _step = startup::step("rest.transformers_models");
         let transformers = horizon_client::block_transform::Transformers::load(root, registry)?;
         let models = (
             perspective::player_type(root),
@@ -19506,6 +19555,7 @@ fn load_world_rest(
         threads
     );
     progress.set(8);
+    let _tail = startup::step("rest.tail");
     Ok(WorldRest {
         stations,
         items,
@@ -20012,6 +20062,7 @@ impl Loading {
             attributes, "horizon", "horizon",
         );
         // `--offscreen` renders into a texture: its window would only show white.
+        let window_step = startup::step("window.create");
         let window = match event_loop.create_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
@@ -20025,6 +20076,7 @@ impl Loading {
                 return;
             }
         };
+        drop(window_step);
         horizon_client::telemetry::note_display(&window);
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
@@ -20049,6 +20101,7 @@ impl Loading {
             stop
         });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
+        let boot_step = startup::step("renderer.boot");
         match loading_renderer(
             window.clone(),
             offscreen,
@@ -20068,6 +20121,7 @@ impl Loading {
                 return;
             }
         }
+        drop(boot_step);
         // The wgpu frames take the window over: stop the boot paint thread
         // before the first one presents.
         #[cfg(target_os = "windows")]
@@ -20106,6 +20160,7 @@ impl Loading {
             renderer.release_surface();
         }
         let bundle = self.gui.as_ref().expect("the menu bundle was just set");
+        let _step = startup::step("renderer.title_artwork");
         match loading_renderer(
             window,
             offscreen,
@@ -20174,6 +20229,7 @@ impl Loading {
         }
         if !self.shown {
             self.shown = true;
+            startup::mark("loading_screen.shown");
             log::info!(
                 "Horizon: loading screen shown after {} ms",
                 self.started.elapsed().as_millis()
@@ -20194,17 +20250,19 @@ impl Loading {
             renderer.release_surface();
         }
         let renderer_at = Instant::now();
-        let renderer = build_renderer(
-            window.clone(),
-            options.offscreen,
-            &loaded.pack,
-            &gui,
-            self.renderer.as_ref(),
-            loaded.renderer_cpu,
-            self.settings.horizon.api,
-            self.settings.horizon.translucent_batching,
-            shader_packs::picked_pack_draws_flat(&self.settings),
-        )?;
+        let renderer = startup::time("renderer.world", || {
+            build_renderer(
+                window.clone(),
+                options.offscreen,
+                &loaded.pack,
+                &gui,
+                self.renderer.as_ref(),
+                loaded.renderer_cpu,
+                self.settings.horizon.api,
+                self.settings.horizon.translucent_batching,
+                shader_packs::picked_pack_draws_flat(&self.settings),
+            )
+        })?;
         log::info!(
             "Horizon: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -20221,6 +20279,7 @@ impl Loading {
         // like the single copy an integrated server would share.
         let res: &'static Arc<Resources> = Box::leak(Box::new(loaded.resources));
         let game_at = Instant::now();
+        let game_step = startup::step("handoff.start_game");
         let Some(mut game) = start_game(
             res,
             loaded.pack,
@@ -20237,6 +20296,7 @@ impl Loading {
         else {
             return Ok(None);
         };
+        drop(game_step);
         let game_ms = game_at.elapsed().as_millis();
         game.window = Some(window);
         game.renderer = Some(renderer);
