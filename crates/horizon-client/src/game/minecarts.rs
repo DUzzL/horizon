@@ -111,6 +111,8 @@ pub(super) struct Minecart {
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
+    /// `Entity.noGravity` (`NoGravity` in its save).
+    pub no_gravity: bool,
     pub items: Vec<Option<ItemStack>>,
     /// Furnace minecarts: fuel ticks and `MinecartFurnace.push`. Its y part
     /// stays between ticks (it sets the push's length), only saving drops it.
@@ -266,6 +268,7 @@ impl Minecart {
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
+            no_gravity: false,
             items: vec![None; kind.slots()],
             fuel: 0,
             push: Vec3::ZERO,
@@ -937,7 +940,9 @@ impl Game<'_> {
         c.hurt_time = (c.hurt_time - 1).max(0);
         c.damage = (c.damage - 1.0).max(0.0);
         // applyGravity
-        c.velocity.y -= if self.cart_in_water(c) { 0.005 } else { 0.04 };
+        if !c.no_gravity {
+            c.velocity.y -= if self.cart_in_water(c) { 0.005 } else { 0.04 };
+        }
         let pos = self.rail_block(c.position);
         if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
             if self.minecart_improvements() {
@@ -2233,6 +2238,7 @@ impl Minecart {
         c.velocity = velocity;
         c.yaw = yaw;
         c.previous_yaw = yaw;
+        c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
         let int = |k: &str| match tag.get(k) {
             Some(Tag::Byte(v)) => Some(i32::from(*v)),
             Some(Tag::Short(v)) => Some(i32::from(*v)),

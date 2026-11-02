@@ -173,18 +173,11 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        use horizon_client::mobs::{Part, anim::Poses, load_model};
-        static MODELS: std::sync::OnceLock<Option<(Part, Part)>> = std::sync::OnceLock::new();
+        use horizon_client::mobs::anim::Poses;
         if !horizon_client::mobs::raider::is_captain(mob) {
             return;
         }
-        let Some((pole, flag)) = MODELS.get_or_init(|| {
-            let root = &self.options.resources;
-            Some((
-                load_model(root, "minecraft:standing_banner#main")?,
-                load_model(root, "minecraft:standing_banner#flag")?,
-            ))
-        }) else {
+        let Some((pole, flag)) = &self.entity_models.banner else {
             return;
         };
         let Some(head) =

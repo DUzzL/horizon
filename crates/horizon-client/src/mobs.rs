@@ -1283,6 +1283,11 @@ pub enum MobEvent {
         count: u32,
     },
     Sound(&'static str, [f64; 3], f32, f32),
+    /// `Entity.sendBubbleColumnParticles`: a mob at the top of the bubble column
+    /// block at `pos` (the splash and bubble particles over it).
+    BubbleColumnParticles {
+        pos: [i32; 3],
+    },
     /// `UseBonemeal`: the villager's bone meal grows the crop at `pos`
     /// (`BoneMealItem.growCrop`, then level event 1505).
     Bonemeal {
@@ -3052,8 +3057,10 @@ impl Mob {
         if creaking::is_creaking(self) && !creaking::can_move(self) {
             return;
         }
+        // The native hook runs first, on the raw strength (NeoForge's `LivingKnockBackEvent` fires
+        // at the start of `LivingEntity.knockback`), then the resistance scales what it left.
         let mut knock = crate::health::Knock {
-            strength: power * (1.0 - self.attrs.knockback_resistance),
+            strength: power,
             x: xd,
             z: zd,
         };
@@ -3066,6 +3073,7 @@ impl Mob {
             x: mut xd,
             z: mut zd,
         } = knock;
+        let power = power * (1.0 - self.attrs.knockback_resistance);
         if power <= 0.0 {
             return;
         }

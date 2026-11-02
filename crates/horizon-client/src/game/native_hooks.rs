@@ -3686,7 +3686,8 @@ impl Game<'_> {
     }
     /// `LivingEntity.knockback` is about to push entity `entity` of type `kind`
     /// (`minecraft:zombie`, `minecraft:player`) `strength` away from the direction (`x`, `z`),
-    /// after the entity's knockback resistance took its share and before its motion changes
+    /// on the raw strength, before the entity's knockback resistance takes its share and its motion
+    /// changes
     /// (docs/native-mods.md, API 125). Vanilla's direction points at the
     /// source of a hit (the attacker's side), and the entity is pushed the other way. Change
     /// `strength`, `x` or `z`, or set `canceled`, and the push follows them: canceled, the

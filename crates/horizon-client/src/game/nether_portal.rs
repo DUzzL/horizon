@@ -116,6 +116,32 @@ fn is_arrow(p: &horizon_client::projectiles::Projectile) -> bool {
         horizon_client::projectiles::ProjectileKind::Arrow { .. }
     )
 }
+/// The projectiles besides arrows that a portal sends on: the thrown items
+/// and fireballs a chunk saves. A pearl has its own rules (it keeps its owner's
+/// dimension) and a wind charge is not saved, so both stay.
+fn is_portal_projectile(p: &horizon_client::projectiles::Projectile) -> bool {
+    use horizon_client::projectiles::ProjectileKind;
+    !is_arrow(p)
+        && !matches!(
+            p.kind,
+            ProjectileKind::EnderPearl
+                | ProjectileKind::WindCharge
+                | ProjectileKind::BreezeWindCharge
+        )
+        && horizon_client::entity_nbt::saved_with_chunk(p)
+}
+/// Width and height of a projectile that goes through a portal.
+fn projectile_box(p: &horizon_client::projectiles::Projectile) -> (f32, f32) {
+    if is_arrow(p) {
+        (
+            horizon_client::arrows::WIDTH,
+            horizon_client::arrows::HEIGHT,
+        )
+    } else {
+        let size = p.kind.size() as f32;
+        (size, size)
+    }
+}
 fn doubles(values: [f64; 3]) -> Tag {
     Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
 }
@@ -668,6 +694,9 @@ impl Game<'_> {
         for t in &self.tnts {
             self.portals.before.insert(t.id, t.position);
         }
+        for o in &self.orbs {
+            self.portals.before.insert(o.id, o.position);
+        }
         // Only an entity in a portal, or cooling down from one, has a state
         // here: whether the others could use a portal is not worth asking
         // for each of them on every tick.
@@ -696,8 +725,13 @@ impl Game<'_> {
                 }
             }
             for p in &self.creatures.projectiles {
-                if tracked.contains_key(&p.id) && is_arrow(p) {
+                if tracked.contains_key(&p.id) && (is_arrow(p) || is_portal_projectile(p)) {
                     ids.push((p.id, true));
+                }
+            }
+            for o in &self.orbs {
+                if tracked.contains_key(&o.id) {
+                    ids.push((o.id, true));
                 }
             }
         }
@@ -837,6 +871,7 @@ impl Game<'_> {
             .dropped
             .iter()
             .map(|e| (e.id, e.position, 0.25, 0.25))
+            .chain(self.orbs.iter().map(|o| (o.id, o.position, 0.5, 0.5)))
             .collect();
         // PrimedTnt is 0.98 across; one that carries a mob stays (the rider would be left behind).
         let tnts: Vec<(u32, Vec3, f32, f32)> = self
@@ -876,16 +911,10 @@ impl Game<'_> {
         // The arrow's `previous` is where it stood at the start of its tick,
         // which is also where an arrow shot this tick began. A stuck arrow
         // that did not move this tick enters no block.
-        for p in self
-            .creatures
-            .projectiles
-            .iter()
-            .filter(|p| is_arrow(p) && (!p.stuck || p.previous != p.position))
-        {
-            let (width, height) = (
-                horizon_client::arrows::WIDTH,
-                horizon_client::arrows::HEIGHT,
-            );
+        for p in self.creatures.projectiles.iter().filter(|p| {
+            (is_arrow(p) && (!p.stuck || p.previous != p.position)) || is_portal_projectile(p)
+        }) {
+            let (width, height) = projectile_box(p);
             if let Some(pos) =
                 self.swept_portal(p.previous, p.position, width, height, &mut portal_sections)
             {
@@ -1029,6 +1058,17 @@ impl Game<'_> {
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
+        } else if let Some(i) = self.orbs.iter().position(|o| o.id == id) {
+            let plan = self.entity_plan(entry, self.orbs[i].position, 0.5, 0.5, false);
+            if !self.may_enter(plan.dim) {
+                return;
+            }
+            let uuid = self.uuid_for(id);
+            let tag = horizon_client::entity_nbt::orb_to_nbt(&self.orbs[i], uuid);
+            self.orbs.remove(i);
+            self.forget_entity(id);
+            self.portals.arrivals.push(Arrival { plan, tag });
+            self.portals.dirty = true;
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             let m = &self.mobs[i];
             let plan = self.entity_plan(entry, m.position, m.width(), m.height(), true);
@@ -1102,13 +1142,10 @@ impl Game<'_> {
             .creatures
             .projectiles
             .iter()
-            .position(|p| p.id == id && is_arrow(p))
+            .position(|p| p.id == id && (is_arrow(p) || is_portal_projectile(p)))
         {
             let p = &self.creatures.projectiles[i];
-            let (width, height) = (
-                horizon_client::arrows::WIDTH,
-                horizon_client::arrows::HEIGHT,
-            );
+            let (width, height) = projectile_box(p);
             let plan = self.entity_plan(entry, p.position, width, height, false);
             if !self.may_enter(plan.dim) {
                 return;
@@ -1120,13 +1157,16 @@ impl Game<'_> {
                 .as_ref()
                 .and_then(|a| a.last_state)
                 .map(|s| self.state_to_nbt(s));
-            let Some(tag) = horizon_client::entity_nbt::arrow_to_nbt(
-                p,
-                uuid,
-                p.owner_uuid,
-                in_block,
-                self.persist_raw(id),
-            ) else {
+            let raw = self.persist_raw(id);
+            let Some(tag) =
+                horizon_client::entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid, in_block, raw)
+                    .or_else(|| {
+                        horizon_client::entity_nbt::fireball_to_nbt(p, uuid, p.owner_uuid, raw)
+                    })
+                    .or_else(|| {
+                        horizon_client::entity_nbt::throwable_to_nbt(p, uuid, p.owner_uuid, raw)
+                    })
+            else {
                 return;
             };
             self.creatures.projectiles.remove(i);

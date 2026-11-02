@@ -829,6 +829,14 @@ impl Game<'_> {
         // inventory key while riding).
         let guest_mount = std::mem::replace(&mut self.mount_menu, host_mount_menu).opened_mob();
         self.keys = host_keys;
+        // `Entity.addPassenger`: a rider that gets in now sits behind the
+        // players already in the vehicle, which is what tells its
+        // `getControllingPassenger` apart from this one's.
+        let seat_order = (guest_vehicle.is_some() && host.hub.guests[i].vehicle != guest_vehicle)
+            .then(|| {
+                host.hub.seat_order += 1;
+                host.hub.seat_order
+            });
         let g = &mut host.hub.guests[i];
         std::mem::swap(
             &mut self.player_attachments,
@@ -839,6 +847,9 @@ impl Game<'_> {
             g.vehicle_good = None;
         }
         g.vehicle = guest_vehicle;
+        if let Some(order) = seat_order {
+            g.vehicle_order = order;
+        }
         let fell_asleep = bed.is_some() && g.bed.is_none();
         (g.bed, g.sleep_timer, g.spawn) = (bed, guest_sleep_timer, guest_spawn);
         g.respawn_elsewhere = guest_respawn.map(|c| c.saved());

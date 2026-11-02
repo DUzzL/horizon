@@ -108,6 +108,11 @@ pub struct Guest {
     pub input: u8,
     /// The boat or minecart the player rides (`Entity.getVehicle`).
     pub vehicle: Option<u32>,
+    /// When the player last got into its vehicle, from `Hub.seat_order`:
+    /// `Entity.addPassenger` seats a rider behind the players already in the
+    /// vehicle, so the smallest order on a boat is its controlling rider
+    /// (`getControllingPassenger`).
+    pub vehicle_order: u64,
     /// `ServerGamePacketListenerImpl.lastGoodX/Y/Z` of the vehicle it controls.
     pub vehicle_good: Option<[f64; 3]>,
     pub sprinting: bool,
@@ -356,6 +361,7 @@ impl Guest {
             sneaking: false,
             input: 0,
             vehicle: None,
+            vehicle_order: 0,
             vehicle_good: None,
             sprinting: false,
             fall_flying: false,

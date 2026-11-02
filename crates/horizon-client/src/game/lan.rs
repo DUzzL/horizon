@@ -1568,11 +1568,14 @@ impl Game<'_> {
             let Some(id) = self.restore_saved_vehicle(uuid, raw.as_ref()) else {
                 continue;
             };
+            host.hub.seat_order += 1;
+            let order = host.hub.seat_order;
             let g = &mut host.hub.guests[i];
             if let Some(horizon_world::nbt::Tag::Compound(p)) = &mut g.saved {
                 p.remove(&"RootVehicle".into());
             }
             g.vehicle = Some(id);
+            g.vehicle_order = order;
             g.saved_vehicle = None;
             // Pair the stationary restored entities before their passenger packet.
             g.moved = true;

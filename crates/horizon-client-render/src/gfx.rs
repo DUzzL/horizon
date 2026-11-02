@@ -838,7 +838,7 @@ pub struct Renderer {
     border_vertices: wgpu::Buffer,
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
-    screen_pipelines: [wgpu::RenderPipeline; 8],
+    screen_pipelines: [wgpu::RenderPipeline; 16],
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
@@ -924,6 +924,8 @@ pub struct Renderer {
     /// last asked (`take_dropped_sections`).
     sections_dropped: bool,
     sorted_indices: arena::Arena,
+    /// Buffers of released arena pages, freed a few frames later on a thread of their own.
+    graveyard: arena::Graveyard<wgpu::Buffer>,
     translucent_sorter: translucency::Sorter,
     translucency_cursor: usize,
     /// `DrawIndexedIndirectArgs` for this frame's solid then translucent draws.
@@ -1857,7 +1859,10 @@ impl Renderer {
                     device_lost: renderer.device_lost.clone(),
                 }
             }
-            None => open_device(&window, offscreen, api, layers).await?,
+            None => {
+                let _step = crate::spans::startup::step("renderer.open_device");
+                open_device(&window, offscreen, api, layers).await?
+            }
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
@@ -1937,6 +1942,8 @@ impl Renderer {
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
+        let pipelines_step = crate::spans::startup::step("renderer.pipelines_textures");
+        let terrain_step = crate::spans::startup::step("renderer.terrain_pipelines");
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon terrain"),
@@ -2283,6 +2290,7 @@ impl Renderer {
             false,
             Some(alpha_blend),
         );
+        drop(terrain_step);
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Horizon globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -2594,6 +2602,7 @@ impl Renderer {
             &glint_sampler,
         )?;
         hud.atlas_texture = Some(atlas.clone());
+        let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon entities"),
             source: wgpu::ShaderSource::Wgsl(entity_shader().into()),
@@ -3165,6 +3174,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        drop(entity_step);
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
         // (repeat, linear minification with mipmaps, nearest magnification).
         let forcefield_size = forcefield.1;
@@ -3359,7 +3369,7 @@ impl Renderer {
         };
         // One per blend and `.png.mcmeta` sampling (screen_effects::SAMPLE_*):
         // the shader is specialised, so a pixel pays for none of the others.
-        let screen_pipelines: [wgpu::RenderPipeline; 8] = std::array::from_fn(|i| {
+        let screen_pipelines: [wgpu::RenderPipeline; 16] = std::array::from_fn(|i| {
             let blur = i as u32 & crate::screen_effects::SAMPLE_BLUR != 0;
             let (entry, blend) = match (i & 4 == 0, blur) {
                 (true, false) => ("fs_screen", alpha_blend),
@@ -3395,7 +3405,12 @@ impl Renderer {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: config.format.remove_srgb_suffix(),
                         blend: Some(blend),
-                        write_mask: wgpu::ColorWrites::ALL,
+                        // 8 and up: colour only, for a tint of the world in HDR output.
+                        write_mask: if i & 8 == 0 {
+                            wgpu::ColorWrites::ALL
+                        } else {
+                            wgpu::ColorWrites::COLOR
+                        },
                     })],
                 }),
                 multiview_mask: None,
@@ -3537,6 +3552,7 @@ impl Renderer {
         );
         let panorama =
             panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
+        drop(pipelines_step);
         if previous.is_none() {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
@@ -3681,6 +3697,7 @@ impl Renderer {
             translucent_batching,
             sections_dropped: false,
             sorted_indices,
+            graveyard: Default::default(),
             translucent_sorter: translucency::Sorter::default(),
             translucency_cursor: 0,
             indirect,
@@ -4429,14 +4446,15 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
-        self.arena.clear();
+        // A dimension change drops every page at once: freed later, off this thread.
+        self.graveyard.add(self.arena.clear());
         if let Some(arena) = &mut self.translucent_arena {
-            arena.clear();
+            self.graveyard.add(arena.clear());
         }
         if let Some(flat) = &mut self.flat {
             flat.clear();
         }
-        self.sorted_indices.clear();
+        self.graveyard.add(self.sorted_indices.clear());
         self.translucency_cursor = 0;
         if layout == self.layout {
             self.occlusion.clear();
@@ -5327,12 +5345,14 @@ impl Renderer {
         if !frame.title {
             self.follow_translucent_layout();
         }
-        self.arena.trim();
+        let released = self.arena.trim();
+        self.graveyard.add(released);
         let left = self.compact_arena();
         if let Some(arena) = &mut self.translucent_arena {
-            arena.trim();
+            self.graveyard.add(arena.trim());
         }
-        self.sorted_indices.trim();
+        self.graveyard.add(self.sorted_indices.trim());
+        arena::free_later(self.graveyard.advance());
         self.shrink_translucent(left);
         if let Some(flat) = &mut self.flat {
             flat.trim(|page| self.arena.has_page(page));
@@ -8337,8 +8357,46 @@ impl Renderer {
                     crate::screen_effects::Blend::Alpha => 0,
                     crate::screen_effects::Blend::Vignette => 4,
                 };
-                pass.set_pipeline(&self.screen_pipelines[blend + (quad.sampling & 3) as usize]);
+                let tint = if quad.world_tint && self.hdr.is_some() {
+                    8
+                } else {
+                    0
+                };
+                pass.set_pipeline(
+                    &self.screen_pipelines[tint + blend + (quad.sampling & 3) as usize],
+                );
                 pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+            }
+            drop(pass);
+            // A tint leaves the frame's alpha and goes over the kept world too: light sources
+            // under water still show the world, and still shine.
+            if let Some(view) = self.hdr.as_ref().and_then(|h| h.hand_light_view())
+                && frame.screen.iter().any(|quad| quad.world_tint)
+            {
+                let attachments = [Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })];
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Screen tints over the kept world"),
+                    timestamp_writes: None,
+                    color_attachments: &attachments,
+                    ..Default::default()
+                });
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
+                for (i, quad) in frame.screen.iter().enumerate() {
+                    if quad.world_tint {
+                        pass.set_pipeline(&self.screen_pipelines[8 + (quad.sampling & 3) as usize]);
+                        pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+                    }
+                }
             }
         }
         // GameRenderer.render3dHud: the debug crosshair after the hand and

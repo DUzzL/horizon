@@ -16,6 +16,7 @@ use crate::{
     graphics::LeafCullingMode,
     models::catalog::BakedFace,
 };
+use horizon_assets::model::Direction as ModelDirection;
 use horizon_core::{
     biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
 };
@@ -282,7 +283,7 @@ impl SectionMesh {
     pub const BOUNDS_PAD: f32 = 0.5;
 
     /// Retain geometry capacity after an upload, but none of its old contents.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.solid.clear();
         self.translucent.clear();
         self.block_entities.clear();
@@ -474,6 +475,9 @@ struct Info {
     overlay: bool,
     /// `LeavesBlock`: with opaque leaves the faces between two leaf blocks are skipped.
     leaves: bool,
+    /// A glass pane: connected-texture tiles take the cube's UVs on it (OptiFine's pane models
+    /// drop vanilla's mirrored faces).
+    pane: bool,
     /// A full opaque cube: `RenderShape::Model`, `can_occlude`, `solid_render`
     /// and a full collision shape. The only block leaf culling treats as solid.
     opaque_cube: bool,
@@ -654,6 +658,7 @@ impl MeshTables {
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
                 leaves: s.has_class("LeavesBlock"),
+                pane: s.has_class("IronBarsBlock") && name.ends_with("glass_pane"),
                 opaque_cube: leaf_culling::opaque_cube(
                     s.render_shape,
                     s.can_occlude,
@@ -884,7 +889,7 @@ impl Padded {
 /// geometry still owned by the renderer, and total about 150 KiB per worker
 /// (the leaf mask adds 8,000 cells, depths and a queue).
 #[derive(Default)]
-pub(crate) struct MeshScratch {
+pub struct MeshScratch {
     padded: Padded,
     own: Option<Box<[u32; 4096]>>,
     visibility: Vec<usize>,
@@ -1139,7 +1144,9 @@ impl Mesher<'_> {
             &mut MeshScratch::default(),
         )
     }
-    pub(crate) fn mesh_reusing(
+    /// The meshing workers' path: `out`'s buffers and `scratch` are reused
+    /// rather than allocated per section.
+    pub fn mesh_reusing(
         &mut self,
         region: &[[Option<&Chunk>; 3]; 3],
         sy: i32,
@@ -1251,10 +1258,33 @@ impl Mesher<'_> {
                                 )
                                 .unwrap_or(true);
                     }
+                    let connected = &self.render.connected;
                     for model in &models {
                         for face in &model.faces {
                             if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
                                 continue;
+                            }
+                            // A pane's top and bottom strips between stacked panes, with
+                            // connected textures.
+                            if state.pane
+                                && !connected.is_empty()
+                                && let Some(dy) = match face.quad.facing {
+                                    ModelDirection::Up => Some(1),
+                                    ModelDirection::Down => Some(-1),
+                                    _ => None,
+                                }
+                            {
+                                let p = &face.quad.positions;
+                                // Only on the block's top or bottom plane: a pack's own pane
+                                // model may have ledges between.
+                                let plane = if dy > 0 { 1.0 } else { 0.0 };
+                                let on_edge = p.iter().all(|v| (v[1] - plane).abs() < 1e-4);
+                                let centre =
+                                    [0, 2].map(|k| p.iter().map(|v| v[k]).sum::<f32>() / 4.0);
+                                let other = pad.blocks[pi(x, y + dy, z)];
+                                if on_edge && connected.stacked_pane_hides(id, other, centre) {
+                                    continue;
+                                }
                             }
                             self.face(
                                 pad,
@@ -1377,7 +1407,18 @@ impl Mesher<'_> {
                 )
             })
         };
-        let corners = vertices(tint, q.uv);
+        // Vanilla's pane models mirror some faces' textures; OptiFine's don't, so a tile's borders
+        // land where the neighbours are: on a pane, tiles take the cube's own UVs.
+        let standard = || q.positions.map(|p| standard_uv(q.facing, p));
+        let tiled = !matches!(pick, Pick::Keep);
+        let corners = vertices(
+            tint,
+            if state.pane && tiled {
+                standard()
+            } else {
+                q.uv
+            },
+        );
         // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
         // solid layer whatever their sprite.
         let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
@@ -1426,10 +1467,9 @@ impl Mesher<'_> {
             Pick::Tile(t) => self.translucent(tile(t)),
             Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
         };
-        // Overlay tiles face the standard way (Continuity: "overlay textures always have the
+        // Overlay tiles face the standard way too (Continuity: "overlay textures always have the
         // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random
-        // rotations): the cube's UVs at the quad's corners.
-        let standard = q.positions.map(|p| standard_uv(q.facing, p));
+        // rotations).
         // Over a `ctm_compact` face, the same pieces: the same depths and sort centres.
         let cuts = match pick {
             Pick::Quarters(_) => cuts(&corners),
@@ -1447,7 +1487,7 @@ impl Mesher<'_> {
                 translucent: overlay.translucent || face_translucent,
                 opaque: false,
             };
-            let whole = vertices(tint, standard);
+            let whole = vertices(tint, standard());
             for s in cuts.windows(2) {
                 for t in cuts.windows(2) {
                     let piece = [(s[0], t[0]), (s[1], t[0]), (s[1], t[1]), (s[0], t[1])]

@@ -67,6 +67,8 @@ pub(super) enum Target {
     Tnt(u32),
     /// A falling block, by its entity id (`minecraft:falling_block`).
     Falling(u32),
+    /// A firework rocket, by its entity id (`minecraft:firework_rocket`).
+    Rocket(u32),
     /// An ominous item spawner, by its entity id (`minecraft:ominous_item_spawner`).
     Spawner(u32),
 }
@@ -144,6 +146,7 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Dragon(id)
     | Target::Tnt(id)
     | Target::Falling(id)
+    | Target::Rocket(id)
     | Target::Spawner(id)) = t
     else {
         return None;
@@ -535,6 +538,11 @@ impl Game<'_> {
                 .iter()
                 .find(|f| f.id == id)
                 .map(|f| [f.position.x, f.position.y, f.position.z]),
+            Target::Rocket(id) => self
+                .rockets
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| [r.position.x, r.position.y, r.position.z]),
             Target::Spawner(id) => self
                 .ominous_spawners
                 .iter()
@@ -588,6 +596,7 @@ impl Game<'_> {
             Target::Dragon(_) => "minecraft:ender_dragon".into(),
             Target::Tnt(_) => "minecraft:tnt".into(),
             Target::Falling(_) => "minecraft:falling_block".into(),
+            Target::Rocket(_) => "minecraft:firework_rocket".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
         }
     }
@@ -880,6 +889,7 @@ impl Game<'_> {
         }
         candidates.extend(self.tnts.iter().map(|t| Target::Tnt(t.id)));
         candidates.extend(self.falling.iter().map(|f| Target::Falling(f.id)));
+        candidates.extend(self.rockets.iter().map(|r| Target::Rocket(r.id)));
         candidates.extend(self.ominous_spawners.iter().map(|s| Target::Spawner(s.id)));
         candidates
     }
@@ -914,6 +924,7 @@ impl Game<'_> {
             Target::Dragon(id),
             Target::Tnt(id),
             Target::Falling(id),
+            Target::Rocket(id),
             Target::Spawner(id),
         ]
         .into_iter()
@@ -938,6 +949,7 @@ impl Game<'_> {
             Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
             Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
             Target::Falling(id) => self.falling.iter().any(|f| f.id == id),
+            Target::Rocket(id) => self.rockets.iter().any(|r| r.id == id),
             Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
         }
     }
@@ -1576,6 +1588,12 @@ impl Game<'_> {
                     f.previous = v;
                 }
             }
+            Target::Rocket(id) => {
+                if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
+                    r.position = v;
+                    r.previous = v;
+                }
+            }
             Target::Spawner(id) => {
                 if let Some(s) = self.ominous_spawners.iter_mut().find(|s| s.id == id) {
                     s.position = [v.x, v.y, v.z];
@@ -2080,6 +2098,7 @@ impl Game<'_> {
             Target::Dragon(id) => self.kill_dragon(id),
             Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
             Target::Falling(id) => self.falling.retain(|f| f.id != id),
+            Target::Rocket(id) => self.rockets.retain(|r| r.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
@@ -2178,6 +2197,7 @@ impl Game<'_> {
                     let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        no_gravity: false,
                         id: self.next_entity,
                         position: Vec3::new(at[0], at[1], at[2]),
                         previous: Vec3::new(at[0], at[1], at[2]),
@@ -3755,6 +3775,7 @@ mod look_at_tests {
             Target::Dragon(7),
             Target::Tnt(7),
             Target::Falling(7),
+            Target::Rocket(7),
             Target::Spawner(7),
         ] {
             assert_eq!(non_player_entity_id(t), Some(7), "{t:?}");

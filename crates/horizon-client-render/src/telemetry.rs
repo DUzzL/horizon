@@ -241,6 +241,7 @@ impl Session {
     pub fn title_shown(&mut self) {
         if !self.title_measured {
             self.title_measured = true;
+            crate::spans::startup::mark("title.shown");
             let ui_ms = UI_READY_MS.load(Ordering::Relaxed);
             self.to_title_ms = if ui_ms != u32::MAX {
                 Some(ui_ms)
@@ -252,6 +253,9 @@ impl Session {
 
     /// A world starts loading.
     pub fn world_opening(&mut self) {
+        if self.opening.is_none() {
+            crate::spans::startup::arm("world.opening");
+        }
         self.opening.get_or_insert_with(Instant::now);
     }
 
@@ -262,10 +266,11 @@ impl Session {
 
     /// A frame drawn while playing (not in menus or loading).
     pub fn frame(&mut self, ms: f32) {
-        if let Some(opening) = self.opening.take()
-            && self.to_world_ms.is_none()
-        {
-            self.to_world_ms = Some(opening.elapsed().as_millis() as u32);
+        if let Some(opening) = self.opening.take() {
+            crate::spans::startup::mark("world.first_frame");
+            if self.to_world_ms.is_none() {
+                self.to_world_ms = Some(opening.elapsed().as_millis() as u32);
+            }
         }
         self.frames.record(ms);
         self.played_ms += ms;
