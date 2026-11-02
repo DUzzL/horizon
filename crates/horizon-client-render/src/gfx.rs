@@ -145,6 +145,7 @@ mod page_runs;
 pub mod panorama;
 mod readback;
 mod resident;
+mod reuse;
 mod stars;
 pub mod submit;
 mod sunrise_fan;
@@ -753,6 +754,9 @@ pub struct Renderer {
     display_fresh: bool,
     window: Arc<Window>,
     pub device: wgpu::Device,
+    /// The shader modules, layouts and pipelines kept for the next renderer on
+    /// this device ([`reuse`]).
+    reuse: Arc<reuse::Reuse>,
     /// Frames are finished and submitted on its submit thread ([`submit`]).
     pub queue: submit::Queue,
     /// The last frame went to the submit thread; whether it had no window surface.
@@ -1942,10 +1946,15 @@ impl Renderer {
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
+        // A renderer on the same device takes the previous one's shader
+        // modules, layouts and pipelines where they come out the same.
+        let reuse = previous.map_or_else(Default::default, |r| r.reuse.clone());
+        let generation = reuse.begin();
+        let kept = reuse.on(&device);
         let pipelines_step = crate::spans::startup::step("renderer.pipelines_textures");
         let terrain_step = crate::spans::startup::step("renderer.terrain_pipelines");
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon terrain"),
             source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
         });
@@ -1969,7 +1978,7 @@ impl Renderer {
             ("SPRITE_ARRAYS", f64::from(sprite_arrays)),
             ("SPRITE_SPLIT", f64::from(split)),
         ];
-        let bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon terrain bindings"),
             entries: &[
                 entry(
@@ -2027,7 +2036,7 @@ impl Renderer {
                 ),
             ],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon terrain layout"),
             bind_group_layouts: &[Some(&bindings)],
             ..Default::default()
@@ -2063,7 +2072,7 @@ impl Renderer {
                            depth_write: bool,
                            depth_test: bool,
                            blend: Option<wgpu::BlendState>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -2211,7 +2220,7 @@ impl Renderer {
             false,
             Some(alpha_blend),
         );
-        let depth_reset = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let depth_reset = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Hand depth reset"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -2603,11 +2612,11 @@ impl Renderer {
         )?;
         hud.atlas_texture = Some(atlas.clone());
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
-        let entity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon entities"),
             source: wgpu::ShaderSource::Wgsl(entity_shader().into()),
         });
-        let entity_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let entity_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Entity bindings"),
             entries: &[
                 entry(
@@ -2758,12 +2767,12 @@ impl Renderer {
                 },
             ],
         });
-        let entity_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let entity_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Entity layout"),
             bind_group_layouts: &[Some(&entity_bindings)],
             ..Default::default()
         });
-        let cloud_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let cloud_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cloud bindings"),
             entries: &[entry(
                 0,
@@ -2789,7 +2798,7 @@ impl Renderer {
                 resource: cloud_uniform.as_entire_binding(),
             }],
         });
-        let cloud_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let cloud_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cloud layout"),
             bind_group_layouts: &[Some(&entity_bindings), Some(&cloud_bindings)],
             ..Default::default()
@@ -2816,7 +2825,7 @@ impl Renderer {
                                     clouds,
                                     fragment: &str,
                                     write_mask| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if clouds {
                     &cloud_layout
@@ -3078,10 +3087,10 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         };
-        let additive_pipeline = device.create_render_pipeline(&additive_descriptor);
+        let additive_pipeline = kept.create_render_pipeline(&additive_descriptor);
         // `RenderPipelines.DRAGON_RAYS` uses DepthStencilState.DEFAULT:
         // unlike eyes, a ray hides the faces and rays behind it.
-        let dragon_rays_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let dragon_rays_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Dragon death rays"),
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -3101,7 +3110,7 @@ impl Renderer {
             write_mask: wgpu::ColorWrites::ALPHA,
         })];
         let hdr_mark_lightning_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("HDR lightning mark"),
                 vertex: wgpu::VertexState {
                     entry_point: Some("vs_lightning"),
@@ -3116,7 +3125,7 @@ impl Renderer {
                 }),
                 ..additive_descriptor.clone()
             });
-        let lightning_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let lightning_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Lightning"),
             vertex: wgpu::VertexState {
                 entry_point: Some("vs_lightning"),
@@ -3125,7 +3134,7 @@ impl Renderer {
             },
             ..additive_descriptor
         });
-        let celestial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let celestial_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Celestial bodies"),
             layout: Some(&entity_layout),
             vertex: wgpu::VertexState {
@@ -3220,7 +3229,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let border_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let border_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World border bindings"),
             entries: &[
                 entry(
@@ -3279,19 +3288,19 @@ impl Renderer {
                 },
             ],
         });
-        let border_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let border_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World border layout"),
             bind_group_layouts: &[Some(&border_bindings)],
             ..Default::default()
         });
-        let border_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let border_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon world border"),
             source: wgpu::ShaderSource::Wgsl(include_str!("border.wgsl").into()),
         });
         let border_attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2];
         // RenderPipelines.WORLD_BORDER: BlendFunction.OVERLAY, no culling,
         // depth writes with a polygon offset of 3 towards the camera.
-        let border_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let border_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("World border"),
             layout: Some(&border_layout),
             vertex: wgpu::VertexState {
@@ -3344,7 +3353,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let screen_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let screen_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon screen effects"),
             source: wgpu::ShaderSource::Wgsl(include_str!("screen.wgsl").into()),
         });
@@ -3383,7 +3392,7 @@ impl Renderer {
                 constants: &constants,
                 ..Default::default()
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Screen effects"),
                 layout: Some(&entity_layout),
                 vertex: wgpu::VertexState {
@@ -3553,6 +3562,13 @@ impl Renderer {
         let panorama =
             panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
         drop(pipelines_step);
+        reuse.finish(generation);
+        if previous.is_some() {
+            log::info!(
+                "Horizon renderer: rebuilt on the same device ({} shader modules, layouts and pipelines kept)",
+                reuse.len()
+            );
+        }
         if previous.is_none() {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
@@ -3583,6 +3599,7 @@ impl Renderer {
             last_encode: std::time::Duration::ZERO,
             window,
             device,
+            reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
             deferred: None,
             device_lost,
