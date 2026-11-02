@@ -8,8 +8,8 @@
 //! submissions keep the order they had on one thread.
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 /// Whether frames go to the submit thread, unless `HORIZON_SUBMIT_THREAD` says (`0` off, `1` on):
 /// on Linux, where it was measured faster (+32% FPS in a CPU-bound view on Vulkan, #5779). On
