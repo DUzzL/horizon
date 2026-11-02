@@ -19379,23 +19379,6 @@ fn load_resources(
             started.elapsed().as_millis()
         );
     }
-    // Finish fallible CPU preparation before starting the tail, so an error
-    // cannot detach a tail worker that races the next pack-loader generation.
-    let prepared_at = Instant::now();
-    let game_cpu = menu
-        .then(|| startup::time("handoff.game_cpu", || GameCpuResources::load(&root)))
-        .transpose()?;
-    let renderer_cpu = menu.then(|| {
-        startup::time("handoff.renderer_textures", || {
-            prepare_renderer_textures(&pack)
-        })
-    });
-    if menu {
-        log::info!(
-            "Horizon: handoff CPU resources prepared on worker in {} ms",
-            prepared_at.elapsed().as_millis()
-        );
-    }
     // The block entity renderer's face visibility: the meshes' own, whose
     // shapes already hold their faces, not a second load of the same tables.
     let visibility = pack.context.tables.visibility.clone();
@@ -19453,6 +19436,37 @@ fn load_resources(
             .set(rest)
             .map_err(|_| "world resources already loaded")?;
         None
+    };
+    // The world tables load (above) while the handoff's CPU work is done: the
+    // world renderer's textures beside the game's own tables. A failure here
+    // waits for the tail, so no tail worker outlives its pack-loader generation.
+    let prepared_at = Instant::now();
+    let (game_cpu, renderer_cpu) = if menu {
+        let (game_cpu, renderer_cpu) = std::thread::scope(|scope| {
+            let textures = Step::spawn(scope, parallel, || {
+                startup::time("handoff.renderer_textures", || {
+                    prepare_renderer_textures(&pack)
+                })
+            });
+            let game_cpu = startup::time("handoff.game_cpu", || GameCpuResources::load(&root));
+            (game_cpu, textures.join())
+        });
+        let game_cpu = match game_cpu {
+            Ok(game_cpu) => game_cpu,
+            Err(error) => {
+                if let Some(tail) = rest_loader {
+                    let _ = tail.handle.join();
+                }
+                return Err(error);
+            }
+        };
+        log::info!(
+            "Horizon: handoff CPU resources prepared on worker in {} ms",
+            prepared_at.elapsed().as_millis()
+        );
+        (Some(game_cpu), Some(renderer_cpu))
+    } else {
+        (None, None)
     };
     Ok(Loaded {
         game_cpu,
