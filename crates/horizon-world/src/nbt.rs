@@ -791,7 +791,14 @@ impl Snbt<'_> {
             self.expect(b':')?;
             map.insert(JavaString::from(key.as_str()), self.value()?);
             match self.peek() {
-                Some(b',') => self.i += 1,
+                Some(b',') => {
+                    self.i += 1;
+                    // `repeatedWithTrailingSeparator`: one trailing comma is allowed.
+                    if self.peek() == Some(b'}') {
+                        self.i += 1;
+                        return Ok(Tag::Compound(map));
+                    }
+                }
                 Some(b'}') => {
                     self.i += 1;
                     return Ok(Tag::Compound(map));
@@ -814,7 +821,13 @@ impl Snbt<'_> {
             loop {
                 items.push(self.value()?);
                 match self.peek() {
-                    Some(b',') => self.i += 1,
+                    Some(b',') => {
+                        self.i += 1;
+                        // `repeatedWithTrailingSeparator`: one trailing comma is allowed.
+                        if self.peek() == Some(b']') {
+                            break;
+                        }
+                    }
                     Some(b']') => break,
                     _ => return Err(format!("expected ',' or ']' at {}", self.i)),
                 }
@@ -928,6 +941,23 @@ mod tests {
         // A name cut short, or a key inside that isn't modified UTF-8, still fails.
         assert!(read_named(&hex("0a0009ff"), Limits::saved()).is_err());
         assert!(read_named(&hex("0a000003000278ff0000000700"), Limits::saved()).is_err());
+    }
+    /// `SnbtGrammar` reads compounds, lists and typed arrays with
+    /// `repeatedWithTrailingSeparator`: one trailing comma is fine, a lone or
+    /// doubled comma is not.
+    #[test]
+    fn snbt_accepts_one_trailing_comma() {
+        let ok = |t: &str| parse_snbt(t).unwrap().0;
+        assert_eq!(ok("{a:1b,}"), Tag::compound([("a", Tag::Byte(1))]));
+        assert_eq!(ok("[1,2,]"), Tag::List(vec![Tag::Int(1), Tag::Int(2)]));
+        assert_eq!(ok("[I;1,2, ]"), Tag::IntArray(vec![1, 2]));
+        assert_eq!(
+            ok("{Tags:[\"t\",],}"),
+            Tag::compound([("Tags", Tag::List(vec![Tag::String("t".into())]))])
+        );
+        for bad in ["{,}", "[,]", "[I;,]", "{a:1,,}", "[1,,]"] {
+            assert!(parse_snbt(bad).is_err(), "{bad}");
+        }
     }
     #[test]
     fn streamed_lists_reach_the_visitor_and_stay_empty_in_the_tree() {
