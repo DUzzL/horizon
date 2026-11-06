@@ -67,10 +67,13 @@ impl Game<'_> {
         let (at, count, xz, height, floating) = match self.res.behaviours().bone_meal_spreads(state)
         {
             Some(spreads) => {
-                // BonemealableBlock.getParticlePos: below for rooted dirt
-                // (its hanging roots) and mangrove leaves (their propagule).
+                // BonemealableBlock.getParticlePos: above for a
+                // NEIGHBOR_SPREADER, the block itself for a GROWER; rooted
+                // dirt (its hanging roots) and mangrove leaves (their
+                // propagule) override it with the block below.
                 let at = match &*facts.get(state).name {
                     "minecraft:rooted_dirt" | "minecraft:mangrove_leaves" => [p[0], p[1] - 1, p[2]],
+                    _ if spreads => [p[0], p[1] + 1, p[2]],
                     _ => p,
                 };
                 if spreads {
