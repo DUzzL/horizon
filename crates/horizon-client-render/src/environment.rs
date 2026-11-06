@@ -396,11 +396,23 @@ pub fn apply_weather(sky: &mut Sky, rain: f32, thunder: f32) {
     }
 }
 
+/// `Level.updateSkyBrightness`: `(int) (15.0f - SKY_LIGHT_LEVEL)`, a truncating
+/// cast. `level_fraction` is the sky light level divided by 15.
+pub fn sky_darken_from_level(level_fraction: f32) -> i32 {
+    let level = level_fraction * 15.0;
+    // Undo the /15 and *15 round trip so integer levels stay exact.
+    let snapped = if (level - level.round()).abs() < 1.0e-4 {
+        level.round()
+    } else {
+        level
+    };
+    (15.0 - snapped) as i32
+}
+
 pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: f32) -> i32 {
     let mut sky = environment.sample(day_time, None, None);
     apply_weather(&mut sky, rain, thunder);
-    // Level.updateSkyBrightness: darkening from the sky light level.
-    (15.0 - 15.0 * sky.sky_light_level).round() as i32
+    sky_darken_from_level(sky.sky_light_level)
 }
 
 #[cfg(test)]
@@ -413,6 +425,18 @@ mod tests {
         root.join("data/minecraft/timeline/day.json")
             .exists()
             .then(|| Environment::load(&root).unwrap())
+    }
+
+    #[test]
+    fn sky_darken_truncates_like_vanilla() {
+        assert_eq!(sky_darken_from_level(15.0 / 15.0), 0);
+        assert_eq!(sky_darken_from_level(4.0 / 15.0), 11);
+        assert_eq!(sky_darken_from_level(11.0 / 15.0), 4);
+        // 15 - 10.6 = 4.4 and 15 - 10.4 = 4.6 both truncate to 4.
+        assert_eq!(sky_darken_from_level(10.6 / 15.0), 4);
+        assert_eq!(sky_darken_from_level(10.4 / 15.0), 4);
+        // 15 - 11.4 = 3.6 truncates to 3 (round() gave 4).
+        assert_eq!(sky_darken_from_level(11.4 / 15.0), 3);
     }
 
     #[test]
