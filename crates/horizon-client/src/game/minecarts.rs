@@ -2166,12 +2166,7 @@ impl Game<'_> {
                 let id = self.carts[i].id;
                 // isVehicle: a mob already sits in it.
                 let has_mob = self.mobs.iter().any(|m| m.extra.mount == Some(id));
-                if sneaking
-                    || self.riding.is_some()
-                    || !self.may_board()
-                    || self.ridden_by_guest(id)
-                    || has_mob
-                {
+                if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
                 if !self.native_may_board(id) {
@@ -2352,12 +2347,23 @@ impl Game<'_> {
     /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
-    pub(super) fn hurt_cart(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) {
+    pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
+        self.hurt_cart_result(i, damage, creative, fire);
+    }
+
+    /// Accepted damage is distinct from survival, destruction, or TNT priming.
+    pub(super) fn hurt_cart_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+        fire: bool,
+    ) -> bool {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
         self.native_vehicle_damage(kind, &mut damage, &mut cancel);
         if cancel {
-            return;
+            return false;
         }
         let destroyed = {
             let c = &mut self.carts[i];
@@ -2409,6 +2415,7 @@ impl Game<'_> {
                 }
             }
         }
+        true
     }
     /// Baked block-state faces with default block tints and terrain shade or diffuse lighting.
     pub(super) fn block_model_vertices(

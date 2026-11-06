@@ -16,6 +16,7 @@
 use super::{Game, Keys, ray_box};
 use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
+use horizon_client::{keybinds, text::Text};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
 
@@ -210,6 +211,19 @@ impl Game<'_> {
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
+                // ClientPacketListener.handleSetEntityPassengersPacket: boarding says how to get off,
+                // on the overlay and to the narrator.
+                let key = if self.cushions.iter().any(|c| c.id == vehicle_id) {
+                    "mount.sit"
+                } else {
+                    "mount.onboard"
+                };
+                let message = Text::translate(
+                    key,
+                    &[keybinds::display_name(self.settings.keys.get("key.sneak"))],
+                );
+                self.say_system_now(&message);
+                self.titles.set_overlay(message, false);
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == vehicle_id) {
                     c.passenger_yaw_delta = 0.0;
                 }
@@ -298,10 +312,13 @@ impl Game<'_> {
                 b = self.tick_boat(b, true);
                 b.input = [keys.left, keys.right, keys.forward, keys.backward];
             }
-            // positionRider: the seat turns with the boat; clampRotation.
+            // positionRider: the seat turns with the boat; clampRotation,
+            // which moves `yRotO` (the held lead's old look) with the view.
             self.yaw += b.delta_rotation;
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
-            self.yaw += delta.clamp(-105.0, 105.0) - delta;
+            let clamped = delta.clamp(-105.0, 105.0) - delta;
+            self.yaw += clamped;
+            self.rope_rot_old.0 += clamped;
             self.boats[i] = b;
             // In front of a mob that shares the boat.
             Some(self.player_boat_seat(i))

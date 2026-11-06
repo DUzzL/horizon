@@ -964,6 +964,16 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
+    /// overrides to snap to the block centre.
+    fn move_by_piston(&mut self, movement: Vec3) {
+        let moved = self.position.add_vector(movement);
+        if self.species() == Species::Shulker {
+            crate::mobs::shulker::client_set_pos(self, moved.x, moved.y, moved.z);
+        } else {
+            self.position = moved;
+        }
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.head_pitch]
     }
@@ -1008,8 +1018,10 @@ impl Entity for Mob {
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
     }
+    /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
+    /// section enumeration immediately, before the entity list is swept.
     fn selector_target(&self) -> Option<Target> {
-        (self.death_time == 0).then_some(Target::Mob(self.id))
+        (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
     }
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)
@@ -1618,7 +1630,8 @@ impl Entity for Projectile {
             "minecraft:fireball"
             | "minecraft:small_fireball"
             | "minecraft:wind_charge"
-            | "minecraft:breeze_wind_charge" => game.load_fireball(tag, uuid, player_uuid),
+            | "minecraft:breeze_wind_charge"
+            | "minecraft:wither_skull" => game.load_fireball(tag, uuid, player_uuid),
             id if horizon_client::entity_nbt::throwable_kind(id).is_some() => {
                 game.load_throwable(tag, uuid, player_uuid)
             }

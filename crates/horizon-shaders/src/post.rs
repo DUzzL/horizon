@@ -214,13 +214,11 @@ const PARTICLES: [&str; 4] = [
     "gbuffers_basic",
 ];
 
-/// The sun and moon's default blend: added to the sky, as vanilla draws them.
-pub const CELESTIAL_BLEND: Blend = [
-    Factor::SrcAlpha,
-    Factor::One,
-    Factor::One,
-    Factor::OneMinusSrcAlpha,
-];
+/// The sun and moon's default blend: added to the sky, and their own alpha replacing the
+/// buffer's, as vanilla draws them (`RenderPipelines.CELESTIAL`, `BlendFunction.OVERLAY`). Iris
+/// 1.11.7 left the sun's alpha (2.0) in an RGBA32F buffer the sky had written 1.0 to, with a
+/// probe pack of ours (#10490).
+pub const CELESTIAL_BLEND: Blend = [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero];
 
 const GROUPS: [(Group, &str); 6] = [
     (Group::Setup, "setup"),
@@ -230,6 +228,11 @@ const GROUPS: [(Group, &str); 6] = [
     (Group::Composite, "composite"),
     (Group::Final, "final"),
 ];
+
+/// The stars' blend: added to the sky, their own alpha replacing the buffer's, as vanilla draws
+/// them (`RenderPipelines.STARS`, `BlendFunction.OVERLAY`). Iris 1.11.7 drew them so with a probe
+/// pack of ours (#10490): colour 0.25 × 0.5 over the disc's 1.0 read 1.125, alpha 0.5.
+pub const STARS_BLEND: Blend = [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero];
 
 pub struct PostProgram {
     /// The program's name (`composite3`).
@@ -243,6 +246,10 @@ pub struct PostProgram {
     pub flips: Vec<(u32, bool)>,
     /// How the program's output blends into its buffers; `None` writes them.
     pub blend: Option<Blend>,
+    /// `gbuffers_skybasic` without a `blend.*` of its own: each part of the sky blends as
+    /// vanilla draws it, the disc and the void without blending (`RenderPipelines.SKY`), the stars
+    /// with [`STARS_BLEND`] and the sunset fan with `blend`.
+    pub vanilla_sky_blends: bool,
     /// Per-buffer blend overrides, keyed by colortex index (not output location).
     pub buffer_blends: Vec<(u32, Option<Blend>)>,
     /// Bit n: `colortex<n>MipmapEnabled` in its fragment stage, so buffer n's mip chain is
@@ -777,13 +784,18 @@ pub fn load_post(
             })
         })
     };
-    // The sky blends as vanilla draws its sunset fan and stars unless `blend.*` says otherwise.
+    // The sky's parts blend as vanilla draws them (the sunset fan translucent, the stars
+    // [`STARS_BLEND`], the disc and the void not at all), unless `blend.*` says otherwise. Iris 1.11.7 left exactly what
+    // `gbuffers_skybasic` wrote on the sky disc, alpha 0.25 included, with a probe pack of ours
+    // (#10490).
     let sky = inputs
         .sky
         .as_ref()
         .and_then(|i| gbuffers(&SKY, Group::Gbuffers, i));
     let sky = sky.map(|mut p| {
-        p.blend = blend(properties, &p.name).unwrap_or(Some(TRANSLUCENT_BLEND));
+        let own = blend(properties, &p.name);
+        p.vanilla_sky_blends = own.is_none();
+        p.blend = own.unwrap_or(Some(TRANSLUCENT_BLEND));
         p
     });
     let celestial = inputs.celestial.as_ref();
@@ -1032,9 +1044,15 @@ fn load_shadow(
         &post.weather,
         &post.hand,
     ];
+    // A program's compute stages count as its other stages do: Iris 1.11.7 drew the shadow map
+    // for a probe pack of ours whose only reader of it was `prepare.csh` (#10490).
     let reads = (post.programs.iter())
         .chain(gbuffers.into_iter().flatten())
-        .flat_map(|p| p.program.iter().flat_map(|q| &q.interface.samplers))
+        .flat_map(|p| {
+            let stages = p.program.iter().map(|q| &q.interface);
+            stages.chain(p.compute.iter().map(|(_, c)| &c.interface))
+        })
+        .flat_map(|i| &i.samplers)
         .any(|s| {
             SHADOW_SAMPLERS.contains(&s.name.as_str())
                 || config::shadow_color(&s.name).is_some_and(|n| n < loader.post.shadow_colors)
@@ -1209,6 +1227,7 @@ impl Loader<'_> {
                 program: None,
                 buffers: Vec::new(),
                 blend: None,
+                vanilla_sky_blends: false,
                 mipmaps: 0,
                 compute,
                 geometry_triangles: 0,
@@ -1306,6 +1325,7 @@ impl Loader<'_> {
             program: Some(program),
             buffers,
             blend: None,
+            vanilla_sky_blends: false,
             mipmaps,
             compute,
             geometry_triangles: 0,
@@ -1437,6 +1457,7 @@ impl Loader<'_> {
             program: Some(program),
             buffers,
             blend: None,
+            vanilla_sky_blends: false,
             mipmaps: 0,
             compute: Vec::new(),
             geometry_triangles: triangles,
@@ -2476,6 +2497,62 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(post.shadow.is_some() && post.shadow_water.is_none());
     }
 
+    /// A compute stage that samples a shadow buffer turns the shadow pass on as a fragment stage
+    /// does. Iris 1.11.7 with probe packs of ours (#10490), where nothing else read them: a
+    /// `prepare.csh` alone sampling shadowtex0 read the terrain's depth there (0.3956 at our noon
+    /// scene), a `composite.csh` beside a `composite.fsh` that reads none read the same, and a
+    /// `prepare.csh` sampling shadowcolor0 read what `shadow.fsh` wrote (0.251); Horizon read an
+    /// empty map (1.0) in all three.
+    #[test]
+    fn a_compute_stage_reading_a_shadow_buffer_turns_the_shadow_pass_on() {
+        let csh = |sampler: &str| {
+            format!(
+                "#version 430\nlayout(local_size_x = 1) in;\nconst ivec3 workGroups = ivec3(1, 1, 1);\n\
+                 uniform sampler2D {sampler};\nlayout(rgba8) writeonly uniform image2D colorimg5;\n\
+                 void main() {{ imageStore(colorimg5, ivec2(0), texture({sampler}, vec2(0.5))); }}\n"
+            )
+        };
+        let load = |files: &[(&str, &str)]| {
+            let mut files = files.to_vec();
+            files.extend([
+                ("shaders/final.vsh", VSH),
+                ("shaders/final.fsh", FSH),
+                ("shaders/shadow.vsh", VSH),
+                ("shaders/shadow.fsh", FSH),
+            ]);
+            let pack = Pack::from_zip_bytes("t", zip(&files)).unwrap();
+            let properties = Properties::parse("", &Macros::default());
+            load_post(
+                &pack,
+                "",
+                &properties,
+                &Macros::standard(),
+                &GameInputs::default(),
+            )
+        };
+        let prepare = csh("shadowtex0");
+        let post = load(&[("shaders/prepare.csh", &prepare)]);
+        assert!(
+            post.programs.iter().any(|p| p.name == "prepare"),
+            "{:?}",
+            post.notes
+        );
+        assert!(post.shadow_pass, "{:?}", post.notes);
+        let post = load(&[
+            ("shaders/composite.vsh", VSH),
+            ("shaders/composite.fsh", FSH),
+            ("shaders/composite.csh", &prepare),
+        ]);
+        let composite = post.programs.iter().find(|p| p.name == "composite");
+        assert_eq!(composite.map(|p| p.compute.len()), Some(1));
+        assert!(post.shadow_pass, "{:?}", post.notes);
+        let color = csh("shadowcolor0");
+        assert!(load(&[("shaders/prepare.csh", &color)]).shadow_pass);
+        // A compute stage that reads none leaves it off, as before.
+        let colortex = csh("colortex1");
+        assert!(!load(&[("shaders/prepare.csh", &colortex)]).shadow_pass);
+    }
+
     /// `HIGHER_SHADOWCOLOR` (required or optional) gives the shadow programs shadowcolor2 to 7,
     /// with their own settings; a directive reaches them, no directive still writes 0 and 1.
     /// Without the feature, outputs stop at shadowcolor1 as before. As in Iris 1.11.7 with
@@ -2945,11 +3022,22 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
                 Some(TRANSLUCENT_BLEND)
             )
         );
+        // Its parts blend as vanilla's: the stars with BlendFunction.OVERLAY.
+        assert!(sky.vanilla_sky_blends);
+        assert_eq!(
+            STARS_BLEND,
+            [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero]
+        );
         // gbuffers_skytextured falls back to gbuffers_textured, then gbuffers_basic.
         let sun = post.sky_textured.unwrap();
         assert_eq!(
             (sun.name.as_str(), sun.blend),
             ("gbuffers_textured", Some(CELESTIAL_BLEND))
+        );
+        // Vanilla's `BlendFunction.OVERLAY`: colour added, alpha the sun's own.
+        assert_eq!(
+            sun.blend,
+            Some([Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero])
         );
         assert_eq!(
             (water.group, water.blend),
