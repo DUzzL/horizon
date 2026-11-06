@@ -375,7 +375,7 @@ impl Goal for RunAroundLikeCrazy {
         if m.extra.tame || m.random.next_int_bound(50).unwrap_or(1) != 0 {
             return;
         }
-        let temper = i32::from(m.extra.variant3);
+        let temper = m.extra.temper;
         let max = max_temper(m.species());
         if m.random.next_int_bound(max).unwrap_or(0) < temper {
             // tameWithName
@@ -383,7 +383,7 @@ impl Goal for RunAroundLikeCrazy {
             cx.events.push(MobEvent::Tamed { mob: m.id });
             return;
         }
-        m.extra.variant3 = (temper + 5).min(max) as u8;
+        m.extra.temper = (temper + 5).clamp(0, max);
         cx.events.push(MobEvent::Buck { mob: m.id });
         make_mad(m, cx.events);
     }

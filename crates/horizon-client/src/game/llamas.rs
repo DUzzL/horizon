@@ -44,8 +44,8 @@ impl Game<'_> {
             used = true;
             happy = true;
         }
-        if (used || !m.extra.tame) && i32::from(m.extra.variant3) < llama::MAX_TEMPER {
-            m.extra.variant3 = (i32::from(m.extra.variant3) + temper).min(llama::MAX_TEMPER) as u8;
+        if (used || !m.extra.tame) && m.extra.temper < llama::MAX_TEMPER {
+            m.extra.temper = (m.extra.temper + temper).clamp(0, llama::MAX_TEMPER);
             used = true;
         }
         if happy {

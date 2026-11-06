@@ -404,8 +404,8 @@ impl Game<'_> {
             m.extra.age = (m.extra.age + age_up * 20).min(0);
             used = true;
         }
-        if temper > 0 && (used || !m.extra.tame) && m.extra.variant3 < 100 {
-            m.extra.variant3 = (m.extra.variant3 + temper).min(100);
+        if temper > 0 && (used || !m.extra.tame) && m.extra.temper < 100 {
+            m.extra.temper = (m.extra.temper + i32::from(temper)).clamp(0, 100);
             used = true;
         }
         if !used {

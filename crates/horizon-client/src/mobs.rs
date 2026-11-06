@@ -1078,6 +1078,9 @@ pub struct Extra {
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
     pub variant2: u8,
     pub variant3: u8,
+    /// `AbstractHorse.temper`: a full signed int, loaded as saved; only
+    /// `modifyTemper` applies the species maximum.
+    pub temper: i32,
     /// `MushroomCow.stewEffects`: what a brown one took from a flower, given
     /// back in its next bowl of stew. `None` is vanilla's null.
     pub stew_effects: Option<Vec<(Arc<str>, i32)>>,

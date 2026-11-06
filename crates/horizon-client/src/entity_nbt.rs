@@ -838,7 +838,7 @@ pub fn mob_to_nbt(
         | "minecraft:llama"
         | "minecraft:trader_llama" => {
             map.insert("Tame".into(), Tag::Byte(i8::from(m.extra.tame)));
-            map.insert("Temper".into(), Tag::Int(i32::from(m.extra.variant3)));
+            map.insert("Temper".into(), Tag::Int(m.extra.temper));
             map.insert("Bred".into(), Tag::Byte(i8::from(m.extra.bred)));
             // AbstractHorse.addAdditionalSaveData; Horizon does not model the
             // eating haystack yet.
@@ -1913,7 +1913,7 @@ pub fn mob_from_nbt(
     }
     if crate::mobs::equine::is_equine(m.species()) {
         m.extra.tame = flag(tag, "Tame");
-        m.extra.variant3 = number(tag.get("Temper")).unwrap_or(0).clamp(0, 100) as u8;
+        m.extra.temper = number(tag.get("Temper")).unwrap_or(0) as i32;
         m.extra.bred = flag(tag, "Bred");
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
         let v = number(tag.get("Variant")).unwrap_or(0) as i32;
@@ -4109,6 +4109,34 @@ mod tests {
                 if base.is_some() {
                     assert_eq!(saved.get("audit:unrelated"), Some(&Tag::Int(7)));
                 }
+            }
+        }
+    }
+
+    /// `AbstractHorse.readAdditionalSaveData` takes `Temper` as a plain int
+    /// (`setTemper`); only `modifyTemper` clamps, so large and negative
+    /// values survive a load and a save for horses and llamas alike.
+    #[test]
+    fn a_saved_temper_is_kept_as_an_unclamped_int() {
+        for (id, species) in [
+            ("minecraft:horse", crate::mobs::Species::Horse),
+            ("minecraft:llama", crate::mobs::Species::Llama),
+        ] {
+            let mut kind = crate::mobs::sensor_scan_tests::kind();
+            let ty = Arc::make_mut(&mut kind);
+            ty.id = id.into();
+            ty.species = species;
+            let types = [(id.into(), kind)].into();
+            for want in [0, 30, 50, 100, -7, 1000] {
+                let raw = Tag::compound([
+                    ("id", string(id)),
+                    ("Pos", doubles(&[4.5, 220.0, 4.5])),
+                    ("Temper", Tag::Int(want)),
+                ]);
+                let m = mob_from_nbt(&raw, &types, 1, None).unwrap();
+                assert_eq!(m.extra.temper, want, "{id} loads {want}");
+                let saved = mob_to_nbt(&m, [0; 4], Some(&raw), None, |_| None);
+                assert_eq!(number(saved.get("Temper")), Some(i64::from(want)));
             }
         }
     }

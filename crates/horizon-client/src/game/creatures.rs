@@ -802,7 +802,7 @@ impl Game<'_> {
                     "leash": m.extra.leash.map(|h| format!("{h:?}")),
                     "tame": m.extra.tame,
                     "sitting": m.extra.sitting,
-                    "temper": m.extra.variant3,
+                    "temper": m.extra.temper,
                     "chested": m.extra.chested,
                 });
                 // Set apart: one json! with every key goes past the default macro recursion
