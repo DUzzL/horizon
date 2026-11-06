@@ -313,6 +313,7 @@ impl Game<'_> {
             )
             .clamp(0.0, 127.0) as u8;
         let count = charged.len();
+        let ignite = self.bow_projectile_ignite();
         // getShootingPower: a rocket among them slows every shot.
         let power = if charged.iter().any(|s| &*s.item == FIREWORK_ROCKET) {
             1.6
@@ -370,6 +371,13 @@ impl Game<'_> {
                     a.set_owner(Some(Who::Player));
                     a.fired_from_weapon = Some(weapon.clone());
                     a.pierce = pierce;
+                }
+                // Projectile.applyOnProjectileSpawned: the weapon's ignite effects
+                // (Flame) apply whatever the item's enchantment legality.
+                if let Some(seconds) = ignite
+                    && let Some(a) = arrow.arrow.as_mut()
+                {
+                    a.ignite_for_seconds(seconds);
                 }
                 arrow.shoot(&mut self.world.random, dir.to_array(), power, 1.0);
                 self.add_projectile(arrow);
