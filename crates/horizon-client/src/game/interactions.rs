@@ -184,7 +184,13 @@ impl InteractionState {
     pub fn from_tag(tag: &horizon_world::nbt::Tag) -> Self {
         use horizon_world::nbt::Tag;
         let float = |key: &str| match tag.get(key) {
+            // Any numeric tag converts, like `NumericTag.floatValue`.
             Some(Tag::Float(bits)) => f32::from_bits(*bits),
+            Some(Tag::Double(bits)) => f64::from_bits(*bits) as f32,
+            Some(Tag::Byte(v)) => f32::from(*v),
+            Some(Tag::Short(v)) => f32::from(*v),
+            Some(Tag::Int(v)) => *v as f32,
+            Some(Tag::Long(v)) => *v as f32,
             _ => 1.0,
         };
         Self {
