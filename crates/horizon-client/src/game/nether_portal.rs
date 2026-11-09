@@ -661,19 +661,23 @@ impl Game<'_> {
         let mut waiting: Vec<u32> = Vec::new();
         let tracked = &self.portals.entities;
         for_each_entity!(entity_lists_of!(self), entity => {
-            if entity.portal_size().is_some() && entity.is_vehicle() == vehicles {
+            let can_sweep = entity.portal_size().is_some();
+            let has_portal_state = tracked.contains_key(&entity.id());
+            // Entity.processPortalCooldown still runs for entities this
+            // portal pass cannot send, such as an armor stand.
+            if entity.is_vehicle() == vehicles && (can_sweep || has_portal_state) {
                 let at = entity.position();
                 if !entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
-                    if tracked.contains_key(&entity.id()) {
+                    if has_portal_state {
                         waiting.push(entity.id());
                     }
                     continue;
                 }
-                if entity.portal_from().is_none() {
+                if can_sweep && entity.portal_from().is_none() {
                     before.insert(entity.id(), entity.position());
                 }
-                if tracked.contains_key(&entity.id()) {
-                    ids.push((entity.id(), entity.can_use_portal(self)));
+                if has_portal_state {
+                    ids.push((entity.id(), can_sweep && entity.can_use_portal(self)));
                 }
             }
         });
