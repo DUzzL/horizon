@@ -458,8 +458,16 @@ impl Game<'_> {
                         loop {
                             g.update_world();
                             g.spawn_loaded_entities();
+                            // A ticketed target chunk is only ready once it ticks
+                            // entities: vanilla's wait ticks the server meanwhile, so the
+                            // 2-column neighbourhood a level-31 ticket loads has arrived
+                            // (`ChunkMap.prepareEntityTickingChunk`) before the scene runs.
+                            g.update_chunk_tickets();
+                            let levels = g.tickets.levels();
+                            let ticking = g.entity_ticking_area();
                             if targets.iter().all(|&(x, z)| {
-                                g.world.chunks.contains_key(&(x, z))
+                                (!levels.entity_ticking(x, z) || ticking(x << 4, z << 4))
+                                    && g.world.chunks.contains_key(&(x, z))
                                     && g.streaming.is_lit(x, z)
                                     && !g
                                         .world
