@@ -295,7 +295,7 @@ pub struct Ext {
     pub hurt_seen: i32,
     /// A zombie villager's cure under way.
     pub cure: Option<super::zombie_villager::Cure>,
-    /// `ZombieVillager.villagerDataFinalized`: only a save with
+    /// `Villager`/`ZombieVillager` data-finalized flag: only a save with
     /// `VillagerDataFinalized` or `VillagerData` sets it.
     pub data_finalized: bool,
     /// The villager's brain, built at its first tick.
@@ -864,6 +864,11 @@ pub fn write_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
         // LivingEntity.addAdditionalSaveData omits an absent modeled position.
         map.remove(&"sleeping_pos".into());
     }
+    // Villager.addAdditionalSaveData writes the live flag.
+    map.insert(
+        "VillagerDataFinalized".into(),
+        Tag::Byte(i8::from(ext(m).is_some_and(|e| e.data_finalized))),
+    );
     let Some(e) = ext(m) else { return };
     map.insert(
         "FoodLevel".into(),
@@ -1005,7 +1010,12 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         &mut saved.last_woken,
         |v| int(Some(v)),
     );
+    // Villager.readAdditionalSaveData: `VillagerDataFinalized` or a
+    // `VillagerData` compound finalizes the villager.
+    let finalized =
+        tag.get("VillagerData").is_some() || crate::entity_nbt::flag(tag, "VillagerDataFinalized");
     let e = ext_mut(m);
+    e.data_finalized = finalized;
     e.food_level = int(tag.get("FoodLevel")).unwrap_or(0) as i32;
     e.gossips = tag
         .get("Gossips")
