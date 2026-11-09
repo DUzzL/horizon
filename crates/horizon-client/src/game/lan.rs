@@ -534,7 +534,7 @@ pub(super) fn mob_meta(
         meta.push((
             2,
             serializer::OPTIONAL_COMPONENT,
-            Value::OptText(Some(horizon_protocol::text::literal(name))),
+            Value::OptText(Some(super::names::name_component(m, name))),
         ));
         if m.name_visible {
             meta.push((3, serializer::BOOLEAN, Value::Bool(true)));
@@ -816,25 +816,23 @@ pub(super) fn mob_meta(
             }
             defaults.push((16, serializer::INT, Value::Int(0)));
         }
-        // AbstractCubeMob.ID_SIZE; SulfurCube also syncs FROM_BUCKET and
-        // MAX_FUSE (clients tick the fuse for the swell / white flash).
+        // AbstractCubeMob.ID_SIZE; SulfurCube then syncs MAX_FUSE (-1 until primed;
+        // clients tick it for the swell / white flash) and FROM_BUCKET (#13721).
         "minecraft:slime" | "minecraft:magma_cube" | "minecraft:sulfur_cube" => {
             if e.size > 1 {
                 meta.push((18, serializer::INT, Value::Int(e.size)));
             }
             defaults.push((18, serializer::INT, Value::Int(1)));
             if kind == "minecraft:sulfur_cube" {
-                let from_bucket = e.scratch[3] != 0;
-                if from_bucket {
-                    meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
-                }
-                defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
-                // SulfurCube.MAX_FUSE: set when primed; 0 means unprimed.
                 let fuse = horizon_client::mobs::sulfur_cube::fuse(m);
                 if fuse >= 0 {
-                    meta.push((20, serializer::INT, Value::Int(fuse)));
+                    meta.push((19, serializer::INT, Value::Int(fuse)));
                 }
-                defaults.push((20, serializer::INT, Value::Int(0)));
+                defaults.push((19, serializer::INT, Value::Int(-1)));
+                if e.scratch[3] != 0 {
+                    meta.push((20, serializer::BOOLEAN, Value::Bool(true)));
+                }
+                defaults.push((20, serializer::BOOLEAN, Value::Bool(false)));
             }
         }
         // Creeper.DATA_SWELL_DIR, DATA_IS_POWERED and DATA_IS_IGNITED: the
@@ -1443,11 +1441,7 @@ impl Game<'_> {
                 .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&self.pack.assets)))
                 .clone(),
         );
-        encoder.mod_update_tag = Some(|pos, entity| {
-            let mut tag = None;
-            Game::native_block_entity_update_tag(pos, entity, &mut tag);
-            tag
-        });
+        self.lan_update_tag_sources(&mut encoder);
         let far = (net.lod_distance > 0)
             .then(|| horizon_client::lod_net::Service::new(net.lod_distance, biome_names.clone()));
         let lan = Lan::start_with(sync.clone(), net)?;
@@ -1728,33 +1722,6 @@ impl Game<'_> {
                 play.stats
                     .write(&super::stats::player_json(&self.world_root, "stats", uuid));
             }
-        }
-    }
-    /// `PlayerAdvancements.save` and `ServerStatsCounter.save` of a network player.
-    pub(super) fn save_guest_records(
-        &self,
-        host: &LanHost,
-        guest: &horizon_client::lan::guest::Guest,
-    ) {
-        if !guest.placed || guest.released || guest.fake || self.adv.tree.list.is_empty() {
-            return;
-        }
-        let Some(uuid) = self.records_uuid(host, guest.uuid) else {
-            return;
-        };
-        let path = super::stats::player_json(&self.world_root, "advancements", uuid);
-        let json = guest
-            .advancements
-            .to_json(&self.adv.tree, horizon_world::DATA_VERSION);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(path, text);
-        }
-        if let Some(play) = host.play.get(&guest.conn) {
-            play.stats
-                .write(&super::stats::player_json(&self.world_root, "stats", uuid));
         }
     }
     /// The advancements and statistics files of a held arrival, before it is placed
@@ -2760,9 +2727,8 @@ impl Game<'_> {
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;
             }
-            for d in &mut self.dropped {
-                d.needs_sync = false;
-            }
+            self.tridents.iter_mut().for_each(|t| t.needs_sync = false);
+            self.dropped.iter_mut().for_each(|d| d.needs_sync = false);
             // The step command reaches clients before the events its tick
             // generated, as ServerTickRateManager.updateStepTicks does.
             host.hub.sync_ticking(
@@ -4290,6 +4256,7 @@ mod tests {
             ]
         );
     }
+    include!("lan/sulfur_cube_meta_tests.rs");
 }
 
 #[cfg(test)]
@@ -4995,3 +4962,9 @@ mod connected_statistics_save_exclusion_tests {
         );
     }
 }
+
+use super::stats;
+mod advancement_records;
+
+#[cfg(test)]
+include!("lan/advancement_save_tests.rs");
