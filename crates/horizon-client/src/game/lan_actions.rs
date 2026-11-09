@@ -5119,6 +5119,10 @@ impl Game<'_> {
                 self.as_guest(host, conn, |game| game.tick_mob_effects());
             }
             self.as_guest(host, conn, |game| {
+                horizon_client::server_impulse::spectator_tick(
+                    game.player.as_mut(),
+                    !moves.is_empty(),
+                );
                 game.handle_shoulder_entities();
                 if !loaded {
                     return;
@@ -5205,6 +5209,7 @@ impl Game<'_> {
             // cobweb or a sweet berry bush it moves through has already made it
             // forget the fall (`makeStuckInBlock`), so landing in one is safe.
             let _ = w.server_stuck_in_blocks(start);
+            let mut move_start = horizon_client::server_impulse::MoveStart::of(&w);
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
                 let landed = (|| -> horizon_client::Result<()> {
@@ -5214,6 +5219,7 @@ impl Game<'_> {
                     w.check_fall_damage(moved[1], on_ground, state, pos)?;
                     w.check_movement_statistics(movement)
                 })();
+                move_start.grounded |= on_ground;
                 if landed.is_err() {
                     break;
                 }
@@ -5225,13 +5231,7 @@ impl Game<'_> {
             if w.climbable().unwrap_or(false) {
                 w.player.fall_distance = 0.0;
             }
-            // ServerGamePacketListenerImpl.handlePlayerPositionChange ends the
-            // impulse context on LivingEntity.hasLandedInLiquid: a move into a
-            // liquid that does not rise, or a wind charge that lands in water
-            // would waive the fall after it.
-            let liquid = w.player.fluids.was_touching_water || w.player.is_in_lava();
-            let delta_y = w.player.velocity.y;
-            w.player.impulse.landed_in_liquid(delta_y, liquid);
+            horizon_client::server_impulse::end_after_moves(&mut w, &move_start);
             // Entity.applyEffectsFromBlocks along those moves: magma, cactus,
             // lit campfires and grown sweet berry bushes hurt (#1305).
             w.player.shift_key_down = sneaking;

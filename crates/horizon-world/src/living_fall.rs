@@ -34,6 +34,20 @@ impl ImpulseContext {
             self.try_reset();
         }
     }
+    /// `LivingEntity.tick`: the reset grace time counts down once per tick.
+    pub fn tick(&mut self) {
+        if self.reset_grace_time > 0 {
+            self.reset_grace_time -= 1;
+        }
+    }
+    /// `ServerGamePacketListenerImpl.handlePlayerPositionChange`: after an
+    /// accepted move, standing on the ground, a liquid landing, a climbable,
+    /// a spectator, gliding or a spin attack tries to end the context.
+    pub fn after_move(&mut self, reset: bool) {
+        if reset {
+            self.try_reset();
+        }
+    }
     pub fn is_in_grace_time(&self) -> bool {
         self.reset_grace_time > 0
     }
@@ -209,6 +223,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_grace_time_counts_down_and_never_below_zero() {
+        let mut c = impact();
+        c.apply_grace_time(2);
+        c.tick();
+        c.tick();
+        c.tick();
+        assert_eq!(c.reset_grace_time, 0);
+    }
+    #[test]
+    fn a_ground_move_keeps_the_context_for_forty_ticks_then_ends_it() {
+        let mut c = impact();
+        c.set_ignore_fall_damage(true, Some(Vec3::new(0.0, 64.0, 0.0)));
+        for _ in 0..40 {
+            c.after_move(true);
+            assert!(c.ignores_fall_damage());
+            c.tick();
+        }
+        c.after_move(true);
+        assert!(!c.ignores_fall_damage());
+    }
+    #[test]
+    fn a_move_without_a_reset_condition_keeps_the_context() {
+        let mut c = impact();
+        c.after_move(false);
+        assert!(c.ignores_fall_damage());
+    }
     #[test]
     fn a_move_that_lands_in_a_liquid_ends_the_impulse_context() {
         let mut impulse = impact();
