@@ -1,6 +1,6 @@
 //! A mob's `CombatTracker`: the hits it took lately, which its death message
 //! is built from (`TamableAnimal.die` sends it to the owner).
-use super::Damage;
+use super::{Damage, Mob, MobWorld};
 
 /// `CombatEntry`: one hit, with where the mob was falling from when it landed.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +50,17 @@ impl Tracker {
     }
 }
 
+/// `setLastHurtByMob(null)` for a resolved attacker that is dead or whose
+/// timestamp is more than 100 ticks old; it also resets the timestamp.
+pub(super) fn expire(m: &mut Mob, w: &MobWorld) {
+    if let Some(attacker) = m.ai.last_hurt_by.and_then(|who| w.target_info(who))
+        && (!attacker.alive || (m.age as i32).wrapping_sub(m.ai.last_hurt_by_time) > 100)
+    {
+        m.ai.last_hurt_by = None;
+        m.ai.last_hurt_by_time = m.age as i32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +103,42 @@ mod tests {
         t.record(hit(Some(Who::Mob(7))), 0);
         t.recheck(false, 1000);
         assert_eq!(t.entries.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod last_hurt_by_tests {
+    use super::super::{Species, Who};
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    #[test]
+    fn last_attacker_expires_after_100_ticks_or_on_death() {
+        crate::mobs::world::with_test_world(&[], |world, _| {
+            let mut world = world.clone();
+            world.player = Some(crate::mobs::world::test_player(Vec3::ZERO));
+            let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            t.species = Species::Fox;
+            let mut fox = Mob::new(1, Arc::new(t), Vec3::new(0.0, 64.0, 0.0), 0.0);
+            fox.ai.last_hurt_by = Some(Who::Player);
+            fox.ai.last_hurt_by_time = 10;
+            fox.age = 110;
+            expire(&mut fox, &world);
+            assert_eq!(fox.ai.last_hurt_by, Some(Who::Player));
+            assert_eq!(fox.ai.last_hurt_by_time, 10);
+            fox.age = 111;
+            expire(&mut fox, &world);
+            assert_eq!(fox.ai.last_hurt_by, None);
+            assert_eq!(fox.ai.last_hurt_by_time, 111);
+
+            fox.ai.last_hurt_by = Some(Who::Player);
+            fox.ai.last_hurt_by_time = 111;
+            fox.age = 112;
+            world.player.as_mut().unwrap().alive = false;
+            expire(&mut fox, &world);
+            assert_eq!(fox.ai.last_hurt_by, None);
+            assert_eq!(fox.ai.last_hurt_by_time, 112);
+        });
     }
 }

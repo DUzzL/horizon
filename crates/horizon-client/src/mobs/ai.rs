@@ -1360,9 +1360,8 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     if m.hurt_time > 0 {
         m.hurt_time -= 1;
     }
-    if m.invulnerable > 0 {
-        m.invulnerable -= 1;
-    }
+    m.invulnerable -= i32::from(m.invulnerable > 0);
+    super::combat::expire(m, w);
     // LivingEntity.baseTick runs tickEffects after the timers count down.
     tick_effects(m, w.mod_effects, &mut |m| hurt_teleports(m, w, events));
     // Entity.applyEffectsFromBlocks runs in LivingEntity.aiStep, after
