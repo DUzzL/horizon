@@ -2214,7 +2214,6 @@ impl Game<'_> {
                 self.boats.iter().all(|b| b.id != v) && self.carts.iter().all(|c| c.id != v)
             })
             && keys.contains(&chunk_of(m.position))
-            && m.alive()
             && !m.removed;
         saves.then(|| (chunk_of(self.mobs[i].position), self.mob_tree_nbt(i)))
     }
