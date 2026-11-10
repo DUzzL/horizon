@@ -1951,9 +1951,66 @@ impl Game<'_> {
                 hint = i + 1;
                 let p = self.carts[i].position;
                 if ticking(p.x.floor() as i32, p.z.floor() as i32) {
+                    self.cart_fire_tick(id, i);
                     self.cart_lava_tick(id, i);
                 }
             }
+        }
+    }
+    /// `BaseFireBlock.entityInside` for a cart: each fire block its box (and
+    /// the box it started the tick in) reaches into hurts it with `inFire`
+    /// for the block's `fireDamage`. Fire counts as a TNT minecart's ignition
+    /// source; a cart has no `baseTick`, so the fire it is lit with never
+    /// burns it further.
+    fn cart_fire_tick(&mut self, id: u32, slot: usize) {
+        let Some(i) = cart_at(&self.carts, id, slot) else {
+            return;
+        };
+        let c = &self.carts[i];
+        let e = f64::from(1.0e-5_f32);
+        let mut cells: Vec<[i32; 3]> = Vec::new();
+        let mut boxes = vec![c.bounds()];
+        if c.previous != c.position {
+            let (w, p) = (WIDTH / 2.0, c.previous);
+            boxes.insert(
+                0,
+                Aabb::new(
+                    Vec3::new(p.x - w, p.y, p.z - w),
+                    Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
+                ),
+            );
+        }
+        let mut damages = Vec::new();
+        for b in boxes {
+            let b = b.deflate(Vec3::new(e, e, e));
+            let (lo, hi) = (b.min_position(), b.max_position());
+            for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                        if cells.contains(&[x, y, z]) {
+                            continue;
+                        }
+                        cells.push([x, y, z]);
+                        if let Some(d) = self.fire_damage_at([x, y, z]) {
+                            damages.push(d);
+                        }
+                    }
+                }
+            }
+        }
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        if invulnerable || self.remote.is_some() {
+            return;
+        }
+        for damage in damages {
+            let Some(i) = cart_at(&self.carts, id, i) else {
+                return;
+            };
+            self.hurt_cart(i, damage, false, true);
         }
     }
     /// `lavaHurt` twice a tick in lava: from `LavaFluid.entityInside` in the
@@ -3699,5 +3756,34 @@ mod container_drop_tests {
             // The two piles and the hull item.
             assert_eq!(game.dropped.len(), 3, "boat: {boat}");
         }
+    }
+
+    /// `BaseFireBlock.entityInside`: a cart in a fire block takes `inFire`
+    /// damage every tick (1 damage is 10 on the cart's counter, which decays
+    /// by 1 a tick) and breaks past 40.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_in_fire_takes_fire_damage_and_breaks() {
+        let mut game = server_game();
+        let fire = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:fire")
+            .unwrap();
+        game.world.set(8, 64, 8, fire).unwrap();
+        game.carts.push(Minecart::new(
+            1,
+            CartKind::Rideable,
+            Vec3::new(8.5, 64.0, 8.5),
+        ));
+        game.cart_fire_tick(1, 0);
+        assert_eq!(game.carts[0].damage, 10.0);
+        for _ in 0..3 {
+            game.cart_fire_tick(1, 0);
+        }
+        assert_eq!(game.carts[0].damage, 40.0);
+        game.cart_fire_tick(1, 0);
+        assert!(game.carts.is_empty());
     }
 }
