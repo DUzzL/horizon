@@ -568,7 +568,12 @@ fn squid_step(m: &mut Mob, client: bool) {
         v[TENTACLE_ANGLE] = v[TENTACLE_MOVEMENT].msin().abs() * PI * 0.25;
         if !client {
             // Squid.aiStep: levitation sets the rise speed, else Entity.getGravity applies.
-            let yd = match m.extra.effects.iter().find(|e| e.0 == "minecraft:levitation") {
+            let yd = match m
+                .extra
+                .effects
+                .iter()
+                .find(|e| e.0 == "minecraft:levitation")
+            {
                 Some(&(_, _, amp)) => 0.05 * f64::from(amp + 1),
                 None => m.velocity.y - m.gravity(),
             };
