@@ -4949,6 +4949,9 @@ mod tests {
                 pickup: Pickup::CreativeOnly,
                 left_owner: true,
                 has_been_shot: true,
+                base_damage: 0.5,
+                critical: true,
+                pierce_level: 3,
                 owner: Some([5, 6, 7, 8]),
                 no_gravity: true,
                 on_ground: true,
@@ -4970,6 +4973,11 @@ mod tests {
         assert_eq!((t.dealt_damage, t.pickup), (true, Pickup::CreativeOnly));
         assert!(t.left_owner && t.has_been_shot);
         assert_eq!(t.owner, Some([5, 6, 7, 8]));
+        // AbstractArrow saves its live damage, crit and PierceLevel.
+        assert_eq!(tag.get("damage"), Some(&Tag::Double(0.5_f64.to_bits())));
+        assert_eq!(tag.get("crit"), Some(&Tag::Byte(1)));
+        assert_eq!(tag.get("PierceLevel"), Some(&Tag::Byte(3)));
+        assert_eq!((t.base_damage, t.critical, t.pierce_level), (0.5, true, 3));
         assert_eq!((t.yaw, t.pitch), (10.0, 20.0));
     }
 
@@ -5932,6 +5940,9 @@ mod tests {
                 pickup: loaded.pickup,
                 left_owner: loaded.left_owner,
                 has_been_shot: loaded.has_been_shot,
+                base_damage: loaded.base_damage,
+                critical: loaded.critical,
+                pierce_level: loaded.pierce_level,
                 owner: loaded.owner,
                 no_gravity: false,
                 on_ground: false,

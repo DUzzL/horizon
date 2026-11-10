@@ -1,6 +1,6 @@
 //! Thrown tridents: `AbstractArrow`, `Projectile` and `ThrownTrident` save data.
 use super::{
-    Base, Pickup, Tag, Vec3, flag, item_from_nbt, item_to_nbt, motion, number, owner_uuid,
+    Base, Pickup, Tag, Vec3, flag, float, item_from_nbt, item_to_nbt, motion, number, owner_uuid,
     position, put, rotation, string, text,
 };
 
@@ -17,6 +17,12 @@ pub struct TridentSave<'a> {
     pub pickup: Pickup,
     pub left_owner: bool,
     pub has_been_shot: bool,
+    /// `AbstractArrow.baseDamage`.
+    pub base_damage: f64,
+    /// `AbstractArrow.isCritArrow`.
+    pub critical: bool,
+    /// `AbstractArrow.getPierceLevel`.
+    pub pierce_level: i8,
     pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
     /// `Entity.onGround`: a trident moves by `setPos`, so it keeps the loaded one.
@@ -59,10 +65,10 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         ("inGround", Tag::Byte(i8::from(t.in_ground))),
         // AbstractArrow.Pickup: 0 disallowed, 1 allowed, 2 creative only.
         ("pickup", Tag::Byte(t.pickup.byte())),
-        ("damage", Tag::Double(2.0_f64.to_bits())),
+        ("damage", Tag::Double(t.base_damage.to_bits())),
         ("HasBeenShot", Tag::Byte(i8::from(t.has_been_shot))),
-        ("crit", Tag::Byte(0)),
-        ("PierceLevel", Tag::Byte(0)),
+        ("crit", Tag::Byte(i8::from(t.critical))),
+        ("PierceLevel", Tag::Byte(t.pierce_level)),
         ("SoundEvent", string(t.sound_event)),
         ("item", item_to_nbt(t.item)),
         ("DealtDamage", Tag::Byte(i8::from(t.dealt_damage))),
@@ -91,6 +97,10 @@ pub struct TridentNbt {
     pub pickup: Pickup,
     pub left_owner: bool,
     pub has_been_shot: bool,
+    /// `damage`, 2.0 when missing (`AbstractArrow.ARROW_BASE_DAMAGE`).
+    pub base_damage: f64,
+    pub critical: bool,
+    pub pierce_level: i8,
     pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
     pub on_ground: bool,
@@ -114,6 +124,9 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         pickup: Pickup::from_byte(number(tag.get("pickup")).unwrap_or(0)),
         left_owner: flag(tag, "LeftOwner"),
         has_been_shot: flag(tag, "HasBeenShot"),
+        base_damage: float(tag.get("damage")).unwrap_or(2.0),
+        critical: flag(tag, "crit"),
+        pierce_level: number(tag.get("PierceLevel")).unwrap_or(0) as i8,
         owner: owner_uuid(tag),
         no_gravity: flag(tag, "NoGravity"),
         on_ground: flag(tag, "OnGround"),
