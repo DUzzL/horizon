@@ -151,6 +151,10 @@ pub(super) struct Minecart {
     pub loot: Option<horizon_client::save::RolledLoot>,
     /// `Entity.firstTick`: not ticked yet (saved as `HasTicked`).
     pub first_tick: bool,
+    /// Where the cart stood right after the move of this tick (the old
+    /// behavior's `AbstractMinecart.move` runs `applyEffectsFromBlocks` there);
+    /// taken by the fire pass.
+    pub fire_move_at: Option<Vec3>,
     /// `Entity.isInWater` (`wasTouchingWater`): `AbstractMinecart.tick`
     /// updates it after the move (`updateFluidInteraction`), so the move
     /// goes by where the cart was a tick before, and a new cart's first
@@ -362,6 +366,7 @@ impl Minecart {
             enabled: true,
             loot: None,
             first_tick: true,
+            fire_move_at: None,
             in_water: false,
             command: horizon_client::command_block::CommandBlock::default(),
             tick_count: 0,
@@ -1371,12 +1376,15 @@ impl Game<'_> {
         if self.minecart_improvements() {
             self.move_along_track_new(c, intent);
         } else if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
-            step = Some(self.move_along_track(c, pos, &rail, intent));
+            let moved = self.move_along_track(c, pos, &rail, intent);
+            c.fire_move_at = Some(moved.1);
+            step = Some(moved);
             if &*rail.name == "minecraft:activator_rail" {
                 self.activate_cart(c, rail.powered);
             }
         } else {
             self.come_off_track(c);
+            c.fire_move_at = Some(c.position);
         }
         c.first_tick = false;
         // The old behavior derives yaw once per tick; the experiment has
@@ -1957,40 +1965,34 @@ impl Game<'_> {
             }
         }
     }
-    /// `BaseFireBlock.entityInside` for a cart: each fire block its box (and
-    /// the box it started the tick in) reaches into hurts it with `inFire`
-    /// for the block's `fireDamage`. Fire counts as a TNT minecart's ignition
-    /// source; a cart has no `baseTick`, so the fire it is lit with never
-    /// burns it further.
+    /// `BaseFireBlock.entityInside` for a cart: each fire block the cart's box
+    /// reaches into hurts it with `inFire` for the block's `fireDamage`. Fire
+    /// counts as a TNT minecart's ignition source; a cart has no `baseTick`,
+    /// so the fire it is lit with never burns it further. The old behavior
+    /// applies block effects twice a tick, each time at the position the cart
+    /// has then and each block once per application: right after its move
+    /// (`AbstractMinecart.move`) and at the end of the tick
+    /// (`OldMinecartBehavior.tick`). The other behavior applies them once.
     fn cart_fire_tick(&mut self, id: u32, slot: usize) {
         let Some(i) = cart_at(&self.carts, id, slot) else {
             return;
         };
-        let c = &self.carts[i];
         let e = f64::from(1.0e-5_f32);
-        let mut cells: Vec<[i32; 3]> = Vec::new();
-        let mut boxes = vec![c.bounds()];
-        if c.previous != c.position {
-            let (w, p) = (WIDTH / 2.0, c.previous);
-            boxes.insert(
-                0,
-                Aabb::new(
-                    Vec3::new(p.x - w, p.y, p.z - w),
-                    Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
-                ),
-            );
-        }
+        let end = self.carts[i].position;
+        let mut spots: Vec<Vec3> = self.carts[i].fire_move_at.take().into_iter().collect();
+        spots.push(end);
         let mut damages = Vec::new();
-        for b in boxes {
-            let b = b.deflate(Vec3::new(e, e, e));
+        for spot in spots {
+            let (w, p) = (WIDTH / 2.0, spot);
+            let b = Aabb::new(
+                Vec3::new(p.x - w, p.y, p.z - w),
+                Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
+            )
+            .deflate(Vec3::new(e, e, e));
             let (lo, hi) = (b.min_position(), b.max_position());
             for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
                 for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                     for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                        if cells.contains(&[x, y, z]) {
-                            continue;
-                        }
-                        cells.push([x, y, z]);
                         if let Some(d) = self.fire_damage_at([x, y, z]) {
                             damages.push(d);
                         }
@@ -3785,5 +3787,33 @@ mod container_drop_tests {
         assert_eq!(game.carts[0].damage, 40.0);
         game.cart_fire_tick(1, 0);
         assert!(game.carts.is_empty());
+    }
+
+    /// `AbstractMinecart.move` and `OldMinecartBehavior.tick` apply block
+    /// effects at the position the cart has then: a cart that started in fire
+    /// and ended clear of it is hurt only by the application right after its
+    /// move (once), and one that never touched fire is not hurt at all.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_is_hurt_by_fire_at_the_positions_the_effects_apply_at() {
+        let mut game = server_game();
+        let fire = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:fire")
+            .unwrap();
+        game.world.set(8, 64, 8, fire).unwrap();
+        // Started overlapping the fire, ended a block away: no hurt.
+        let mut cart = Minecart::new(1, CartKind::Rideable, Vec3::new(10.5, 64.0, 8.5));
+        cart.previous = Vec3::new(8.9, 64.0, 8.5);
+        game.carts.push(cart);
+        game.cart_fire_tick(1, 0);
+        assert_eq!(game.carts[0].damage, 0.0);
+        // In the fire only right after the move: one application hurts.
+        game.carts[0].fire_move_at = Some(Vec3::new(8.5, 64.0, 8.5));
+        game.cart_fire_tick(1, 0);
+        assert_eq!(game.carts[0].damage, 10.0);
+        assert!(game.carts[0].fire_move_at.is_none());
     }
 }
