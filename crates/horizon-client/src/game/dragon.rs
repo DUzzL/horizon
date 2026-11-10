@@ -180,7 +180,7 @@ impl Respawn {
         .find(|r| r.name() == name)
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Crystal {
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
@@ -191,6 +191,7 @@ pub(super) struct Crystal {
     pub beam: Option<[i32; 3]>,
     /// `setPermanentlyInvulnerable` (respawned spike crystals).
     pub invulnerable: bool,
+    pub motion_rotation: (Vec3, [f32; 2]), // `Entity.load`'s Motion and Rotation, kept as loaded
 }
 impl Crystal {
     /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
@@ -1296,8 +1297,7 @@ impl Game<'_> {
                 position: at,
                 show_bottom: true,
                 time,
-                beam: None,
-                invulnerable: false,
+                ..Default::default()
             });
             self.world
                 .modified
@@ -3700,8 +3700,8 @@ impl Crystal {
         let mut tag = horizon_client::entity_nbt::vehicle_to_nbt(
             "minecraft:end_crystal",
             self.position,
-            Vec3::ZERO,
-            [0.0, 0.0],
+            self.motion_rotation.0,
+            self.motion_rotation.1,
             (false, 0.0),
             uuid,
             raw,
@@ -3721,8 +3721,8 @@ impl Crystal {
     pub(super) fn from_nbt(tag: &Tag, time: i32) -> Option<Self> {
         let (position, _, _) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
         Some(Self {
-            id: 0,
             position,
+            motion_rotation: horizon_client::entity_nbt::loaded_motion_rotation(tag),
             show_bottom: horizon_client::entity_nbt::flag_or(tag, "ShowBottom", true),
             time,
             beam: match tag.get("beam_target") {
@@ -3730,6 +3730,7 @@ impl Crystal {
                 _ => None,
             },
             invulnerable: horizon_client::entity_nbt::flag(tag, "Invulnerable"),
+            ..Default::default()
         })
     }
 }
@@ -3957,8 +3958,7 @@ impl Game<'_> {
             position: at,
             show_bottom: false,
             time,
-            beam: None,
-            invulnerable: false,
+            ..Default::default()
         });
         // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
         self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
@@ -4255,12 +4255,12 @@ impl Game<'_> {
         let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
         let time = Crystal::start_time(at, drawn, self.clock.still());
         self.crystals.push(Crystal {
-            id: 0,
             position: at,
             show_bottom: true,
             time,
             beam: Some([0, 128, 0]),
             invulnerable: true,
+            ..Default::default()
         });
         let _ = self.set_state_named([cx, h, cz], "minecraft:bedrock", &[]);
         let _ = self.set_state_named([cx, h + 1, cz], "minecraft:fire", &[]);
@@ -4861,6 +4861,27 @@ mod tests {
         assert!(c.invulnerable && !c.show_bottom);
         let c = crystal(Vec::new());
         assert!(!c.invulnerable && c.show_bottom);
+    }
+
+    /// `Entity.load` reads `Motion` (a component beyond 10 blocks a tick is zeroed) and
+    /// `Rotation`; `Entity.saveWithoutId` writes them back.
+    #[test]
+    fn a_crystal_keeps_its_motion_and_rotation() {
+        let d = |v: f64| Tag::Double(v.to_bits());
+        let f = |v: f32| Tag::Float(v.to_bits());
+        let tag = Tag::compound(vec![
+            ("Pos", Tag::List(vec![d(0.5), d(64.0), d(0.5)])),
+            ("Motion", Tag::List(vec![d(0.1), d(25.0), d(-0.3)])),
+            ("Rotation", Tag::List(vec![f(45.0), f(10.0)])),
+        ]);
+        let c = Crystal::from_nbt(&tag, 0).unwrap();
+        assert_eq!(c.motion_rotation, (Vec3::new(0.1, 0.0, -0.3), [45.0, 10.0]));
+        let saved = c.to_nbt([0; 4], None);
+        assert_eq!(
+            horizon_client::entity_nbt::motion(&saved),
+            c.motion_rotation.0
+        );
+        assert_eq!(horizon_client::entity_nbt::rotation(&saved), [45.0, 10.0]);
     }
 
     /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order

@@ -107,3 +107,8 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
         random: crate::random_source::entity(),
     })
 }
+
+/// `Entity.load`'s `Motion` (a component beyond 10 blocks a tick reads as 0) and `Rotation`.
+pub fn loaded_motion_rotation(tag: &Tag) -> (Vec3, [f32; 2]) {
+    (loaded_motion(tag), rotation(tag))
+}

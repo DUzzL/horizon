@@ -2677,8 +2677,7 @@ impl Game<'_> {
                         position: at,
                         show_bottom: true,
                         time: super::dragon::Crystal::start_time(at, drawn, self.clock.still()),
-                        beam: None,
-                        invulnerable: false,
+                        ..Default::default()
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {

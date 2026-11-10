@@ -392,8 +392,7 @@ impl Game<'_> {
                     position: at,
                     show_bottom: true,
                     time,
-                    beam: None,
-                    invulnerable: false,
+                    ..Default::default()
                 });
             }
             _ => {
