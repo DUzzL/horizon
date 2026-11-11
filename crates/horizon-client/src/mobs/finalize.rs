@@ -1664,12 +1664,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         if g.is_none() {
             let mut effect = None;
             if self.difficulty.hard && self.float() < 0.1 * self.special() {
-                effect = Some(match self.int(5) {
-                    0 | 1 => "minecraft:speed",
-                    2 => "minecraft:strength",
-                    3 => "minecraft:regeneration",
-                    _ => "minecraft:invisibility",
-                });
+                effect = Some(super::spawning::spider_random_effect(self.random));
             }
             g = Some(Group::Spider(effect));
         }
@@ -2168,8 +2163,9 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             }
             S::Zombie | S::ZombifiedPiglin => self.zombie(m, g, reason),
             S::ZombieVillager => {
+                // `ZombieVillager.finalizeSpawn` chooses the villager type and
+                // nothing else: the profession came from the constructor.
                 self.villager_type(m);
-                m.extra.variant2 = super::zombie_villager::constructor_profession(m);
                 self.zombie(m, g, reason)
             }
             S::Husk => self.husk(m, g, reason),
