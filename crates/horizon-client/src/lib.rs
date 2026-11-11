@@ -6,8 +6,11 @@ extern crate self as horizon_client;
 pub use horizon_client_lib::*;
 pub mod entry;
 pub mod game;
+mod horizon_look;
 pub mod mod_api;
 pub mod server_impulse;
 
 #[cfg(test)]
 mod brewing_speed_load_tests;
+#[cfg(test)]
+mod living_death_tests;
