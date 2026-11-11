@@ -1376,3 +1376,28 @@ fn memory_connection_first_view_sends_every_ready_column() {
         "an empty queue sends nothing"
     );
 }
+
+/// `handleAcceptTeleportPacket`: the id of an accepted teleport still equals
+/// `awaitingTeleport` but no position is awaited, so a second accept of it
+/// disconnects the player.
+#[test]
+fn a_second_accept_of_the_same_teleport_disconnects() {
+    let (mut hub, _rx) = hub_with_a_guest();
+    let mut world = floor_at(1);
+    hub.resend_teleport(0, Some([0.5, 64.0, 0.5]));
+    let id = hub.guests[0].teleport_counter;
+    let accept = || {
+        S::AcceptTeleportation(play::AcceptTeleportation {
+            id,
+            x: 0.5,
+            y: 64.0,
+            z: 0.5,
+            yaw: 0.0,
+            pitch: 0.0,
+        })
+    };
+    tick_packet(&mut hub, &mut world, accept());
+    assert!(hub.pending_kicks.is_empty(), "the first accept is fine");
+    tick_packet(&mut hub, &mut world, accept());
+    assert_eq!(hub.pending_kicks.len(), 1, "the repeat disconnects");
+}

@@ -4061,18 +4061,14 @@ impl Hub {
                 S::AcceptTeleportation(p) => {
                     let recording = self.recording();
                     let g = &mut self.guests[i];
-                    if let Some((id, at)) = g.awaiting_teleport
-                        && id == p.id
-                    {
-                        if p.x.is_nan()
-                            || p.y.is_nan()
-                            || p.z.is_nan()
-                            || !p.yaw.is_finite()
-                            || !p.pitch.is_finite()
-                        {
+                    // awaitingTeleport keeps the accepted id: a repeat finds nothing awaited.
+                    if p.id == g.teleport_counter {
+                        let bad = p.x.is_nan() || p.y.is_nan() || p.z.is_nan();
+                        let bad = bad || !p.yaw.is_finite() || !p.pitch.is_finite();
+                        let Some((_, at)) = g.awaiting_teleport.filter(|_| !bad) else {
                             self.kick(conn, invalid_movement());
                             continue;
-                        }
+                        };
                         g.position = at;
                         g.awaiting_teleport = None;
                         // The prediction's replay starts again where the client now is.
