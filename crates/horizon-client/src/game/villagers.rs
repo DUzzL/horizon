@@ -173,6 +173,8 @@ impl Game<'_> {
             child.extra.variant2 = villager::NONE;
             child.extra.age = -24000;
             child.extra.bed = Some(bed);
+            // `Villager.getBreedOffspring`: `setVillagerDataFinalized(true)`.
+            villager::ext_mut(child).data_finalized = true;
         }
         // VillagerMakeLove.giveBirth: entity event 12 for the child.
         self.mob_event_particles(id, 12);

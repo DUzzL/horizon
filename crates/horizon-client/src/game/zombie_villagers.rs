@@ -316,6 +316,8 @@ pub(super) fn convert_to_villager(from: &Mob, to: &mut Mob) -> Vec<ItemStack> {
         }
     }
     to.extra.age = if from.is_baby() { -24000 } else { 0 };
+    // `ZombieVillager.finishConversion`: `setVillagerDataFinalized(getVillagerDataFinalized())`.
+    villager::ext_mut(to).data_finalized = villager::ext(from).is_some_and(|e| e.data_finalized);
     drops_out
 }
 
@@ -418,7 +420,10 @@ mod tests {
         assert!(zombie.invulnerable_flag);
         assert!(zombie.extra.left_handed);
         let mut cured = mob(3, Species::Villager, "minecraft:villager");
+        assert!(!villager::ext(&zombie).is_some_and(|e| e.data_finalized));
+        villager::ext_mut(&mut zombie).data_finalized = true;
         let drops = convert_to_villager(&zombie, &mut cured);
+        assert!(villager::ext(&cured).is_some_and(|e| e.data_finalized));
         assert!(drops.is_empty());
         assert!(cured.silent);
         assert!(cured.no_ai);
