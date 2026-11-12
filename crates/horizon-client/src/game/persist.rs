@@ -1137,6 +1137,11 @@ impl Game<'_> {
             }
         }
         let id = m.id;
+        // A body saved mid-death is already dead: `die()` ran when it was
+        // killed, so only the death animation continues, with no second drop.
+        if !m.alive() {
+            self.died.insert(id);
+        }
         self.remember(id, Some(uuid.unwrap_or(fresh)), tag);
         self.mobs.push(m);
         if finalize {
