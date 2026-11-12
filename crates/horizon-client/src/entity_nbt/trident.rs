@@ -28,6 +28,8 @@ pub struct TridentSave<'a> {
     /// `Entity.onGround`: a trident moves by `setPos`, so it keeps the loaded one.
     pub on_ground: bool,
     pub fire_ticks: i32,
+    /// `Entity.fallDistance`.
+    pub fall_distance: f64,
     /// `AbstractArrow.soundEvent`: the sound of its next block hit.
     pub sound_event: &'a str,
     pub item: &'a crate::items::ItemStack,
@@ -44,7 +46,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         motion: t.motion,
         rotation: [t.yaw, t.pitch],
         on_ground: t.on_ground,
-        fall_distance: 0.0,
+        fall_distance: t.fall_distance,
     }
     .tag(raw);
     // Projectile.addAdditionalSaveData omits LeftOwner until it is true,
@@ -105,6 +107,8 @@ pub struct TridentNbt {
     pub no_gravity: bool,
     pub on_ground: bool,
     pub fire_ticks: i32,
+    /// `Entity.load`: `getDoubleOr("fall_distance", 0.0)`.
+    pub fall_distance: f64,
     /// `SoundEvent`, or the trident's default when missing or no identifier.
     pub sound_event: String,
     pub item: crate::items::ItemStack,
@@ -137,6 +141,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         no_gravity: flag(tag, "NoGravity"),
         on_ground: flag(tag, "OnGround"),
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i16 as i32,
+        fall_distance: float(tag.get("fall_distance")).unwrap_or(0.0),
         sound_event: text(tag.get("SoundEvent"))
             .and_then(|s| horizon_client_core::identifier::normalize_id(&s))
             .unwrap_or_else(|| TRIDENT_HIT_GROUND.to_owned()),
