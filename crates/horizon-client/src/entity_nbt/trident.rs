@@ -1,7 +1,7 @@
 //! Thrown tridents: `AbstractArrow`, `Projectile` and `ThrownTrident` save data.
 use super::{
-    Base, Pickup, Tag, Vec3, flag, float, int_value, item_from_nbt, item_to_nbt, motion, number, owner_uuid,
-    position, put, rotation, string, text,
+    Base, Pickup, Tag, Vec3, flag, float, int_value, item_from_nbt, item_to_nbt, motion, number,
+    owner_uuid, position, put, rotation, string, text,
 };
 
 /// A thrown trident as `AbstractArrow` + `ThrownTrident` save it.
@@ -129,7 +129,10 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         base_damage: float(tag.get("damage")).unwrap_or(2.0),
         critical: flag(tag, "crit"),
         // `getByteOr`: floating tags floor before the byte narrowing.
-        pierce_level: tag.get("PierceLevel").and_then(int_value).map_or(0, |v| v as i8),
+        pierce_level: tag
+            .get("PierceLevel")
+            .and_then(int_value)
+            .map_or(0, |v| v as i8),
         owner: owner_uuid(tag),
         no_gravity: flag(tag, "NoGravity"),
         on_ground: flag(tag, "OnGround"),
@@ -151,9 +154,16 @@ mod tests {
     #[test]
     fn pierce_level_floors_floats_before_byte_narrowing() {
         let mut tag = Tag::Compound(Default::default());
-        let Tag::Compound(map) = &mut tag else { unreachable!() };
-        map.insert("Pos".into(), Tag::List(vec![Tag::Double(0f64.to_bits()); 3]));
-        let Tag::Compound(map) = &mut tag else { unreachable!() };
+        let Tag::Compound(map) = &mut tag else {
+            unreachable!()
+        };
+        map.insert(
+            "Pos".into(),
+            Tag::List(vec![Tag::Double(0f64.to_bits()); 3]),
+        );
+        let Tag::Compound(map) = &mut tag else {
+            unreachable!()
+        };
         map.insert("PierceLevel".into(), Tag::Double((-255.5f64).to_bits()));
         assert_eq!(trident_from_nbt(&tag).unwrap().pierce_level, 0);
     }
