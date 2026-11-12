@@ -4847,6 +4847,16 @@ mod tests {
             c.motion_rotation.0
         );
         assert_eq!(horizon_client::entity_nbt::rotation(&saved), [45.0, 10.0]);
+        // Rotation goes through `setRot`: yaw % 360, pitch % 360 clamped to -90..90.
+        for (yaw, pitch, want) in [(400.0, 100.0, [40.0, 90.0]), (-370.0, 400.0, [-10.0, 40.0])] {
+            let tag = Tag::compound(vec![
+                ("Pos", Tag::List(vec![d(0.5), d(64.0), d(0.5)])),
+                ("Rotation", Tag::List(vec![f(yaw), f(pitch)])),
+            ]);
+            let c = Crystal::from_nbt(&tag, 0).unwrap();
+            let saved = c.to_nbt([0; 4], None);
+            assert_eq!(horizon_client::entity_nbt::rotation(&saved), want);
+        }
     }
 
     /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order

@@ -129,7 +129,10 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
 
 /// `Entity.load`'s `Motion` (a component beyond 10 blocks a tick reads as 0) and `Rotation`.
 pub fn loaded_motion_rotation(tag: &Tag) -> (Vec3, [f32; 2]) {
-    (loaded_motion(tag), rotation(tag))
+    // `Entity.load` runs the yaw through `setYRot(yRot % 360)` (a non-finite one is discarded).
+    let yaw = rotation(tag)[0];
+    let yaw = if yaw.is_finite() { yaw % 360.0 } else { 0.0 };
+    (loaded_motion(tag), [yaw, loaded_pitch(Some(tag))])
 }
 
 #[cfg(test)]
