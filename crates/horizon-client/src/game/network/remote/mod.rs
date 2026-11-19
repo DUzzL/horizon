@@ -10789,7 +10789,11 @@ fn legacy_proxy_load_completes_without_a_second_load_start_event() {
     use horizon_client::level_loading::{LevelLoadTracker, PlayerCheck, Reason};
     use horizon_protocol::adapter::ServerVersion;
 
-    for version in [ServerVersion::V1_21_1, ServerVersion::V1_21_11, ServerVersion::Current] {
+    for version in [
+        ServerVersion::V1_21_1,
+        ServerVersion::V1_21_11,
+        ServerVersion::Current,
+    ] {
         let player = PlayerCheck {
             outside_build_height: false,
             spectator: false,
