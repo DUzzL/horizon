@@ -4983,11 +4983,14 @@ impl Game<'_> {
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 }
             });
-            if !spectator {
-                self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
+            // Hud.extractHotbarAndDecorations draws the spectator action after the contextual bar.
+            self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
+                if spectator {
+                    g.draw_spectator_action(batch);
+                } else {
                     g.draw_selected_name(batch, !g.creative);
-                });
-            }
+                }
+            });
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
         let draws = hud_overlays::sleep_overlay(wi, hi, self.sleep_timer as i32);

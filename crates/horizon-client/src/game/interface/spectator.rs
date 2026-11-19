@@ -92,7 +92,7 @@ impl Game<'_> {
         let now = self.spectator_now();
         self.spectator_gui.on_mouse_scrolled(wheel, now);
     }
-    /// `Hud.extractHotbar` for a spectator, and `extractAction`'s prompt.
+    /// `Hud.extractHotbar` for a spectator.
     pub(super) fn draw_spectator_hotbar(&mut self, batch: &mut HudBatch) {
         let (w, h) = (batch.width as i32, batch.height as i32);
         let now = self.spectator_now();
@@ -100,16 +100,22 @@ impl Game<'_> {
             .map(|n| keybinds::display_name(self.settings.keys.get(&format!("key.hotbar.{n}"))))
             .collect();
         let font = &self.gui.atlas.font;
-        let mut draws = self
+        let draws = self
             .spectator_gui
             .hotbar(w, h, now, &|slot| labels[slot].clone(), font);
-        draws.extend(self.spectator_gui.action(
+        hud_layout::paint(batch, &self.gui.atlas, &draws);
+    }
+
+    /// `SpectatorGui.extractAction`: the prompt or selected name above the contextual bar.
+    pub(super) fn draw_spectator_action(&self, batch: &mut HudBatch) {
+        let (w, h) = (batch.width as i32, batch.height as i32);
+        let draws = self.spectator_gui.action(
             w,
             h,
-            now,
-            font,
+            self.spectator_now(),
+            &self.gui.atlas.font,
             self.settings.text_background(0.0),
-        ));
+        );
         hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
 }
