@@ -6131,8 +6131,8 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        if section_ready && r.level_load.wants_player_section() {
-            r.level_load.player_section_ready();
+        if section_ready {
+            remote_player_section_ready(&mut r.level_load, r.session.server_version());
         }
         r.level_load.tick_client_load(now, check);
         if !r.level_load.is_level_ready(now) {
@@ -10769,6 +10769,47 @@ pub(super) fn snap_target(
 /// Login).
 fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
     logged_in && reconfiguring.is_none()
+}
+
+fn remote_player_section_ready(
+    load: &mut horizon_client::level_loading::LevelLoadTracker,
+    version: horizon_protocol::adapter::ServerVersion,
+) {
+    // Older proxies can omit LEVEL_CHUNKS_LOAD_START on a backend switch.
+    // The replacement player's position and its lit column are already known
+    // here, so the missing event no longer needs to hold up this load.
+    if version.at_most(horizon_protocol::adapter::ServerVersion::V1_21_11) {
+        load.loading_packets_received();
+    }
+    load.player_section_ready();
+}
+
+#[test]
+fn legacy_proxy_load_completes_without_a_second_load_start_event() {
+    use horizon_client::level_loading::{LevelLoadTracker, PlayerCheck, Reason};
+    use horizon_protocol::adapter::ServerVersion;
+
+    for version in [ServerVersion::V1_21_1, ServerVersion::V1_21_11, ServerVersion::Current] {
+        let player = PlayerCheck {
+            outside_build_height: false,
+            spectator: false,
+            alive: true,
+        };
+        let mut load = LevelLoadTracker::new(0);
+        load.start_client_load(0, Reason::Other);
+        load.loading_packets_received();
+        remote_player_section_ready(&mut load, version);
+        load.tick_client_load(1, player);
+        assert!(load.is_level_ready(1));
+        load.finish();
+
+        load.start_client_load(2, Reason::Other);
+        load.tick_client_load(3, player);
+        assert!(!load.is_level_ready(3));
+        remote_player_section_ready(&mut load, version);
+        load.tick_client_load(4, player);
+        assert_eq!(load.is_level_ready(4), version != ServerVersion::Current);
+    }
 }
 
 /// `ClientChunkCache.Storage.inRange`: whether column `x`, `z` is within `calculateStorageRange`
