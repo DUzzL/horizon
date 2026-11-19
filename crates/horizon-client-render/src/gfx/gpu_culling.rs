@@ -71,7 +71,7 @@ use super::{
     Frustum, SectionKey,
     arena::{Arena, try_create},
     occlusion::Reach,
-    pack_timing::PassTiming,
+    pack_timing::{PassTiming, compute_parts},
     resident,
     submit::Queue,
     upload::Uploads,
@@ -349,7 +349,7 @@ pub(super) struct FrameInputs<'a> {
     /// The cave-culling graph, while cave culling runs and has one
     /// (`Occlusion::reach`); `None`: every section counts as reached.
     pub reach: Option<Reach<'a>>,
-    /// The eye (gfx.rs `projection_center`), while solid quads facing away
+    /// The eye (`view::projection_center`), while solid quads facing away
     /// from it are left out (`sides_on`); `None`: every solid quad is drawn. A
     /// GPU frame has no water mirror, whose eye below would see more of them.
     pub eye: Option<Vec3>,
@@ -372,6 +372,21 @@ pub(super) enum Prepared {
     Cpu,
     /// A buffer failed to grow.
     OutOfMemory,
+}
+
+/// A part of a compute pass: `pipeline` over `[x, y]` workgroups, nothing when `x` is 0.
+fn step<'a>(
+    group: &'a wgpu::BindGroup,
+    pipeline: &'a wgpu::ComputePipeline,
+    [x, y]: [u32; 2],
+) -> impl FnMut(&mut wgpu::ComputePass<'_>) + 'a {
+    move |pass| {
+        if x > 0 {
+            pass.set_bind_group(0, group, &[]);
+            pass.set_pipeline(pipeline);
+            pass.dispatch_workgroups(x, y, 1);
+        }
+    }
 }
 
 /// The frame's `tables` before the regions, into `words`, and the parameters
@@ -527,6 +542,13 @@ pub(super) fn supported(
 /// shortcut: not offered there, until GPU culling's draws carry their base vertex otherwise.
 pub(super) fn loses_base_vertex(info: &wgpu::AdapterInfo, flat_page_groups: bool) -> bool {
     info.backend == wgpu::Backend::Dx12 && flat_page_groups
+}
+
+/// DX12's count draws also leave the quads' looks out of reach: a pack's terrain finds its quad's
+/// look by `vertex_index` (`looks`), so with looks on, the frame draws the CPU's lists, whose
+/// draws carry their base vertex.
+pub(super) fn looks_lose_base_vertex(info: &wgpu::AdapterInfo, looks: bool) -> bool {
+    looks && info.backend == wgpu::Backend::Dx12
 }
 
 /// What the settings offer (`graphics::GpuCullingOffer`): where `supported`
@@ -1190,12 +1212,13 @@ impl GpuCulling {
         uploads: &mut Uploads,
         encoder: &mut wgpu::CommandEncoder,
         input: &FrameInputs<'_>,
+        timing: Option<&mut PassTiming>,
     ) -> Prepared {
         self.pages.clear();
         self.ids = 0;
         self.n_updates = 0;
         self.occluding = false;
-        self.prepare_buffers(device, queue, uploads, encoder, input)
+        self.prepare_buffers(device, queue, uploads, encoder, input, timing)
             .unwrap_or(Prepared::OutOfMemory)
     }
 
@@ -1206,6 +1229,7 @@ impl GpuCulling {
         uploads: &mut Uploads,
         encoder: &mut wgpu::CommandEncoder,
         input: &FrameInputs<'_>,
+        mut timing: Option<&mut PassTiming>,
     ) -> Option<Prepared> {
         // Every buffer grows before anything is written. One made anew drops
         // the bind group at once, and a new section table needs every record:
@@ -1287,6 +1311,9 @@ impl GpuCulling {
                 occl = OCCLUDE | if probe { PROBE } else { 0 };
             }
         }
+        let uploading = timing
+            .as_mut()
+            .and_then(|t| t.encoder_begin(encoder, "GPU culling uploads"));
         if self.records.all_dirty {
             // The whole table, after it grew or more records changed than
             // updates take (GPU culling switched on in a loaded world, a
@@ -1352,6 +1379,9 @@ impl GpuCulling {
         // are written before they are read.
         let cleared = if self.occluding { tests_at } else { phase1_end };
         encoder.clear_buffer(&self.counts.buffer, 0, Some(cleared * 4));
+        if let Some(t) = timing {
+            t.encoder_end(encoder, uploading);
+        }
         if self.group.is_none() {
             self.group = Some(self.bind(device));
             if let Some(test) = &mut self.test {
@@ -1403,23 +1433,24 @@ impl GpuCulling {
         let Some(group) = self.group.as_ref().filter(|_| self.ids > 0) else {
             return;
         };
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("GPU culling"),
-            timestamp_writes: timing.and_then(|t| t.compute_writes("GPU culling")),
-        });
-        pass.set_bind_group(0, group, &[]);
         let [apply, cull, scan, scatter] = &self.pipelines;
-        if self.n_updates > 0 {
-            pass.set_pipeline(apply);
-            pass.dispatch_workgroups(self.n_updates.div_ceil(WORKGROUP), 1, 1);
-        }
         let blocks = self.ids.div_ceil(WORKGROUP);
-        pass.set_pipeline(cull);
-        pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
-        pass.set_pipeline(scan);
-        pass.dispatch_workgroups(self.pass_pages, 1, 1);
-        pass.set_pipeline(scatter);
-        pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
+        let rows = [blocks.min(ROW), blocks.div_ceil(ROW)];
+        let updates = [self.n_updates.div_ceil(WORKGROUP), 1];
+        let (mut apply, mut cull) = (step(group, apply, updates), step(group, cull, rows));
+        let pages = [self.pass_pages, 1];
+        let (mut scan, mut scatter) = (step(group, scan, pages), step(group, scatter, rows));
+        compute_parts(
+            encoder,
+            timing,
+            "GPU culling",
+            &mut [
+                ("apply", &mut apply),
+                ("cull", &mut cull),
+                ("scan", &mut scan),
+                ("scatter", &mut scatter),
+            ],
+        );
     }
 
     /// The kept sections' solid draws, a count draw per page, with the quad
@@ -1432,6 +1463,7 @@ impl GpuCulling {
         arena: &Arena,
         group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
         phase: u64,
+        looks: Option<&super::looks::LookGroups>,
     ) {
         if self.pages.is_empty() {
             return;
@@ -1441,6 +1473,9 @@ impl GpuCulling {
             pass.set_vertex_buffer(0, arena.buffer(page).slice(..));
             if let Some(group) = group(page) {
                 pass.set_bind_group(1, group, &[]);
+            }
+            if let Some(looks) = looks {
+                pass.set_bind_group(super::looks::GROUP, looks.page(page, false), &[]);
             }
             pass.multi_draw_indexed_indirect_count(
                 &self.draws.buffer,
@@ -1494,19 +1529,22 @@ impl GpuCulling {
         if !self.occluding {
             return;
         }
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("GPU culling phase 2"),
-            timestamp_writes: timing.and_then(|t| t.compute_writes("GPU culling phase 2")),
-        });
-        pass.set_bind_group(0, group, &[]);
         let [count2, scan2, scatter2] = &test.phase2;
         let blocks = self.ids.div_ceil(WORKGROUP);
-        pass.set_pipeline(count2);
-        pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
-        pass.set_pipeline(scan2);
-        pass.dispatch_workgroups(self.pass_pages, 1, 1);
-        pass.set_pipeline(scatter2);
-        pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
+        let rows = [blocks.min(ROW), blocks.div_ceil(ROW)];
+        let pages = [self.pass_pages, 1];
+        let (mut count, mut scatter) = (step(group, count2, rows), step(group, scatter2, rows));
+        let mut scan = step(group, scan2, pages);
+        compute_parts(
+            encoder,
+            timing,
+            "GPU culling phase 2",
+            &mut [
+                ("count2", &mut count),
+                ("scan2", &mut scan),
+                ("scatter2", &mut scatter),
+            ],
+        );
     }
 
     /// After the frame's world passes (phase 2's counts too), in the same
@@ -1697,7 +1735,7 @@ mod tests {
     /// The frustum `draw_frame` culls with for the view and projection `m`, and
     /// the eye it leaves out the faces turned away from (`projection_center`).
     fn through(m: Mat4) -> (Frustum, Vec3) {
-        let eye = super::super::projection_center(m).expect("a perspective");
+        let eye = super::super::view::projection_center(m).expect("a perspective");
         let planes = super::super::frustum(m);
         (Frustum { planes }, eye)
     }
@@ -1857,6 +1895,7 @@ mod tests {
     /// occlusion test's (the pass's with `gpu_occlusion.wgsl`) with it.
     #[test]
     fn the_shaders_validate() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use naga::valid::Capabilities as C;
         let pass = include_str!("gpu_culling.wgsl");
         let test = [pass, include_str!("gpu_occlusion.wgsl")].concat();
@@ -1877,6 +1916,7 @@ mod tests {
     /// mark the whole table.
     #[test]
     fn records_keep_ids_page_counts_and_moves() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut records = Records::default();
         let a = records.insert(Record::new((0, 0, 0), 0, 0, 1, 7));
         let b = records.insert(Record::new((1, 0, 0), 0, 256, 2, 9));
@@ -2031,6 +2071,7 @@ mod tests {
     /// finite, are `UNBOUNDED`; no bounds are the cell.
     #[test]
     fn boxes_round_outward_and_meet_their_cell() {
+        let _gpu = crate::gfx::test_gpu::lock();
         // Each axis's low and high ends.
         let ends = |packed: u32| -> [[i32; 2]; 3] {
             std::array::from_fn(|axis| {
@@ -2068,6 +2109,7 @@ mod tests {
     /// constants both sides use.
     #[test]
     fn params_and_records_match_the_shader() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let module = naga::front::wgsl::parse_str(include_str!("gpu_culling.wgsl")).unwrap();
         let mut layouter = naga::proc::Layouter::default();
         layouter.update(module.to_ctx()).unwrap();
@@ -2165,6 +2207,7 @@ mod tests {
     /// from the camera's at every render distance to 130.
     #[test]
     fn the_shaders_near_is_in_view_distance() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let (cam_x, cam_z) = (-37, 1_234_567);
         for r in 0..=130 {
             let params = Params {
@@ -2193,6 +2236,7 @@ mod tests {
     /// float's key passes a NaN threshold's, either way.
     #[test]
     fn order_keys_compare_as_their_floats() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut floats = Vec::new();
         for x in [
             0.0,
@@ -2238,6 +2282,7 @@ mod tests {
     /// which GPU culling never meets, is drawn whole.
     #[test]
     fn the_shaders_runs_are_facing_runs() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0xBB67_AE85_84CA_A73B);
         let mut meshes: Vec<Sides> = (0..2_000).map(|_| sorted_sides(&mut rng)).collect();
         let special = [
@@ -2337,6 +2382,7 @@ mod tests {
     /// exactly the quads of the buckets seen.
     #[test]
     fn a_section_has_at_most_four_runs() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let eye = [order_key(0.0); 3];
         let mut most = 0;
         // Each bucket empty (0), seen (1) or left out (2); the other never left out.
@@ -2375,6 +2421,7 @@ mod tests {
     /// infinity.
     #[test]
     fn planes_past_i32_take_the_cpu_path() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0x0F1E_2D3C_4B5A_6978);
         let mut words = Vec::new();
         for _ in 0..500 {
@@ -2425,6 +2472,7 @@ mod tests {
     /// origin, the difference facing compares.
     #[test]
     fn the_integer_test_keeps_what_the_walk_keeps() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0x5DEE_CE66_D1CE_4E5B);
         let mut words = Vec::new();
         let (mut listed, mut near_sections, mut rejected, mut inside) = (0, 0, 0, 0);
@@ -2578,6 +2626,7 @@ mod tests {
     /// somewhere: the margin is needed.
     #[test]
     fn the_margin_covers_production_rounding() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let mut rng = Rng(0x1405_7B7E_F767_814F);
         let min_y = crate::chunk::MIN_Y;
         let mut words = Vec::new();
@@ -2704,22 +2753,17 @@ mod tests {
         assert!(worst[2].max(worst[3]) > 1.0 / SCALE, "{worst:?}");
     }
 
-    /// A device of `backends` that draws counts with first instances, if this
-    /// machine has one; on DirectX 12, `compiler` compiles its shaders. Not
-    /// Intel's Gen11 and Gen12 Vulkan driver, which gets first instances wrong
-    /// and is never offered GPU culling (`supported`).
-    fn device(
-        backends: wgpu::Backends,
-        compiler: wgpu::Dx12Compiler,
-        name: &str,
-    ) -> Option<(wgpu::Device, wgpu::Queue)> {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends;
-        desc.backend_options.dx12.shader_compiler = compiler;
-        let instance = wgpu::Instance::new(desc);
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    /// A device on `adapter` that draws counts with first instances, if it
+    /// can. Not Intel's Gen11 and Gen12 Vulkan driver, which gets first
+    /// instances wrong and is never offered GPU culling (`supported`).
+    fn device(adapter: &wgpu::Adapter, name: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
         let needed =
             wgpu::Features::MULTI_DRAW_INDIRECT_COUNT | wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        let timing = adapter.features()
+            & (wgpu::Features::TIMESTAMP_QUERY
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                | wgpu::Features::SHADER_EARLY_DEPTH_TEST);
         if !adapter.features().contains(needed)
             || super::super::flat::is_broken_intel_vulkan(&adapter.get_info())
         {
@@ -2727,33 +2771,18 @@ mod tests {
         }
         eprintln!("GPU culling on {} ({name})", adapter.get_info().name);
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: needed,
+            required_features: needed | timing,
             ..Default::default()
         }))
         .ok()
     }
 
-    /// `test` on each device here that draws counts with first instances:
-    /// Vulkan, and DirectX 12 with each of its compilers. Players' DirectX 12
-    /// compiles with FXC, part of Windows, and with DXC (`dxcompiler.dll`,
-    /// beside the game in the Windows x64 zip) on integrated GPUs
-    /// (`gfx/dx12_compiler.rs`).
+    /// `test` on each device here that draws counts with first instances
+    /// (`test_gpu::each_adapter`).
     fn on_each_device(test: impl Fn(&wgpu::Device, &Queue)) {
         let mut tested = false;
-        for (backends, compiler, name) in [
-            (wgpu::Backends::VULKAN, Default::default(), "Vulkan"),
-            (
-                wgpu::Backends::DX12,
-                wgpu::Dx12Compiler::Fxc,
-                "DirectX 12, FXC",
-            ),
-            (
-                wgpu::Backends::DX12,
-                wgpu::Dx12Compiler::default_dynamic_dxc(),
-                "DirectX 12, DXC",
-            ),
-        ] {
-            if let Some((device, queue)) = device(backends, compiler, name) {
+        for (adapter, name) in crate::gfx::test_gpu::each_adapter() {
+            if let Some((device, queue)) = device(&adapter, name) {
                 test(&device, &Queue::new(queue, false));
                 tested = true;
             }
@@ -2807,6 +2836,7 @@ mod tests {
     /// them to the CPU.
     #[test]
     fn the_gpu_draws_what_the_integer_test_keeps() {
+        let _gpu = crate::gfx::test_gpu::lock();
         on_each_device(draws_match);
     }
 
@@ -2834,6 +2864,11 @@ mod tests {
         // was drawn.
         let (mut eyed, mut hidden, mut several) = (0, 0, 0);
         let (mut edge, mut edge_drawn) = (None, false);
+        // Timed in detail as the renderer does: the commands, and so the draws, stay the same.
+        let mut timing = PassTiming::new(device, queue);
+        if let Some(t) = &mut timing {
+            t.set_detail(true);
+        }
         for case in 0..25 {
             let radius = [2, 5, 9][case % 3];
             let at_edge = case == 24;
@@ -2981,6 +3016,9 @@ mod tests {
                 edge = Some(id);
             }
             let whole = gpu.records.all_dirty;
+            if let Some(t) = &mut timing {
+                t.begin(device, queue);
+            }
             let mut encoder = device.create_command_encoder(&Default::default());
             let input = FrameInputs {
                 camera,
@@ -3000,11 +3038,18 @@ mod tests {
                     camera: camera + DVec3::Y * 2.0e7,
                     ..input
                 };
-                let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &up);
+                let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &up, None);
                 assert_eq!(prepared, Prepared::Cpu, "case 7");
                 assert!(gpu.records.all_dirty || !gpu.records.dirty.is_empty());
             }
-            let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
+            let prepared = gpu.prepare(
+                device,
+                queue,
+                &mut uploads,
+                &mut encoder,
+                &input,
+                timing.as_mut(),
+            );
             assert_eq!(prepared, Prepared::Gpu, "case {case}");
             match case {
                 4 => assert!(
@@ -3060,12 +3105,15 @@ mod tests {
                     culled += 1;
                 }
             }
-            gpu.dispatch(&mut encoder, None);
+            gpu.dispatch(&mut encoder, timing.as_mut());
             // Its statistics come back with a CPU part of the case's own.
             let cpu = [case * 7, case * 3, case];
             gpu.copy_stats(&mut encoder, case as u64, cpu);
             uploads.finish(&encoder);
             queue.submit([encoder.finish()]);
+            if let Some(t) = &mut timing {
+                t.submitted(queue);
+            }
             gpu.submitted().expect("a readback free")();
             let pages = u64::from(gpu.pass_pages);
             let counts = read(device, queue, &gpu.counts.buffer, (STATS + pages) * 4);
@@ -3124,6 +3172,18 @@ mod tests {
             "of {eyed} from an eye, {hidden} with a bucket left out, {several} in three runs"
         );
         assert!(edge_drawn, "the bucket at the section's edge");
+        if let Some(t) = &timing {
+            let parts = t.part_medians();
+            let names = |pass: &str| {
+                let parts = parts.iter().find(|p| p.0 == pass)?;
+                Some(parts.1.iter().map(|p| p.0.as_str()).collect::<Vec<_>>())
+            };
+            assert_eq!(
+                names("GPU culling"),
+                Some(vec!["apply", "cull", "scan", "scatter"]),
+                "{parts:?}"
+            );
+        }
         assert!(culled > 2_000, "{culled} within the distance left out");
         assert!(faded * 10 > compared, "{faded} fading of {compared} drawn");
         assert!(
@@ -3136,6 +3196,114 @@ mod tests {
         );
     }
 
+    /// Detail times both phases and the uploads and leaves counts and draws as an untimed frame's.
+    #[test]
+    fn detail_times_both_phases_and_leaves_the_draws_alone() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        on_each_device(|device, queue| {
+            let mut rng = Rng(0x1F83_D9AB_FB41_BD6B);
+            let (frustum, _) = view(&mut rng);
+            let records: Vec<Record> = (0..400)
+                .map(|i| {
+                    let key = (rng.range(-6, 6), rng.range(0, 23), rng.range(-6, 6));
+                    Record::new(
+                        key,
+                        i % 3,
+                        u64::from(i) * 1024,
+                        1 + rng.below(500),
+                        UNBOUNDED,
+                    )
+                })
+                .collect();
+            let mut timing = PassTiming::new(device, queue);
+            let early = device
+                .features()
+                .contains(wgpu::Features::SHADER_EARLY_DEPTH_TEST);
+            let Some(t) = timing.as_mut().filter(|_| early) else {
+                eprintln!("no timestamps or early depth test: skipped");
+                return;
+            };
+            t.set_detail(true);
+            let run = |timing: &mut Option<PassTiming>| {
+                let mut gpu = GpuCulling::new(device, Some(wgpu::TextureFormat::Rgba8Unorm))
+                    .expect("the pass");
+                let mut uploads = Uploads::new(device);
+                for r in &records {
+                    gpu.records.insert(*r);
+                }
+                let mut out = Vec::new();
+                for frame in 0..12 {
+                    if let Some(t) = timing {
+                        t.begin(device, queue);
+                    }
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    let input = FrameInputs {
+                        camera: DVec3::new(0.5, 70.0, 0.5),
+                        min_y: -64,
+                        sections: 24,
+                        radius: 5,
+                        frustum: &frustum,
+                        reach: None,
+                        eye: None,
+                        view_proj: Mat4::IDENTITY,
+                        occlude: true,
+                    };
+                    let prepared = gpu.prepare(
+                        device,
+                        queue,
+                        &mut uploads,
+                        &mut encoder,
+                        &input,
+                        timing.as_mut(),
+                    );
+                    assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
+                    assert!(gpu.occluding(), "frame {frame}: phase 2 runs");
+                    gpu.dispatch(&mut encoder, timing.as_mut());
+                    gpu.compact(&mut encoder, timing.as_mut());
+                    uploads.finish(&encoder);
+                    queue.submit([encoder.finish()]);
+                    if let Some(t) = timing {
+                        t.submitted(queue);
+                    }
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let pages = u64::from(gpu.pass_pages);
+                    out.push((
+                        read(device, queue, &gpu.counts.buffer, (STATS + 2 * pages) * 4),
+                        read(device, queue, &gpu.draws.buffer, gpu.draws.bytes),
+                    ));
+                }
+                out
+            };
+            let timed = run(&mut timing);
+            let plain = run(&mut None);
+            assert_eq!(timed, plain, "detail changes what is drawn");
+            let t = timing.as_ref().expect("the timer");
+            let parts = t.part_medians();
+            let names = |pass: &str| {
+                let parts = parts.iter().find(|p| p.0 == pass)?;
+                Some(parts.1.iter().map(|p| p.0.as_str()).collect::<Vec<_>>())
+            };
+            assert_eq!(
+                names("GPU culling"),
+                Some(vec!["apply", "cull", "scan", "scatter"]),
+                "{parts:?}"
+            );
+            assert_eq!(
+                names("GPU culling phase 2"),
+                Some(vec!["count2", "scan2", "scatter2"]),
+                "{parts:?}"
+            );
+            // The uploads are a pass of their own, never a part of one.
+            assert_eq!(names("GPU culling uploads"), None, "{parts:?}");
+            let passes = t.medians();
+            assert_eq!(
+                passes.iter().any(|p| p.0 == "GPU culling uploads"),
+                t.detail_support().encoder_stamps,
+                "{passes:?}"
+            );
+        });
+    }
+
     /// The statistics come back with their frame, in place and from the submit
     /// thread, submitted as gfx.rs submits frames (`submit_later`, or in place
     /// with its `after` handed back): three frames on their way fill the ring, a
@@ -3144,6 +3312,7 @@ mod tests {
     /// or unmapped again (as `timing::GpuTimer`'s), so the statistics stop.
     #[test]
     fn the_statistics_come_back_with_their_frame() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use super::super::submit::{AfterSubmit, Job};
         on_each_device(|device, queue| {
             for threaded in [false, true] {
@@ -3215,6 +3384,7 @@ mod tests {
     /// pixel clear.
     #[test]
     fn the_count_draws_draw_each_kept_section_with_its_origin() {
+        let _gpu = crate::gfx::test_gpu::lock();
         on_each_device(draws_land);
     }
 
@@ -3377,7 +3547,7 @@ struct Quad {
                 view_proj: Mat4::IDENTITY,
                 occlude: false,
             };
-            let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
+            let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input, None);
             assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
             let mut params = tables(&input, &mut words).expect("the planes fit");
             params.pages = gpu.pass_pages;
@@ -3420,7 +3590,7 @@ struct Quad {
             });
             pass.set_pipeline(&pipeline);
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-            gpu.draw(&mut pass, &arena, |_| None, 0);
+            gpu.draw(&mut pass, &arena, |_| None, 0, None);
             drop(pass);
             encoder.copy_texture_to_buffer(
                 target.as_image_copy(),

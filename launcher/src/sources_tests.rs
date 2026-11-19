@@ -133,6 +133,21 @@ fn folders_with_ampersands_are_linked() {
     assert_linked(&linked, &dir, jar);
 }
 
+/// cmd expands `%NAME%` inside quotes as well, so a launcher folder named with one used to be
+/// linked to the expanded path, or to nothing at all, and cmd still succeeded (#18411): such a
+/// folder is refused with a reason, and no link is left behind.
+#[cfg(windows)]
+#[test]
+fn a_folder_name_cmd_would_expand_is_refused() {
+    let s = Scratch::new("percent");
+    let jar = "libraries/com/mojang/minecraft/26.3/minecraft-26.3-client.jar";
+    let dir = s.launcher("Game %TEMP%", "", jar);
+    let linked = s.0.join("linked");
+    let error = resolve_with(&dir, &[], &linked, &Mojang::new(MANIFEST)).unwrap_err();
+    assert!(error.contains("can't be linked"), "{error}");
+    assert!(fs::symlink_metadata(linked.join("libraries")).is_err());
+}
+
 #[test]
 fn maven_names_become_repository_paths() {
     assert_eq!(
@@ -511,6 +526,30 @@ fn nothing_found_lists_every_folder_and_what_it_lacks() {
     ));
     // A launcher that isn't installed isn't listed.
     assert!(!error.contains("atlauncher"));
+    assert!(mojang.urls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_version_file_without_its_game_says_to_play_it_once() {
+    // What the official launcher leaves for a version picked but never played (#14286).
+    let s = Scratch::new("listed");
+    let chosen = s.0.join(".minecraft");
+    s.write(".minecraft/versions/26.3/26.3.json", MANIFEST);
+    let modrinth = s.0.join("ModrinthApp");
+    s.write("ModrinthApp/meta/versions/26.3/26.3.json", MANIFEST);
+    let known = [("Modrinth App", modrinth.clone())];
+    let mojang = Mojang::new(MANIFEST);
+    let error = resolve_with(&chosen, &known, &s.0.join("linked"), &mojang).unwrap_err();
+    let expected = format!(
+        "Minecraft 26.3 was not found. Horizon looked in:\n  \
+         {} (versions/26.3/26.3.json is here but not the game itself: play 26.3 once in that \
+         launcher to download it)\n  \
+         {} (Modrinth App: meta/versions/26.3/26.3.json is here but not the game itself: play \
+         26.3 once in that launcher to download it)\nTo fix it:\n",
+        chosen.display(),
+        modrinth.display()
+    );
+    assert!(error.starts_with(&expected), "{error}");
     assert!(mojang.urls.lock().unwrap().is_empty());
 }
 

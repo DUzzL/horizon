@@ -63,7 +63,7 @@ for Windows includes it), else against the SHA-256 GitHub publishes, and never a
 - a `game-files` folder for the files you prepare, kept across updates.
 
 Options: `--version vX.Y.Z`, `--dir FOLDER`, `--bin FOLDER` (Windows: `-Version`, `-Dir`). Other systems,
-such as Linux on ARM, build from source: `cargo build --release -p horizon-client --bin horizon-client -p
+such as Linux on ARM, build from source: `cargo build --release -p horizon-game --bin horizon-client -p
 horizon-server` and keep both programs in one folder.
 
 On Nix and NixOS, the repository's flake builds `horizon-server` from source and has a
@@ -160,6 +160,10 @@ enforce_whitelist = false
 view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
+max_viewed_loaded_chunks = 2048             # see "Other levels a mod shows a player" below
+max_viewed_ticking_chunks = 441
+max_viewed_loaded_chunks_per_level = 16384
+max_viewed_ticking_chunks_per_level = 3528
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
 accept_older_clients = false # true: 26.2 clients join too (see below; work in progress)
 
@@ -181,6 +185,7 @@ path = ""                    # the game program; empty: the one beside horizon-s
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true
 low_memory = false           # true: less memory, slightly slower ticks (see below)
+parallel_tick = false        # true: the tick shares its work among helper threads (see below)
 
 [backups]
 every = "6h"                 # 30m, 6h, 1d...; "0" turns automatic backups off
@@ -240,6 +245,40 @@ average tick goes over 50 ms, the ring pulls in by two chunks a second, never in
 30 s of ticks under 45 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
 minutes (96 MB at most), so a player walking back isn't sent the save again.
 
+### Other levels a mod shows a player: `max_viewed_*`
+
+A server mod (a portal mod, for example) can ask for areas of chunks in other levels for one player
+(`PlayerRef::set_chunk_areas`). The server keeps them loaded and sends them to a Horizon client that can
+keep other levels; a vanilla client is sent nothing. An area either only keeps its chunks loaded (nothing
+ticks there because of it) or ticks them as a player standing there would. An area counts as no player:
+no mobs spawn around it, it doesn't count for sleeping, raids or spawners. Terrain generated for it is
+saved like any other.
+
+The four caps limit what mods can ask for, counted per level:
+
+| Setting | Default | Range | What it counts |
+|---|---|---|---|
+| `max_viewed_loaded_chunks` | 2048 | 0 to 65536 | Chunks kept loaded for one player in one level, the loading ring around each area included. A client keeps at most 4489 columns of a viewed level: a higher value is lowered to 4489 at startup, with a warning in the log. A client of an older Horizon (before revision 4 of viewed levels) gets at most 2048 |
+| `max_viewed_ticking_chunks` | 441 | 0 to 65536 | Of them, the ticking ones: 441 is one player's simulation area at distance 10 |
+| `max_viewed_loaded_chunks_per_level` | 16384 | 0 to 1048576 | Loaded chunks of every player together in one level |
+| `max_viewed_ticking_chunks_per_level` | 3528 | 0 to 1048576 | Ticking chunks of every player together in one level |
+
+0 refuses every area of that kind. A request over a cap is refused whole, and the mod is told which cap and
+its value. Areas end when the player leaves.
+
+### Levels a mod opens: `horizon-max-runtime-levels`
+
+A mod can open levels of its own while the server runs ([runtime levels](modding/src/how-to/world/runtime-levels.md)).
+The server keeps at most 64 of them open at once, for all mods together; the 65th request is refused
+with `CapReached`. Set another number under `[properties]` in `server.toml`:
+
+```toml
+[properties]
+horizon-max-runtime-levels = 128
+```
+
+A level frees its place when its mod unloads or deletes it (a delete also removes its folder from `dimensions/`). After 300 ticks with nobody in it, it leaves memory, as any level does, but keeps its place: it opens again when someone enters it.
+
 Already have a vanilla server? Run `horizon-server init` in its folder, or `horizon-server import
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists
 keep vanilla's names and formats, so going back to vanilla works too.
@@ -248,7 +287,7 @@ keep vanilla's names and formats, so going back to vanilla works too.
 
 A native-mods build exports a standalone engine
 (`horizon-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code`;
-see [Native mods](native-mods.md#standalone-server-export)). Point the server at it:
+see [Native mods](modding/src/how-to/native-mods/12-standalone-server-export.md)). Point the server at it:
 
     horizon-server --dir SERVER config set engine.path=/absolute/export/horizon-engine
     horizon-server --dir SERVER restart
@@ -356,27 +395,50 @@ far past the view distance, which helps players find the seed. A player's own LO
 shorter. Each player may have 8 tiles waiting and ask for 64 a second on average, and one background thread
 samples them for everyone in turn, behind the ticks, so far terrain never slows the server down; a tile past the
 distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
-Tiles are sampled again for each player who asks (there is no cache yet). Vanilla clients never hear of it.
+A tile is the same for every player in its level, so the server keeps the tiles it sampled in memory (up to
+32 MiB, about 4,000 tiles; the least recently asked for go first) and answers the next player who asks for one
+with it: players looking at the same land cost one sample. Vanilla clients never hear of it.
 
-`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600),
-then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
-the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
-sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
-share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
-tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
-a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
-hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
-`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
-it is. Nothing restarts: the report runs beside the game.
+`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
+`reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and
+prints a short summary (TPS, MSPT, CPU, memory, players and the heaviest tick phases) and where it went. On the console it is `horizon-report [SECONDS]`; `horizon-report stop` ends it now and
+`horizon-report status` says how far it is. Nothing restarts: the report runs beside the game.
 
-To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
-steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
-thread. `horizon-trace stop` ends it early. It holds step names and times only.
+The capture holds the settings, the machine, the Horizon switches and the few game rules that change what a tick
+costs, the health history from before it (TPS and MSPT over the last 10 minutes to 7 days), a sample each second,
+the counters and the slow ticks with their steps. It says where the ticks' time went, phase by phase (mobs, block
+ticks, block entities, the network and the chunks it sends, saving...), in blocks of five seconds and as totals,
+with each dimension's share of the tick (`level_*`) and the 16 slowest ticks with their whole step tree. It counts
+the chunks, entities and block entities of each dimension at the start and at the end, and gives what each mob type
+costs per dimension (one tick in four times every mob: ms a tick, mobs, µs a mob), the chunk workers' CPU by job
+(load, generate, decorate, finish, light), the bytes each player sends and receives in each block, and what recording
+cost the tick (measured, usually well under 1 % of MSPT). It holds no names, UUIDs or addresses (players are
+numbered in the order they joined), no seed and no world name, so you can attach it to an issue as it is. Past 30
+files or 1 GiB the oldest `profile-*.hzperf` is deleted; a file you renamed is never touched. On Linux the tick thread is also sampled 250 times a second (about 0.05 % of the tick thread), and the capture
+holds where the CPU time went, by function and by what the server was doing (step, entity type, block, dimension,
+chunk); `--no-samples` leaves that out. Finishing the file after the window can take a few seconds and does not stall
+ticks. The old `perf-<time>.json` and `.txt` files are no
+longer written; the ones already in `reports/` stay.
 
-Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
-its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
-two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 seconds.
+`python3 tools/server_bench.py --profile` records each Horizon run's measure window this way (`--profile=--no-samples`
+passes flags to `horizon-report`) and adds the run's record, MSPT, RSS, CPU and chunk figures, to the capture with
+`horizon-perf attach FILE --name NAME --body JSONFILE`, which keeps whatever else the file holds. Build
+`-p horizon-perf` beside the server first; the capture's path is the run's `profile` in the report.
+
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 600) writes a capture with every
+thread's timed steps to `reports/profile-<time>Z.hzperf`, one row per thread. `horizon-trace stop` ends it early, and
+`horizon-report --timeline` adds the same steps to a report. The steps are recorded for the first 60 seconds of a
+capture, or until they pass 256 MiB; the capture then says when they stopped. `HORIZON_TRACE=FILE` in the server's
+environment writes such a capture to FILE from the first tick. It holds step names and times only.
+
+To profile your server from a game, join it as an operator of level 4 and run `horizon-ctl profile server start` (or `profile start`, which captures your game and the server in one file). Another operator level is refused and nothing is written. One server capture runs at a time. The server writes its copy to its own `reports/`, logs who started it and when, and sends the file to your game in the background, at most 256 KiB a second and after gameplay packets; the game says where it saved it. Open a capture with `horizon-perf` ([perf-platform.md](perf-platform.md)), which you build from this repository (`cargo build --release -p horizon-perf`).
+
+Between reports, the server keeps its last 256 slow ticks in memory, each with its eight largest steps. A tick
+counts as slow from 250 ms (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and every
+capture carries the ring as it stood at its start and adds the slow ticks of its own window. The log no longer has a
+line for them: `horizon-perf query spans --slow` says which steps they spent their time in, and `query ticks --worst 5`
+lists the five worst with their step trees (the newest capture, or name a file last). When a slow tick spent 10 ms or more on one player's packets or one event, the log says so in a `Horizon: … ms tick was busy with:` line with the player's name; the capture never holds names. A server more than two seconds behind still says `Can't keep up!` as
+vanilla's does, at most every 15 seconds.
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
@@ -439,7 +501,7 @@ or keeps its settings, fix both in `server.toml`:
 ```toml
 [api]
 bind = "127.0.0.1:8131"      # or your tailnet address, 100.x.y.z:8131
-token = "a long random string only the bot knows"
+token = "b0t-0nly-2f9c41a7d8e35b60"   # 16 characters or more, no spaces
 ```
 
 The same rules as the panel's hold: a tailnet or loopback address, unless `allow_public = true` (the token is then
@@ -563,7 +625,7 @@ horizon-server restore before-the-update
 
 A backup zips the world, vanilla's files and `server.toml` into `backups/`. A running server saves first and
 stays up: players don't notice. Automatic backups run on the `[backups] every` schedule while the server runs,
-and the oldest automatic ones beyond `keep` are deleted. Backups you make by hand are never deleted.
+and the oldest automatic ones beyond `keep` (1 to 1000) are deleted. Backups you make by hand are never deleted.
 
 `restore` takes a backup's file name, a unique start of it, or the name you gave it. It moves the current
 world aside to `backups/replaced-<time>/` (never deleted), puts the backup in place, and restarts the server if
@@ -614,6 +676,43 @@ legacy = true
 ```
 
 Players join with any vanilla 26.3 client: only the server decides the damage.
+
+### Mods' biome regions: `[biome_regions]`
+
+A world made with a mod that adds a [biome region](modding/src/how-to/content-mods/biome-regions.md) saves that region with the
+world. If the mod is later removed, the server refuses to start and names the mod and region. To start anyway with
+vanilla's biomes where that region was (chunks that already exist stay as they are), add to `server.toml`, then
+restart:
+
+```toml
+[biome_regions]
+missing = "vanilla"      # "refuse", the default: don't start
+adopt_installed = false  # true explicitly adopts installed regions for new generation
+```
+
+The choice for a missing mod is saved in the world, so it holds even if the setting is removed later.
+Substitution keeps the missing region's slot and weight; a returning mod does not undo it.
+Adoption keeps saved weights for returning regions, takes declared weights for new regions and
+drops absent regions. Completed chunks keep their saved biomes and blocks. New generation may
+differ in surface material, carving, features and structures. The
+[design note](design/mod-api/mod-biome-regions.md) lists record limits and fixture coverage.
+
+### Worlds saved with mods that are gone: `[missing_mods]`
+
+A world records the mods it was saved with: code mods and content mods, and the namespaces of the mods' blocks.
+If one of them is no longer loaded, opening the world turns that mod's blocks into air and removes what they hold,
+and the next save makes it permanent. So the server refuses to start that world: it logs one line per missing mod
+and a last line naming the switch, and changes nothing in the world. To open it anyway, back the world up, then add
+to `server.toml` and restart:
+
+```toml
+[missing_mods]
+allow = true   # false, the default: don't start
+```
+
+Started as `horizon-client --dedicated` directly, `--allowMissingMods` does the same for one start. With either one,
+the server logs the same list as a warning and opens the world. A mod whose `mod_mismatch` listener marks a missing
+mod resolved (a migration) takes it off the list.
 
 ## 8. Start it with the computer
 
@@ -719,6 +818,53 @@ the game with huge pages off. Measured on a 4-core EPYC VPS with 20 bots playing
 Turn it on when memory is what you're short of, for example on a small VPS. It applies at the next start.
 A game started without `horizon-server` (`horizon-client --dedicated`, a container of your own) gets the same
 effect from the environment variable `MIMALLOC_ALLOW_THP=0`. On macOS and Windows it changes nothing.
+
+### Parallel tick: `parallel_tick`
+
+Off by default. Under `[engine]`, `parallel_tick = true` starts the game with its parallel tick on: the
+phases of the server tick that give the same result in any order share their work among helper threads (at
+most 8, as many as the machine has cores). It applies at the next start. It is the same switch as the
+environment variable `HORIZON_PARALLEL_TICK=1`, for a host that gives you no way to set one (a game panel
+with a fixed startup command). With the setting off, a `HORIZON_PARALLEL_TICK` already in the server's
+environment still applies.
+
+Natural mob spawning is one of those phases: the spawn attempts of the chunks around your players run on the helper
+threads, and the server thread then takes what they found, in order, if the mob caps still allow it. It has vanilla's odds
+and caps but not the random draws of one vanilla level, so a world does not spawn the same mobs with the setting on as off.
+It stays on one thread while a native mod listens to spawns, with fewer than 512 chunks to try (about two players' worth) and
+on a machine with one core ([how it works](parallel-natural-spawning.md)).
+
+One thing differs from the serial tick while it is on: the rolls a mob makes on the level's random (a fish
+leaving its school, a parrot imitating, a brain's durations) come from a random of the mob's own, so that mobs
+on different threads do not wait for each other. The odds are vanilla's; the values are not the ones the level's
+random would have given ([mob-islands.md](mob-islands.md#every-turn-draws-its-own-random)).
+
+### Mob AI far from players: `[entities] dab`
+
+Off by default, because it is not vanilla's behaviour: mobs far from every player react more slowly. It is
+Pufferfish's "dynamic activation of brain", with the same names and defaults. Add the section to `server.toml`:
+
+```toml
+[entities]
+dab = true                    # false (the default): every mob thinks every tick, as in vanilla
+dab_start_distance = 12       # blocks; a mob this close to the nearest player is never slowed
+dab_max_tick_freq = 20        # ticks; the longest wait between two AI ticks
+dab_activation_dist_mod = 8   # raise it to slow far mobs less, lower it to slow them more
+```
+
+A mob farther than `dab_start_distance` from the nearest player (squared distance `d²`) runs its AI on the ticks where
+`age % interval == 0`, with `interval = clamp(d² >> dab_activation_dist_mod, 1, dab_max_tick_freq)`: 14 ticks at
+60 blocks with the defaults, 20 from about 71 blocks. Only the decisions wait: goals and targets, the brains of villagers,
+piglins, axolotls and the like, and each species' `customServerAiStep`. A far mob still moves (its navigation, move,
+look and jump controls run), falls, floats, is pushed, takes damage and effects, and its despawn check runs.
+
+Never slowed: withers and wardens; a mob with a target or anger, or hurt in the last two seconds; raiders in a raid; a
+mob that is ridden, riding, carrying a passenger or on a lead; a tamed mob that is not sitting.
+
+Unlike Pufferfish, it applies to every mob (Pufferfish limits the brain part to villagers, axolotls, hoglins,
+zombified piglins and goats and has an entity blacklist), and a level with no player counts as far away. It applies at
+the next start, and is the same switch as the environment variables `HORIZON_DAB=1`, `HORIZON_DAB_START_DISTANCE`,
+`HORIZON_DAB_MAX_TICK_FREQ` and `HORIZON_DAB_ACTIVATION_DIST_MOD`.
 
 ## When something goes wrong
 

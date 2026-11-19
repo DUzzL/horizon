@@ -5,7 +5,7 @@
 //! prints. Comparator levels of containers and lecterns come from the oracle
 //! (`analog`): nothing here moves items.
 use horizon_core::{
-    geometry::{Direction, Vec3},
+    geometry::{BlockHit, Direction, Vec3},
     position::{BlockPos, ChunkPos},
     random::LegacyRandom,
 };
@@ -28,6 +28,7 @@ struct Cells {
     time: i64,
     analog: HashMap<BlockPos, i32>,
 }
+impl horizon_world::level::BlockEntityNeighbors for Cells {}
 impl LevelAccess for Cells {
     fn block_state(&self, pos: BlockPos) -> BlockStateId {
         self.cells.get(&pos).copied().unwrap_or(self.air)
@@ -50,7 +51,7 @@ impl LevelAccess for Cells {
         self.time
     }
     fn block_entity_analog_signal(
-        &self,
+        &mut self,
         pos: BlockPos,
         _state: BlockStateId,
         _direction: Direction,
@@ -153,8 +154,10 @@ impl Run<'_> {
             self.left -= 1;
             self.level.time += 1;
             let b = self.behaviours;
-            b.tick_scheduled(&mut self.level, &mut self.ticks);
-            b.run_block_events(&mut self.level, &mut self.ticks);
+            // The block ticks and the block events inside the level tick's
+            // `handlingTick` (ServerLevel.java:360-412), the block entities
+            // below it (:455).
+            b.tick_level_blocks(&mut self.level, &mut self.ticks);
             b.tick_block_entities(&mut self.level, &mut self.ticks);
             let now = self.outputs();
             if now != last {
@@ -193,13 +196,19 @@ impl Run<'_> {
                 may_build: true,
                 can_eat: false,
                 game_master: false,
+                respawn_point: None,
             };
+            let state = self.level.block_state(pos);
             self.behaviours.use_without_item(
                 &mut self.level,
                 &mut self.ticks,
-                pos,
-                Direction::Up,
-                hit,
+                state,
+                BlockHit {
+                    block: pos,
+                    direction: Direction::Up,
+                    location: hit,
+                    inside: false,
+                },
                 player,
             );
         }

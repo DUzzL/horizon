@@ -10,6 +10,7 @@
 //! `global_varb.*` every entity shares, and `render.*`, which nothing reads back yet.
 
 use super::{Mob, Part, anim::Poses, anim::State};
+use horizon_core::use_animation::UseAnimation;
 use horizon_optifine::cem::expr::{Expr, compile};
 use std::{
     cell::{Cell, RefCell},
@@ -601,9 +602,9 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
     let swing_right = m.extra.swing_right_arm.unwrap_or(!m.main_arm_left());
     // `HumanoidArm`'s items: the main hand is on the main arm.
     let (right_hand, left_hand) = if m.main_arm_left() {
-        (&m.extra.off_hand, &m.extra.main_hand)
+        (m.extra.off_hand_id(), m.extra.main_hand_id())
     } else {
-        (&m.extra.main_hand, &m.extra.off_hand)
+        (m.extra.main_hand_id(), m.extra.off_hand_id())
     };
     for (i, (_, p)) in PARAMS.iter().enumerate() {
         use Param::*;
@@ -623,8 +624,14 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
             PosX => m.position.x as f32,
             PosY => m.position.y as f32,
             PosZ => m.position.z as f32,
-            RotX => m.head_pitch,
-            RotY => m.body_yaw,
+            // EMF's getEntityRX/RY: radians, lerped within the tick (`Mth.rotLerp`) from the
+            // pitch and the body yaw. A pack's turn-in-place counter-rotation reads it.
+            RotX => (m.previous_head_pitch
+                + super::living::wrap(m.head_pitch - m.previous_head_pitch) * s.partial)
+                .to_radians(),
+            RotY => (m.previous_body_yaw
+                + super::living::wrap(m.body_yaw - m.previous_body_yaw) * s.partial)
+                .to_radians(),
             Id => m.id as f32,
             // OptiFine's `time` loops at 27720 ticks to keep float precision.
             Time => (frame.time % 27720.0) as f32,
@@ -636,8 +643,9 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
             PlayerX => frame.player[0] as f32,
             PlayerY => frame.player[1] as f32,
             PlayerZ => frame.player[2] as f32,
-            PlayerRotX => frame.player_rot[0],
-            PlayerRotY => frame.player_rot[1],
+            // EMF's getPlayerRX/RY: radians too.
+            PlayerRotX => frame.player_rot[0].to_radians(),
+            PlayerRotY => frame.player_rot[1].to_radians(),
             // The model's matching random-model rule (`optifine/cem/<name>.properties`),
             // whose number the animations read: a grazing cow reads 2.
             RuleIndex => rule_index,
@@ -689,7 +697,7 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
             Sprinting => flag(m.extra.sprinting),
             Sneaking => flag(m.extra.crouching),
             // A player's `isBlocking`: the item in use blocks attacks.
-            Blocking => flag(m.extra.blocking),
+            Blocking => flag(m.extra.use_animation == UseAnimation::Block),
             // `isVisuallyCrawling`: the swimming pose out of water.
             Crawling => flag(swim_pose && !m.fluids.in_water),
             Swimming => flag(swim_pose),
@@ -996,7 +1004,7 @@ mod tests {
         m.extra.crouching = true;
         // The player's main hand option set to left.
         m.extra.main_hand_left = true;
-        m.extra.blocking = true;
+        m.extra.use_animation = UseAnimation::Block;
         // The swimming pose out of water: crawling.
         m.extra.pose = 3;
         m.extra.using_item = 3;
@@ -1024,6 +1032,24 @@ mod tests {
             poses.get("root")[0],
             (31 + 64 + 128 + 256 + 512 + 2048 + 8192 + 16384) as f32
         );
+    }
+
+    /// EMF's `rot_x`/`rot_y`: radians, lerped within the tick the short way round. A body
+    /// turning from 170 to -170 degrees reads 180 halfway, not -0.
+    #[test]
+    fn rot_y_and_rot_x_are_lerped_radians() {
+        let mut m = mob();
+        (m.previous_body_yaw, m.body_yaw) = (170.0, -170.0);
+        (m.previous_head_pitch, m.head_pitch) = (10.0, 30.0);
+        let model = bone("root", vec![]);
+        let animation = animate(&model, &[("root.tx", "rot_y"), ("root.ty", "rot_x")]);
+        let mut s = still();
+        s.partial = 0.5;
+        let mut poses = Poses::new(&model);
+        animation.run_in(&Frame::default(), &m, &s, &mut poses);
+        let [x, y] = [poses.get("root")[0], poses.get("root")[1]];
+        assert!((x - std::f32::consts::PI).abs() < 1e-4, "rot_y read {x}");
+        assert!((y - 20f32.to_radians()).abs() < 1e-4, "rot_x read {y}");
     }
 
     #[test]

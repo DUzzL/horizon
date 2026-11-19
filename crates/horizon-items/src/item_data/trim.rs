@@ -1,8 +1,8 @@
 //! ArmorTrim's two registry holders: names or actual inline definitions.
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Holder<T> {
     Named(Arc<str>),
     Direct(T),
@@ -17,12 +17,12 @@ impl<T> From<&str> for Holder<T> {
         Self::Named(name.into())
     }
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Material {
     pub palette_id: Arc<str>,
     pub description: Tag,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Pattern {
     pub asset_id: Arc<str>,
     pub description: Tag,

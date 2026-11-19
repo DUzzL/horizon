@@ -1,17 +1,18 @@
 //! Item stacks in NBT (`ItemStack.CODEC`): id, count and components, alone or in
 //! slot lists.
 use horizon_client_core::nbt_value::{number, string, text};
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use std::sync::Arc;
 
-/// The two measured saved forms of `BlockPredicate.CODEC`. Operate only on
+/// The two measured saved forms of `BlockPredicate.CODEC`, and the `Identifier`s
+/// of `attribute_modifiers` written whole. Operate only on
 /// the fresh ItemStack save, never its model or the shared live component view.
 fn canonical_saved_adventure_predicates(components: &mut Tag) {
     fn predicate(value: &mut Tag) {
         let named = match value.get("blocks") {
             Some(Tag::List(names)) => match names.as_slice() {
                 [Tag::String(name)]
-                    if horizon_world::identifier::Identifier::parse(&name.to_string_lossy())
+                    if horizon_core::identifier::Identifier::parse(&name.to_string_lossy())
                         .is_ok_and(|id| !id.path().is_empty()) =>
                 {
                     Some(name.clone())
@@ -38,6 +39,20 @@ fn canonical_saved_adventure_predicates(components: &mut Tag) {
             Some(Tag::List(predicates)) => predicates.iter_mut().for_each(predicate),
             Some(value) => predicate(value),
             None => {}
+        }
+    }
+    // `Attribute.CODEC` and `Identifier.CODEC` read a bare name as `minecraft:`'s
+    // and write it back whole, so a stack given `attack_damage` saves as
+    // `minecraft:attack_damage` (#14641).
+    if let Some(Tag::List(entries)) = components.get_mut("minecraft:attribute_modifiers") {
+        for entry in entries.iter_mut() {
+            for key in ["type", "id"] {
+                if let Some(Tag::String(name)) = entry.get_mut(key) {
+                    let named =
+                        horizon_world::datafix::dynamic::namespaced(&name.to_string_lossy());
+                    *name = named.as_str().into();
+                }
+            }
         }
     }
 }
@@ -84,7 +99,7 @@ pub fn item_from_nbt(tag: &Tag) -> Option<crate::items::ItemStack> {
         .or_else(|| number(tag.get("Count")))
         .filter(|count| (1..=99).contains(count))
         .unwrap_or(1) as u32;
-    let (damage, extra) = crate::item_data::decode_components(tag.get("components"));
+    let (damage, extra) = crate::item_data::decode_components_for_item(&id, tag.get("components"));
     Some(crate::items::ItemStack {
         item: Arc::from(id.as_str()),
         count,
@@ -116,6 +131,40 @@ pub fn decode_items(tag: Option<&Tag>, size: usize) -> Vec<Option<crate::items::
         }
     }
     slots
+}
+
+/// A stack as its saved NBT (`item_to_nbt`).
+impl From<&crate::items::ItemStack> for Tag {
+    fn from(stack: &crate::items::ItemStack) -> Self {
+        item_to_nbt(stack)
+    }
+}
+
+/// A stack read from its saved NBT (`item_from_nbt`); a tag that is no stack is refused as
+/// itself.
+impl TryFrom<Tag> for crate::items::ItemStack {
+    type Error = Tag;
+    fn try_from(tag: Tag) -> Result<Self, Tag> {
+        item_from_nbt(&tag).ok_or(tag)
+    }
+}
+
+/// Components as a stack's `components` compound (`components_tag`), undamaged.
+impl From<&crate::item_data::StackData> for Tag {
+    fn from(data: &crate::item_data::StackData) -> Self {
+        crate::item_data::components_tag(0, Some(data))
+            .unwrap_or_else(|| Tag::Compound(Default::default()))
+    }
+}
+
+/// Components read from a stack's `components` compound (`decode_components`); a damage in it
+/// is not a component of these.
+impl TryFrom<Tag> for crate::item_data::StackData {
+    type Error = Tag;
+    fn try_from(tag: Tag) -> Result<Self, Tag> {
+        let (_, extra) = crate::item_data::decode_components(Some(&tag));
+        Ok(extra.map(|data| *data).unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
@@ -186,7 +235,7 @@ mod h285_saved_adventure_tests {
     use super::*;
     use crate::{item_data::components_tag, items::ItemStack};
     fn parse(s: &str) -> Tag {
-        horizon_world::nbt::parse_snbt(s).unwrap().0
+        horizon_core::nbt::parse_snbt(s).unwrap().0
     }
     fn item(key: &str, value: Tag) -> Tag {
         Tag::compound([
@@ -470,6 +519,45 @@ mod h285_saved_adventure_tests {
                 .get("minecraft:can_break"),
             Some(&raw),
             "retained source gap, not a Java parity assertion"
+        );
+    }
+    /// `Attribute.CODEC` and `Identifier.CODEC` save a bare name as
+    /// `minecraft:`'s: vanilla's `/item replace` of `type:"attack_damage"`
+    /// saves `type:"minecraft:attack_damage"` (checked against the 26.3 server
+    /// by `test_builtin_component_delivery_parity`, #14641).
+    #[test]
+    fn a_bare_attribute_and_modifier_name_save_namespaced() {
+        let entry = |attribute: &str, id: &str| {
+            parse(&format!(
+                r#"{{type:"{attribute}",id:"{id}",amount:20.0d,operation:"add_value",slot:"mainhand"}}"#
+            ))
+        };
+        let mut stack = ItemStack::new("minecraft:iron_pickaxe", 1);
+        stack.data_mut().set_other(
+            "minecraft:attribute_modifiers",
+            Some(Tag::List(vec![
+                entry("attack_damage", "base_attack_damage"),
+                entry("minecraft:armor", "mod:x"),
+            ])),
+        );
+        let saved = item_to_nbt(&stack);
+        assert_eq!(
+            saved
+                .get("components")
+                .unwrap()
+                .get("minecraft:attribute_modifiers"),
+            Some(&Tag::List(vec![
+                entry("minecraft:attack_damage", "minecraft:base_attack_damage"),
+                entry("minecraft:armor", "mod:x"),
+            ]))
+        );
+        // The live stack keeps what it was given: only the save is canonical.
+        assert_eq!(
+            stack.data().unwrap().other("minecraft:attribute_modifiers"),
+            Some(&Tag::List(vec![
+                entry("attack_damage", "base_attack_damage"),
+                entry("minecraft:armor", "mod:x"),
+            ]))
         );
     }
 }

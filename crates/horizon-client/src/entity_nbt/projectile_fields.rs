@@ -2,7 +2,7 @@
 //! air, the visual fire flag and the fall distance.
 use super::{flag, float, int_value, put};
 use crate::projectiles::{Projectile, ProjectileKind};
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 /// Fireballs, skulls and wind charges all go through `Entity.load` and
 /// `Entity.saveWithoutId`, so they keep their own fire and air.
@@ -45,3 +45,17 @@ pub(super) fn load_projectile_flags_and_entity_fields(p: &mut Projectile, tag: &
     p.no_gravity = flag(tag, "NoGravity");
     load_projectile_entity_fields(p, tag);
 }
+
+/// `Entity.load` for an arrow: fire and fall distance live on its arrow state,
+/// air on the projectile and defaults to the 300 of `getMaxAirSupply`.
+pub(super) fn load_arrow_entity_fields(p: &mut Projectile, tag: &Tag) {
+    p.air_supply = tag.get("Air").and_then(int_value).unwrap_or(300);
+    if let Some(a) = p.arrow.as_mut() {
+        a.fire_ticks = i32::from(tag.get("Fire").and_then(int_value).unwrap_or(0) as i16);
+        a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    }
+}
+
+#[cfg(test)]
+#[path = "projectile_fields_tests.rs"]
+mod tests;

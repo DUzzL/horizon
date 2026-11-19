@@ -16,6 +16,7 @@ use crate::{
     supervisor::note,
 };
 use horizon_platform::server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_server_launch::config;
 use std::{
     collections::HashMap,
     io,
@@ -33,6 +34,10 @@ const GAME_ID: &str = "MINECRAFT";
 const MAX_PACKET: usize = 1460;
 /// `CHALLENGE_CHECK_INTERVAL`: tokens are dropped this often (every one made before the check goes).
 const PRUNE_EVERY: Duration = Duration::from_secs(30);
+/// Addresses holding a token at once. Vanilla keeps one per handshake until the next prune, so
+/// spoofed handshakes could grow the map with the packet rate; a real client asks again after a
+/// refusal, by which time the prune has made room.
+const MAX_CHALLENGES: usize = 65_536;
 /// `RESPONSE_CACHE_TIME`: the full stat is kept this long.
 const RULES_CACHE: Duration = Duration::from_secs(5);
 /// How long what the game said about its players is believed.
@@ -109,6 +114,9 @@ impl Query {
                 let mut ident = [0; 4];
                 for (at, byte) in ident.iter_mut().zip(packet.iter().skip(3)) {
                     *at = *byte;
+                }
+                if self.challenges.len() >= MAX_CHALLENGES && !self.challenges.contains_key(&from) {
+                    return None;
                 }
                 let token = token();
                 self.challenges.insert(from, Challenge { ident, token });
@@ -214,7 +222,7 @@ enum Setup {
 }
 
 fn setup(dir: &Path) -> Result<Setup, String> {
-    let file = crate::config::read_properties(&dir.join(crate::config::PROPERTIES))?;
+    let file = config::read_properties(&dir.join(config::PROPERTIES))?;
     let p = ServerProperties::new(file, &mut SystemEntropy::default())?;
     if !p.enable_query {
         return Ok(Setup::Off);
@@ -239,7 +247,7 @@ fn setup(dir: &Path) -> Result<Setup, String> {
 /// log, not a server that doesn't start.
 pub fn start(shared: Arc<Shared>) -> Result<Option<SocketAddr>, String> {
     // The file the game reads, as server.toml makes it.
-    crate::config::Config::load(&shared.dir)?
+    config::Config::load(&shared.dir)?
         .write_properties(&shared.dir)
         .map_err(|e| format!("server.properties: {e}"))?;
     let (host, port) = match setup(&shared.dir)? {
@@ -294,7 +302,7 @@ fn read_info(shared: &Shared) -> Option<Info> {
     if shared.state.lock().ok()?.phase != Phase::Running {
         return None;
     }
-    let file = crate::config::read_properties(&shared.dir.join(crate::config::PROPERTIES)).ok()?;
+    let file = config::read_properties(&shared.dir.join(config::PROPERTIES)).ok()?;
     let p = ServerProperties::new(file, &mut SystemEntropy::default()).ok()?;
     let status = engine::Control::connect(&shared.dir)
         .and_then(|mut game| game.ask("server-status"))
@@ -437,6 +445,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(reply, b"\x09\x01\x02\x03\x049513671\0");
+    }
+
+    #[test]
+    fn handshakes_past_the_cap_wait_for_the_next_prune() {
+        let now = Instant::now();
+        let mut query = Query::new(now);
+        let from = |i: usize| SocketAddr::from(([10, (i >> 16) as u8, (i >> 8) as u8, i as u8], 1));
+        for i in 0..MAX_CHALLENGES {
+            assert!(
+                query
+                    .answer(&handshake([0; 4]), from(i), now, || 1, || None)
+                    .is_some()
+            );
+        }
+        let new = from(MAX_CHALLENGES);
+        assert_eq!(
+            query.answer(&handshake([0; 4]), new, now, || 1, || None),
+            None
+        );
+        // An address already holding a token still gets a fresh one.
+        assert!(
+            query
+                .answer(&handshake([0; 4]), from(0), now, || 2, || None)
+                .is_some()
+        );
+        // After the prune there is room again.
+        let later = now + PRUNE_EVERY;
+        assert!(
+            query
+                .answer(&handshake([0; 4]), new, later, || 3, || None)
+                .is_some()
+        );
     }
 
     #[test]
@@ -683,6 +723,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn a_listener_on_a_real_socket_answers_the_handshake_and_both_stats() {
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         let server = socket.local_addr().unwrap();
@@ -717,7 +758,7 @@ mod tests {
     fn an_invalid_port_leaves_the_query_off_with_vanillas_warning() {
         let dir = std::env::temp_dir().join(format!("horizon-query-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let write = |text: &str| std::fs::write(dir.join(crate::config::PROPERTIES), text).unwrap();
+        let write = |text: &str| std::fs::write(dir.join(config::PROPERTIES), text).unwrap();
         write("enable-query=false\nquery.port=0\n");
         assert!(matches!(setup(&dir), Ok(Setup::Off)));
         for port in ["0", "65536", "-3"] {

@@ -1,0 +1,1 @@
+Consumable.consumeSeconds	port	crates/horizon-items/src/item_data.rs::ConsumableComponent::new	consume_seconds from the stack's consumable component

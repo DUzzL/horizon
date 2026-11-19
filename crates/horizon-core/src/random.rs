@@ -1,9 +1,11 @@
 //! Vanilla's two seeded random streams. No platform/default Rust RNG is used.
 mod hash;
+mod ordered;
 mod owner;
 mod positional;
 mod worldgen;
 pub use hash::{seed_from_hash, seed_from_hash_utf16};
+pub use ordered::{LaneDone, OrderedDraws};
 pub use owner::{EntityPositional, EntityRandom, LevelPositional, LevelRandom};
 pub use positional::{
     LegacyPositionalRandom, PositionalRandom, XoroshiroPositionalRandom, java_string_hash,
@@ -106,10 +108,41 @@ pub trait RandomSource: Sized {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct LegacyRandom {
     state: u64,
     gaussian: Option<f64>,
+    /// A lane of an [`OrderedDraws`] stream: each item's first draw waits for its turn.
+    gate: Option<Box<ordered::Gate>>,
+}
+
+/// A copy draws on its own, from the state it was copied at: it is never gated.
+impl Clone for LegacyRandom {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state,
+            gaussian: self.gaussian,
+            gate: None,
+        }
+    }
+}
+
+/// The whole generator: its 48-bit state and the cached second gaussian, so a copy draws on
+/// exactly as the original would.
+impl From<&LegacyRandom> for (u64, Option<f64>) {
+    fn from(random: &LegacyRandom) -> Self {
+        (random.state, random.gaussian)
+    }
+}
+/// A generator from its state (masked to 48 bits) and cached gaussian.
+impl From<(u64, Option<f64>)> for LegacyRandom {
+    fn from((state, gaussian): (u64, Option<f64>)) -> Self {
+        Self {
+            state: state & Self::MASK,
+            gaussian,
+            gate: None,
+        }
+    }
 }
 
 impl LegacyRandom {
@@ -120,6 +153,7 @@ impl LegacyRandom {
         Self {
             state: (seed as u64 ^ Self::MULTIPLIER) & Self::MASK,
             gaussian: None,
+            gate: None,
         }
     }
 
@@ -128,6 +162,7 @@ impl LegacyRandom {
         Self {
             state,
             gaussian: None,
+            gate: None,
         }
     }
 
@@ -136,7 +171,23 @@ impl LegacyRandom {
         self.state
     }
 
+    /// The cached second `nextGaussian` value, if one is pending.
+    pub fn cached_gaussian(&self) -> Option<f64> {
+        self.gaussian
+    }
+
+    /// A gated lane's first draw of an item waits for its turn and takes the shared state.
+    #[inline]
+    fn sync(&mut self) {
+        if let Some(gate) = self.gate.as_deref_mut()
+            && !gate.held()
+        {
+            (self.state, self.gaussian) = gate.take();
+        }
+    }
+
     fn bits(&mut self, count: u32) -> i32 {
+        self.sync();
         self.state = self.state.wrapping_mul(Self::MULTIPLIER).wrapping_add(11) & Self::MASK;
         let value = (self.state >> (48 - count)) as i32;
         #[cfg(feature = "rng-trace")]
@@ -151,7 +202,11 @@ impl RandomSource for LegacyRandom {
         LegacyPositionalRandom::new(self.next_long())
     }
     fn set_seed(&mut self, seed: i64) {
-        *self = Self::new(seed);
+        // LegacyRandomSource.setSeed resets the stream and its gaussian cache, not the lane.
+        // Reseeding is an ordered mutation even when this item makes no draws afterwards.
+        self.sync();
+        self.state = (seed as u64 ^ Self::MULTIPLIER) & Self::MASK;
+        self.gaussian = None;
     }
 
     fn next_int(&mut self) -> i32 {
@@ -192,6 +247,7 @@ impl RandomSource for LegacyRandom {
         value as f64 * (1.0 / 9_007_199_254_740_992.0)
     }
     fn next_gaussian(&mut self) -> f64 {
+        self.sync();
         let mut cache = self.gaussian.take();
         let value = marsaglia_polar(&mut cache, || self.next_double());
         self.gaussian = cache;
@@ -203,7 +259,7 @@ impl RandomSource for LegacyRandom {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct XoroshiroRandom {
     lo: u64,
     hi: u64,
@@ -352,6 +408,24 @@ mod tests {
     fn invalid_inputs_preserve_both_streams() {
         invalid_bounds_do_not_consume_state(LegacyRandom::new(0));
         invalid_bounds_do_not_consume_state(XoroshiroRandom::new(0));
+    }
+
+    #[test]
+    fn legacy_reseed_resets_the_gaussian_cache_and_stream() {
+        let mut rng = LegacyRandom::new(42);
+        for seed in [i64::MIN, -1, 0, 42, i64::MAX] {
+            // Leave a cached second gaussian before reseeding.
+            rng.next_gaussian();
+            rng.set_seed(seed);
+            let mut fresh = LegacyRandom::new(seed);
+            for _ in 0..3 {
+                assert_eq!(
+                    rng.next_gaussian().to_bits(),
+                    fresh.next_gaussian().to_bits()
+                );
+                assert_eq!(rng.next_long(), fresh.next_long());
+            }
+        }
     }
 
     #[test]

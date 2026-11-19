@@ -1,0 +1,1 @@
+Consumable.hasConsumeParticles	port	crates/horizon-items/src/item_data.rs::ConsumableComponent::new	has_consume_particles from the stack's consumable component

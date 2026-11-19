@@ -13,7 +13,8 @@ use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 // Version 5 read every vanilla file to stamp it on Windows.
 // Version 6 stamps vanilla's files by their metadata on Windows too.
 // Version 7 stacks blockstate files (every pack's definition, bottom first).
-const VERSION: u32 = 8;
+// Version 8 left an atlas `single` source's renamed sprite without its texture file (#14485).
+const VERSION: u32 = 9;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {
@@ -262,6 +263,12 @@ fn pack_signature(packs: &[Pack]) -> io::Result<String> {
         field(&mut hash, format!("{:?}", pack.overlays).as_bytes());
         field(&mut hash, format!("{:?}", pack.filter).as_bytes());
         match &pack.source {
+            Source::Opened(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "open resource layers do not have a persistent filesystem cache key",
+                ));
+            }
             Source::Dir(path) => {
                 field(&mut hash, absolute(path)?.as_os_str().as_encoded_bytes());
                 tree(&mut hash, path, Some(pack))?;

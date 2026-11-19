@@ -6,10 +6,11 @@
 //! on a log, stone or ore. Both are one goal here. The long jump activity is
 //! the frog's goal (frog.rs) with the goat's numbers.
 use super::{
-    Damage, Mob, MobEvent, MobWorld, Who,
+    Damage, DamageKind, Mob, MobEvent, MobWorld, Who,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use mod_api::SoundSource;
 
 /// `GoatAi.TIME_BETWEEN_RAMS` and `TIME_BETWEEN_RAMS_SCREAMER`.
 const RAMS: (i32, i32) = (600, 6000);
@@ -75,7 +76,7 @@ fn tempted(m: &Mob, w: &MobWorld) -> bool {
         item.as_deref()
             .is_some_and(|i| m.kind.food.iter().any(|f| f.as_str() == i))
     };
-    w.player.as_ref().is_some_and(|p| {
+    w.selected_player().is_some_and(|p| {
         p.alive
             && !p.spectator
             && m.distance_sqr(p.position) <= 100.0
@@ -181,7 +182,13 @@ fn block_of(p: Vec3) -> [i32; 3] {
 fn play(m: &Mob, events: &mut Vec<MobEvent>, sound: &'static str, pitch: f32) {
     // PrepareRamNearestTarget / RamTarget use the level overload even when
     // Silent is set; the receiving client's bound instance checks silence.
-    events.push(MobEvent::entity_sound(m, sound, 6, 1.0, pitch));
+    events.push(MobEvent::bound_sound(
+        m,
+        sound,
+        SoundSource::Neutral,
+        1.0,
+        pitch,
+    ));
 }
 
 /// `PrepareRamNearestTarget.isWalkableBlock`.
@@ -240,7 +247,7 @@ fn choose(m: &mut Mob, w: &MobWorld, target: Who) {
 /// allow: not a goat, a player who is not creative or a spectator.
 fn nearest_target(m: &mut Mob, w: &MobWorld) -> Option<Who> {
     let mut best: Option<(Who, f64)> = None;
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && !p.creative
         && !p.spectator
@@ -415,23 +422,29 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
         // hurtServer by `noAggroMobAttack`, then the knockback.
         let amount = m.attrs.attack_damage;
         match target {
-            Who::Player => cx.events.push(MobEvent::DamagePlayer {
-                amount,
-                from,
-                kind: "minecraft:mob_attack_no_aggro",
-            }),
+            Who::Player => cx
+                .events
+                .push(cx.w.route_player_event(MobEvent::DamagePlayer {
+                    amount,
+                    from,
+                    kind: "minecraft:mob_attack_no_aggro",
+                })),
             Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
                 target: id,
                 amount,
-                source: Damage::mob(m.id, from),
+                // The same `noAggroMobAttack`: a ram angers no mob.
+                source: Damage {
+                    kind: DamageKind::MobAttackNoAggro,
+                    ..Damage::mob(m.id, from)
+                },
             }),
         }
         let level = |effect: &str| {
             m.extra
                 .effects
                 .iter()
-                .find(|e| e.0 == effect)
-                .map_or(0, |e| e.2 + 1)
+                .find(|e| e.id == effect)
+                .map_or(0, |e| e.amplifier + 1)
         };
         let boost = 0.25 * (level("minecraft:speed") - level("minecraft:slowness")) as f32;
         let factor = (m.ai.speed * 1.65).clamp(0.2, 3.0) + boost;
@@ -440,15 +453,19 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
         let force = if m.is_baby() { 1.0 } else { 2.5 };
         let power = f64::from(factor) * force;
         let d = m.extra.goat.ram_direction;
-        // The knockback's source is `mobAttack`, not the hurt's `noAggroMobAttack`,
-        // and `applyItemBlocking` runs again for it before the push.
-        cx.events.push(MobEvent::Knockback {
+        // The knockback's source is `mobAttack`, not the hurt's `noAggroMobAttack`.
+        let event = MobEvent::Knockback {
             target,
             power,
             x: d.x,
             z: d.z,
             source: Damage::mob(m.id, from),
             apply_blocking: Some(amount),
+        };
+        cx.events.push(if target == Who::Player {
+            cx.w.route_player_event(event)
+        } else {
+            event
         });
         finish_ram(m, cx.events);
         play(m, cx.events, impact, 1.0);
@@ -467,7 +484,7 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
 /// allow.
 fn rammed(m: &Mob, w: &MobWorld) -> Option<Who> {
     let bounds = m.bounds();
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && !p.creative
         && !p.spectator
@@ -555,6 +572,115 @@ fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.extra.goat.phase = Phase::Done;
 }
 
+/// `Goat.addAdditionalSaveData` and the `GoatAi` brain memory Horizon writes
+/// with it: the screaming flag, the missing horns and the long jump cooldown
+/// (`LONG_JUMP_COOLDOWN_TICKS`, an integer memory in the brain).
+pub fn write_nbt(m: &Mob, map: &mut horizon_core::nbt::Compound) {
+    use horizon_core::nbt::Tag;
+    map.insert(
+        "IsScreamingGoat".into(),
+        Tag::Byte(i8::from(m.extra.screaming)),
+    );
+    let [left, right] = m.extra.lost_horns;
+    map.insert("HasLeftHorn".into(), Tag::Byte(i8::from(!left)));
+    map.insert("HasRightHorn".into(), Tag::Byte(i8::from(!right)));
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Default::default()));
+    if !matches!(brain, Tag::Compound(_)) {
+        *brain = Tag::Compound(Default::default());
+    }
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Default::default()));
+    if !matches!(memories, Tag::Compound(_)) {
+        *memories = Tag::Compound(Default::default());
+    }
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    match crate::mobs::frog::jump_cooldown(m) {
+        Some(ticks) => {
+            memories.insert(
+                "minecraft:long_jump_cooling_down".into(),
+                Tag::compound([("value", Tag::Int(ticks as i32))]),
+            );
+        }
+        None => {
+            memories.remove(&"minecraft:long_jump_cooling_down".into());
+        }
+    }
+}
+
+/// `Goat.readAdditionalSaveData` and `Brain.Packed`'s memory: the three own
+/// fields and the ticks left of the long jump cooldown.
+pub fn read_nbt(m: &mut Mob, tag: &horizon_core::nbt::Tag) {
+    m.extra.screaming = crate::entity_nbt::flag(tag, "IsScreamingGoat");
+    let horn = |key| !crate::entity_nbt::flag_or(tag, key, true);
+    m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
+    let cooldown = tag
+        .get("Brain")
+        .and_then(|b| b.get("memories"))
+        .and_then(|b| b.get("minecraft:long_jump_cooling_down"))
+        .and_then(|m| crate::save::number(m.get("value")));
+    crate::mobs::frog::set_jump_cooldown(m, cooldown);
+}
+
+#[cfg(test)]
+mod long_jump_save_tests {
+    use super::*;
+    use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+    use horizon_core::nbt::Tag;
+    use std::sync::Arc;
+
+    fn goat() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:goat".into();
+        k.species = crate::mobs::Species::Goat;
+        Mob::new(7, kind, Vec3::new(0.5, 0.0, 0.5), 0.0)
+    }
+
+    /// `GoatAi`'s `LONG_JUMP_COOLDOWN_TICKS` is a brain memory, and
+    /// `Brain.Packed` saves every memory: `mob_to_nbt`/`mob_from_nbt` are the
+    /// pair `Game::mob_tree_nbt` and `Game::load_mob` go through. Horizon
+    /// counted the cooldown in the goat's memories and wrote no `Brain`, so a
+    /// goat that had just long jumped came back ready to jump again.
+    #[test]
+    fn a_goat_keeps_its_long_jump_cooldown_through_a_save() {
+        let mut m = goat();
+        assert_eq!(crate::mobs::frog::jump_cooldown(&m), None);
+        crate::mobs::frog::set_jump_cooldown(&mut m, Some(57));
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert_eq!(
+            saved
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:long_jump_cooling_down")),
+            Some(&Tag::compound([("value", Tag::Int(57))])),
+            "the save names the ticks left"
+        );
+        let types = std::collections::HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert_eq!(
+            crate::mobs::frog::jump_cooldown(&back),
+            Some(57),
+            "the reloaded cooldown"
+        );
+        // No cooldown writes no memory, even over a compound that names one.
+        let saved = mob_to_nbt(&goat(), [1, 2, 3, 4], Some(&saved), None, |_| None);
+        assert_eq!(
+            saved
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:long_jump_cooling_down")),
+            None,
+            "no cooldown, no key"
+        );
+    }
+}
+
 #[cfg(test)]
 mod sound_tests {
     use super::*;
@@ -571,9 +697,9 @@ mod sound_tests {
         let mut events = Vec::new();
         play(&goat, &mut events, "entity.goat.ram_impact", 1.0);
         let [
-            MobEvent::EntitySound {
+            MobEvent::BoundSound {
                 mob,
-                name,
+                sound,
                 at,
                 source,
                 volume,
@@ -583,7 +709,10 @@ mod sound_tests {
         else {
             panic!("the level sound must survive Silent and retain its emitter");
         };
-        assert_eq!((*mob, *name, *source), (37, "entity.goat.ram_impact", 6));
+        assert_eq!(
+            (*mob, *sound, *source),
+            (37, "entity.goat.ram_impact", SoundSource::Neutral)
+        );
         assert_eq!(*at, [0.123456789, 64.0, -3.25]);
         assert_eq!((*volume, *pitch), (1.0, 1.0));
         assert_eq!(goat.random.next_long(), expected.next_long());
@@ -607,13 +736,14 @@ mod ram_tests {
     /// absent, and `GoatAi.updateActivity` picks RAM before IDLE: a goat being
     /// fed or bred only follows.
     #[test]
+    #[ignore = "daily"]
     fn a_fed_or_bred_goat_starts_no_ram() {
         let kind = fake_goat();
         let mut partner = Mob::new(9, kind.clone(), Vec3::new(2.5, 64.0, 0.5), 0.0);
         partner.extra.in_love = 600;
-        let others = [partner.seen(None)];
+        let others = [partner.seen(None, &crate::items::Items::empty())];
         let ran = with_test_world(&others, |w, _| {
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut damage = crate::health::TestLevel::new(0);
             let mut events = Vec::new();
             let mut goat = Mob::new(7, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
             let mut due = |goat: &mut Mob, w: &MobWorld| {
@@ -621,7 +751,7 @@ mod ram_tests {
                     goat,
                     &mut Cx {
                         w,
-                        lr: &mut lr,
+                        level: &mut damage.level(),
                         events: &mut events,
                     },
                 )
@@ -644,12 +774,13 @@ mod ram_tests {
             stone.player = Some(p);
             assert!(due(&mut goat, &stone));
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 
     /// `RamTarget.tick` posts the hit (`noAggroMobAttack`) and then its push,
     /// which names the damage the victim's `applyItemBlocking` runs again on.
     #[test]
+    #[ignore = "daily"]
     fn a_ram_posts_the_hits_damage_with_its_push() {
         let kind = fake_goat();
         let ran = with_test_world(&[], |w, _| {
@@ -659,13 +790,13 @@ mod ram_tests {
             goat.attrs.attack_damage = 2.0;
             goat.ai.speed = 3.0;
             goat.extra.goat.ram_direction = Vec3::new(0.0, 0.0, 1.0);
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut damage = crate::health::TestLevel::new(0);
             let mut events = Vec::new();
             ram_tick(
                 &mut goat,
                 &mut Cx {
                     w: &w,
-                    lr: &mut lr,
+                    level: &mut damage.level(),
                     events: &mut events,
                 },
             );
@@ -695,6 +826,10 @@ mod ram_tests {
             // victim's second `applyItemBlocking`.
             assert_eq!(push, (7.5, 0.0, 1.0, Some(2.0)));
         });
-        let _ = ran;
+        assert!(ran, "vanilla data is missing");
     }
 }
+
+#[cfg(test)]
+#[path = "goat_ram_tests.rs"]
+mod goat_ram_tests;

@@ -50,6 +50,24 @@ pub struct World {
     pub size: u64,
     /// `icon.png`, the picture the game took of it.
     pub icon: Option<PathBuf>,
+    /// The ids of the mods it was last saved with: the code mods of `fml.LoadingModList`, then the
+    /// content mods of Horizon's `horizon.ContentModList`, as the game writes them.
+    pub mods: Vec<String>,
+}
+
+/// The worlds of `worlds` saved with any of the mods `ids`, each with those of its mods.
+pub fn saved_with<'a>(worlds: &'a [World], ids: &[String]) -> Vec<(&'a World, Vec<String>)> {
+    worlds
+        .iter()
+        .filter_map(|world| {
+            let used: Vec<String> = ids
+                .iter()
+                .filter(|id| world.mods.contains(id))
+                .cloned()
+                .collect();
+            (!used.is_empty()).then_some((world, used))
+        })
+        .collect()
 }
 
 /// The worlds in a game folder's `saves/`, the last played first.
@@ -76,6 +94,17 @@ fn level_dat(path: &Path) -> Option<Tag> {
         Err(_) => bytes,
     };
     Some(nbt::read_named(&raw, Limits::default()).ok()?.0.tag)
+}
+
+/// The time a `LastPlayed` of `millis` after the epoch names, or None for one that can't be a
+/// time: zero or less, or past the year 9999. An edited or corrupt level.dat can hold any number,
+/// and a huge one overflows `SystemTime` on Windows and the date shown everywhere.
+fn played_at(millis: i64) -> Option<SystemTime> {
+    /// 9999-12-31T23:59:59.999Z.
+    const LAST: i64 = 253_402_300_799_999;
+    (1..=LAST)
+        .contains(&millis)
+        .then(|| UNIX_EPOCH + Duration::from_millis(millis as u64))
 }
 
 fn read(path: &Path) -> Option<World> {
@@ -105,11 +134,29 @@ fn read(path: &Path) -> Option<World> {
         (_, 3) => "Spectator",
         _ => "Survival",
     };
-    let last_played = match number(field("LastPlayed")) {
-        millis if millis > 0 => UNIX_EPOCH + Duration::from_millis(millis as u64),
-        _ => changed,
-    };
+    let last_played = played_at(number(field("LastPlayed"))).unwrap_or(changed);
     let icon = path.join("icon.png");
+    // `[{ModId, ModVersion}]` lists, as `save::level_mods` writes them; anything else reads as none.
+    let listed = |list: Option<&Tag>| -> Vec<String> {
+        let Some(Tag::List(entries)) = list else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| text(entry.get("ModId")))
+            .filter(|id| !id.is_empty())
+            .collect()
+    };
+    let mut mods = listed(
+        root.as_ref()
+            .and_then(|r| r.get("fml"))
+            .and_then(|fml| fml.get("LoadingModList")),
+    );
+    mods.extend(listed(
+        root.as_ref()
+            .and_then(|r| r.get("horizon"))
+            .and_then(|horizon| horizon.get("ContentModList")),
+    ));
     Some(World {
         name: text(field("LevelName"))
             .filter(|n| !n.trim().is_empty())
@@ -121,6 +168,7 @@ fn read(path: &Path) -> Option<World> {
         version: text(field("Version").and_then(|v| v.get("Name"))),
         size: size(path),
         icon: icon.is_file().then_some(icon),
+        mods,
     })
 }
 

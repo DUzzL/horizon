@@ -153,7 +153,8 @@ impl Launcher {
                 .child(ui::text(13., FontWeight::MEDIUM, ink::FULL).child(tr("Play")))
                 .child(ui::icon("arrow-right-01", 15., white(ink::FULL)))
         } else {
-            ui::text(13., FontWeight::NORMAL, ink::QUIET).child(megabytes(w.size))
+            ui::text(13., FontWeight::NORMAL, ink::QUIET)
+                .child(horizon_launcher::storage::format_bytes(w.size))
         };
         let more = ui::icon_button(
             SharedString::from(format!("{key}-more")),
@@ -164,6 +165,7 @@ impl Launcher {
             menu_open,
             &t,
         )
+        .tooltip(ui::tip(tr("More for this world")))
         .on_click(cx.listener({
             let key = key.clone();
             move |this, event: &ClickEvent, _, cx| {
@@ -180,16 +182,7 @@ impl Launcher {
         // Under the pointer only, as the mockup's row actions: the size keeps the row's end.
         let mut more = div().relative().child(more);
         if menu_open {
-            more = more.child(
-                deferred(
-                    div()
-                        .absolute()
-                        .top(px(44.))
-                        .right_0()
-                        .child(self.world_menu(w, cx)),
-                )
-                .with_priority(1),
-            );
+            more = more.child(world_menu_overlay(self.world_menu(w, cx)));
         }
         div().child(
             row.child(ui::list_text(w.name.clone(), facts.join(" · ")))
@@ -398,13 +391,28 @@ impl Launcher {
             36.,
             &t,
         );
-        let join = if self.can_join_selected() && !offline {
+        // Signed out, Join signs in first, as Play does; otherwise a dimmed Join says why.
+        let signed_out =
+            self.owner == Some(false) && !horizon_launcher::developer_offline::selected();
+        let join = if signed_out && !offline {
+            join.tooltip(ui::tip(tr("Sign in to join")))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sign_in_to_play();
+                    cx.notify();
+                }))
+        } else if self.can_join_selected() && !offline {
             join.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.quick_play("--server", ip.clone());
                 cx.notify();
             }))
         } else {
-            join.opacity(0.4).cursor_default()
+            join.opacity(0.4)
+                .cursor_default()
+                .tooltip(ui::tip(tr(if offline {
+                    "This server doesn't answer right now"
+                } else {
+                    "Wait for the game to finish starting or installing"
+                })))
         };
         let remove = (hovered || confirming).then(|| {
             if confirming {
@@ -429,6 +437,7 @@ impl Launcher {
                             false,
                             &t,
                         )
+                        .tooltip(ui::tip(tr("Remove this server")))
                         .on_click(cx.listener(
                             move |this, _: &ClickEvent, _, cx| {
                                 this.multiplayer.confirm_remove = Some(i);
@@ -448,6 +457,19 @@ impl Launcher {
             .child(join.relative())
             .children(remove.map(|r| div().relative().child(r)))
     }
+}
+
+fn world_menu_overlay(menu: impl IntoElement) -> impl IntoElement {
+    // Offset only the downward placement so the flipped menu ends above the button.
+    deferred(
+        div().absolute().top_0().right_0().child(
+            gpui::anchored()
+                .anchor(gpui::Anchor::TopRight)
+                .offset(gpui::point(px(0.), px(44.)))
+                .child(menu),
+        ),
+    )
+    .with_priority(1)
 }
 
 /// Add server: opens or closes the line to add one, its address field focused.
@@ -499,6 +521,7 @@ pub(super) fn danger_line(message: String) -> Div {
 pub(super) fn danger_button(id: SharedString, label: SharedString) -> Stateful<Div> {
     div()
         .id(id)
+        .relative()
         .flex()
         .flex_none()
         .items_center()
@@ -506,10 +529,62 @@ pub(super) fn danger_button(id: SharedString, label: SharedString) -> Stateful<D
         .px(px(12.))
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
-        .hover(|s| s.bg(gpui::rgba(horizon_theme::glass::DANGER_HOVER << 8 | 0x1f)))
+        .child(ui::back_tint(
+            radius::CONTROL,
+            gpui::rgba(horizon_theme::glass::DANGER_HOVER << 8 | 0x1f).into(),
+        ))
         .child(
             ui::text(13., FontWeight::MEDIUM, ink::FULL)
+                .relative()
                 .text_color(ui::danger())
                 .child(label),
         )
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use super::*;
+
+    struct WorldRow {
+        bottom: bool,
+    }
+
+    impl Render for WorldRow {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let menu = div()
+                .debug_selector(|| "menu".into())
+                .w(px(230.))
+                .h(px(200.));
+            div().size_full().relative().child(
+                div()
+                    .absolute()
+                    .right(px(16.))
+                    .map(|row| {
+                        if self.bottom {
+                            row.bottom_0()
+                        } else {
+                            row.top_0()
+                        }
+                    })
+                    .size(px(36.))
+                    .debug_selector(|| "button".into())
+                    .child(world_menu_overlay(menu)),
+            )
+        }
+    }
+
+    #[gpui::test]
+    async fn world_menu_fits_at_both_ends_of_the_window(cx: &mut gpui::TestAppContext) {
+        for bottom in [false, true] {
+            let (_, window) = cx.add_window_view(|_, _| WorldRow { bottom });
+            let menu = window.debug_bounds("menu").unwrap();
+            let button = window.debug_bounds("button").unwrap();
+            assert_eq!(menu.right(), button.right());
+            if bottom {
+                assert!(menu.top() >= px(0.) && menu.bottom() <= button.top());
+            } else {
+                assert!(menu.top() >= button.bottom());
+            }
+        }
+    }
 }

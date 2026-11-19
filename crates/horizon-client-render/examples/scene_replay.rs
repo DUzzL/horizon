@@ -6,13 +6,14 @@
 //! [--mipmaps N] [--lod-distance CHUNKS] [--render-distance CHUNKS] [--size WxH]
 //! [--section-draws flat|indirect] [--section-cull on|off] [--section-sides on|off]
 //! [--gpu-culling on|off] [--root RESOURCES] [--screenshot PNG]
-//! [--world SAVE --leaf-culling MODE] [--memory on]`
+//! [--world SAVE --leaf-culling MODE] [--memory on] [--gpu-detail on|off]`
 //! `--screenshot` saves the first view's last frame, after the timed frames.
 //! `--world` meshes the captured sections again from that save's region files
 //! (blocks, biomes and saved light; `ao`, `biomeBlendRadius` and `cutoutLeaves`
 //! from `./options.txt`) with `--leaf-culling` (default `off`), so a mesher
 //! change can be measured on the captured view. A section whose 3x3 columns are
 //! not all saved keeps its captured mesh.
+//! `--gpu-detail on` adds GPU culling's dispatch times and, on Vulkan, the world passes' counters.
 //! `--memory on` adds the renderer's largest GPU resources and, on macOS, the process's
 //! physical footprint by category (`footprint`), taken after the timed frames.
 use horizon_client_render::{
@@ -24,6 +25,7 @@ use horizon_client_render::{
     gfx::{
         PreparedTextures, Renderer, ScreenshotRequest,
         capture::{self, AtlasCheck, Scene},
+        pack_timing,
         panorama::Faces,
     },
     graphics::LeafCullingMode,
@@ -35,12 +37,6 @@ use horizon_client_render::{
 use horizon_core::{
     biome::{BiomeZoom, obfuscate_seed},
     paletted::PalettedContainer,
-};
-use horizon_world::{
-    chunk::BlockState,
-    nbt::{Limits, NamedTag, Tag},
-    region::RegionFile,
-    registry::BlockRegistry,
 };
 use serde_json::{Value, json};
 use std::{
@@ -57,11 +53,18 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+use {
+    horizon_core::nbt::{Limits, NamedTag, Tag},
+    horizon_world::{chunk::BlockState, region::RegionFile, registry::BlockRegistry},
+};
 
 // The game's allocator, so that `--memory`'s footprint is the game's: the system heap kept
 // gigabytes of the meshes `--world` frees dirty.
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
+
+/// Frames drawn with detail on, enough for a few timed frames of each kind.
+const DETAIL_FRAMES: usize = 60;
 
 #[derive(Default)]
 struct Options {
@@ -84,6 +87,7 @@ struct Options {
     world: Option<PathBuf>,
     leaf_culling: LeafCullingMode,
     memory: bool,
+    gpu_detail: bool,
 }
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -136,6 +140,7 @@ fn options() -> Result<Options, String> {
             "--screenshot" => o.screenshot = Some(value.into()),
             "--world" => o.world = Some(value.into()),
             "--memory" => o.memory = on_off(&value)?,
+            "--gpu-detail" => o.gpu_detail = on_off(&value)?,
             "--leaf-culling" => {
                 o.leaf_culling = LeafCullingMode::ALL
                     .into_iter()
@@ -179,7 +184,9 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let root = o.root.clone().unwrap_or_else(|| settings.resources.clone());
     let loading = Instant::now();
     let assets = Assets::load(&root)?;
-    let render = assets.reload(&root)?;
+    let render = assets.reload(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))?;
     if AtlasCheck::of(&render) != settings.atlas {
         return Err(format!(
             "the block sprites at {} are not the ones the capture was made with (resource packs \
@@ -222,7 +229,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         None,
         settings.graphics_api(),
         settings.translucent_batching,
-        false,
+        (false, false),
         // HDR off, as the replays draw.
         &horizon_client_render::graphics::Graphics::default(),
         Default::default(),
@@ -343,7 +350,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     }
     let loaded_ms = ms(loading.elapsed());
 
-    let hud = HudBatch::new([width, height]);
+    let hud = HudBatch::scratch([width, height]);
     let mut views = Vec::new();
     for &offset in &o.yaw_offsets {
         let mut frame = scene.frame(&hud);
@@ -394,11 +401,32 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
             }
-            match renderer.screenshot_result.take() {
+            let result = renderer
+                .screenshot_result
+                .take()
+                .map(|result| result.and_then(|pending| pending.save().map_err(|e| e.to_string())));
+            match result {
                 Some(Ok(_)) => {}
                 Some(Err(e)) => notes.push(format!("screenshot: {e}")),
                 None => notes.push("screenshot: not saved".into()),
             }
+        }
+        let mut detail = serde_json::Map::new();
+        if o.gpu_detail {
+            renderer.set_pass_detail(true);
+            for _ in 0..DETAIL_FRAMES {
+                draw(&mut renderer)?;
+            }
+            detail.insert(
+                "gpu_pass_parts_median_ms".into(),
+                pack_timing::parts_json(&renderer.own_pass_parts()),
+            );
+            let unit = renderer.pass_detail_support().and_then(|s| s.fragment_unit);
+            detail.insert(
+                "gpu_counters_median".into(),
+                pack_timing::counters_by_pass_json(&renderer.own_pass_counters(), unit),
+            );
+            renderer.set_pass_detail(false);
         }
         views.push(json!({
             "yaw_offset": offset,
@@ -417,6 +445,9 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
             // indices hidden.
             "culled": renderer.culled_sections(),
         }));
+        if let Some(Value::Object(view)) = views.last_mut() {
+            view.extend(detail);
+        }
     }
     let section_draws = if renderer.flat_draws() {
         "flat"
@@ -424,6 +455,11 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         "indirect"
     };
     let memory = o.memory.then(|| memory_report(&renderer));
+    let gpu_detail = o
+        .gpu_detail
+        .then(|| renderer.pass_detail_support())
+        .flatten()
+        .map(pack_timing::support_json);
     let report = json!({
         "capture": o.dir.display().to_string(),
         "adapter": renderer.info.name,
@@ -454,6 +490,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         "notes": notes,
         "views": views,
         "memory": memory,
+        "gpu_detail": gpu_detail,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -562,8 +599,10 @@ fn remesh(
 ) -> Result<FxHashMap<[i32; 3], SectionMesh>, Box<dyn std::error::Error>> {
     let facts = BlockFacts::load(root, assets.registry)?;
     let visibility = models::load_visibility(root, assets.registry)?;
-    let tables = MeshTables::new(assets, render, &facts, visibility)?;
-    let biomes = Biomes::load(root)?;
+    let tables = MeshTables::new(assets, render, &facts, visibility, None)?;
+    let biomes = Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))?;
     let seed = world_seed(save).unwrap_or_else(|| {
         eprintln!(
             "scene_replay: no seed in {}, biome blending uses 0",
@@ -654,6 +693,7 @@ fn remesh(
                         shader_pack_lighting: false,
                         separate_ao: false,
                         shader_pack: false,
+                        looks: false,
                         assets,
                         render,
                         tables: &tables,
@@ -666,6 +706,8 @@ fn remesh(
                         opaque_ice: false,
                         translucent_layers: &[],
                         leaf_culling,
+                        hidden_states: &[],
+                        part_tables: Default::default(),
                     };
                     let mut scratch = MeshScratch::default();
                     let mut out = Vec::new();

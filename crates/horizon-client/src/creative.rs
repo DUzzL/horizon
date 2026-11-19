@@ -6,9 +6,58 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
+    hash::{BuildHasher, Hasher, RandomState},
     path::Path,
     sync::{Arc, Mutex, OnceLock},
 };
+
+/// Append distinct mod stacks while preserving the exported and insertion order.
+fn append_unique_stacks<'a>(
+    items: &mut Vec<ItemStack>,
+    added: impl Iterator<Item = &'a ItemStack>,
+    mut on_append: impl FnMut(&ItemStack),
+) {
+    // Indexing has an upfront cost proportional to the exported list. Budget
+    // actual comparisons so early matches do not trigger an unnecessary index.
+    let mut scan_budget = items.len().saturating_mul(64).max(8 * 1024);
+    let mut index = None;
+    let hash_builder = RandomState::new();
+    let fingerprint = |stack: &ItemStack| {
+        let mut hasher = hash_builder.build_hasher();
+        stack.hash_item_and_components(&mut hasher);
+        hasher.finish()
+    };
+    for stack in added {
+        if index.is_none() && scan_budget == 0 {
+            let mut buckets = HashMap::<u64, Vec<usize>>::with_capacity(items.len());
+            for (position, item) in items.iter().enumerate() {
+                buckets.entry(fingerprint(item)).or_default().push(position);
+            }
+            index = Some(buckets);
+        }
+
+        if let Some(buckets) = &mut index {
+            let candidates = buckets.entry(fingerprint(stack)).or_default();
+            if candidates
+                .iter()
+                .any(|&i| items[i].same_item_same_components(stack))
+            {
+                continue;
+            }
+            candidates.push(items.len());
+        } else {
+            let duplicate = items
+                .iter()
+                .position(|s| s.same_item_same_components(stack));
+            scan_budget = scan_budget.saturating_sub(duplicate.map_or(items.len(), |i| i + 1));
+            if duplicate.is_some() {
+                continue;
+            }
+        }
+        items.push(stack.clone());
+        on_append(stack);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Tab {
@@ -94,6 +143,12 @@ pub struct Creative {
     /// The `hasPermissions` the tabs were last built with
     /// (`CreativeModeTabs.tryRebuildTabContents`).
     permissions: bool,
+    /// Whether the game built the tabs since they loaded (`build`), which
+    /// asks the mods for their stacks: until then only the exported ones.
+    built: bool,
+    /// The stacks mods added to item tabs in the last build
+    /// (`BuildCreativeModeTabContentsEvent`), by tab id, in the order asked.
+    added: Vec<(String, Vec<ItemStack>)>,
     /// ItemPickerMenu.items: what the grid shows, filled when the tab or the
     /// search changes (selectTab, refreshSearchResults), not on every frame.
     shown: Mutex<Option<Shown>>,
@@ -141,21 +196,28 @@ pub struct Names {
     map: HashMap<String, String>,
 }
 impl Names {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &horizon_assets::resource_source::ResourceSource) -> Self {
         let read = |namespace: &str| {
-            fs::read(root.join(format!("assets/{namespace}/lang/en_us.json")))
+            root.read(&format!("assets/{namespace}/lang/en_us.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
                 .unwrap_or_default()
         };
         let mut map = read("minecraft");
         // Content mods' names (docs/modpacks.md); none in a vanilla root.
-        for namespace in crate::mod_content::namespaces(root) {
+        for namespace in root
+            .namespaces("assets")
+            .into_iter()
+            .filter(|ns| ns != "minecraft")
+        {
             map.extend(read(&namespace));
         }
         Self { map }
     }
     pub fn item(&self, id: &str) -> String {
+        if let Some(name) = crate::item_data::default_names::of(id) {
+            return name.plain();
+        }
         let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
         self.map
             .get(&format!("item.{namespace}.{path}"))
@@ -166,6 +228,9 @@ impl Names {
     /// An item's display name in the selected language: `item.*` then
     /// `block.*`, then the pinned English map (`Names::item`).
     pub fn display_item(&self, id: &str) -> String {
+        if let Some(name) = crate::item_data::default_names::of(id) {
+            return name.plain();
+        }
         let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
         if let Some(lang) = crate::lang::current() {
             for prefix in ["item", "block"] {
@@ -212,6 +277,8 @@ pub fn item_group_key(id: &str) -> Option<&'static str> {
 impl Creative {
     pub const WIDTH: f32 = 195.0;
     pub const HEIGHT: f32 = 136.0;
+    /// How far a tab row reaches outside the window, above or below it.
+    pub const TAB_ROW_DEPTH: f32 = 28.0;
     pub const TRASH_POSITION: (f32, f32) = (173.0, 112.0);
 
     /// Visible player slots in the creative inventory tab (game slot ids).
@@ -410,6 +477,8 @@ impl Creative {
             exported,
             exported_search,
             permissions: false,
+            built: false,
+            added: Vec::new(),
             shown: Mutex::new(None),
             lines_cache: Mutex::new(None),
             pack: Vec::new(),
@@ -420,18 +489,29 @@ impl Creative {
     /// `CreativeModeTabs.buildAllTabContents` with `permissions`: the operator
     /// tab's display items generator lists its stacks only with them
     /// (`hasPermissions`), and the search tab with it; a category tab is
-    /// shown with a stack (`CreativeModeTab.shouldDisplay`).
+    /// shown with a stack (`CreativeModeTab.shouldDisplay`). The stacks mods
+    /// added (`added`) follow each tab's own, then join the end of the search
+    /// tab; a stack already listed there (same item and components) and an
+    /// empty one are left out.
     fn rebuild(&mut self) {
         let permissions = self.permissions;
         let keep = |operator: bool| permissions || !operator;
+        let usable = |s: &&ItemStack| s.count > 0 && s.item.as_ref() != "minecraft:air";
+        let added = &self.added;
         self.tabs = self
             .exported
             .iter()
             .filter_map(|e| {
-                let items: Vec<ItemStack> = (e.tab.items.iter().zip(&e.operator))
+                let mut items: Vec<ItemStack> = (e.tab.items.iter().zip(&e.operator))
                     .filter(|(_, o)| keep(**o))
                     .map(|(s, _)| s.clone())
                     .collect();
+                let stacks = added
+                    .iter()
+                    .filter(|(tab, _)| *tab == e.tab.id)
+                    .flat_map(|(_, stacks)| stacks)
+                    .filter(usable);
+                append_unique_stacks(&mut items, stacks, |_| {});
                 let mut tab = Tab {
                     items,
                     ..e.tab.header()
@@ -447,6 +527,16 @@ impl Creative {
             .filter(|(_, _, o)| keep(*o))
             .map(|(s, e, _)| (s.clone(), e.clone()))
             .unzip();
+        let stacks = added.iter().flat_map(|(_, stacks)| stacks).filter(usable);
+        append_unique_stacks(&mut self.search_items, stacks, |stack| {
+            // No exported tooltip lines or tags: searched by its name.
+            let (namespace, path) = split_id(&java_lower(&stack.item));
+            self.search_index.push(SearchEntry {
+                namespace,
+                path,
+                ..Default::default()
+            });
+        });
         self.forget_items();
     }
     /// The packs' Polytone creative tab modifiers (wiki "Creative Tab Modifiers"): the tabs are
@@ -490,17 +580,44 @@ impl Creative {
     /// `CreativeModeInventoryScreen.tryRefreshInvalidatedTabs`, which its
     /// constructor and `containerTick` run with `hasPermissions`
     /// (`Player.canUseGameMasterBlocks` and the Operator Items Tab option):
-    /// when that changed, the tabs are built again. A selected tab left
-    /// without stacks (the operator tab) gives way to the default tab; any
-    /// other keeps its first row (`refreshCurrentTabContents`). True when the
-    /// tabs were rebuilt.
-    pub fn set_permissions(&mut self, permissions: bool, names: &Names) -> bool {
-        if permissions == self.permissions {
-            return false;
+    /// the item tabs to build, by id, when the tabs need building, the first
+    /// time since they loaded and whenever `permissions` changed; None when
+    /// they are current. The game asks the mods for each tab's stacks
+    /// (`BuildCreativeModeTabContentsEvent`) and hands them to `build`.
+    pub fn tabs_to_build(&self, permissions: bool) -> Option<Vec<String>> {
+        if self.built && permissions == self.permissions {
+            return None;
         }
+        Some(
+            self.exported
+                .iter()
+                .filter(|e| !e.tab.search && !e.tab.inventory && !e.tab.hotbar)
+                .map(|e| e.tab.id.clone())
+                .collect(),
+        )
+    }
+    /// Invalidate collected contents after client resources are published, even
+    /// when permissions have not changed. The next refresh recollects mod stacks.
+    pub fn invalidate_build(&mut self) {
+        self.built = false;
+        self.forget_items();
+    }
+    /// `CreativeModeTabs.buildAllTabContents` with `permissions` and the
+    /// stacks mods add (`added`, by tab id, for the tabs `tabs_to_build`
+    /// named). A selected tab left without stacks (the operator tab) gives
+    /// way to the default tab; any other keeps its first row
+    /// (`refreshCurrentTabContents`).
+    pub fn build(
+        &mut self,
+        permissions: bool,
+        added: Vec<(String, Vec<ItemStack>)>,
+        names: &Names,
+    ) {
         let selected = self.tab().id.clone();
         let row = self.first_row(names);
         self.permissions = permissions;
+        self.built = true;
+        self.added = added;
         self.rebuild();
         match self.tabs.iter().position(|t| t.id == selected) {
             Some(tab) => {
@@ -522,7 +639,6 @@ impl Creative {
                 self.select(default.unwrap_or(0));
             }
         }
-        true
     }
     /// Where a stack comes in the creative tabs (the search tab lists them
     /// all, in tab order): the same stack's place, else its item's first.
@@ -675,10 +791,18 @@ impl Creative {
         self.search_items
             .iter()
             .map(|s| {
-                crate::item_tooltip::lines(s, None, &self.enchantments, translate)
-                    .iter()
-                    .map(|l| java_lower(l))
-                    .collect()
+                crate::item_tooltip::lines(
+                    s,
+                    None,
+                    &crate::item_tooltip::NoAttributeListener,
+                    &self.enchantments,
+                    translate,
+                    // The search cache has no attribute catalog: vanilla's look.
+                    &|_| None,
+                )
+                .iter()
+                .map(|l| java_lower(l))
+                .collect()
             })
             .collect()
     }
@@ -833,6 +957,27 @@ impl Creative {
         self.scrolling = self.can_scroll(names);
         true
     }
+    /// `CreativeModeInventoryScreen.extractRenderState`: over the scrollbar the
+    /// cursor is the pointing hand, the vertical resize while it is held, and
+    /// not-allowed when there is nothing to scroll. `mouse` is relative to the
+    /// screen origin, like [`Self::inside_scrollbar`]; None away from the bar.
+    pub fn scrollbar_cursor(
+        &self,
+        mouse: (f32, f32),
+        names: &Names,
+    ) -> Option<crate::widgets::Cursor> {
+        use crate::widgets::Cursor;
+        if !self.inside_scrollbar(mouse.0, mouse.1) {
+            return None;
+        }
+        Some(if !self.can_scroll(names) {
+            Cursor::NotAllowed
+        } else if self.scrolling {
+            Cursor::ResizeNs
+        } else {
+            Cursor::PointingHand
+        })
+    }
     /// mouseDragged while the scrollbar is held, at a cursor height relative to
     /// the screen origin, wherever the cursor is (even off the track or the window).
     pub fn drag_scrollbar(&mut self, y: f32) -> bool {
@@ -913,14 +1058,28 @@ impl Creative {
             // Right-aligned tabs (search, operator, inventory).
             x = Self::WIDTH - 27.0 * (7 - tab.column) as f32 + 1.0;
         }
-        let y = if tab.top { -28.0 } else { Self::HEIGHT - 4.0 };
+        let y = if tab.top {
+            -Self::TAB_ROW_DEPTH
+        } else {
+            Self::HEIGHT - 4.0
+        };
         (x, y)
     }
     /// `CreativeModeInventoryScreen.checkTabHovering`: the tab whose icon
     /// rectangle, 3 pixels in from its 26x32 slot (`isHovering(x + 3, y + 3,
     /// 21, 27)`), holds the cursor. The screen draws its display name.
-    pub fn hovered_tab(tabs: &[Tab], origin: (f32, f32), cursor: (f32, f32)) -> Option<usize> {
+    /// Tabs on another page share those slots, so only a tab on `page` (or
+    /// one every page shows) can be hovered, as a click already does.
+    pub fn hovered_tab(
+        tabs: &[Tab],
+        page: u32,
+        origin: (f32, f32),
+        cursor: (f32, f32),
+    ) -> Option<usize> {
         tabs.iter().position(|tab| {
+            if tab.page != page && !Self::on_every_page(tab) {
+                return false;
+            }
             let (x, y) = Self::tab_position(tab);
             let (x, y) = (origin.0 + x + 3.0, origin.1 + y + 3.0);
             cursor.0 >= x && cursor.0 < x + 21.0 && cursor.1 >= y && cursor.1 < y + 27.0
@@ -1013,6 +1172,19 @@ pub fn slot_locked(stack: &ItemStack) -> bool {
         .is_some_and(|d| d.other("minecraft:creative_slot_lock").is_some())
 }
 
+/// `ItemStack.getMaxStackSize` for a copy taken from the creative screen: the
+/// stack's `minecraft:max_stack_size` component, clamped to the codec's
+/// 1..=99, otherwise the item's own size.
+pub fn creative_stack_limit(stack: &ItemStack, item_max: u32) -> u32 {
+    match stack
+        .data()
+        .and_then(|data| data.other("minecraft:max_stack_size"))
+    {
+        Some(horizon_core::nbt::Tag::Int(n)) => (*n).clamp(1, 99) as u32,
+        _ => item_max,
+    }
+}
+
 /// `CreativeModeInventoryScreen.slotClicked` on a display slot
 /// (`slot.container == CONTAINER`): `shown` is the slot's item (None past
 /// the tab's end) and `max` gives an item's max stack size. The tab's items
@@ -1092,7 +1264,7 @@ pub fn click_display(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_world::nbt::Tag;
+    use horizon_core::nbt::Tag;
 
     fn stack(item: &str, count: u32) -> ItemStack {
         ItemStack {
@@ -1101,6 +1273,75 @@ mod tests {
             damage: 0,
             extra: None,
         }
+    }
+
+    #[test]
+    fn rebuild_deduplicates_nested_variants_in_category_and_search_order() {
+        let mut creative = tooltip_tabs();
+        let tab_id = "minecraft:building_blocks";
+        let mut added = vec![stack("oak_log", 64), stack("air", 1), stack("stone", 0)];
+        let variants: Vec<_> = (0..256)
+            .map(|variant| {
+                let mut inner = stack("stone", 1 + variant % 2);
+                inner.data_mut().set_other(
+                    "minecraft:custom_data",
+                    Some(Tag::compound([(
+                        "marker",
+                        Tag::List(vec![Tag::Int((variant / 2) as i32)]),
+                    )])),
+                );
+                let mut outer = stack("shulker_box", 1);
+                outer.data_mut().container.push((0, inner));
+                outer
+            })
+            .collect();
+        added.extend(variants.iter().cloned());
+        let mut duplicate = variants[0].clone();
+        duplicate.count = 2;
+        duplicate.data_mut().bundle_selected.0 = 1;
+        added.push(duplicate.clone());
+        let mut expected_search = creative.search_items.clone();
+        expected_search.extend(variants.iter().cloned());
+        let mut expected_category = vec![stack("oak_log", 1)];
+        expected_category.extend(variants);
+        creative.build(
+            false,
+            vec![
+                (tab_id.to_owned(), added),
+                (
+                    "minecraft:natural_blocks".to_owned(),
+                    vec![duplicate.clone()],
+                ),
+            ],
+            &Names::default(),
+        );
+        let category = |id: &str| &creative.tabs.iter().find(|tab| tab.id == id).unwrap().items;
+        assert_eq!(category(tab_id), &expected_category);
+        assert_eq!(
+            category("minecraft:natural_blocks").last(),
+            Some(&duplicate)
+        );
+        assert_eq!(creative.search_items, expected_search);
+        assert_eq!(creative.search_index.len(), creative.search_items.len());
+    }
+
+    /// A middle-click on a display item copies `getMaxStackSize`. The component
+    /// wins over the item's 64; a stack without one still copies the item's size.
+    #[test]
+    fn a_display_click_copies_the_stacks_own_max_stack_size() {
+        use crate::menu::Input;
+        let limit = |s: &ItemStack| creative_stack_limit(s, 64);
+        let mut plain = None;
+        click_display(&mut plain, Some(&stack("stone", 1)), limit, 0, Input::Clone);
+        assert_eq!(plain.unwrap().count, 64);
+
+        let mut shown = stack("stone", 1);
+        shown
+            .data_mut()
+            .set_other("minecraft:max_stack_size", Some(Tag::Int(16)));
+        let mut carried = None;
+        click_display(&mut carried, Some(&shown), limit, 0, Input::Clone);
+        assert_eq!(carried.unwrap().count, 16);
     }
 
     /// One click on a display slot showing one stone (max 64; pearls 16).
@@ -1462,6 +1703,36 @@ mod tests {
         c.tabs.iter().map(|t| t.id.as_str()).collect()
     }
 
+    /// The game's `refresh_creative_tabs`, with `mods` answering each tab
+    /// (`BuildCreativeModeTabContentsEvent`): true when the tabs were built.
+    fn refresh_with(
+        c: &mut Creative,
+        permissions: bool,
+        names: &Names,
+        mods: &dyn Fn(&str, bool) -> Vec<ItemStack>,
+    ) -> bool {
+        let Some(tabs) = c.tabs_to_build(permissions) else {
+            return false;
+        };
+        let added = tabs
+            .into_iter()
+            .map(|tab| {
+                let items = mods(&tab, permissions);
+                (tab, items)
+            })
+            .collect();
+        c.build(permissions, added, names);
+        true
+    }
+
+    fn refresh(c: &mut Creative, permissions: bool, names: &Names) -> bool {
+        refresh_with(c, permissions, names, &|_, _| Vec::new())
+    }
+
+    fn ids(items: &[ItemStack]) -> Vec<&str> {
+        items.iter().map(|s| s.item.as_ref()).collect()
+    }
+
     #[test]
     fn operator_stacks_stay_out_without_permissions() {
         let c = with_operator_tab();
@@ -1483,9 +1754,11 @@ mod tests {
     fn operator_tab_comes_and_goes_with_permissions() {
         let mut c = with_operator_tab();
         let names = Names::default();
-        assert!(!c.set_permissions(false, &names));
-        assert!(c.set_permissions(true, &names));
-        assert!(!c.set_permissions(true, &names));
+        // The first build after loading, then only when permissions change.
+        assert!(refresh(&mut c, false, &names));
+        assert!(!refresh(&mut c, false, &names));
+        assert!(refresh(&mut c, true, &names));
+        assert!(!refresh(&mut c, true, &names));
         assert_eq!(
             tab_ids(&c),
             [
@@ -1502,17 +1775,149 @@ mod tests {
         // The search tab keeps its place across the rebuild.
         c.select(2);
         c.search.set_value("block");
-        assert!(c.set_permissions(false, &names));
+        assert!(refresh(&mut c, false, &names));
         assert!(c.tab().search);
         assert_eq!(c.search.value, "block");
         assert!(c.items(&names).is_empty());
         // The selected operator tab is left empty: the default tab instead.
-        c.set_permissions(true, &names);
+        refresh(&mut c, true, &names);
         c.select(1);
         assert_eq!(c.items(&names).len(), 2);
-        c.set_permissions(false, &names);
+        refresh(&mut c, false, &names);
         assert_eq!(c.tab().id, "minecraft:building_blocks");
         assert_eq!(c.items(&names)[0].item.as_ref(), "minecraft:stone");
+    }
+
+    #[test]
+    fn mods_are_asked_for_each_item_tab_only() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        let asked = std::cell::RefCell::new(Vec::new());
+        refresh_with(&mut c, false, &names, &|tab, permissions| {
+            asked.borrow_mut().push((tab.to_owned(), permissions));
+            Vec::new()
+        });
+        // Not the search or survival inventory tabs; the operator tab even
+        // without permissions, as vanilla builds it (and leaves it empty).
+        assert_eq!(
+            *asked.borrow(),
+            [
+                ("minecraft:building_blocks".to_owned(), false),
+                ("minecraft:op_blocks".to_owned(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn mods_stacks_follow_the_tabs_own_and_join_the_search_tab() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        let mods = |tab: &str, _: bool| match tab {
+            "minecraft:building_blocks" => vec![
+                ItemStack::new("ae2:sky_stone_block", 1),
+                // Already in the tab and the search tab: not listed twice.
+                ItemStack::new("minecraft:stone", 1),
+                // Empty stacks are left out.
+                ItemStack::new("ae2:quartz_block", 0),
+                ItemStack::new("minecraft:air", 1),
+                // Listed once, though accepted twice.
+                ItemStack::new("ae2:sky_stone_block", 1),
+            ],
+            _ => Vec::new(),
+        };
+        assert!(refresh_with(&mut c, false, &names, &mods));
+        assert_eq!(
+            ids(&c.tabs[0].items),
+            ["minecraft:stone", "ae2:sky_stone_block"]
+        );
+        assert_eq!(
+            ids(c.search_items()),
+            ["minecraft:stone", "ae2:sky_stone_block"]
+        );
+        // Searched by its name, which it has no exported line for.
+        assert_eq!(c.search_results("sky", &names), [1]);
+        assert_eq!(c.search_results("ae2:", &names), [1]);
+        c.select(0);
+        assert_eq!(
+            ids(&c.items(&names)),
+            ["minecraft:stone", "ae2:sky_stone_block"]
+        );
+    }
+
+    #[test]
+    fn resource_reload_recollects_with_unchanged_permissions() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        refresh_with(&mut c, false, &names, &|_, _| {
+            vec![ItemStack::new("example:old", 1)]
+        });
+        assert!(c.tabs_to_build(false).is_none());
+        c.invalidate_build();
+        refresh_with(&mut c, false, &names, &|_, _| {
+            vec![ItemStack::new("example:new", 1)]
+        });
+        assert_eq!(ids(c.search_items()), ["minecraft:stone", "example:new"]);
+        assert!(c.tabs_to_build(false).is_none());
+    }
+
+    #[test]
+    fn a_rebuild_asks_the_mods_again() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        // An operator-only stack a mod lists with permissions alone.
+        let mods = |tab: &str, permissions: bool| {
+            if tab == "minecraft:op_blocks" && permissions {
+                vec![ItemStack::new("ae2:debug_card", 1)]
+            } else {
+                Vec::new()
+            }
+        };
+        refresh_with(&mut c, false, &names, &mods);
+        assert_eq!(
+            tab_ids(&c),
+            [
+                "minecraft:building_blocks",
+                "minecraft:search",
+                "minecraft:inventory"
+            ]
+        );
+        refresh_with(&mut c, true, &names, &mods);
+        assert_eq!(
+            ids(&c.tabs[1].items),
+            [
+                "minecraft:command_block",
+                "minecraft:barrier",
+                "ae2:debug_card"
+            ]
+        );
+        assert_eq!(
+            ids(c.search_items()),
+            [
+                "minecraft:stone",
+                "minecraft:command_block",
+                "minecraft:barrier",
+                "ae2:debug_card"
+            ]
+        );
+        // Without permissions the mod's stack goes with the tab.
+        refresh_with(&mut c, false, &names, &mods);
+        assert_eq!(ids(c.search_items()), ["minecraft:stone"]);
+    }
+
+    #[test]
+    fn a_mods_stack_brings_back_an_empty_category_tab() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        // `shouldDisplay`: a category tab with a stack is shown, whoever added it.
+        refresh_with(&mut c, false, &names, &|tab, _| {
+            if tab == "minecraft:op_blocks" {
+                vec![ItemStack::new("ae2:creative_energy_cell", 1)]
+            } else {
+                Vec::new()
+            }
+        });
+        assert_eq!(tab_ids(&c)[1], "minecraft:op_blocks");
+        assert_eq!(ids(&c.tabs[1].items), ["ae2:creative_energy_cell"]);
     }
 
     #[test]
@@ -1676,6 +2081,39 @@ mod tests {
         assert!(!c.scrolling);
     }
 
+    #[test]
+    fn scrollbar_asks_for_the_cursor_its_state_calls_for() {
+        use crate::widgets::Cursor;
+        let names = Names {
+            map: HashMap::new(),
+        };
+        let mut c = creative(90);
+        c.selected = 1;
+        // Over the track: the hand. Beside it: no request at all.
+        assert_eq!(
+            c.scrollbar_cursor((180.0, 60.0), &names),
+            Some(Cursor::PointingHand)
+        );
+        assert_eq!(c.scrollbar_cursor((170.0, 60.0), &names), None);
+        // Held: the vertical resize, until it is released.
+        assert!(c.press_scrollbar(180.0, 60.0, &names));
+        assert_eq!(
+            c.scrollbar_cursor((180.0, 60.0), &names),
+            Some(Cursor::ResizeNs)
+        );
+        c.release();
+        assert_eq!(
+            c.scrollbar_cursor((180.0, 60.0), &names),
+            Some(Cursor::PointingHand)
+        );
+        // The inventory tab has nothing to scroll, so the bar is not allowed.
+        c.selected = 0;
+        assert_eq!(
+            c.scrollbar_cursor((180.0, 60.0), &names),
+            Some(Cursor::NotAllowed)
+        );
+    }
+
     /// `CreativeModeInventoryScreen.selectTab`: the search box is focused on
     /// its own tab and loses the focus when another tab is shown (and, hidden,
     /// is no longer the field a key types into).
@@ -1812,12 +2250,56 @@ mod tests {
         let tab = &screen.tabs[0];
         let (x, y) = Creative::tab_position(tab);
         let at =
-            |dx: f32, dy: f32| Creative::hovered_tab(&screen.tabs, (0.0, 0.0), (x + dx, y + dy));
+            |dx: f32, dy: f32| Creative::hovered_tab(&screen.tabs, 0, (0.0, 0.0), (x + dx, y + dy));
         assert_eq!(at(4.0, 4.0), Some(0));
         assert_eq!(at(23.5, 4.0), Some(0));
         assert_eq!(at(2.0, 4.0), None);
         assert_eq!(at(24.0, 4.0), None);
         assert_eq!(at(4.0, 2.0), None);
         assert_eq!(at(4.0, 30.0), None);
+    }
+
+    /// Off-page tabs sit in the same slot as the tab drawn there, so hover
+    /// must ignore them and name the tab on the page shown.
+    #[test]
+    fn hovered_tab_follows_the_page_shown() {
+        let stack = |id: &str| format!("{{count:1,id:\"minecraft:{id}\"}}");
+        let tab = |id: &str, column: u32, page: u32| {
+            serde_json::json!({"id": format!("minecraft:{id}"), "type": "CATEGORY", "row": "TOP",
+                "column": column, "page": page, "title": id, "icon": stack("stone"),
+                "visible": true, "items": [stack("stone")]})
+        };
+        let screen = Creative::from_json(&serde_json::json!({"schema": 3, "tabs": [
+            tab("building_blocks", 0, 0),
+            tab("modded", 0, 1),
+            tab("search", 6, 0),
+        ]}))
+        .unwrap();
+        let at = |page: u32, tab: usize| {
+            let (x, y) = Creative::tab_position(&screen.tabs[tab]);
+            Creative::hovered_tab(&screen.tabs, page, (0.0, 0.0), (x + 4.0, y + 4.0))
+        };
+        // Page 0: the vanilla tab in column 0, not the mod tab that shares it.
+        assert_eq!(at(0, 0), Some(0));
+        // Page 1: the same slot is the mod tab; the vanilla tab is not hovered.
+        assert_eq!(at(1, 0), Some(1));
+        assert_eq!(at(1, 1), Some(1));
+        // A right-hand tab (column >= 5) still hovers on every page.
+        assert_eq!(at(0, 2), Some(2));
+        assert_eq!(at(1, 2), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod source_name_tests {
+    #[test]
+    fn item_names_read_selected_namespace_resources_without_files() {
+        use horizon_assets::resource_source::{Resource, ResourceSource};
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([(
+            "assets/reader/lang/en_us.json".into(),
+            Resource::bytes(br#"{"item.reader.widget":"Selected widget"}"#.to_vec()),
+        )]));
+        let names = super::Names::load(&source);
+        assert_eq!(names.item("reader:widget"), "Selected widget");
     }
 }

@@ -126,9 +126,10 @@ def run_server(name, command, directory, setup, probes, boot_timeout=600):
 
 def horizon_binary(args, build):
     if args.binary:
-        return Path(args.binary)
+        # Each server runs with its world as the working directory, so a relative path must be the caller's.
+        return Path(os.path.abspath(args.binary))
     with (build / 'cargo-build.log').open('w') as log:
-        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-client', '--bin', 'horizon-client'],
+        subprocess.run(['cargo', 'build', '--profile', 'fast', '-p', 'horizon-game', '--bin', 'horizon-client'],
                        cwd=lab.ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
                                                   cwd=lab.ROOT, text=True))

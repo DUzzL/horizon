@@ -97,29 +97,33 @@ impl Row {
 /// The licence family of an SPDX id or a `mods.toml` licence text.
 pub fn license_kind(license: &str) -> &'static str {
     let l = license.to_ascii_lowercase();
+    // Whole words of the text, or a family with its version run on ("GPLv3", "MPL2"): "limited"
+    // holds "mit", "template" "mpl" and "Discord" "isc", but none of those is a family's word.
+    let has = |k: &str| {
+        l.split(|c: char| !c.is_ascii_alphanumeric()).any(|t| {
+            t.strip_prefix(k).is_some_and(|rest| {
+                let digits = rest.strip_prefix('v').unwrap_or(rest);
+                rest.is_empty()
+                    || (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            })
+        })
+    };
     if l.is_empty() || l.starts_with("unknown") {
         "unknown"
     } else if l.contains("-nc") || l.contains("-nd") || l.contains("noncommercial") {
         "restricted"
     } else if l.contains("all-rights-reserved") || l.contains("all rights reserved") || l == "arr" {
         "all-rights-reserved"
-    } else if ["gpl", "mpl", "eupl", "general public"]
+    } else if ["gpl", "lgpl", "agpl", "mpl", "eupl"]
         .iter()
-        .any(|k| l.contains(k))
+        .any(|k| has(k))
+        || l.contains("general public")
     {
         "copyleft"
-    } else if [
-        "mit",
-        "apache",
-        "bsd",
-        "cc0",
-        "cc-by",
-        "unlicense",
-        "isc",
-        "zlib",
-    ]
-    .iter()
-    .any(|k| l.contains(k))
+    } else if ["mit", "apache", "bsd", "cc0", "unlicense", "isc", "zlib"]
+        .iter()
+        .any(|k| has(k))
+        || l.contains("cc-by")
     {
         "permissive"
     } else {
@@ -132,11 +136,13 @@ fn not_yet(tier: &str) -> &'static str {
     match tier {
         "data" => "data tier: carry-over only, no agent; its jar is not here yet (fetch gets it)",
         "logic" => {
-            "needs mod API 0.3: behaviour callbacks (use, place, break, ticks) and server events"
+            "needs native logic: behaviour callbacks (use, place, break, ticks) and server events"
         }
-        "machines" => "needs mod API 0.4: block entities, menus, capabilities and mod networking",
+        "machines" => {
+            "needs native machine code: block entities, menus, capabilities and mod networking"
+        }
         "deep" => {
-            "needs mod API 0.5: entities, custom renderers and models, dimensions, new vanilla hooks"
+            "needs a deep native port: entities, custom renderers and models, dimensions, new vanilla hooks"
         }
         "client" => "needs the client interfaces (keys, target, inventory-read, ui, render)",
         _ => "not classified",
@@ -684,7 +690,7 @@ mod tests {
         );
         assert_eq!(by["lib"].status, Status::NotNeeded);
         assert_eq!(by["machine"].status, Status::NotYet);
-        assert!(by["machine"].reason.contains("0.4"));
+        assert!(by["machine"].reason.contains("native machine code"));
         assert!(by["addon"].reason.starts_with("after the mods it joins"));
         assert!(
             by["addon"].reason.ends_with("waits on machine"),
@@ -767,10 +773,8 @@ mod tests {
     }
 
     fn carried_harness_row(harness: Option<&str>) -> Row {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let work = std::env::temp_dir().join(format!(
             "horizon-report-verdict-{}-{nonce}",
             std::process::id()
@@ -796,6 +800,21 @@ mod tests {
     #[test]
     fn licence_families() {
         assert_eq!(license_kind("MIT"), "permissive");
+        assert_eq!(license_kind("Apache-2.0"), "permissive");
+        assert_eq!(license_kind("BSD-3-Clause"), "permissive");
+        assert_eq!(license_kind("GPL-3.0-or-later"), "copyleft");
+        // Words that only hold a family's letters.
+        assert_eq!(license_kind("Custom, limited redistribution"), "custom");
+        assert_eq!(license_kind("See the template"), "custom");
+        assert_eq!(license_kind("Ask on Discord"), "custom");
+        // A version run on to the family's name.
+        for spelled in [
+            "GPLv3", "LGPLv3", "AGPLv3", "MPLv2", "GPL3", "LGPLv2.1", "gplv2+",
+        ] {
+            assert_eq!(license_kind(spelled), "copyleft", "{spelled}");
+        }
+        assert_eq!(license_kind("Apache2"), "permissive");
+        assert_eq!(license_kind("mplvx"), "custom");
         assert_eq!(license_kind("CC0-1.0"), "permissive");
         assert_eq!(license_kind("LGPL-3.0-only"), "copyleft");
         assert_eq!(

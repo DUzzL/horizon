@@ -11,9 +11,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub mod compare;
 mod hardware;
 
-pub use hardware::{cpu_seconds, load_average, power_source, rss_bytes, Display, Gpu, Hardware};
+#[cfg(not(target_arch = "wasm32"))]
+pub use hardware::power_source;
+pub use hardware::{Display, Gpu, Hardware};
+/// The process probes, from the platform (`horizon-system`).
+#[cfg(not(target_arch = "wasm32"))]
+pub use horizon_system::{cpu_seconds, load_average, rss_bytes};
 
 pub const FORMAT: &str = "horizon-benchmark-report";
 pub const VERSION: u32 = 1;
@@ -173,6 +179,10 @@ impl Frames {
             let slowest = &times[n - ((n as f64 * share).ceil() as usize).max(1)..];
             1000.0 * slowest.len() as f64 / slowest.iter().sum::<f64>()
         };
+        let median = |ms: &[f32]| {
+            let times = sorted(ms);
+            (!times.is_empty()).then(|| round(percentile(&times, 0.5)))
+        };
         let mut histogram = vec![0; HISTOGRAM_EDGES_MS.len()];
         for &t in &times {
             histogram[HISTOGRAM_EDGES_MS.partition_point(|&edge| edge <= t).max(1) - 1] += 1;
@@ -190,8 +200,8 @@ impl Frames {
             p99_ms: round(percentile(&times, 0.99)),
             p999_ms: round(percentile(&times, 0.999)),
             max_ms: round(times[n - 1]),
-            cpu_p50_ms: (!cpu_ms.is_empty()).then(|| round(percentile(&sorted(cpu_ms), 0.5))),
-            gpu_p50_ms: (!gpu_ms.is_empty()).then(|| round(percentile(&sorted(gpu_ms), 0.5))),
+            cpu_p50_ms: median(cpu_ms),
+            gpu_p50_ms: median(gpu_ms),
             histogram,
         })
     }
@@ -234,6 +244,9 @@ pub struct Report {
     pub metrics: BTreeMap<String, Summary>,
     #[serde(default)]
     pub frames: Vec<Frames>,
+    /// Present in A/B runs only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ab: Option<compare::Ab>,
     /// Local only: a name the person running it chose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -244,6 +257,7 @@ pub struct Report {
 
 impl Report {
     /// An empty report for this machine, created now.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(kind: Kind, app: App) -> Report {
         Self::with_hardware(kind, app, Hardware::detect())
     }
@@ -261,6 +275,7 @@ impl Report {
             conditions: Conditions::default(),
             metrics: BTreeMap::new(),
             frames: Vec::new(),
+            ab: None,
             label: None,
             local: Vec::new(),
         }
@@ -407,6 +422,29 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_medians_use_only_finite_samples() {
+        let invalid = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+        let mixed = [f32::INFINITY, 9.0, f32::NAN, 3.0];
+        for (cpu, gpu, expected) in [
+            (invalid.as_slice(), invalid.as_slice(), (None, None)),
+            (invalid.as_slice(), mixed.as_slice(), (None, Some(3.0))),
+            (mixed.as_slice(), invalid.as_slice(), (Some(3.0), None)),
+            (mixed.as_slice(), mixed.as_slice(), (Some(3.0), Some(3.0))),
+        ] {
+            let frames = Frames::of("flight", 0, &[10.0, 20.0], cpu, gpu).unwrap();
+            assert_eq!((frames.cpu_p50_ms, frames.gpu_p50_ms), expected);
+            assert_eq!(
+                (frames.frames, frames.p50_ms, frames.max_ms),
+                (2, 10.0, 20.0)
+            );
+            let json = serde_json::to_value(&frames).unwrap();
+            assert_eq!(json.get("cpu_p50_ms").is_some(), expected.0.is_some());
+            assert_eq!(json.get("gpu_p50_ms").is_some(), expected.1.is_some());
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn round_trip_and_upload_strips_local_fields() {
         let mut r = Report::new(
             Kind::Game,
@@ -435,6 +473,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn rejects_other_formats_and_newer_versions() {
         let r = Report::new(Kind::Launcher, App::default());
         let newer = r.to_json().replace("\"version\": 1", "\"version\": 2");
@@ -444,6 +483,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn writes_into_a_folder() {
         let dir = std::env::temp_dir().join(format!("horizon-bench-test-{}", std::process::id()));
         let mut r = Report::new(Kind::Launcher, App::default());

@@ -11,6 +11,16 @@ use crate::{
     text::{Style, Text},
 };
 
+/// The screen-owned boundaries between its background, contents and overlays.
+///
+/// Renderers report these while drawing, so the game can dispatch render hooks
+/// with its real client host without lower client systems depending on gameplay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderPhase {
+    Background,
+    Foreground,
+}
+
 /// One GUI call.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Draw {
@@ -580,6 +590,15 @@ pub fn button(
         "widget/button"
     };
     sprite(out, sprite_id, x, y, w, h);
+    // `AbstractWidget.WithInactiveMessage.defaultInactiveMessage`: an inactive
+    // widget's message is -6250336 (0xFFA0A0A0), not the active white.
+    let inactive;
+    let label = if active {
+        label
+    } else {
+        inactive = label.clone().with_color(0xFFA0_A0A0);
+        &inactive
+    };
     scrolling_string_over_contents(out, m, label, x, y, w, h, 2, now_ms);
 }
 /// `Tooltip.splitTooltip` of a widget's tooltip, shown under the mouse.
@@ -855,11 +874,21 @@ impl TextField {
         self.set_highlight(m, pos);
     }
     /// `onClick`: the cursor where the mouse is (`findClickedPositionInText`).
-    pub fn click(&mut self, m: &Measure, x: f64, extend: bool) {
+    /// `EditBox.onClick` / `MultiLineEditBox.onClick`: a double click selects
+    /// the word the pointer is in (`EditBox.selectWord`), any other click
+    /// places the caret there.
+    pub fn click(&mut self, m: &Measure, x: f64, extend: bool, double: bool) {
         let pos = (x.floor() as i32 - self.text_x()).min(self.inner_width());
         let rest = sub(&self.value, self.display, chars(&self.value));
         let at = self.display + m.plain(&rest, pos, false);
-        self.move_cursor_to(m, at, extend);
+        if double {
+            let start = crate::ui::word_position(&self.value, -1, at);
+            let end = crate::ui::word_position(&self.value, 1, at);
+            self.move_cursor_to(m, start, false);
+            self.move_cursor_to(m, end, true);
+        } else {
+            self.move_cursor_to(m, at, extend);
+        }
     }
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.x as f64
@@ -1003,17 +1032,16 @@ fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
     }
 }
 
-/// Draws the calls with the HUD batch: sprites nine-sliced, textures from
-/// the atlas (`textures/gui/x.png` is `gui/x`; tiled textures from their
-/// corner), scissor clipping, and the tooltip at the mouse.
-pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
+/// Paint the screen's contents and return its deferred tooltip's draw index.
+/// The screen owner paints that tooltip after its foreground render boundary.
+pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) -> Option<usize> {
     // `GuiGraphicsExtractor.ScissorStack`: a scissor clips what is drawn since
     // it opened, cut to the screen while none is open and to the one around it
     // otherwise; closing it puts the enclosing one back.
     let screen = [0, 0, batch.width as i32, batch.height as i32];
     let mut clips: Vec<(usize, [i32; 4])> = Vec::new();
     let mut tooltip = None;
-    for d in draws {
+    for (index, d) in draws.iter().enumerate() {
         match d {
             Draw::Sprite {
                 sprite,
@@ -1123,13 +1151,23 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
                     batch.clip_since(start, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
                 }
             }
-            Draw::Tooltip { lines, x, y } => {
-                tooltip = Some((lines.clone(), (*x as f32, *y as f32)))
-            }
+            Draw::Tooltip { .. } => tooltip = Some(index),
         }
     }
-    if let Some((lines, at)) = tooltip {
-        crate::ui::tooltip(batch, atlas, &lines, at);
+    tooltip
+}
+
+/// Paint the tooltip deferred by [`paint`], borrowing the same draw list.
+pub fn paint_tooltip(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    draws: &[Draw],
+    tooltip: Option<usize>,
+) {
+    if let Some(index) = tooltip
+        && let Draw::Tooltip { lines, x, y } = &draws[index]
+    {
+        crate::ui::tooltip(batch, atlas, lines, (*x as f32, *y as f32));
     }
 }
 
@@ -1138,7 +1176,10 @@ mod button_label_tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+        ))
+        .unwrap()
     }
     /// A label made of `n` copies of one letter.
     fn label(n: usize) -> Text {
@@ -1149,6 +1190,33 @@ mod button_label_tests {
         let mut out = Vec::new();
         button(&mut out, m, text, 10, 20, w, 20, true, false, now_ms);
         out
+    }
+    /// `WithInactiveMessage`: a disabled button's message is grey, not white.
+    #[test]
+    fn an_inactive_buttons_label_is_grey() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let mut out = Vec::new();
+        button(
+            &mut out,
+            &m,
+            &Text::literal("Go"),
+            10,
+            20,
+            100,
+            20,
+            false,
+            false,
+            0,
+        );
+        let color = out
+            .iter()
+            .find_map(|d| match d {
+                Draw::Text { text, .. } => text.spans.iter().find_map(|s| s.style.color),
+                _ => None,
+            })
+            .expect("the label is drawn with its inactive style");
+        assert_eq!(color & 0xFF_FFFF, 0xA0_A0A0);
     }
     fn scissor_of(draws: &[Draw]) -> Option<[i32; 4]> {
         draws.iter().find_map(|d| match d {
@@ -1227,8 +1295,14 @@ mod button_label_tests {
             assert_eq!(draws[3], Draw::NoScissor);
             assert_eq!(draws.len(), 4);
             // Painted, no vertex of the label leaves the box.
-            let mut batch = HudBatch::new([320, 240]);
-            paint(&mut batch, &atlas, &draws[1..]);
+            let mut batch = HudBatch::scratch([320, 240]);
+            {
+                let batch = &mut batch;
+                let atlas = &atlas;
+                let draws = &draws[1..];
+                let tooltip = paint(batch, atlas, draws);
+                paint_tooltip(batch, atlas, draws, tooltip);
+            };
             assert!(!batch.vertices.is_empty());
             for v in &batch.vertices {
                 assert!(
@@ -1285,8 +1359,14 @@ mod button_label_tests {
             for w in [-5, 0, 1, 2, 3, 4, 5, 150] {
                 for ms in [0, 1, 1499, 1500, 123_456_789] {
                     let draws = draw(&m, &text, w, ms);
-                    let mut batch = HudBatch::new([320, 240]);
-                    paint(&mut batch, &atlas, &draws);
+                    let mut batch = HudBatch::scratch([320, 240]);
+                    {
+                        let batch = &mut batch;
+                        let atlas = &atlas;
+                        let draws = &draws;
+                        let tooltip = paint(batch, atlas, draws);
+                        paint_tooltip(batch, atlas, draws, tooltip);
+                    };
                     if let Some([x0, _, x1, _]) = scissor_of(&draws) {
                         // Whatever scrolled is clipped to the (maybe empty) box.
                         for v in batch.vertices.iter().skip(sprite_vertices(&atlas, w)) {
@@ -1308,10 +1388,15 @@ mod button_label_tests {
 
     /// The vertices of the button's sprite alone.
     fn sprite_vertices(atlas: &HudAtlas, w: i32) -> usize {
-        let mut batch = HudBatch::new([320, 240]);
+        let mut batch = HudBatch::scratch([320, 240]);
         let mut out = Vec::new();
         sprite(&mut out, "widget/button", 10, 20, w, 20);
-        paint(&mut batch, atlas, &out);
+        {
+            let batch = &mut batch;
+            let draws = &out;
+            let tooltip = paint(batch, atlas, draws);
+            paint_tooltip(batch, atlas, draws, tooltip);
+        };
         batch.vertices.len()
     }
 }
@@ -1321,7 +1406,10 @@ mod scissor_tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            std::path::PathBuf::from("/nonexistent/horizon-test-assets"),
+        ))
+        .unwrap()
     }
 
     /// The bounds of every quad's six vertices, in draw order.
@@ -1365,11 +1453,11 @@ mod scissor_tests {
     #[test]
     fn a_nested_scissor_is_intersected_with_the_one_around_it() {
         let atlas = atlas();
-        let mut batch = HudBatch::new([320, 240]);
-        paint(
-            &mut batch,
-            &atlas,
-            &[
+        let mut batch = HudBatch::scratch([320, 240]);
+        {
+            let batch = &mut batch;
+            let atlas = &atlas;
+            let draws = &[
                 scissor(10, 10, 100, 100),
                 fill(0, 0, 200, 200),
                 scissor(50, 50, 300, 300),
@@ -1377,8 +1465,10 @@ mod scissor_tests {
                 Draw::NoScissor,
                 fill(0, 0, 200, 200),
                 Draw::NoScissor,
-            ],
-        );
+            ];
+            let tooltip = paint(batch, atlas, draws);
+            paint_tooltip(batch, atlas, draws, tooltip);
+        };
         assert_eq!(
             quads(&batch),
             [
@@ -1394,16 +1484,18 @@ mod scissor_tests {
     #[test]
     fn a_scissor_wider_than_the_screen_is_cut_to_it() {
         let atlas = atlas();
-        let mut batch = HudBatch::new([320, 240]);
-        paint(
-            &mut batch,
-            &atlas,
-            &[
+        let mut batch = HudBatch::scratch([320, 240]);
+        {
+            let batch = &mut batch;
+            let atlas = &atlas;
+            let draws = &[
                 scissor(-50, -50, 500, 500),
                 fill(-100, -100, 600, 600),
                 Draw::NoScissor,
-            ],
-        );
+            ];
+            let tooltip = paint(batch, atlas, draws);
+            paint_tooltip(batch, atlas, draws, tooltip);
+        };
         assert_eq!(quads(&batch), [[0.0, 0.0, 320.0, 240.0]]);
     }
 
@@ -1413,11 +1505,11 @@ mod scissor_tests {
     #[test]
     fn a_scissor_outside_the_one_around_it_draws_nothing() {
         let atlas = atlas();
-        let mut batch = HudBatch::new([320, 240]);
-        paint(
-            &mut batch,
-            &atlas,
-            &[
+        let mut batch = HudBatch::scratch([320, 240]);
+        {
+            let batch = &mut batch;
+            let atlas = &atlas;
+            let draws = &[
                 scissor(10, 10, 50, 50),
                 fill(0, 0, 200, 200),
                 scissor(60, 60, 90, 90),
@@ -1426,8 +1518,10 @@ mod scissor_tests {
                 fill(0, 0, 200, 200),
                 Draw::NoScissor,
                 fill(0, 0, 200, 200),
-            ],
-        );
+            ];
+            let tooltip = paint(batch, atlas, draws);
+            paint_tooltip(batch, atlas, draws, tooltip);
+        };
         assert_eq!(
             quads(&batch),
             [
@@ -1444,7 +1538,10 @@ mod max_length_tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            "/nonexistent/horizon-test-assets".into(),
+        ))
+        .unwrap()
     }
 
     /// `EditBox.maxLength` counts Java `String.length()` (UTF-16 code units),

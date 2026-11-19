@@ -45,6 +45,11 @@ mod tests {
 
     /// `seconds` of server ticks of `server_ms` each, with `per_tick` client ticks handled in each.
     fn run(b: &mut Balance, server_ms: f64, per_tick: f64, seconds: f64) -> usize {
+        run_at(b, 20.0, server_ms, per_tick, seconds)
+    }
+
+    /// [`run`] at the tick rate `rate` (`/tick rate`), which the client's ticks follow.
+    fn run_at(b: &mut Balance, rate: f32, server_ms: f64, per_tick: f64, seconds: f64) -> usize {
         let c = TimerConfig::default();
         let mut owed = 0.0;
         let mut flags = 0;
@@ -53,10 +58,29 @@ mod tests {
             owed += per_tick;
             while owed >= 1.0 {
                 owed -= 1.0;
-                flags += usize::from(b.tick_end(20.0, &c).is_some());
+                flags += usize::from(b.tick_end(rate, &c).is_some());
             }
         }
         flags
+    }
+
+    /// At another tick rate a vanilla client ticks at the rate the server sent it, and each of its
+    /// ticks is worth `1000 / rate` ms: never flagged on time, flagged again and again 1.5 times as fast.
+    #[test]
+    fn the_balance_follows_the_tick_rate() {
+        for rate in [10.0_f32, 60.0] {
+            let tick_ms = 1000.0 / f64::from(rate);
+            assert_eq!(
+                run_at(&mut Balance::default(), rate, tick_ms, 1.0, 600.0),
+                0,
+                "on time at {rate}"
+            );
+            // Half a tick ahead every server tick: 75 flags in a minute at 10 a second, 94 at 60.
+            let flags = run_at(&mut Balance::default(), rate, tick_ms, 1.5, 60.0);
+            assert!(flags >= 50, "1.5 times as fast at {rate}: {flags} flags");
+        }
+        // The rate counts: at 10 a second, a client sending 20 ticks a second is twice as fast.
+        assert!(run_at(&mut Balance::default(), 10.0, 100.0, 2.0, 60.0) >= 50);
     }
 
     #[test]
@@ -87,6 +111,23 @@ mod tests {
         for _ in 0..17 {
             assert_eq!(b.tick_end(20.0, &c), None);
         }
+    }
+
+    /// A quiet connection banks at most `max_lag_ms` (1000) and the tick that ends the stall: with
+    /// the tolerance (300), the ticks sent during a stall of up to 1.35 s are not flagged, and those
+    /// of a longer one are (docs/anticheat.md, the timer row).
+    #[test]
+    fn a_stall_banks_at_most_max_lag_ms() {
+        let flagged = |ticks: usize| {
+            let (mut b, c) = (Balance::default(), TimerConfig::default());
+            // `ticks` server ticks with nothing arriving, then the client ticks sent meanwhile.
+            for _ in 0..ticks {
+                b.elapse(50.0, &c);
+            }
+            (0..ticks).any(|_| b.tick_end(20.0, &c).is_some())
+        };
+        assert!(!flagged(26), "a 1.3 s stall");
+        assert!(flagged(28), "a 1.4 s stall");
     }
 
     #[test]

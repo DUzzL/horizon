@@ -71,7 +71,9 @@ Cases:
 - osk_sign_done: on a sign Done (Menu) closes the sign with what was typed, as its Done button.
 - osk_chat_suggestions: over chat with the keyboard open, RT fills in the selected command suggestion (Tab) and the
   right stick picks another first (Up and Down), without closing the keyboard.
-Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
+- osk_labels: the on-screen keyboard over chat draws its keys' labels, in Horizon's look and with no menu style given
+  (`HORIZON_MENU_STYLE=vanilla`, where the overlays have no fonts of their own and use the pack's).
+Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
 - radial_no_selection: a release with nothing selected, after retention ran out, or on an empty slot runs nothing.
@@ -1765,7 +1767,7 @@ def graphics_shell(args, name):
     return check.failures
 
 
-PRESET = 'Preset'
+PRESET = 'Horizon Preset'
 
 
 def shell_choice_step(args, name):
@@ -1942,6 +1944,7 @@ PACK_LANG = {
 # A card's options button (pack_screen's OPTIONS_SIZE), and the D-pad hops allowed to reach it.
 PACK_OPTIONS_SIZE = 16
 PACK_HOPS = 8
+RAIN = 'Rain style'
 
 
 def seed_pack_options(game_home):
@@ -1977,6 +1980,20 @@ def on_pack_options_button(game, hops=PACK_HOPS):
     return False
 
 
+def open_pack_options(game):
+    """From the title to the Configurable pack's Pack Options, by its card's button and A."""
+    game.press_through('west')
+    game.ctl('options', 'packs')
+    time.sleep(SETTLE)
+    game.wait_targets()
+    if not on_pack_options_button(game):
+        raise RuntimeError(f'the D-pad never reached the options button: {game.rects()}, {game.menu()["pointer"]}')
+    game.pad('south')
+    game.wait_targets()
+    if label_of(game, 'Presets') is None:
+        raise RuntimeError(f'A on the options button did not open Pack Options: {labels(game)}')
+
+
 def pack_card_options(args, name):
     """A pad player reaches a pack card's options button as a control, and A opens its Pack Options."""
     game = Game(args, name, seed=seed_pack_options)
@@ -1996,6 +2013,63 @@ def pack_card_options(args, name):
         game.pad('east')
         game.wait_targets()
         check(pack_options_button(game) is not None, f'B did not come back to the pack screen: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def pack_choices(game):
+    found = list(game.home.rglob('polytone-configs.json'))
+    return json.loads(found[0].read_text()) if found else {}
+
+
+def pack_options(args, name):
+    game = Game(args, name, seed=seed_pack_options)
+    check = Check()
+    try:
+        open_pack_options(game)
+        check(label_of(game, 'Presets') is not None, f'no Presets row on the first page: {labels(game)}')
+        check(declared(game).get('Done') is True, f'Pack Options declares {declared(game)}')
+        check('Apply' not in declared(game), f'Undo shows with nothing changed: {declared(game)}')
+        shot(game, 'pack_options_first_page')
+        # Down the page list to Sky, A opens it, and right into its rows: the focused entry's tooltip and
+        # performance impact are in the strip.
+        for _ in range(ROW_WALK):
+            if game.focused_label() == 'Sky':
+                break
+            game.pad('down')
+        game.pad('south')
+        game.pad('right')
+        for _ in range(ROW_WALK):
+            if (game.focused_label() or '').startswith('Fog density'):
+                break
+            game.pad('down')
+        check((game.focused_label() or '').startswith('Fog density'), f'never reached Fog density: {labels(game)}')
+        shot(game, 'pack_options_strip')
+        # RB to the Weather page, then down to Rain style; Right steps it, and Undo puts it back.
+        game.pad('rb')
+        check(open_tab(game) == 'Weather', f'RB opened {open_tab(game)}')
+        game.pad('right')
+        for _ in range(ROW_WALK):
+            if (game.focused_label() or '').startswith(RAIN):
+                break
+            game.pad('down')
+        label = game.focused_label() or ''
+        check(label.endswith('drops'), f'the D-pad never reached {RAIN}: {label}')
+        game.pad('right')
+        label = game.focused_label() or ''
+        check(label.endswith('streaks'), f'Right left {RAIN} as {label}')
+        check(declared(game).get('Apply') is True, f'Undo did not appear: {declared(game)}')
+        shot(game, 'pack_options_stepped')
+        game.pad('west')
+        check((label_of(game, RAIN) or {}).get('label', '').endswith('drops'), f'X did not undo: {labels(game)}')
+        # Left steps back, round to the last value, and leaving keeps it.
+        game.pad('left')
+        check((game.focused_label() or '').endswith('none'), f'Left left {RAIN} as {game.focused_label()}')
+        game.pad('east')
+        game.wait_targets()
+        check(label_of(game, RAIN) is None, f'B did not leave Pack Options: {labels(game)}')
+        check(pack_choices(game).get('demo:rain_style') == 'none', f'not saved: {pack_choices(game)}')
     finally:
         game.quit()
     return check.failures
@@ -2286,6 +2360,54 @@ def prompt_dialog_field(args, name):
         game.quit()
     return check.failures
 
+
+# The on-screen keyboard's layout in dp (`osk.rs`, `Keyboard::draw`) and the dp scale (`ui_theme::Ui::new`).
+OSK_UNIT, OSK_GAP, OSK_KEY_H, OSK_EDGE = 50, 6, 38, 16
+OSK_WIDTH = 10 * OSK_UNIT + 9 * OSK_GAP
+DP_WINDOW = (1040, 700)
+# A label's ink against the dark key plates: every channel this bright, and at least this many pixels of it.
+LABEL_INK, LABEL_PIXELS = 200, 12
+# Keys away from the focus (on Q): Y in the letters row, Space in the bottom row; (row, left unit, units wide).
+LABELLED_KEYS = {'Y': (1, 5, 1), 'Space': (4, 3, 4)}
+
+
+def label_pixels(rows, width, channels, row, left, units):
+    """How many bright pixels the keyboard (at the top, as over chat) draws inside one key's plate."""
+    height = len(rows)
+    density = min(max(min(width / DP_WINDOW[0], height / DP_WINDOW[1]), 1.0), 4.0)
+    x0 = round((width / density - OSK_WIDTH) / 2)
+    x = x0 + left * (OSK_UNIT + OSK_GAP)
+    y = OSK_EDGE + row * (OSK_KEY_H + OSK_GAP)
+    w = units * OSK_UNIT + (units - 1) * OSK_GAP
+    bright = 0
+    for py in range(int((y + 2) * density), int((y + OSK_KEY_H - 2) * density)):
+        line = rows[py]
+        for px in range(int((x + 2) * density), int((x + w - 2) * density)):
+            if min(line[px * channels:px * channels + 3]) >= LABEL_INK:
+                bright += 1
+    return bright
+
+
+def osk_labels(args, name):
+    failures = []
+    for look, env in (('horizon', None), ('vanilla', {'HORIZON_MENU_STYLE': 'vanilla'})):
+        game = Game(args, f'{name}-{look}', world=True, env=env)
+        check = Check()
+        try:
+            game.pad('up')
+            time.sleep(SETTLE)
+            check(game.menu()['keyboard'], f'{look}: the keyboard did not open over chat')
+            path = game.home / 'keyboard.png'
+            game.ctl('screenshot', path, timeout=120)
+            shot(game, f'osk-labels-{look}')
+            rows, width, channels = png_rows(path)
+            for key, (row, left, units) in LABELLED_KEYS.items():
+                ink = label_pixels(rows, width, channels, row, left, units)
+                check(ink >= LABEL_PIXELS, f'{look}: the {key} key draws no label ({ink} bright pixels)')
+        finally:
+            game.quit()
+        failures += check.failures
+    return failures
 
 def walk_to_field(game, check):
     """The D-pad, towards the screen's text field."""
@@ -4617,6 +4739,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'shell_choice_step': shell_choice_step,
          'shader_screens': shader_screens,
          'pack_card_options': pack_card_options,
+         'pack_options': pack_options,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'nintendo_letters': nintendo_letters,
@@ -4624,6 +4747,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'prompt_dialog': prompt_dialog,
          'prompt_dialog_field': prompt_dialog_field,
          'prompt_keeps_typing': prompt_keeps_typing,
+         'osk_labels': osk_labels,
          'prompt_keeps_crosshair': prompt_keeps_crosshair,
          'osk_social': osk_social,
          'osk_book': osk_book,

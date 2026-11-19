@@ -12,11 +12,6 @@
 //! copied as they were) and a file left empty is deleted. Nothing else in the world is touched: not
 //! level.dat, player data, stats or advancements.
 
-use horizon_platform::world::{
-    nbt::{self, Limits, Tag},
-    region::{ChunkRecord, RegionFile, RegionWriter, position_from_path},
-};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     fmt::Write as _,
@@ -24,6 +19,13 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
+};
+use {
+    horizon_platform::world::region::{ChunkRecord, RegionFile, RegionWriter, position_from_path},
+    horizon_platform::world::{
+        nbt,
+        nbt::{Limits, Tag},
+    },
 };
 
 mod transaction;
@@ -36,68 +38,9 @@ const STAGING: &str = ".horizon-prune";
 const PREFIX: usize = 16 * 1024;
 const KINDS: [&str; 3] = ["region", "entities", "poi"];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Mode {
-    #[default]
-    Off,
-    DryRun,
-    Delete,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Settings {
-    /// "off", "dry-run" (a report, the game starts at once) or "delete" (before the game starts).
-    pub mode: Mode,
-    /// Chunks with less `InhabitedTime` than this go (1200 ticks: a minute).
-    pub min_inhabited_ticks: i64,
-    /// Chunks this close to the spawn (in chunks, on each axis) are kept.
-    pub spawn_radius: u32,
-    /// Chunks this close to a kept chunk are kept too.
-    pub ring: u32,
-    /// JSON files in the world folder naming chunks to keep: keys or strings `<dimension> <chunk x>
-    /// <chunk z>` (claims), and objects with `dimension`, `x` and `z` (homes, warps). A file that is
-    /// missing is skipped; one that can't be read stops the prune.
-    pub keep_files: Vec<String>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            mode: Mode::Off,
-            min_inhabited_ticks: 1200,
-            spawn_radius: 32,
-            ring: 1,
-            keep_files: vec![
-                "horizon-smp/claims.json".into(),
-                "horizon-smp/places.json".into(),
-            ],
-        }
-    }
-}
-
-impl Settings {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-
-    pub fn check(&self) -> Result<(), String> {
-        if self.min_inhabited_ticks < 0 || self.ring > 8 {
-            return Err("prune_chunks: min_inhabited_ticks must be 0 or more, ring 0 to 8".into());
-        }
-        if let Some(bad) = self
-            .keep_files
-            .iter()
-            .find(|f| Path::new(f).is_absolute() || f.split(['/', '\\']).any(|p| p == ".."))
-        {
-            return Err(format!(
-                "prune_chunks.keep_files: {bad:?} must be a path inside the world folder"
-            ));
-        }
-        Ok(())
-    }
-}
+#[cfg(test)]
+use horizon_server_launch::prune::Mode;
+use horizon_server_launch::prune::Settings;
 
 type Chunk = (i32, i32);
 
@@ -626,7 +569,9 @@ pub fn run(
             regions,
         });
     }
-    let (r, ring) = (settings.spawn_radius as i32, settings.ring as i32);
+    // A radius past i32 keeps everything rather than wrapping negative and keeping nothing.
+    let r = i32::try_from(settings.spawn_radius).unwrap_or(i32::MAX);
+    let ring = settings.ring as i32;
     let mut tallies = Vec::new();
     let mut errors = Vec::new();
     let mut committed_chunks = 0_u64;
@@ -874,7 +819,9 @@ pub fn write_report(dir: &Path, outcome: &Outcome) -> io::Result<PathBuf> {
 pub(crate) mod tests {
     use super::*;
     use horizon_platform::world::ChunkPos;
-    use horizon_platform::world::{compression::Compression, nbt::NamedTag};
+    use {
+        horizon_platform::world::compression::Compression, horizon_platform::world::nbt::NamedTag,
+    };
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("horizon-prune-{name}-{}", std::process::id()));
@@ -1330,6 +1277,10 @@ pub(crate) mod tests {
 
         // The spawn radius reaches region r.2.0 (64 chunks out): everything there stays.
         s.spawn_radius = 100;
+        let all = run(&world, &s, false, 1).unwrap();
+        assert!(all.summary.contains(" 0 of "), "{}", all.report);
+        // So does a radius past i32 (it once wrapped negative and kept nothing).
+        s.spawn_radius = u32::MAX;
         let all = run(&world, &s, false, 1).unwrap();
         assert!(all.summary.contains(" 0 of "), "{}", all.report);
 

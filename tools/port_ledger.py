@@ -28,13 +28,14 @@ method-by-method reading misses:
   0.30000001192092896) as the double 0.3;
 - drift: a port that never names what its vanilla method uses: a sound, particle, item, block, effect or
   game event, or a rare number (a missing sound or a changed constant);
-- stale: a citation whose class or method doesn't exist in the pinned version;
+- stale: a citation whose own vanilla class exists but whose method doesn't, on it or a supertype
+  (a rename candidate); a class the pinned version has never heard of is skipped, not reported;
 - unported: vanilla methods with no port, ranked by how many vanilla methods call them.
 
     python3 tools/port_ledger.py build                         # index into .local/port-ledger/ledger.json
     python3 tools/port_ledger.py where KineticWeapon.damageEntities
     python3 tools/port_ledger.py where ShulkerBulletRenderer   # a whole class
-    python3 tools/port_ledger.py what crates/horizon-client/src/game/spear.rs:150
+    python3 tools/port_ledger.py what crates/horizon-client/src/game/items/spear.rs:150
     python3 tools/port_ledger.py class Shulker                 # every method: ported where, or not
     python3 tools/port_ledger.py issue 3123                    # the classes, code and gaps a report points at
     python3 tools/port_ledger.py blame blaze v                 # what computes a field a parity trace shows differ
@@ -45,10 +46,11 @@ method-by-method reading misses:
     python3 tools/port_ledger.py diff OTHER/ledger.json        # against another build
     python3 tools/port_ledger.py todo [--package world/entity] # the next methods with no answer
 
-Add --json to any query for machine output. `build` reads the game jar (the lab's or the launcher's; --jar,
---no-jar) and the lab's decompiled sources (.local/minecraft/<version>/sources/{client,server},
-tools/lab.py decompile; --sources takes any directory of decompiled Java). Queries read the last build;
-`build` again after pulling. docs/port-ledger.md has the details.
+Add --json to any query for machine output, before or after the query's name. `build` reads the game jar
+(the lab's or the launcher's; --jar, --no-jar) and the lab's decompiled sources
+(.local/minecraft/<version>/sources/{client,server}, tools/lab.py decompile; --sources takes any directory
+of decompiled Java). Queries read the last build; `build` again after pulling. docs/port-ledger.md has the
+details.
 """
 
 import argparse
@@ -126,8 +128,6 @@ SKIP_PACKAGES = (
 
 CITE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*)*)(?:(?:\.|::|#)([A-Za-z_][A-Za-z0-9_]*))?")
 JAVA_CLASS = re.compile(r"\b(class|interface|enum|record|@interface)\s+([A-Za-z_]\w*)")
-JAVA_EXTENDS = re.compile(r"\bextends\s+([\w.]+)")
-JAVA_IMPLEMENTS = re.compile(r"\bimplements\s+([\w.,\s<>?]+)")
 JAVA_METHOD = re.compile(r"\b([A-Za-z_]\w*)\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\s*(?:throws\s+[\w.,\s]+)?$")
 JAVA_CALL = re.compile(r"(?:\b([A-Za-z_]\w*)\s*(?:\.|::)\s*|(\.|::)\s*)?\b([a-z][A-Za-z0-9_]*)\s*\(")
 JAVA_METHOD_REF = re.compile(r"\b([A-Za-z_]\w*)::([a-z]\w*)\b")
@@ -411,6 +411,39 @@ def id_tokens_from_string(s):
 # ---- Java ---------------------------------------------------------------------------------------------
 
 
+def strip_generics(text):
+    """`text` without its `<...>` type arguments and type-parameter bounds (balanced, nested)."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">" and depth:
+            depth -= 1
+        elif not depth:
+            out.append(ch)
+    return "".join(out)
+
+
+def java_supertypes(header):
+    """Every supertype a class header names, generics stripped: the superclass plus all interfaces.
+
+    A type-parameter bound (`class Foo<T extends Bar> extends Baz`) must not shadow the real extends
+    clause, and an interface may extend several interfaces (`extends A, B`)."""
+    header = strip_generics(header)
+    names = []
+    for keyword in ("extends", "implements"):
+        m = re.search(r"\b" + keyword + r"\b", header)
+        if not m:
+            continue
+        clause = header[m.end():]
+        stop = re.search(r"\b(?:extends|implements|permits)\b", clause)
+        if stop:
+            clause = clause[:stop.start()]
+        clause = clause.split("(", 1)[0]  # a record components list comes before implements
+        names += [n.strip() for n in clause.split(",") if re.fullmatch(r"[\w.$]+", n.strip())]
+    return names
+
+
 def parse_java(path_and_root):
     path, root = path_and_root
     rel = os.path.relpath(path, root).replace(os.sep, "/")
@@ -452,12 +485,7 @@ def parse_java(path_and_root):
                     "outer": outer["path"] if outer else None,
                     "fields": {},
                 }
-                ext = JAVA_EXTENDS.search(header_one)
-                if ext:
-                    cls["extends"].append(ext.group(1).split("<")[0])
-                imp = JAVA_IMPLEMENTS.search(header_one)
-                if imp:
-                    cls["extends"] += [p.strip().split("<")[0] for p in re.split(r",(?![^<]*>)", imp.group(1)) if p.strip()]
+                cls["extends"] += java_supertypes(header_one)
                 if m.group(1) == "record":
                     cls["fields"].update({v: t.split(".")[-1] for t, v in JAVA_TYPED.findall(header_one.split("(", 1)[-1])})
                     for field in re.findall(r"\b([a-z]\w*)\s*(?:,|\)\s*(?:implements|$))", header_one.split("(", 1)[-1]):
@@ -721,7 +749,8 @@ def default_jars():
     lock = json.loads((ROOT / "research-lock.json").read_text()) if (ROOT / "research-lock.json").exists() else {}
     version = str((lock.get("minecraft") or {}).get("version") or lock.get("version") or lab.VERSION)
     home = Path.home()
-    candidates = sorted((ROOT / ".local" / "minecraft" / version).glob("*.jar")) + [
+    directory = ROOT / ".local" / "minecraft" / version
+    candidates = sorted((directory / "jars").glob("*.jar")) + sorted(directory.glob("*.jar")) + [
         home / "Library/Application Support/minecraft/versions" / version / f"{version}.jar",
         home / ".minecraft/versions" / version / f"{version}.jar",
         Path(os.environ.get("APPDATA", "")) / ".minecraft/versions" / version / f"{version}.jar",
@@ -1028,22 +1057,33 @@ class Vanilla:
         top = [c for c in cands if "$" not in c and c.startswith("net/minecraft/")]
         return top[0] if len(top) == 1 else None
 
-    def lineage(self, path, limit=12):
-        """The class and its supertypes, nearest first."""
+    def resolve_type(self, name, near=None):
+        """The index path a supertype name means: a jar path, a qualified name, or `Outer.Inner`."""
+        if name in self.classes:
+            return name
+        name = strip_generics(name).replace("$", ".").strip()
+        if name in self.classes:
+            return name
+        parts = name.split(".")
+        first = next((i for i, part in enumerate(parts) if part[:1].isupper()), len(parts))
+        if first < len(parts):
+            path = "/".join(parts[:first] + ["$".join(parts[first:])])
+            if path in self.classes:
+                return path
+        return self.resolve(name, near=near)
+
+    def lineage(self, path, limit=None):
+        """The class and all its supertypes, nearest first. No depth cap unless one is given: a method
+        deep in the hierarchy is still inherited, so stale detection must not stop before it."""
         out, todo, seen = [], [path], set()
-        while todo and len(out) < limit:
+        while todo and (limit is None or len(out) < limit):
             p = todo.pop(0)
             if p in seen or p not in self.classes:
                 continue
             seen.add(p)
             out.append(p)
             for sup in self.classes[p]["extends"]:
-                if sup in self.classes:
-                    todo.append(sup)
-                    continue
-                r = self.resolve(sup.split(".")[-1] if "." not in sup or sup.startswith(("net.", "com.")) else sup, near=p)
-                if not r and "." in sup:
-                    r = self.resolve(sup.rsplit(".", 1)[-1], near=p)
+                r = self.resolve_type(sup, near=p)
                 if r:
                     todo.append(r)
         return out
@@ -1297,8 +1337,11 @@ def build(sources, jars, jobs):
                             continue
                     cp = van.resolve(cls_name)
                     if not cp:
-                        if member and sum(ch.isupper() for ch in cls_name) >= 1 and len(cls_name) > 3 and cls_name not in ("Self", "Some", "None", "Ok", "Err", "Vec", "Option", "Result", "String", "Box", "Arc", "Rc", "HashMap", "HashSet", "BTreeMap"):
-                            stale.append({"what": "class", "cite": f"{cls_name}.{member}", "file": f["file"], "line": line})
+                        # Only the pinned version can call a citation stale. An unknown class is no evidence
+                        # of a rename: Java's Math/Number/UUID, JOML's Matrix4f/Quaternion, authlib and
+                        # Horizon's own types (Ranges, Game, its snake_case helpers) are not vanilla 26.3
+                        # classes, so citing one says nothing about whether vanilla had it. When its class
+                        # is in the index but the method is not, the method is a real rename candidate.
                         continue
                     if not member:
                         if sum(ch.isupper() for ch in cls_name.split(".")[-1]) >= 2:
@@ -2045,20 +2088,48 @@ def port_of(led, k):
     return [i["fn"] for i in led["inferred"].get(k, [])[:1]]
 
 
+def class_name_forms(query):
+    """Spellings a class query can take: internal (net/minecraft/.../Outer$Inner), dotted FQN
+    (net.minecraft...Outer.Inner) and simple (Outer). Dots can be package or inner-class separators,
+    so build the mixed spelling too: once a capitalised class segment appears, later dots are '$'."""
+    parts = query.replace("/", ".").split(".")
+    nested, in_class = parts[0], False
+    for part in parts[1:]:
+        nested += ("$" if in_class else "/") + part
+        if part[:1].isupper():
+            in_class = True
+    return {query, query.replace(".", "$"), query.replace(".", "/"), nested}
+
+
 def match_classes(led, query):
-    q = query.replace(".", "$")
-    return [p for p in led["classes"] if p.endswith("/" + q) or p == q or p.rsplit("/", 1)[-1] == q]
+    forms = class_name_forms(query)
+    return [p for p in led["classes"]
+            if any(p.endswith("/" + q) or p == q or p.rsplit("/", 1)[-1] == q for q in forms)]
+
+
+def class_and_supertypes(led, cp):
+    """A class and the classes/interfaces it extends, nearest first, without repeats (cycle-safe)."""
+    seen, queue = {cp}, [cp]
+    while queue:
+        p = queue.pop(0)
+        yield p
+        for sup in led["classes"].get(p, {}).get("extends", []):
+            if sup not in seen:
+                seen.add(sup)
+                queue.append(sup)
 
 
 def cmd_where(led, query, as_json):
     out = []
     if "." in query and query.split(".")[-1][:1].islower():
         cls_q, meth = query.rsplit(".", 1)
+        seen = set()
         for cp in match_classes(led, cls_q):
             # The method on the class or a supertype.
-            for p in [cp] + [x for x in led["classes"] if False]:
+            for p in class_and_supertypes(led, cp):
                 k = key(p, meth)
-                if k in led["methods"]:
+                if k in led["methods"] and k not in seen:
+                    seen.add(k)
                     out.append(method_view(led, k))
     else:
         for cp in match_classes(led, query):
@@ -2621,6 +2692,8 @@ def diff_ledgers(old, new):
             found.append(f"{short(new['methods'][k]['class'], new['methods'][k]['name'])}: {before} -> {st}")
         elif rank[st] > rank[before] and st in ("missing", "inferred") and before not in ("trivial",):
             lost.append(f"{short(new['methods'][k]['class'], new['methods'][k]['name'])}: {before} -> {st}")
+    for k in set(ost) - set(nst):
+        lost.append(f"{short(old['methods'][k]['class'], old['methods'][k]['name'])}: {ost[k]} -> missing")
     return {
         "gaps closed": [gap_text(old, og[k]) for k in sorted(set(og) - set(ng), key=lambda k: gap_rank(og[k]))],
         "gaps opened": [gap_text(new, ng[k]) for k in sorted(set(ng) - set(og), key=lambda k: gap_rank(ng[k]))],
@@ -2649,6 +2722,18 @@ def changed_ranges(base):
             m = re.search(r"\+(\d+)(?:,(\d+))?", line)
             start, n = int(m.group(1)), int(m.group(2) or 1)
             ranges[path].append((start, start + max(n, 1) - 1))
+    # A brand-new, untracked source file is uncommitted work too: cover the whole file so cmd_check
+    # sees every fn in it. Keep the same crates/launcher scope as the diff above.
+    new = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "*.rs"],
+                         cwd=ROOT, capture_output=True, text=True).stdout
+    for path in new.splitlines():
+        if not path.endswith(".rs") or not (path.startswith("crates/") or path.startswith("launcher/")):
+            continue
+        try:
+            count = len((ROOT / path).read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
+        ranges[path].append((1, max(count, 1)))
     return mb.stdout.strip(), ranges
 
 
@@ -2856,8 +2941,7 @@ def cmd_map_check(led, paths):
                 continue
             head, _, last = name.rpartition(".")
             cls_q, meth = (head, last) if head and (last[:1].islower() or last.startswith("<")) else (name, None)
-            q = cls_q.replace(".", "$")
-            cands = [p for p in classes if p.endswith("/" + q) or p.rsplit("/", 1)[-1] == q]
+            cands = match_classes(led, cls_q)
             where_ok = True
             if verdict in ("port", "inline"):
                 file_, _, rest = where.partition("::")
@@ -3001,39 +3085,48 @@ def write_html(led, rows, tot):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    # The same flag on every query, so `--json` reads the same before or after the query's name. A query
+    # parses into its own namespace that argparse then copies over the top-level one, so its default would
+    # wipe a --json given before the query; SUPPRESS keeps it out of the namespace unless it is passed.
+    query_flags = argparse.ArgumentParser(add_help=False)
+    query_flags.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                             help="machine-readable output")
     sub = parser.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--sources", action="append", help="a directory of decompiled vanilla Java (repeatable)")
     b.add_argument("--jar", action="append", help="a vanilla game jar (repeatable; default: the lab's or the launcher's)")
     b.add_argument("--no-jar", action="store_true", help="read the sources only")
     b.add_argument("--jobs", type=int, default=os.cpu_count())
-    sub.add_parser("where").add_argument("query")
-    sub.add_parser("what").add_argument("location")
-    sub.add_parser("class").add_argument("query")
-    c = sub.add_parser("coverage")
+    sub.add_parser("where", parents=[query_flags]).add_argument("query")
+    sub.add_parser("what", parents=[query_flags]).add_argument("location")
+    sub.add_parser("class", parents=[query_flags]).add_argument("query")
+    c = sub.add_parser("coverage", parents=[query_flags])
     c.add_argument("--package")
     c.add_argument("--depth", type=int, default=2)
-    g = sub.add_parser("gaps")
+    g = sub.add_parser("gaps", parents=[query_flags])
     g.add_argument("--kind", choices=["seam", "client", "float", "drift", "class", "callee", "stale", "map", "unported", "untested"])
     g.add_argument("--package")
     g.add_argument("--limit", type=int, default=50)
     sub.add_parser("report")
     mc = sub.add_parser("map-check", help="check verdict-map files against the last build, without rebuilding")
     mc.add_argument("paths", nargs="+")
-    t = sub.add_parser("todo", help="the next methods with no answer, for the verdict map (tools/port_map)")
+    t = sub.add_parser("todo", parents=[query_flags], help="the next methods with no answer, for the verdict map (tools/port_map)")
     t.add_argument("--package", help="e.g. world/entity/animal")
     t.add_argument("--limit", type=int, default=150, help="about this many methods, whole classes at a time")
     t.add_argument("--after", help="start after this class path (the last batch's last class)")
-    d = sub.add_parser("diff", help="what changed against another ledger.json")
+    d = sub.add_parser("diff", parents=[query_flags], help="what changed against another ledger.json")
     d.add_argument("other")
-    ck = sub.add_parser("check", help="what a branch's changes touch: ports, their open gaps, citations to add")
+    ck = sub.add_parser("check", parents=[query_flags],
+                        help="what a branch's changes touch: ports, their open gaps, citations to add")
     ck.add_argument("--base", default="origin/main")
     ck.add_argument("--no-compare", action="store_true", help="skip building the base to list gaps opened and closed")
-    bl = sub.add_parser("blame", help="which vanilla methods compute a traced field of an entity, and their ports")
+    bl = sub.add_parser("blame", parents=[query_flags],
+                        help="which vanilla methods compute a traced field of an entity, and their ports")
     bl.add_argument("entity", help="a class (Blaze) or registry name (blaze)")
     bl.add_argument("fields", nargs="+", help="trace keys (p v r g hp target in move look) or field/setter names")
     bl.add_argument("--limit", type=int, default=8)
-    sub.add_parser("issue", help="the vanilla classes, Rust code and gaps a bug report points at").add_argument(
+    sub.add_parser("issue", parents=[query_flags],
+                   help="the vanilla classes, Rust code and gaps a bug report points at").add_argument(
         "ref", help=f"an issue number on {ISSUE_REPO}, the report's text, or - to read it from stdin")
     args = parser.parse_args()
     if args.cmd == "build":
