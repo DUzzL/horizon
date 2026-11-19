@@ -6373,6 +6373,22 @@ def check_frames(host, guest, out):
                       and o['position'] == [x, y + 1, z + 2]]
             assert theirs and theirs[0]['item'] == 'minecraft:diamond' and theirs[0]['rotation'] == 1, \
                 f'the other side sees the {label}\'s frame as {theirs}'
+            # Empty the frame, then insert a filled map with an empty main hand.
+            player.raw('look-at', f'{x + 0.5:.2f}', f'{y + 1.5:.2f}', f'{z + 2.95:.2f}')
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            emptied = next(o for o in player('status')['objects'] if o['id'] == frame['id'])
+            assert emptied.get('item') is None, f'{label}: expected an empty frame, got {emptied}'
+            player('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+            player('command', command='item replace entity @s weapon.offhand with '
+                   'minecraft:filled_map[minecraft:map_id=0]')
+            player.wait(5)
+            player.raw('mouse', 'right', 'click')
+            player.wait(15)
+            for viewer in (player, other):
+                seen = next(o for o in viewer('status')['objects'] if o['id'] == frame['id'])
+                assert seen.get('item') == 'minecraft:filled_map', f'{label}: off-hand map insertion left {seen}'
+            assert not player('inventory')['offhand'], f'{label}: the server did not consume the off-hand map'
             player('command', command='item replace entity @s weapon.mainhand with minecraft:iron_helmet')
             player.wait(5)
             stand = [o for o in player('status')['objects'] if o['kind'] == 'minecraft:armor_stand'
