@@ -393,14 +393,37 @@ Each overlay's captions now fit their room:
 
 ## The settings shell
 
+### Its look
+
+The shell paints through `graphics_style`, which follows the menu style the layer above gives
+(`menu_style::install`). Its `surfaces` picks one of two looks, with the same layout:
+
+- `Surfaces::Flat`: see-through glass panels and flat controls in the style's colours. The official game
+  gives this with Horizon's Blocks palette (`horizon_look.rs`).
+- `Surfaces::Vanilla`: what vanilla's Options screens draw, from the player's resource packs. Panels are
+  the list background between its header and footer separators, and the open page is a selection
+  list's entry (a grey edge round black, white with the focus). Controls are the `widget/*` sprites: a
+  value a press steps through is a `CycleButton`-style button, and sliders always show their track.
+  A row the cursor or the focus is on gets the grey edge, and its control lights. `NEUTRAL`, the look
+  with no style given, uses it, so the engine built alone looks vanilla.
+
+Two of vanilla's pieces draw in any look, for overlays that use them: `graphics_style::vanilla_tab`
+(a Create World tab, `MenuTabBar.MenuTabButton`) and `ui::tooltip_panel` (a tooltip's background and
+frame round any content).
+
+`HORIZON_MENU_STYLE=vanilla` starts the official game with no style given, so it draws in `NEUTRAL`.
+Use it to see and test the vanilla look; `pad_menu_e2e.py` passes the variable on to the game.
+
 ### Moving a screen onto the shell
 
 A settings screen on the shell describes its pages, groups and rows, and says what a press does. The
 shell (`settings_shell::Shell`) does the rest: drawing, the mouse, one scroll path, the keyboard's focus
 and the controller's targets, the search, the strip that describes a row, Undo, and a binding's wait. A
 fix there reaches every screen on it. `extras_ui.rs` is the smallest example, `graphics_ui.rs` has
-sliders, costs and greyed rows, `controller_ui.rs` has bindings and lines to read, and `shader_ui.rs` has
-pages read from a shader pack, rows that link to pages out of the page list, and Apply.
+sliders, costs and greyed rows, `controller_ui.rs` has bindings and lines to read, `shader_ui.rs` has
+pages read from a shader pack, rows that link to pages out of the page list, and Apply, and
+`pack_options_ui.rs` (Pack Options) edits values of its own rather than `Settings`: a resource pack's
+Polytone config entries, a page per section, with Undo from a snapshot taken when it opens.
 
 1. **Name the rows and the pages.** `type Row` is an id for a row (an enum over the settings), `type
    Page` one for a page (`()` for a screen of one page, which then shows no page list).
@@ -417,7 +440,8 @@ pages read from a shader pack, rows that link to pages out of the page list, and
    Escape goes back. A slider's `slider_released` says what its change does once the drag ends, or a key stepped
    it (a Horizon shader pack saves its options once a drag).
 4. **Fingerprint what the rows read** in `stamp` (`stamp_of`), besides the presses: the rows are built
-   again only when it changes.
+   again only when it changes. A screen that keeps its own values can count its changes instead
+   (Pack Options' values are floats, which don't hash).
 5. **Undo**, if the screen has it: `undoes`, and `undo` puts back what the screen changes from the
    settings it opened with, and says what else that does (Shaders saves a pack's options again).
    `differs` lets Undo show exactly while something differs, a binding the game made meanwhile

@@ -2,11 +2,15 @@
 //! port and who may join, imports an existing `server.properties`, finds the game, and writes `server.toml`.
 //! Every question has a flag, so it also runs unattended (Docker, scripts).
 
-use crate::{config, config::Config, engine};
+use crate::engine;
+use horizon_platform::java_properties::now_millis;
 use horizon_platform::server_files::{
     eula,
-    java_properties::now_millis,
     user_lists::{OpEntry, OpList, WhiteEntry, WhiteList},
+};
+use horizon_server_launch::{
+    self as launch,
+    config::{self, Config},
 };
 use std::{
     io::{BufRead, IsTerminal, Write},
@@ -167,6 +171,10 @@ pub fn run(dir: &Path, answers: Answers) -> Result<(), String> {
             .parse()
             .map_err(|_| "the port must be a number from 1 to 65535".to_owned())?,
     };
+    // Validate the prospective server.toml through the launch crate's owning parse boundary,
+    // just as a server start does, before writing it or adding players. Config's internal
+    // checks stay private to that crate rather than becoming a second public validation API.
+    cfg = Config::parse(&config::render(&cfg))?;
     if std::net::TcpListener::bind(("0.0.0.0", cfg.server.port)).is_err() {
         println!(
             "Port {} is in use right now: stop what uses it, or change server.port in server.toml.",
@@ -199,16 +207,23 @@ pub fn run(dir: &Path, answers: Answers) -> Result<(), String> {
             .yes(&format!("Make {first} an operator?"), true)
             .then(|| first.clone())
     });
-    add_players(dir, &players, op.as_deref(), cfg.server.online_mode)?;
+    let op_level = cfg.op_permission_level(dir);
+    add_players(
+        dir,
+        &players,
+        op.as_deref(),
+        cfg.server.online_mode,
+        op_level,
+    )?;
 
     // 5. The game and its files.
-    match engine::program(&cfg, dir) {
+    match launch::program(&cfg, dir) {
         Ok(program) => {
             println!("Game: {}", program.display());
             if let Err(e) = engine::check_starts(&program) {
                 println!("Warning: {e}");
             }
-            match engine::resources(&cfg, dir, Some(&program)) {
+            match launch::resources(&cfg, dir, Some(&program)) {
                 Ok(resources) => {
                     println!("Game files: {}", resources.display());
                     if let Err(e) = engine::check_prepared(&resources) {
@@ -243,6 +258,7 @@ fn add_players(
     players: &[String],
     op: Option<&str>,
     online: bool,
+    op_level: i32,
 ) -> Result<(), String> {
     if !players.is_empty() {
         let mut white = WhiteList::new(dir.join("whitelist.json"));
@@ -263,7 +279,8 @@ fn add_players(
             .map_err(|e| format!("ops.json: {e}; fix it or move it away, then run init again"))?;
         ops.add(OpEntry {
             user: crate::lists::account(name, online)?,
-            level: 4,
+            // PlayerList.op: the level of `op-permission-level`.
+            level: op_level,
             bypasses_player_limit: false,
         });
         println!("Operator: {name}");
@@ -283,7 +300,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = "[{\"uuid\": \"x\", \"name\": \"Kim\",}]";
         std::fs::write(dir.join("whitelist.json"), theirs).unwrap();
-        assert!(add_players(&dir, &["Alex".into()], None, false).is_err());
+        assert!(add_players(&dir, &["Alex".into()], None, false, 4).is_err());
         assert_eq!(
             std::fs::read_to_string(dir.join("whitelist.json")).unwrap(),
             theirs
@@ -292,6 +309,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn unattended_init_writes_everything() {
         let dir = std::env::temp_dir().join(format!("horizon-server-init-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -335,6 +353,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn no_eula_no_server() {
         let dir = std::env::temp_dir().join(format!("horizon-server-eula-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -345,6 +364,68 @@ mod tests {
         assert!(run(&dir, answers).unwrap_err().contains("EULA"));
         assert!(!dir.join(config::FILE).exists());
         assert!(!eula::agreed(&dir.join("eula.txt")).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `Config::check` refuses these at every start, so `init` must not write a `server.toml` that holds them.
+    #[test]
+    #[ignore = "daily"]
+    fn init_refuses_a_port_or_world_name_the_server_would_refuse() {
+        for (label, world, port, refusal) in [
+            ("port-0", None, Some(0), "server.port"),
+            ("world-slash", Some("a/b"), Some(25597), "world.name"),
+            ("world-dotdot", Some(".."), Some(25597), "world.name"),
+            ("world-logs", Some("logs"), Some(25597), "world.name"),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "horizon-server-init-refuses-{label}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            let answers = Answers {
+                eula: true,
+                world: world.map(str::to_owned),
+                port,
+                whitelist: Some(false),
+                online: Some(false),
+                yes: true,
+                ..Default::default()
+            };
+            match run(&dir, answers) {
+                Err(e) => assert!(e.contains(refusal), "{label}: {e}"),
+                Ok(()) => panic!("{label}: init accepted it"),
+            }
+            assert!(
+                !dir.join(config::FILE).exists(),
+                "{label}: server.toml written"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn init_op_gets_the_op_permission_level_of_the_imported_properties() {
+        // `PlayerList.op` writes `operatorUserPermissions()`, the level of `op-permission-level`.
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-init-op-level-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(config::PROPERTIES), "op-permission-level=2\n").unwrap();
+        let answers = Answers {
+            eula: true,
+            port: Some(25598),
+            whitelist: Some(false),
+            op: Some("Alex".into()),
+            online: Some(false),
+            yes: true,
+            ..Default::default()
+        };
+        run(&dir, answers).unwrap();
+        let ops = std::fs::read_to_string(dir.join("ops.json")).unwrap();
+        assert!(ops.contains("\"level\": 2,"), "{ops}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

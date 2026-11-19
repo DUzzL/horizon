@@ -7,7 +7,7 @@ use crate::{
     registries::Registries,
     text::{self, Style, Text},
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -26,7 +26,7 @@ pub fn bracketed(inner: Text) -> Text {
 }
 fn hover_name(text: Text, name: &str) -> Text {
     text.with_style(&Style {
-        hover: Some(Box::new(Text::literal(name))),
+        hover: Some(std::sync::Arc::new(Text::untrusted(name))),
         ..Style::default()
     })
 }
@@ -374,9 +374,14 @@ pub fn criteria_by_name(name: &str, reg: &Registries) -> Result<Option<String>, 
             reg.items.is_empty() || reg.items.contains(&key)
         }
         "killed" | "killed_by" => reg.entity_types.is_empty() || reg.entity_types.contains(&key),
-        "custom" => key
-            .strip_prefix("minecraft:")
-            .is_some_and(|k| CUSTOM_STATS.contains(&k)),
+        "custom" => {
+            key.strip_prefix("minecraft:")
+                .is_some_and(|k| CUSTOM_STATS.contains(&k))
+                || reg
+                    .by_registry
+                    .get("minecraft:custom_stat")
+                    .is_some_and(|registry| registry.ids.contains(&key))
+        }
         _ => false,
     };
     Ok(known.then(|| stat_criteria(ty, &key)))
@@ -736,7 +741,7 @@ impl ScoreEntry {
     pub fn owner_name(&self) -> Text {
         match &self.display {
             Some(d) => comp_text(d),
-            None => Text::literal(self.owner.clone()),
+            None => Text::untrusted(self.owner.clone()),
         }
     }
     pub fn format_value(&self, default: &NumberFormat) -> Text {
@@ -1300,116 +1305,7 @@ fn entity_uuids(tag: &mut Tag) {
     }
 }
 
-/// A style object as `Style.Serializer.MAP_CODEC` re-encodes it.
-pub fn canonical_style(style: &Value) -> Value {
-    let (mut node, _) = decompose(style);
-    node.remove("text");
-    Value::Object(node)
-}
-
-/// A component as vanilla decodes and re-encodes it (`ComponentSerialization`):
-/// a literal without style or siblings becomes a plain string, a list becomes
-/// its first element with the others appended as siblings, and the content
-/// type marker is left out.
-pub fn canonical_component(c: &Comp) -> Comp {
-    let (mut node, extra) = decompose(c);
-    finish(&mut node, extra)
-}
-/// A component's own fields (content and style) and its siblings.
-fn decompose(c: &Comp) -> (serde_json::Map<String, Value>, Vec<Comp>) {
-    match c {
-        Value::Array(list) if !list.is_empty() => {
-            let (mut node, mut extra) = decompose(&list[0]);
-            extra.extend(list[1..].iter().map(canonical_component));
-            node.remove("extra");
-            (node, extra)
-        }
-        Value::Object(o) => {
-            let mut node = serde_json::Map::new();
-            let mut extra = Vec::new();
-            for (k, v) in o {
-                match k.as_str() {
-                    "type" => {}
-                    "extra" => {
-                        if let Value::Array(list) = v {
-                            extra.extend(list.iter().map(canonical_component));
-                        }
-                    }
-                    "bold" | "italic" | "underlined" | "strikethrough" | "obfuscated" => {
-                        let b = match v {
-                            Value::Bool(b) => *b,
-                            Value::Number(n) => n.as_f64().is_some_and(|f| f as i8 != 0),
-                            _ => continue,
-                        };
-                        node.insert(k.clone(), Value::Bool(b));
-                    }
-                    "color" => {
-                        let color = v.as_str().map(|s| match s.strip_prefix('#') {
-                            Some(_) => match component::hex_color(s) {
-                                Some(rgb) => format!("#{rgb:06X}"),
-                                None => s.to_owned(),
-                            },
-                            None => s.to_owned(),
-                        });
-                        if let Some(color) = color {
-                            node.insert(k.clone(), Value::String(color));
-                        }
-                    }
-                    "with" => {
-                        if let Value::Array(args) = v {
-                            let args = args
-                                .iter()
-                                .map(|a| match a {
-                                    Value::Object(_) | Value::Array(_) => canonical_component(a),
-                                    other => other.clone(),
-                                })
-                                .collect();
-                            node.insert(k.clone(), Value::Array(args));
-                        }
-                    }
-                    "separator" => {
-                        node.insert(k.clone(), canonical_component(v));
-                    }
-                    "hover_event" => {
-                        let mut h = v.clone();
-                        if let Some(value) = h.get("value").cloned()
-                            && h.get("action").and_then(Value::as_str) == Some("show_text")
-                        {
-                            h["value"] = canonical_component(&value);
-                        }
-                        node.insert(k.clone(), h);
-                    }
-                    _ => {
-                        node.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            (node, extra)
-        }
-        Value::String(s) => {
-            let mut node = serde_json::Map::new();
-            node.insert("text".into(), Value::String(s.clone()));
-            (node, Vec::new())
-        }
-        other => {
-            let mut node = serde_json::Map::new();
-            node.insert("text".into(), Value::String(other.to_string()));
-            (node, Vec::new())
-        }
-    }
-}
-fn finish(node: &mut serde_json::Map<String, Value>, extra: Vec<Comp>) -> Comp {
-    if extra.is_empty()
-        && node.len() == 1
-        && let Some(Value::String(s)) = node.get("text")
-    {
-        return Value::String(s.clone());
-    }
-    if !extra.is_empty() {
-        node.insert("extra".into(), Value::Array(extra));
-    }
-    Value::Object(node.clone())
-}
+pub use horizon_assets::component_codec::{canonical_component, canonical_style};
 
 #[cfg(test)]
 mod tests {
@@ -1475,6 +1371,29 @@ mod tests {
         };
         assert!(criteria_exists("minecraft.crafted:minecraft.stick", &reg));
         assert!(!criteria_exists("minecraft.crafted:minecraft.dirt", &reg));
+    }
+
+    #[test]
+    fn custom_stat_criteria_use_live_inventory() {
+        let mut reg = Registries::default();
+        let criterion = "minecraft.custom:rewrite.steps";
+        assert_eq!(criteria_by_name(criterion, &reg), Ok(None));
+        reg.by_registry
+            .entry("minecraft:custom_stat".into())
+            .or_default()
+            .ids
+            .push("rewrite:steps".into());
+        assert_eq!(
+            criteria_by_name(criterion, &reg),
+            Ok(Some(criterion.into()))
+        );
+        assert_eq!(
+            criteria_by_name("minecraft.custom:rewrite.missing", &reg),
+            Ok(None)
+        );
+        reg.by_registry.remove("minecraft:custom_stat");
+        assert_eq!(criteria_by_name(criterion, &reg), Ok(None));
+        assert!(criteria_exists("minecraft.custom:minecraft.jump", &reg));
     }
 
     #[test]
@@ -1550,15 +1469,15 @@ mod tests {
         let back = Scoreboard::unpack(&sb.pack());
         assert_eq!(back, sb);
         // And through the binary NBT format.
-        let bytes = horizon_world::nbt::write_named(
-            &horizon_world::nbt::NamedTag {
+        let bytes = horizon_core::nbt::write_named(
+            &horizon_core::nbt::NamedTag {
                 name: "".into(),
                 tag: sb.pack(),
             },
             Default::default(),
         )
         .unwrap();
-        let (named, _) = horizon_world::nbt::read_named(&bytes, Default::default()).unwrap();
+        let (named, _) = horizon_core::nbt::read_named(&bytes, Default::default()).unwrap();
         assert_eq!(Scoreboard::unpack(&named.tag), sb);
     }
 

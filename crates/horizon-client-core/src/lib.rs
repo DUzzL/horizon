@@ -6,8 +6,10 @@
 //! (`horizon_client::text`, ...).
 #![forbid(unsafe_code)]
 pub mod block_entity_nbt;
+pub mod block_entity_types;
 pub mod bossbar;
 pub mod component;
+pub mod component_codec;
 pub mod fastutil_order;
 pub mod gamerules;
 pub mod identifier;
@@ -22,6 +24,7 @@ pub mod registries;
 pub mod scoreboard;
 pub mod snbt;
 pub mod sound_source;
+pub mod suggestion;
 pub mod text;
 pub mod uuid;
 pub mod who;

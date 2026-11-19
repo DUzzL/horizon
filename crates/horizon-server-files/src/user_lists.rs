@@ -2,13 +2,13 @@
 //! (StoredUserList and its entries): a Java HashMap keyed by the UUID string
 //! or the address, saved as a pretty-printed Gson array in that map's order.
 use super::{
-    java_properties::{civil_from_days, days_from_civil, now_millis},
     json::{self, Json},
     properties::parse_uuid,
 };
+use horizon_core::java_hash_map::{JavaHashMap, JavaKey};
 use horizon_core::random::java_string_hash;
+use horizon_java_properties::{civil_from_days, days_from_civil, now_millis};
 use horizon_protocol::crypto::uuid_string;
-use horizon_world::java_hash_map::{JavaHashMap, JavaKey};
 use std::{cmp::Ordering, path::PathBuf};
 
 /// A map key: a Java String.
@@ -89,18 +89,7 @@ pub fn parse_date(s: &str) -> Option<i64> {
     }
     let (y, mo, da) = (num(d[0])?, num(d[1])?, num(d[2])?);
     let (h, mi, se) = (num(t[0])?, num(t[1])?, num(t[2])?);
-    let zone = zone.trim();
-    let sign = match zone.as_bytes().first()? {
-        b'+' => 1,
-        b'-' => -1,
-        _ => return None,
-    };
-    let digits = &zone[1..];
-    if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let offset =
-        sign * (digits[..2].parse::<i64>().ok()? * 60 + digits[2..].parse::<i64>().ok()?);
+    let offset = zone_offset(zone.trim_start())?;
     // Lenient month and day arithmetic, checked: the file is edited by hand, and a value past what
     // milliseconds since 1970 hold is no date (None, as an unparsable one) rather than a wrapped one.
     let months = y.checked_mul(12)?.checked_add(mo.checked_sub(1)?)?;
@@ -119,6 +108,47 @@ pub fn parse_date(s: &str) -> Option<i64> {
         .checked_add(se)?
         .checked_sub(offset * 60)?;
     seconds.checked_mul(1000)
+}
+
+/// The `Z` field of that lenient parse, in minutes east of UTC: `+hhmm` / `-hhmm` (exactly four digits,
+/// hours to 23, minutes to 59), `GMT` alone or `GMT+h:mm` / `GMT-hh:mm`, or `UTC`, the names in any case.
+/// What follows the zone is left unread, as Java's date parser leaves it. Other zone names
+/// (`EST`...) are not read here.
+fn zone_offset(zone: &str) -> Option<i64> {
+    let digits = |text: &str| text.bytes().all(|b| b.is_ascii_digit());
+    let minutes_east = |sign: &str, hours: &str, minutes: &str| -> Option<i64> {
+        let (h, m) = (hours.parse::<i64>().ok()?, minutes.parse::<i64>().ok()?);
+        (h <= 23 && m <= 59).then_some(if sign == "-" {
+            -(h * 60 + m)
+        } else {
+            h * 60 + m
+        })
+    };
+    let name = zone.get(..3).unwrap_or_default();
+    if name.eq_ignore_ascii_case("utc") {
+        return Some(0);
+    }
+    if name.eq_ignore_ascii_case("gmt") {
+        let rest = &zone[3..];
+        let Some(sign @ ("+" | "-")) = rest.get(..1) else {
+            return Some(0);
+        };
+        // `h:mm` or `hh:mm`.
+        let (hours, after) = rest[1..].split_once(':')?;
+        let minutes = after.get(..2)?;
+        if !matches!(hours.len(), 1 | 2) || !digits(hours) || !digits(minutes) {
+            return None;
+        }
+        return minutes_east(sign, hours, minutes);
+    }
+    let sign @ ("+" | "-") = zone.get(..1)? else {
+        return None;
+    };
+    let hhmm = zone.get(1..5)?;
+    if !digits(hhmm) {
+        return None;
+    }
+    minutes_east(sign, &hhmm[..2], &hhmm[2..])
 }
 
 /// One list entry kind.
@@ -305,7 +335,7 @@ impl Entry for BanEntry<String> {
     }
 }
 
-/// JsonElement.getAsInt / getAsBoolean on primitives.
+/// Gson's int and boolean views for primitives.
 fn json_int(v: &Json) -> Option<i32> {
     match v {
         Json::Number(n) => n
@@ -433,12 +463,14 @@ impl<E: Entry> UserList<E> {
     pub fn save(&self) -> std::io::Result<()> {
         std::fs::write(&self.file, self.to_json())
     }
-    /// StoredUserList.load: a missing file leaves the list as it is.
+    /// StoredUserList.load: a missing file leaves the list as it is; a path that exists but cannot
+    /// be read is an error, as vanilla's reader throws before it clears the map.
     pub fn load(&mut self) -> Result<(), String> {
-        let Ok(text) = std::fs::read_to_string(&self.file) else {
-            return Ok(());
-        };
-        self.load_str(&text)
+        match read_utf8(&self.file) {
+            Ok(text) => self.load_str(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", self.file.display())),
+        }
     }
     pub fn load_str(&mut self, text: &str) -> Result<(), String> {
         self.map = JavaHashMap::default();
@@ -465,6 +497,13 @@ pub type WhiteList = UserList<WhiteEntry>;
 pub type BanList = UserList<BanEntry<NameAndId>>;
 pub type IpBanList = UserList<BanEntry<String>>;
 
+/// A list or cache file as vanilla reads it, through Guava's UTF-8 reader: a byte
+/// sequence that is not UTF-8 becomes U+FFFD, grouped as Java's decoder groups it (`java_utf8`), and the
+/// rest is kept. A file that cannot be read at all is an error, as before.
+pub(crate) fn read_utf8(file: &std::path::Path) -> std::io::Result<String> {
+    Ok(horizon_protocol::buf::java_utf8(&std::fs::read(file)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +527,71 @@ mod tests {
             "2026-10-12 08:00:00 +0000"
         );
         assert_eq!(parse_date("forever"), None);
+    }
+
+    /// `SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.ROOT).parse`, as `BanListEntry` and
+    /// `CachedUserNameToIdResolver` read their dates. Every value is what vanilla's own format gave for
+    /// "2026-10-12 08:00:00 <zone>" (a Java run on OpenJDK 25), None where it threw `ParseException`.
+    #[test]
+    fn parse_date_matches_simple_date_format() {
+        for (zone, millis) in [
+            ("+0000", Some(1791792000000)),
+            ("-0000", Some(1791792000000)),
+            ("+0200", Some(1791784800000)),
+            ("-1230", Some(1791837000000)),
+            ("+2359", Some(1791705660000)),
+            ("-2359", Some(1791878340000)),
+            ("+0059", Some(1791788460000)),
+            ("+2400", None),
+            ("+0075", None),
+            ("+020", None),
+            ("+02:00", None),
+            ("+02 00", None),
+            ("+02000", Some(1791784800000)),
+            ("+0200 extra", Some(1791784800000)),
+            ("+0200abc", Some(1791784800000)),
+            ("UTC", Some(1791792000000)),
+            ("utc", Some(1791792000000)),
+            ("UTCabc", Some(1791792000000)),
+            ("UTC+02:00", Some(1791792000000)),
+            ("GMT", Some(1791792000000)),
+            ("gmt", Some(1791792000000)),
+            ("GMTx", Some(1791792000000)),
+            ("GMT +02:00", Some(1791792000000)),
+            ("GMT+02:00", Some(1791784800000)),
+            ("gmt+02:00", Some(1791784800000)),
+            ("GMT+2:30", Some(1791783000000)),
+            ("GMT-5:30", Some(1791811800000)),
+            ("GMT+23:59", Some(1791705660000)),
+            ("GMT-23:59", Some(1791878340000)),
+            ("GMT-00:00", Some(1791792000000)),
+            ("GMT+12:00x", Some(1791748800000)),
+            ("GMT+02:005", Some(1791784800000)),
+            ("GMT+24:00", None),
+            ("GMT+2:60", None),
+            ("GMT+2", None),
+            ("GMT+02", None),
+            ("GMT+0200", None),
+            ("GMT+2:3", None),
+            ("GMT+002:00", None),
+            ("GMT+", None),
+            ("GMT+x", None),
+            ("Z", None),
+            ("UT", None),
+            ("CET", None),
+        ] {
+            assert_eq!(
+                parse_date(&format!("2026-10-12 08:00:00 {zone}")),
+                millis,
+                "{zone:?}"
+            );
+        }
+        // The zone comes after any run of spaces, as the date and the time do.
+        assert_eq!(
+            parse_date("2026-10-12 08:00:00  +0200"),
+            Some(1791784800000)
+        );
+        assert_eq!(parse_date("2026-10-12 08:00:00"), None);
     }
 
     #[test]
@@ -553,6 +657,85 @@ mod tests {
         assert!(bans.add(ban.clone()));
         assert!(!bans.add(ban));
         assert_eq!(*said.lock().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `StoredUserList.load` reads through Guava's UTF-8 reader: a byte that is not
+    /// UTF-8 becomes U+FFFD (vanilla's reader gave `0043 0061 0066 fffd` for `Caf\xE9`), so the entry is
+    /// kept, and the next save writes it back with the others instead of losing the file.
+    #[test]
+    fn a_byte_that_is_not_utf8_is_replaced_not_a_missing_file() {
+        let dir = std::env::temp_dir().join(format!("horizon-lists-latin1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("whitelist.json");
+        let mut bytes = br#"[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Caf"#.to_vec();
+        bytes.extend(b"\xE9\"}]");
+        std::fs::write(&file, &bytes).unwrap();
+        let mut white = WhiteList::new(&file);
+        white.load().unwrap();
+        let names: Vec<String> = white
+            .entries()
+            .iter()
+            .map(|e| e.user.name.clone())
+            .collect();
+        assert_eq!(names, ["Caf\u{fffd}"]);
+        assert!(white.add(WhiteEntry {
+            user: NameAndId::offline("Kim")
+        }));
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            saved.contains("Caf\u{fffd}") && saved.contains("Kim"),
+            "{saved}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Java's reader gives one U+FFFD for an encoded UTF-16 surrogate (`ED A0 80`, and its truncated
+    /// prefixes), where `String::from_utf8_lossy` gives two or three; both are read, not taken as missing.
+    #[test]
+    fn an_encoded_surrogate_is_one_replacement_as_java_reads_it() {
+        let dir = std::env::temp_dir().join(format!("horizon-lists-cesu-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ops.json");
+        for (bytes, expected) in [
+            (&b"\xED\xA0\x80"[..], "\u{fffd}"),
+            (&b"\xED\xA0"[..], "\u{fffd}"),
+            (&b"\xED\xBFA"[..], "\u{fffd}A"),
+            (&b"Caf\xE9"[..], "Caf\u{fffd}"),
+        ] {
+            std::fs::write(&file, bytes).unwrap();
+            assert_eq!(read_utf8(&file).unwrap(), expected, "{bytes:x?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `StoredUserList.load` only treats a missing path as a no-op: a path that exists but cannot
+    /// be read (here a directory in place of the JSON file) throws before the map is touched.
+    #[test]
+    fn a_list_that_cannot_be_read_is_an_error_and_keeps_its_entries() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-lists-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("whitelist.json");
+        std::fs::write(
+            &file,
+            r#"[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Alex"}]"#,
+        )
+        .unwrap();
+        let mut white = WhiteList::new(&file);
+        white.load().unwrap();
+        assert_eq!(white.entries().len(), 1);
+
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let error = white.load().unwrap_err();
+        assert!(error.contains("whitelist.json"), "{error}");
+        assert_eq!(white.entries().len(), 1, "the entries survive a read error");
+
+        let mut missing = WhiteList::new(dir.join("missing.json"));
+        missing.load().unwrap();
+        assert!(missing.is_empty());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

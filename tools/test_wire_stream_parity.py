@@ -6,7 +6,7 @@ stream, also after ViaVersion translated it for an older server, so Horizon's mu
 A vanilla 26.3 dedicated server (flat world, offline) runs behind tools/net_capture.py. Each client joins it in
 turn as Steve and plays every scenario below: the harness resets the place and the player from the server's
 console, then hands the client the scenario, which it plays tick by tick from its own tick loop (Horizon:
-HORIZON_TICK_SCRIPT, game/tick_script.rs; vanilla: VanillaTickScript.java, the unchanged client with its
+HORIZON_TICK_SCRIPT, game/world/tick_script.rs; vanilla: VanillaTickScript.java, the unchanged client with its
 keys pressed through KeyMapping). Both send /wire-mark on the scenario's first tick. tools/wire_stream.py
 cuts each scenario's stream into client ticks (ClientTickEnd ends one) and decodes the packets; every tick
 must hold the same packets, in the same order, with the same fields (doubles and floats exactly). Packets
@@ -238,13 +238,12 @@ class VanillaClient:
         cp = command.index('-cp') + 1
         command[cp] = os.pathsep.join([str(classes), command[cp]])
         command[command.index('net.minecraft.client.main.Main')] = 'dev.horizonlab.parity.VanillaTickScript'
-        self.log = open(log, 'w')
+        self.log = open(log, 'w', encoding='utf-8')
         self.ready, self.done = threading.Event(), {}
         # Its window opens without the focus (SDL's hint), so it takes neither the keyboard nor the pointer of
         # whoever is at the computer; VanillaTickScript keeps their input out once it runs.
         env = dict(screen_env(vanilla_client.environment()), SDL_WINDOW_ACTIVATE_WHEN_SHOWN='0')
-        self.process = subprocess.Popen(command, cwd=args.game_dir, env=env, text=True,
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.process = vanilla_client.spawn(command, args.game_dir, env)
         threading.Thread(target=self.pump, daemon=True).start()
 
     def pump(self):
@@ -276,7 +275,7 @@ class VanillaClient:
 
 class HeadlessGame(Game):
     """server_pack_e2e's game, `--headless`: no display, window or GPU; the frame and the ticks run as a
-    window's do (game/headless.rs), and only the ticks' packets matter here."""
+    window's do (game/runtime/headless.rs), and only the ticks' packets matter here."""
 
     def __init__(self, bins, resources, work, scripts, extras=None):
         self.home = work / 'home'
@@ -288,9 +287,9 @@ class HeadlessGame(Game):
         self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_LAUNCHER_HOME=work / 'launcher',
                                 XDG_DATA_HOME=work / 'data', XDG_CONFIG_HOME=work / 'config',
                                 HORIZON_TELEMETRY_URL='off', HORIZON_TICK_SCRIPT=scripts / 'scenario.json')
-        self.base = [str(bins / 'horizon-ctl'), '--socket', str(work / 'c.sock')]
+        self.base = [str(lab.binary(bins, 'horizon-ctl')), '--socket', str(work / 'c.sock')]
         self.log = self.home / 'logs' / 'latest.log'
-        reply = self('launch', '--game', bins / 'horizon-client', '--headless', '--resources', resources)
+        reply = self('launch', '--game', lab.binary(bins, 'horizon-client'), '--headless', '--resources', resources)
         self.pid = reply.get('pid')
 
 

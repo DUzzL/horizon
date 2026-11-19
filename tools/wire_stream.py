@@ -11,7 +11,11 @@ client processes the server's packets at the start of a frame (Minecraft.runTick
 the ticks), so none of them lands between two packets of one tick. Keep-alive answers are the exception: the
 network thread sends them (ClientCommonPacketListenerImpl.handleKeepAlive).
 """
+import itertools
 import struct
+
+# Sentinel for a packet missing from one side of a field_diff comparison.
+_MISSING = object()
 
 # Sent from the frame (the server's packets), not from a tick.
 FRAME = {'keep_alive', 'pong', 'chunk_batch_received', 'accept_teleportation', 'chat_ack'}
@@ -34,6 +38,11 @@ class Reader:
         value = shift = 0
         while True:
             b = self.take(1)[0]
+            # Java's VarInt.read caps a VarInt at five 7-bit groups: a continuation bit on the fifth group
+            # (shift 28) would need a sixth byte and is malformed. Reject it instead of silently desynchronising
+            # the compared stream. Every valid one-to-five-byte encoding keeps decoding identically.
+            if shift == 28 and b & 0x80:
+                raise ValueError('VarInt too big')
             value |= (b & 0x7F) << shift
             if not b & 0x80:
                 return value - (1 << 32) if value >= 1 << 31 else value
@@ -207,13 +216,32 @@ def compare_answered(vanilla, horizon, ticks, av, ah):
     """compare, for a scenario the server answers once (a teleport): the tick each client received the answer
     in (`av`, `ah`) compares with the other client's, every other tick with the same tick, on the script's
     clock. A loaded server answers a few ticks later in one run than in the other, while the script's own
-    packets (a button released, the position resent every 20 ticks) keep its clock. Numbers are vanilla's."""
+    packets (a button released, the position resent every 20 ticks) keep its clock. Numbers are vanilla's.
+
+    The moves of the two answer ticks (LocalPlayer.sendPosition, at the end of the player's tick) keep the
+    script's clock too: an answer that doesn't move the player (`tp @s ~ ~ ~`) leaves them to the 20-tick
+    position reminder, which a later answer can land on in one run and not in the other."""
     out = [d for d in compare(vanilla, horizon, ticks) if d[0] not in (av, ah)]
-    v = vanilla[av]['packets'] if av < len(vanilla) else None
-    h = horizon[ah]['packets'] if ah < len(horizon) else None
-    if v != h:
+    packets = lambda run, i: run[i]['packets'] if i < len(run) else None  # noqa: E731
+    v, h = packets(vanilla, av), packets(horizon, ah)
+    if strip_moves(v) != strip_moves(h):
         out.append((av, v, h))
+    for i in sorted({av, ah}):
+        vi, hi = packets(vanilla, i), packets(horizon, i)
+        if moves(vi) != moves(hi) and all(d[0] != i for d in out):
+            out.append((i, vi, hi))
     return sorted(out, key=lambda d: d[0])
+
+
+MOVES = {'move_player_pos', 'move_player_pos_rot', 'move_player_rot', 'move_player_status_only'}
+
+
+def moves(packets):
+    return None if packets is None else [p for p in packets if p[0] in MOVES]
+
+
+def strip_moves(packets):
+    return None if packets is None else [p for p in packets if p[0] not in MOVES]
 
 
 def describe(packets):
@@ -229,10 +257,23 @@ def describe(packets):
 
 
 def field_diff(v, h, names=('vanilla', 'Horizon')):
-    """One line per differing field of packets paired by position, with the exact values."""
+    """One line per differing field of packets paired by position, with the exact values.
+
+    A packet present on only one side is itself a difference (compare() already flagged it), so it is
+    reported too instead of being silently dropped by a plain zip() over the shorter list."""
     a, b = names
     lines = []
-    for i, ((vn, vf), (hn, hf)) in enumerate(zip(v or [], h or [])):
+    for i, (vp, hp) in enumerate(itertools.zip_longest(v or [], h or [], fillvalue=_MISSING)):
+        if vp is _MISSING:
+            hn, hf = hp
+            lines.append(f'    #{i}: {a} (no packet), {b} {hn} {hf!r}')
+            continue
+        if hp is _MISSING:
+            vn, vf = vp
+            lines.append(f'    #{i}: {a} {vn} {vf!r}, {b} (no packet)')
+            continue
+        vn, vf = vp
+        hn, hf = hp
         if vn != hn:
             lines.append(f'    #{i}: {a} {vn}, {b} {hn}')
             continue

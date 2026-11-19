@@ -19,7 +19,9 @@
 
 pub mod hud;
 pub mod lang;
+pub mod mod_links;
 pub mod pages;
+pub mod perf;
 pub mod players;
 mod registry;
 pub mod settings;
@@ -86,6 +88,11 @@ pub trait Hooks: Sync {
     /// offers one is used. Asked on the network thread when joining and on the game thread when
     /// an address is shown, never per frame.
     fn tunnel(&self) -> Option<&dyn tunnel::Resolver> {
+        None
+    }
+
+    /// Opens and shares saved performance captures ([`perf`]); the first hook that offers one is used.
+    fn captures(&self) -> Option<&dyn perf::Captures> {
         None
     }
 
@@ -164,6 +171,8 @@ pub enum Dimension {
     Overworld,
     Nether,
     End,
+    /// A custom dimension, with no private identifier published.
+    Other,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +361,11 @@ pub mod engine {
         }
     }
 
+    /// [`Hooks::captures`]: the first registered hook's.
+    pub fn captures() -> Option<&'static dyn perf::Captures> {
+        all().iter().find_map(|hooks| hooks.captures())
+    }
+
     /// [`Hooks::tunnel`]: the first registered hook's resolver.
     pub fn tunnel() -> Option<&'static dyn tunnel::Resolver> {
         all().iter().find_map(|hooks| hooks.tunnel())
@@ -382,6 +396,9 @@ mod tests {
         }
         fn published(&self, open: bool) {
             self.0.lock().unwrap().push(format!("published {open}"));
+        }
+        fn shutdown(&self) {
+            self.0.lock().unwrap().push("shutdown".into());
         }
         fn activity(&self, now: Activity) {
             self.0.lock().unwrap().push(format!("{now:?}"));
@@ -629,6 +646,7 @@ mod tests {
                 "published false",
                 "Menus",
                 "World { play: Singleplayer, dimension: Nether, mode: Creative }",
+                "shutdown",
                 "frame 4"
             ]
         );

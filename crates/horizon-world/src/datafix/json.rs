@@ -2,7 +2,8 @@
 //! lenient mode, `GsonHelper.toStableString`, and `JsonOps.convertTo` into NBT.
 //! Strings stay UTF-16 like Java's; numbers keep their literal like Gson's
 //! `LazilyParsedNumber`.
-use crate::nbt::{Compound, JavaString, Tag};
+use horizon_core::nbt::{Compound, JavaString, Tag};
+use indexmap::IndexMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Json {
@@ -43,6 +44,38 @@ impl Json {
     }
 }
 
+// The ordered index is temporary so the public object keeps its original Vec.
+const INDEX_AFTER_FIELDS: usize = 32;
+#[derive(Default)]
+struct ObjectEntries {
+    entries: Vec<(Vec<u16>, Json)>,
+    indexed: Option<IndexMap<Vec<u16>, Json>>,
+}
+impl ObjectEntries {
+    fn insert(&mut self, key: Vec<u16>, value: Json) {
+        if let Some(indexed) = &mut self.indexed {
+            indexed.insert(key, value);
+            return;
+        }
+
+        if self.entries.len() == INDEX_AFTER_FIELDS {
+            // Move the keys and values into the index, preserving their order.
+            let mut indexed = IndexMap::with_capacity(INDEX_AFTER_FIELDS * 2);
+            indexed.extend(std::mem::take(&mut self.entries));
+            indexed.insert(key, value);
+            self.indexed = Some(indexed);
+        } else {
+            Json::insert(&mut self.entries, key, value);
+        }
+    }
+
+    fn finish(self) -> Json {
+        Json::Obj(match self.indexed {
+            Some(indexed) => indexed.into_iter().collect(),
+            None => self.entries,
+        })
+    }
+}
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Strict,
@@ -135,10 +168,10 @@ impl Reader<'_> {
     }
     fn object(&mut self, depth: usize) -> R<Json> {
         self.pos += 1;
-        let mut entries = Vec::new();
+        let mut entries = ObjectEntries::default();
         if self.skip_ws()? == Some(u('}')) {
             self.pos += 1;
-            return Ok(Json::Obj(entries));
+            return Ok(entries.finish());
         }
         loop {
             let c = self.skip_ws()?.ok_or(())?;
@@ -171,11 +204,11 @@ impl Reader<'_> {
                 _ => return Err(()),
             }
             let value = self.value(depth + 1)?;
-            Json::insert(&mut entries, name, value);
+            entries.insert(name, value);
             match self.skip_ws()?.ok_or(())? {
                 0x7D => {
                     self.pos += 1;
-                    return Ok(Json::Obj(entries));
+                    return Ok(entries.finish());
                 }
                 0x2C => self.pos += 1,
                 0x3B if self.lenient() => self.pos += 1,
@@ -545,8 +578,8 @@ pub fn from_nbt(tag: &Tag) -> Json {
         Tag::Short(v) => Json::Num(v.to_string()),
         Tag::Int(v) => Json::Num(v.to_string()),
         Tag::Long(v) => Json::Num(v.to_string()),
-        Tag::Float(v) => Json::Num(java_float_string(f32::from_bits(*v))),
-        Tag::Double(v) => Json::Num(java_double_string(f64::from_bits(*v))),
+        Tag::Float(v) => Json::Num(float_to_string(f32::from_bits(*v))),
+        Tag::Double(v) => Json::Num(double_to_string(f64::from_bits(*v))),
         Tag::ByteArray(v) => Json::Arr(
             v.iter()
                 .map(|b| Json::Num((*b as i8).to_string()))
@@ -560,55 +593,7 @@ pub fn from_nbt(tag: &Tag) -> Json {
     }
 }
 
-/// Java `Double.toString`.
-pub fn java_double_string(d: f64) -> String {
-    java_fp_string(d, format!("{d:e}"))
-}
-/// Java `Float.toString`.
-pub fn java_float_string(f: f32) -> String {
-    java_fp_string(f64::from(f), format!("{f:e}"))
-}
-fn java_fp_string(d: f64, sci: String) -> String {
-    if d.is_nan() {
-        return "NaN".into();
-    }
-    if d.is_infinite() {
-        return if d > 0.0 { "Infinity" } else { "-Infinity" }.into();
-    }
-    if d == 0.0 {
-        return if d.is_sign_negative() { "-0.0" } else { "0.0" }.into();
-    }
-    // `sci` is Rust's shortest round-trip form: d.ddde<exp>.
-    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let negative = mantissa.starts_with('-');
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let sign = if negative { "-" } else { "" };
-    let a = d.abs();
-    if (1e-3..1e7).contains(&a) {
-        if exp >= 0 {
-            let e = exp as usize;
-            let (int, frac) = if digits.len() > e + 1 {
-                (digits[..=e].to_string(), digits[e + 1..].to_string())
-            } else {
-                (format!("{digits:0<width$}", width = e + 1), String::new())
-            };
-            let frac = if frac.is_empty() { "0".into() } else { frac };
-            format!("{sign}{int}.{frac}")
-        } else {
-            let zeros = "0".repeat((-exp - 1) as usize);
-            format!("{sign}0.{zeros}{digits}")
-        }
-    } else {
-        if digits.len() == 1 {
-            // Select the nearest two-digit decimal, rather than padding the
-            // one-digit round-trip form; Java can choose a different exponent.
-            return format!("{d:.1e}").replace('e', "E");
-        }
-        let (first, rest) = digits.split_at(1);
-        format!("{sign}{first}.{rest}E{exp}")
-    }
-}
+use horizon_core::java_number::{double_to_string, float_to_string};
 
 /// A string value as a JSON text component (`{"text": s}`), stable string.
 pub fn text_component_json(text: &[u16]) -> Vec<u16> {
@@ -661,6 +646,43 @@ mod tests {
         }
     }
     #[test]
+    fn wide_object_keeps_order_and_replaces_utf16_keys_in_place() {
+        use std::fmt::Write as _;
+
+        let mut source = String::from(r#"{"\ud800":1,"empty":{},"😀":{"z":1,"a":2,"z":3}"#);
+        let expected_nested = Json::Obj(vec![
+            (w("z"), Json::Num("3".into())),
+            (w("a"), Json::Num("2".into())),
+        ]);
+        let mut expected = vec![
+            (vec![0xd800], Json::Num("4".into())),
+            (w("empty"), Json::Obj(Vec::new())),
+            (w("😀"), Json::Bool(true)),
+        ];
+        // Retain a nested object and check that both sides of the promotion
+        // preserve key positions, including a key inserted after promotion.
+        expected.push((w("nested"), expected_nested));
+        source.push_str(r#","nested":{"z":1,"a":2,"z":3}"#);
+        for i in (0..64).rev() {
+            write!(&mut source, r#","k{i}":false"#).unwrap();
+            let value = if i == 0 {
+                Json::Null
+            } else {
+                Json::Bool(false)
+            };
+            expected.push((w(&format!("k{i}")), value));
+        }
+        source.push_str(r#","\ud800":4,"\ud83d\ude00":true,"k0":null,"\ud801":true}"#);
+        expected.push((vec![0xd801], Json::Bool(true)));
+        let input = w(&source);
+        let expected = Some(Json::Obj(expected));
+        for parse in [parse_lenient, parse_strict, parse_prefix_strict] {
+            assert_eq!(parse(&input), expected);
+            assert_eq!(parse(&w("{}")), Some(Json::Obj(Vec::new())));
+        }
+    }
+
+    #[test]
     fn numbers_become_the_smallest_tag() {
         let tag = |s: &str| to_nbt(&parse_strict(&w(s)).unwrap()).unwrap();
         assert_eq!(tag("1"), Tag::Byte(1));
@@ -691,19 +713,19 @@ mod tests {
     }
     #[test]
     fn java_floating_point_strings() {
-        assert_eq!(java_float_string(f32::from_bits(1)), "1.4E-45");
-        assert_eq!(java_float_string(f32::from_bits(0x8000_0007)), "-9.8E-45");
-        assert_eq!(java_double_string(f64::from_bits(1)), "4.9E-324");
+        assert_eq!(float_to_string(f32::from_bits(1)), "1.4E-45");
+        assert_eq!(float_to_string(f32::from_bits(0x8000_0007)), "-9.8E-45");
+        assert_eq!(double_to_string(f64::from_bits(1)), "4.9E-324");
         assert_eq!(
-            java_double_string(f64::from_bits(0x8000_0000_0000_0002)),
+            double_to_string(f64::from_bits(0x8000_0000_0000_0002)),
             "-9.9E-324"
         );
-        assert_eq!(java_double_string(1.0), "1.0");
-        assert_eq!(java_double_string(0.001), "0.001");
-        assert_eq!(java_double_string(1e7), "1.0E7");
-        assert_eq!(java_double_string(123456.789), "123456.789");
-        assert_eq!(java_double_string(1e-4), "1.0E-4");
-        assert_eq!(java_float_string(0.1), "0.1");
-        assert_eq!(java_float_string(1.5e10), "1.5E10");
+        assert_eq!(double_to_string(1.0), "1.0");
+        assert_eq!(double_to_string(0.001), "0.001");
+        assert_eq!(double_to_string(1e7), "1.0E7");
+        assert_eq!(double_to_string(123456.789), "123456.789");
+        assert_eq!(double_to_string(1e-4), "1.0E-4");
+        assert_eq!(float_to_string(0.1), "0.1");
+        assert_eq!(float_to_string(1.5e10), "1.5E10");
     }
 }

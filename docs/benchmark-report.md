@@ -2,8 +2,7 @@
 
 Every benchmark Horizon writes uses this one JSON format: `horizon-client --benchmark`, the launcher's own
 measurements, and `tools/perf_bench.py` (which also writes it for vanilla and vanilla with mods). The same
-file is the local log a player can attach to an issue and, only with the player's consent, what the
-telemetry upload sends (minus the local-only fields below). The types, the statistics and the hardware
+file is the local log a player can attach to an issue by hand; nothing uploads it. The types, the statistics and the hardware
 detection are in `crates/horizon-bench`; nothing else builds a report by hand.
 
 A report holds summaries and histogram counts, never raw frame streams: a 10-minute run is a few
@@ -82,6 +81,7 @@ confidence interval of the mean, Student's t, null when `n` is 1). The unit is t
 | --- | --- |
 | `startup.title_ms` | process start to the first frame of the title screen |
 | `startup.world_ms` | process start to in-world, every chunk around the spawn loaded and drawn |
+| `startup.first_chunk_ms` | Horizon `perf_bench.py` only: world open or server join to the first non-empty resident-chunk status; vanilla reports omit this diagnostic and it is not a comparison metric |
 | `chunks.<phase>.load_ms` | teleport to every chunk in view distance loaded and drawn |
 | `chunks.<phase>.generated_count`, `chunks.<phase>.meshed_count`, `chunks.<phase>.generated_per_s` | chunks generated and section meshes built while loading, and the rate |
 | `fps.<phase>.avg_fps`, `fps.<phase>.low_1pct_fps`, `fps.<phase>.low_01pct_fps` | per-phase figures across repeats |
@@ -90,8 +90,10 @@ confidence interval of the mean, Student's t, null when `n` is 1). The unit is t
 | `memory.gpu_mb`, `memory.<phase>.gpu_mb` | video memory the game allocated (or NVIDIA attributes to it), where readable |
 | `memory.<phase>.rss_mb` | resident memory, median over that phase's flight (perf_bench) |
 | `cpu.<phase>.p50_ms` | median CPU time of a frame (the frame minus its waits for the GPU, the display and the limiter; Horizon only) |
+| `gpu.<phase>.p50_ms` | median GPU time of a frame (timestamp queries; not on every device). Over a phase's blocks, as `cpu.<phase>.p50_ms`: the `travel` flight and the `hold` blocks of `--benchmark travel`, and the `ab.a` and `ab.b` blocks of `--benchmark ab:SWITCH` (with `fps.` and `cpu.` of the same phases) |
 | `tick.<phase>.client_ms` | mean time of one client tick during the phase (vanilla: `Minecraft.tick`; Horizon: the frames' tick phase over the ticks run) |
-| `gpu_pass.<phase>.<pass>_ms` | GPU time of one of the game's render passes (`world`, `world_after_culling`, `occlusion_test`, `hud`...), the median of the last 15 timed frames in the 2 s before the flight, at its start; the flight itself is not timed per pass. Not on Metal, where passes overlap |
+| `gpu_pass.<phase>.<pass>_ms` | GPU time of one of the game's render passes (`world`, `world_after_culling`, `occlusion_test`, `hud`...), the median of the last 15 timed frames in the 2 s before the flight, at its start; the flight itself is not timed per pass. In an A/B run the phases are `ab_a` and `ab_b`: each arm's passes, timed once after the blocks. Not on Metal, where passes overlap |
+| `shader_pass.<phase>.<pass>_ms` | the same for each pass of the shader pack that runs (its sky, shadow map, post passes and tone map, by the names F3 shows: a stage's `name`, else its file's, and `Tonemap` for the tone map with or without a `[tonemap]`; lowercased, other characters as `_`, as `gpu_pass`'s) |
 | `power.package_w`, `power.battery_drain_pct` | power draw, battery used per hour (laptops; planned) |
 | `thermal.cpu_c`, `thermal.throttled_pct` | temperature, share of the run spent throttled (planned) |
 | `launcher.start_ms` | launcher process start to its first frame (a session) |
@@ -116,13 +118,27 @@ are fixed by the version, so histograms from any number of reports add up:
 Bucket *i* counts frames from edge *i* (included) to edge *i* + 1; the last bucket is 1000 ms and over
 (24 buckets). 4.17, 8.33, 16.67 and 33.33 ms are 240, 120, 60 and 30 FPS.
 
+**`ab`.** Optional, present only in A/B runs (one setting switched between arms A and B). The blocks are ordinary
+`frames` entries with phase `ab.a` or `ab.b`, `repeat` being the block's position in time (`0..2*pairs-1`, order B A A B
+B A A B...), so `result` can be recomputed from the file alone (`horizon_bench::compare::Ab::from_frames`). Fields: `switch`, `a`, `b` (the setting and its two values), `pairs`, `block_s`,
+`warmup_s`, `first_block_outside_range` (block 0, measured before any switch, lies outside the later B blocks: switching
+may reset what is measured) and `result`, by `gpu_p50_ms`, `cpu_p50_ms` and `frame_p50_ms` (a metric any block lacks is
+left out). Each is `pairs`, `a` and `b` (medians of the arm's block values), `diff` (B minus A), `diff_pct` (null when `a`
+is 0), `ci95` and `confidence` (null with fewer than 6 pairs), `noise` and `verdict`.
+
+The statistic, in `horizon_bench::compare`, exact and deterministic:
+
+1. A block's value is the median of its frames; pair k is blocks 2k and 2k+1, adjacent in time, so linear drift cancels.
+2. `diff` is the Hodges-Lehmann estimate: the median of the Walsh averages `(d_i + d_j) / 2`, `i <= j`, of the per-pair differences `d = b - a`.
+3. `ci95` is the exact Wilcoxon signed-rank interval, the sorted Walsh averages `W(k)` to `W(M+1-k)` for the largest `k` whose lower tail of the null distribution of T+ is at most 2.5%; `confidence` is `1 - 2 * tail` (0.9609 for 8 pairs). Below 6 pairs there is none.
+4. `verdict`: `too_few_pairs`; `within_noise` when the interval holds 0; `negligible` when `|diff| < max(0.05 ms, 2% of a)`; else `slower` (interval above 0) or `faster` (below 0). Lower milliseconds are better.
+5. `noise` is the median distance between neighbouring blocks of the same arm (blocks 1-2, 3-4...), shown next to `diff`.
+
 ## Local only
 
-`label` (a name the person running it chose) and `local` (paths of the logs the run wrote next to the
-report) stay on the machine: the upload removes them and dates the report to the day only, as every
-telemetry item is (`Report::for_upload`). The upload is `horizon-telemetry`'s `benchmark` item: this
-report, as it is, only with the player's consent to benchmark uploads (docs/telemetry.md). Nothing in a report
-identifies the player, the machine's name or the world: no host name, user name, path or address.
+Nothing in a report identifies the player, the machine's name or the world: no host name, user name, path or
+address. `label` (a name the person running it chose) and `local` (paths of the logs the run wrote next to the
+report) are kept in the file. A report is never sent anywhere (docs/telemetry.md).
 
 ## Where reports go
 

@@ -7,10 +7,11 @@
 //! offline UUID, is still refused. There the offline entry is written to whitelist.json and the game
 //! reloads it (`whitelist reload`), as it would be written while the server is stopped.
 
-use crate::{config, supervisor};
+use crate::supervisor;
 use horizon_platform::server_files::user_lists::{
     BanEntry, BanList, IpBanList, NameAndId, OpEntry, OpList, WhiteEntry, WhiteList,
 };
+use horizon_server_launch::config;
 use std::path::Path;
 
 pub fn run(dir: &Path, command: &str, args: &[String]) -> Result<(), String> {
@@ -65,7 +66,8 @@ fn edit_locked(
             } else {
                 ops.add(OpEntry {
                     user,
-                    level: 4,
+                    // PlayerList.op: MinecraftServer.operatorUserPermissions(), the property's level.
+                    level: config.op_permission_level(dir),
                     bypasses_player_limit: false,
                 });
                 saved(&ops)?;
@@ -387,7 +389,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn edits_the_lists_while_stopped() {
+        // The lock is held below without a server behind it: do not wait the full 5 s for its endpoint.
+        crate::api::ENDPOINT_WAIT.with(|w| w.set(Some(std::time::Duration::from_millis(300))));
         let dir = std::env::temp_dir().join(format!("horizon-server-lists-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -488,5 +493,47 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `PlayerList.op` writes `MinecraftServer.operatorUserPermissions()`: the level of
+    /// `op-permission-level`, from `server.toml` or, when that does not set it, `server.properties`.
+    #[test]
+    fn a_stopped_op_gets_the_op_permission_level() {
+        for (name, toml_level, file_text, expected) in [
+            ("default", None, None, 4),
+            ("toml-2", Some(2), None, 2),
+            ("toml-0", Some(0), None, 0),
+            ("toml-9", Some(9), None, 4),
+            ("file-3", None, Some("op-permission-level=3\n"), 3),
+            ("toml-wins", Some(1), Some("op-permission-level=3\n"), 1),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "horizon-server-op-level-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(config::FILE), config::TEMPLATE).unwrap();
+            config::update(&dir, "server", "online_mode", toml::Value::Boolean(false)).unwrap();
+            if let Some(text) = file_text {
+                std::fs::write(dir.join(config::PROPERTIES), text).unwrap();
+            }
+            if let Some(level) = toml_level {
+                config::update(
+                    &dir,
+                    "properties",
+                    "op-permission-level",
+                    toml::Value::Integer(level),
+                )
+                .unwrap();
+            }
+            edit_stopped(&dir, "op", &["Alex"]).unwrap();
+            let ops = std::fs::read_to_string(dir.join("ops.json")).unwrap();
+            assert!(
+                ops.contains(&format!("\"level\": {expected},")),
+                "{name}: {ops}"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }

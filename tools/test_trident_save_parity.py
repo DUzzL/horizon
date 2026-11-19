@@ -78,11 +78,15 @@ def groups():
         x = 4096 + index * 48
         entity = f'@e[type={kind},limit=1]'
         saved_keys = keys if kind == 'trident' else keys[1:]
+        arrow_fields = ''
+        if kind == 'trident':
+            saved_keys = [*saved_keys, 'damage', 'crit', 'PierceLevel']
+            arrow_fields = ',damage:0.5d,crit:1b,PierceLevel:3b'
         reloads.extend([
             command(f'/forceload add {x} 4096', False),
             {'op': 'wait_chunks', 'chunks': [[x >> 4, 256]]},
             command(f'/summon {kind} {x + 8}.5 300 4104.5 '
-                    f'{{NoGravity:1b,HasBeenShot:{shot}b,LeftOwner:{shot}b}}'),
+                    f'{{NoGravity:1b,HasBeenShot:{shot}b,LeftOwner:{shot}b{arrow_fields}}}'),
             *fields(entity, saved_keys),
             command(f'/forceload remove {x} 4096', False),
             {'op': 'tick', 'n': 60},
