@@ -2300,6 +2300,7 @@ horizon-client game::remote::tests::menu_title_snapshot_tracks_open_replacement_
 horizon-client game::remote::tests::mod_chat_needs_a_joined_player_and_what_the_chat_option_allows lib daily resources
 horizon-client game::remote::tests::mod_open_chat_fills_the_box_only_over_the_world lib daily resources
 horizon-client game::remote::tests::mods_replace_and_cancel_received_chat lib daily resources
+horizon-client game::remote::tests::open_screen_replaces_the_dialog_only_when_it_opens_a_screen lib daily resources
 horizon-client game::remote::tests::plugin_player_stack_follows_network_moves_and_local_carriers lib daily resources
 horizon-client game::remote::tests::rejected_menu_packets_retire_the_previous_client_menu lib daily resources
 horizon-client game::remote::tests::remote_player_use_animation_dispatches_once lib daily resources

@@ -9434,7 +9434,8 @@ impl Game<'_> {
             m.session.villager = p.show_progress;
         }
     }
-    /// ClientboundOpenScreenPacket for the menus Horizon draws.
+    /// `ClientPacketListener.handleOpenScreen`: `MenuScreens.create` replaces
+    /// the current screen when it can construct the requested menu screen.
     fn remote_open_screen(&mut self, p: play::OpenScreen) {
         // A new RecipeBookComponent owns fresh ghost slots and an overlay,
         // even when the server replaces a menu without a close packet.
@@ -9472,12 +9473,14 @@ impl Game<'_> {
                 r.set_menu_title(None);
             }
             self.remote_open_lectern(target.unwrap_or_default());
+            self.close_dialogs();
             return;
         }
         if let Some(kind) = Self::remote_station_kind(&menu) {
             let title = menu_title(&p.title);
             let pos = target.map_or([0, 0, 0], |t| [t.0, t.1, t.2]);
             self.remote_open_station(p.container, menu, kind, title, pos);
+            self.close_dialogs();
             return;
         }
         if menu == "minecraft:merchant" {
@@ -9491,6 +9494,7 @@ impl Game<'_> {
                     .unwrap_or_default(),
             );
             self.remote_open_merchant(p.container, title, menu_title(&p.title));
+            self.close_dialogs();
             return;
         }
         let mod_type = horizon_client::containers::mod_menu_type(&menu);
@@ -9589,6 +9593,7 @@ impl Game<'_> {
                 return;
             }
         }
+        self.close_dialogs();
         self.set_screen(Screen::Inventory);
         self.capture(false);
     }
@@ -10820,6 +10825,59 @@ pub(crate) mod tests {
             }
         });
     }
+    #[test]
+    #[ignore = "daily"]
+    fn open_screen_replaces_the_dialog_only_when_it_opens_a_screen() {
+        use horizon_core::nbt::Tag;
+        use horizon_protocol::packets::play::{self, Clientbound as C, DialogHolder};
+
+        super::super::native_entity_refs::tests::with_client_game(|game| {
+            let (client, _server) = horizon_protocol::connection::Pipe::pair();
+            game.connect_local(client, "DialogMenuTest").unwrap();
+            let dialog = Tag::compound([
+                ("type", Tag::String("minecraft:notice".into())),
+                ("title", Tag::String("Test".into())),
+            ]);
+            for name in [
+                "minecraft:generic_9x3",
+                "minecraft:anvil",
+                "minecraft:merchant",
+                "minecraft:lectern",
+                "unsupported",
+            ] {
+                let menu = game
+                    .remote
+                    .as_ref()
+                    .unwrap()
+                    .builtin
+                    .get("minecraft:menu")
+                    .unwrap()
+                    .id(name)
+                    .unwrap_or(-1);
+                assert_eq!(menu == -1, name == "unsupported");
+                game.handle_packet(C::ShowDialog(play::ShowDialog {
+                    dialog: DialogHolder::Direct(dialog.clone()),
+                }))
+                .unwrap();
+                assert!(game.dialog_open());
+                game.handle_packet(C::OpenScreen(play::OpenScreen {
+                    container: 7,
+                    menu,
+                    title: Tag::String("Menu".into()),
+                }))
+                .unwrap();
+                assert_eq!(game.dialog_open(), menu == -1, "{name}");
+                if menu != -1 {
+                    assert_eq!(
+                        game.remote.as_ref().unwrap().menu.as_ref().unwrap().0,
+                        7,
+                        "{name}"
+                    );
+                }
+            }
+        });
+    }
+
     #[test]
     #[ignore = "daily"]
     fn menu_title_snapshot_follows_packet_and_close_paths() {
