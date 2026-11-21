@@ -6383,12 +6383,19 @@ def check_frames(host, guest, out):
             player('command', command='item replace entity @s weapon.offhand with '
                    'minecraft:filled_map[minecraft:map_id=0]')
             player.wait(5)
+            inventory = player('inventory')
+            offhand = inventory['offhand']
+            assert inventory['held'] is None, f'{label}: the main hand is not empty'
+            assert offhand['item'] == 'minecraft:filled_map' and offhand['count'] == 1, \
+                f'{label}: expected one map in the off hand, got {offhand}'
             player.raw('mouse', 'right', 'click')
             player.wait(15)
             for viewer in (player, other):
                 seen = next(o for o in viewer('status')['objects'] if o['id'] == frame['id'])
                 assert seen.get('item') == 'minecraft:filled_map', f'{label}: off-hand map insertion left {seen}'
-            assert not player('inventory')['offhand'], f'{label}: the server did not consume the off-hand map'
+            offhand = player('inventory')['offhand']
+            assert offhand['item'] is None, f'{label}: the client still sees {offhand} in the off hand'
+            server_reply(player, 'execute unless items entity @s weapon.offhand *', 'Test passed')
             player('command', command='item replace entity @s weapon.mainhand with minecraft:iron_helmet')
             player.wait(5)
             stand = [o for o in player('status')['objects'] if o['kind'] == 'minecraft:armor_stand'
@@ -6421,14 +6428,17 @@ def check_frames(host, guest, out):
             assert player('inventory')['counts'].get('minecraft:name_tag') == 2, 'named tag was not consumed once'
             server_reply(player, f'data get entity {selector} CustomName', name)
             server_reply(other, f'data get entity {selector} CustomName', name)
-            # NameTagItem shrinks its stack in creative too.
+            # Player.interactOn gives NameTagItem a copy of the creative player's stack.
             player('command', command='gamemode creative')
+            creative_name = f'{label} creative Bob'
             player('command', command='item replace entity @s weapon.mainhand with '
-                   f'minecraft:name_tag[minecraft:custom_name="{name}"] 3')
+                   f'minecraft:name_tag[minecraft:custom_name="{creative_name}"] 3')
             player.wait(5)
             player.raw('mouse', 'right', 'click')
             player.wait(10)
-            assert player('inventory')['counts'].get('minecraft:name_tag') == 2, 'creative tag was not consumed once'
+            assert player('inventory')['counts'].get('minecraft:name_tag') == 3, 'creative tag was consumed'
+            server_reply(player, f'data get entity {selector} CustomName', creative_name)
+            server_reply(other, f'data get entity {selector} CustomName', creative_name)
             player('command', command='gamemode survival')
             result[label] = {'frame': 'diamond, turned', 'stand': 'helmet on and off; named tag consumed'}
         finally:
